@@ -1531,6 +1531,24 @@ if $projet and $projet.responsable:
           rebuildChildrenCache(); 
           try { statusCfg = await TF.loadStatusConfig(grist, 'Actions', 'statut', actions.map(a => a && a.statut)); } catch (e) {} 
           initKanbanFilterManager();
+          // Mettre à jour les données du FilterManager après initialisation
+          if (filterManager) {
+            filterManager.setData({
+              team: team,
+              entites: entites,
+              projects: projects,
+              tasks: tasks,
+              actions: actions
+            });
+            // Mettre à jour la config avec les filtres courants
+            filterManager.setWidgetConfig({
+              workLevel: workLevel,
+              showSubtasks: showSubtasks,
+              searchQuery: searchQuery,
+              _assigneeFilter: filters.assignee,
+              _teamFilter: filters.team
+            });
+          }
           updateFilterMenus(); 
           render(); 
         }
@@ -1556,19 +1574,89 @@ if $projet and $projet.responsable:
             return (est > 0 && asg.length) ? asg.map(id => ({ teamId: id, heures: est / asg.length })) : [];
           };
           
-          // Initialiser le FilterManager avec gestion complète de l'UI
+          // Post-filter spécifique au Kanban : Actions + workLevel + showSubtasks + search
+          // Ce post-filter reçoit les TÂCHES déjà filtrées par le FilterManager, et doit retourner les ACTIONS à afficher
+          const kanbanPostFilter = (filteredTasks, config, allData) => {
+            const { actions = [], tasks = [], team = [] } = allData;
+            const filteredTaskIds = new Set(filteredTasks.map(t => t.id));
+            
+            console.log('kanbanPostFilter:', {
+              totalActions: actions.length,
+              filteredTaskIds: filteredTaskIds.size,
+              config: config,
+              _assigneeFilter: config._assigneeFilter,
+              _teamFilter: config._teamFilter
+            });
+            
+            // Filtrer les actions dont la tâche parente est dans les tâches filtrées
+            let result = actions.filter(a => {
+              // La tâche parente doit être dans les tâches filtrées
+              if (a.task && !filteredTaskIds.has(Number(a.task))) return false;
+              
+              // Appliquer le filtre assignee SUR L'ACTION elle-même (pas juste la tâche parente)
+              if (config._assigneeFilter && config._assigneeFilter.length > 0) {
+                // Si l'action n'a PAS d'assignee, elle ne correspond pas au filtre
+                if (!a.assignee) return false;
+                // Si l'assignee de l'action n'est PAS dans le filtre, on exclut
+                if (!config._assigneeFilter.includes(String(a.assignee))) return false;
+              }
+              
+              // Appliquer le filtre team (entité) sur l'assignee de l'action
+              if (config._teamFilter && config._teamFilter.length > 0) {
+                const member = team.find(m => m.id === a.assignee);
+                if (!member) return false; // Pas de membre trouvé
+                if (!member.entite) return false; // Membre sans entité
+                if (!config._teamFilter.includes(String(member.entite))) return false; // Entité non filtrée
+              }
+              
+              // Filtre recherche
+              if (config.searchQuery && !(a.titre||'').toLowerCase().includes(config.searchQuery)) return false;
+              return true;
+            });
+            
+            console.log('kanbanPostFilter result:', result.length, 'actions');
+            
+            // Appliquer workLevel (actions/parents/all)
+            if (config.workLevel === 'actions') {
+              // Actions = tâches sans sous-tâche (feuilles)
+              result = result.filter(a => !hasChildren(a.task));
+            } else if (config.workLevel === 'parents') {
+              // Parents = tâches avec des enfants
+              result = result.filter(a => hasChildren(a.task));
+            }
+            
+            // Appliquer showSubtasks (WBS-03)
+            if (!config.showSubtasks) {
+              // Exclure les tâches qui sont des enfants (ont un parentTask)
+              const parentTaskIds = new Set(tasks.filter(t => t.parentTask).map(t => t.parentTask));
+              result = result.filter(a => !parentTaskIds.has(a.task));
+            }
+            
+            return result;
+          };
+          
+          // Initialiser le FilterManager (les données seront mises à jour via setData)
           filterManager = new FilterManager({
-            data: {
-              team: team,
-              entites: entites,
-              projects: projects,
-              tasks: tasks
-            },
             initialFilters: filters,
             onChange: (newFilters) => {
-              filters = newFilters;
+              // Mettre à jour la variable globale filters
+              filters.assignee = newFilters.assignee || [];
+              filters.team = newFilters.team || [];
+              filters.project = newFilters.project || [];
+              filters.task = newFilters.task || [];
+              
               updateFilterCount();
               broadcastKanbanFilters();
+              // Mettre à jour la config avec les filtres pour le post-filter
+              if (filterManager) {
+                filterManager.setWidgetConfig({
+                  workLevel: workLevel,
+                  showSubtasks: showSubtasks,
+                  searchQuery: searchQuery,
+                  _assigneeFilter: filters.assignee,
+                  _teamFilter: filters.team
+                });
+              }
               render();
             },
             onBroadcast: (newFilters) => {
@@ -1576,7 +1664,15 @@ if $projet and $projet.responsable:
             },
             effCharges: effCharges,
             teamById: teamById,
-            theme: 'light'
+            theme: 'light',
+            postFilter: kanbanPostFilter,
+            widgetConfig: {
+              workLevel: workLevel,
+              showSubtasks: showSubtasks,
+              searchQuery: searchQuery,
+              _assigneeFilter: filters.assignee,
+              _teamFilter: filters.team
+            }
           });
 
           // Initialiser l'UI avec le panneau de filtres
@@ -1673,37 +1769,53 @@ if $projet and $projet.responsable:
         function broadcastFilters() {
           broadcastKanbanFilters();
         }
-        function getFilteredActions() {  // Filtre les Actions dont la tâche parente est dans les tâches filtrées
-            // Filtrer les tâches d'abord avec le FilterManager
-            let filteredTasks = tasks;
-            if (filterManager) {
-              filteredTasks = filterManager.filterTasks(tasks);
-            }
-            const filteredTaskIds = new Set(filteredTasks.map(t => t.id));
-            
-            // Filtrer les actions dont la tâche est dans la liste filtrée
-            return actions.filter(a => {
-                if (a.task && !filteredTaskIds.has(a.task)) return false;
-                if (searchQuery && !(a.titre||'').toLowerCase().includes(searchQuery)) return false;
-                return true;
-            });
-        }
+        
         // #9 : change le niveau de travail affiche (persistance locale par widget, comme colorMode).
         function changeWorkLevel(v) {
             workLevel = v;
             localStorage.setItem('taskflow_kanban_worklevel', v);
             const s = document.getElementById('levelSelect'); if (s) s.value = v;
+            // Mettre à jour la config du FilterManager
+            if (filterManager) {
+              filterManager.setWidgetConfig({ 
+                workLevel: workLevel,
+                _assigneeFilter: filters.assignee,
+                _teamFilter: filters.team
+              });
+            }
             updateFilterMenus();
             render();
         }
+        
         // WBS-03: toggle d'inclusion des sous-tâches dans le kanban
         function toggleShowSubtasks() {
             showSubtasks = !showSubtasks;
             localStorage.setItem('taskflow_kanban_showsubs', showSubtasks ? '1' : '0');
             const btn = document.getElementById('btnShowSubs');
             if (btn) btn.classList.toggle('active', showSubtasks);
+            // Mettre à jour la config du FilterManager
+            if (filterManager) {
+              filterManager.setWidgetConfig({ 
+                showSubtasks: showSubtasks,
+                _assigneeFilter: filters.assignee,
+                _teamFilter: filters.team
+              });
+            }
             updateFilterMenus();
             render();
+        }
+        
+        function handleSearch(q) { 
+          searchQuery = q.toLowerCase(); 
+          // Mettre à jour la config du FilterManager
+          if (filterManager) {
+            filterManager.setWidgetConfig({ 
+              searchQuery: searchQuery,
+              _assigneeFilter: filters.assignee,
+              _teamFilter: filters.team
+            });
+          }
+          render(); 
         }
 
         // ═══════════════════════════════════════════════════════════════════════
@@ -1713,7 +1825,15 @@ if $projet and $projet.responsable:
             sortableInstances.forEach(s => s.destroy());
             sortableInstances = [];
             const container = document.getElementById('kanbanContainer');
-            const fa = getFilteredActions();  // NOUVEAU: Actions au lieu de Tasks
+            // Utiliser le FilterManager pour obtenir les Actions filtrées
+            // Le post-filter Kanban transforme les tâches filtrées en actions filtrées
+            const fa = filterManager ? filterManager.filterTasks(tasks) : actions;
+            console.log('Render:', { 
+              totalTasks: tasks.length, 
+              filteredActions: fa.length, 
+              filters: filterManager?.filters,
+              config: filterManager?.widgetConfig
+            });
             const columns = buildColumns(fa);
             
             container.innerHTML = columns.map(col => `
@@ -1745,7 +1865,11 @@ if $projet and $projet.responsable:
         }
 
         function renderEmptyColumn(col) {
-            const hasFilters = searchQuery || filters.project.length || filters.priority.length || filters.assignee.length || filters.status.length;
+            const hasFilters = searchQuery || 
+                              (filters.project && filters.project.length) || 
+                              (filters.assignee && filters.assignee.length) || 
+                              (filters.team && filters.team.length) || 
+                              (filters.task && filters.task.length);
             const inbox = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>';
             const search = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>';
             if (hasFilters) {
@@ -2013,7 +2137,7 @@ if $projet and $projet.responsable:
             selectedActionId = actionId;
             
             // Find column actions for navigation
-            const fa = getFilteredActions();
+            const fa = filterManager ? filterManager.filterTasks(tasks) : actions;
             const columns = buildColumns(fa);
             let colKey = null, colActions = [];
             for (const col of columns) {
@@ -2570,16 +2694,19 @@ if $projet and $projet.responsable:
                         // Appliquer les filtres via FilterManager
                         if (filterManager) {
                           const newFilters = {
-                            assignee: Array.isArray(f.assignee) ? f.assignee : [],
-                            team: [],
-                            project: Array.isArray(f.project) ? f.project : [],
-                            task: []
+                            assignee: Array.isArray(f.assignee) ? f.assignee.map(String) : [],
+                            team: Array.isArray(f.team) ? f.team.map(String) : [],
+                            project: Array.isArray(f.project) ? f.project.map(String) : [],
+                            task: Array.isArray(f.task) ? f.task.map(String) : []
                           };
                           filterManager.setState(newFilters);
+                          // Le setState va appeler onChange qui mettra à jour la config et re-render
                         } else {
                           // Fallback si FilterManager pas encore initialisé
-                          filters.project = Array.isArray(f.project) ? f.project : [];
-                          filters.assignee = Array.isArray(f.assignee) ? f.assignee : [];
+                          filters.project = Array.isArray(f.project) ? f.project.map(String) : [];
+                          filters.assignee = Array.isArray(f.assignee) ? f.assignee.map(String) : [];
+                          filters.team = Array.isArray(f.team) ? f.team.map(String) : [];
+                          filters.task = Array.isArray(f.task) ? f.task.map(String) : [];
                           updateFilterMenus();
                           render();
                         }

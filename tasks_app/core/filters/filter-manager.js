@@ -7,13 +7,15 @@
 class FilterManager {
   /**
    * @param {Object} options
-   * @param {Object} options.data - { team: [], entites: [], projects: [], tasks: [] }
+   * @param {Object} options.data - { team: [], entites: [], projects: [], tasks: [], actions: [] }
    * @param {Object} options.initialFilters - Filtres initiaux { assignee: [], team: [], project: [], task: [] }
    * @param {Function} options.onChange - Callback quand les filtres changent
    * @param {Function} options.onBroadcast - Callback pour diffuser les filtres (grist.setOptions)
    * @param {Function} options.effCharges - Fonction pour obtenir les charges effectives d'une tâche
    * @param {Function} options.teamById - Fonction pour obtenir un membre par son ID
    * @param {string} options.theme - 'light' ou 'dark' pour adapter les styles
+   * @param {Function} options.postFilter - Fonction de post-filtrage spécifique au widget (reçoit les données filtrées, retourne les données finales)
+   * @param {Object} options.widgetConfig - Configuration spécifique au widget (ex: { type: 'kanban', workLevel: 'all', showSubtasks: true, searchQuery: '' })
    */
   constructor(options = {}) {
     this.data = options.data || {};
@@ -29,7 +31,9 @@ class FilterManager {
     this.teamById = options.teamById || (() => null);
     this.theme = options.theme || 'dark';
     this.ui = null;
-    this.openSection = null; // Section actuellement ouverte (accordéon)
+    this.openSection = null;
+    this.postFilter = options.postFilter || null;
+    this.widgetConfig = options.widgetConfig || {};
   }
 
   // ========== INITIALISATION UI ==========
@@ -254,6 +258,8 @@ class FilterManager {
    * @private
    */
   _updateUIFromState() {
+    if (!this.ui) return; // Pas d'UI initialisée (ex: test ou utilisation sans UI)
+    
     // Mettre à jour les checkboxes
     Object.keys(this.ui).forEach(type => {
       const section = this.ui[type];
@@ -311,11 +317,11 @@ class FilterManager {
   // ========== FILTRAGE DES TÂCHES ==========
 
   /**
-   * Filtre les tâches selon les critères actuels
+   * Filtre les tâches selon les critères actuels, puis applique le post-filter widget si défini
    * @param {Array} tasks - Liste de tâches à filtrer
-   * @returns {Array} Tâches filtrées
+   * @returns {Array} Tâches filtrées (ou Actions si widget=kanban)
    */
-   filterTasks(tasks) {
+  filterTasks(tasks) {
     let result = [...tasks];
  
     // Filtre par assignee (via charges ou assignees directement)
@@ -366,6 +372,11 @@ class FilterManager {
     // Filtre par tâche spécifique
     if (this.filters.task.length > 0) {
       result = result.filter(t => t.id && this.filters.task.includes(String(t.id)));
+    }
+ 
+    // Appliquer le post-filter spécifique au widget si défini
+    if (this.postFilter) {
+      result = this.postFilter(result, this.widgetConfig, this.data);
     }
  
     return result;
@@ -452,7 +463,7 @@ class FilterManager {
 
   /**
    * Définit les données (appelé après chargement des données Grist)
-   * @param {Object} data - { team: [], entites: [], projects: [], tasks: [] }
+   * @param {Object} data - { team: [], entites: [], projects: [], tasks: [], actions: [] }
    */
   setData(data) {
     this.data = data;
@@ -469,6 +480,22 @@ class FilterManager {
       });
       this._updateUIFromState();
     }
+  }
+
+  /**
+   * Met à jour la configuration spécifique au widget
+   * @param {Object} config - Configuration du widget (ex: { workLevel: 'actions', showSubtasks: false, searchQuery: '' })
+   */
+  setWidgetConfig(config) {
+    this.widgetConfig = { ...this.widgetConfig, ...config };
+  }
+
+  /**
+   * Définit la fonction de post-filtrage spécifique au widget
+   * @param {Function} fn - Fonction (filteredData, widgetConfig, allData) => finalData
+   */
+  setPostFilter(fn) {
+    this.postFilter = fn;
   }
 
   /**
