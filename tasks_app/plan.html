@@ -119,8 +119,8 @@ tfoot td.colres{background:var(--surface-2);z-index:2}
 .indispo-add>input[type=text]{background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:6px 8px;font-size:0.8rem}
 .indispo-add .dd{display:flex;align-items:center;gap:6px}
 .indispo-add .dd input{flex:1;background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:5px 6px;font-size:0.74rem;color-scheme:dark}
-  .indispo-add .dd span{color:var(--text-muted)}
-  /* Filtres - utiliser le CSS commun depuis core/filters/filter-styles.css */
+   .indispo-add .dd span{color:var(--text-muted)}
+   /* Filtres - utiliser le CSS commun depuis core/filters/filter-styles.css */
 </style>
 </head>
 <body>
@@ -147,40 +147,12 @@ tfoot td.colres{background:var(--surface-2);z-index:2}
     <div class="seg" id="segUnit"></div>
     <div class="filter-dropdown">
       <button class="filter-btn" id="btnFilterToggle" title="Filtres">🔍 Filtres <span class="filter-count" style="display:none"></span>▾</button>
-      <div class="filter-menu filter-panel" id="filterPanel">
+      <div class="filter-panel" id="filterPanel">
         <div class="filter-sections">
-          <div class="filter-section">
-            <div class="filter-section-header">
-              <span class="filter-section-label">Personnes</span>
-              <span class="filter-section-count"></span>
-              <span class="filter-section-chevron">▾</span>
-            </div>
-            <div class="filter-checkboxes" id="filterPersonContainer"></div>
-          </div>
-          <div class="filter-section">
-            <div class="filter-section-header">
-              <span class="filter-section-label">Équipes</span>
-              <span class="filter-section-count"></span>
-              <span class="filter-section-chevron">▾</span>
-            </div>
-            <div class="filter-checkboxes" id="filterTeamContainer"></div>
-          </div>
-          <div class="filter-section">
-            <div class="filter-section-header">
-              <span class="filter-section-label">Projets</span>
-              <span class="filter-section-count"></span>
-              <span class="filter-section-chevron">▾</span>
-            </div>
-            <div class="filter-checkboxes" id="filterProjectContainer"></div>
-          </div>
-          <div class="filter-section">
-            <div class="filter-section-header">
-              <span class="filter-section-label">Tâches</span>
-              <span class="filter-section-count"></span>
-              <span class="filter-section-chevron">▾</span>
-            </div>
-            <div class="filter-checkboxes" id="filterTaskContainer"></div>
-          </div>
+          <div id="filterPersonContainer"></div>
+          <div id="filterTeamContainer"></div>
+          <div id="filterProjectContainer"></div>
+          <div id="filterTaskContainer"></div>
         </div>
         <div class="filter-actions">
           <button class="btn ghost" id="btnClearFilters" title="Effacer tous les filtres">× Effacer tout</button>
@@ -791,84 +763,41 @@ function tasksForKey(key) {
 }
 function toast(msg) { const el = document.getElementById('toast'); if (!el) return; el.textContent = msg; el.classList.add('show'); clearTimeout(toast._t); toast._t = setTimeout(() => el.classList.remove('show'), 2800); }
 
-// Initialiser le FilterManager de manière asynchrone
-function initFilterManagerAsync() {
-  return new Promise((resolve) => {
-    function tryInit() {
-      // Vérifier que les données et le DOM sont prêts
-      if (!S.team?.length || !S.projects?.length || !S.tasks?.length) {
-        setTimeout(tryInit, 100);
-        return;
-      }
-      
-      const containers = {
-        assignee: document.getElementById('filterPersonContainer'),
-        team: document.getElementById('filterTeamContainer'),
-        project: document.getElementById('filterProjectContainer'),
-        task: document.getElementById('filterTaskContainer')
-      };
-      
-      if (!containers.assignee || !containers.team || !containers.project || !containers.task) {
-        setTimeout(tryInit, 100);
-        return;
-      }
-
-      S.filterManager = new FilterManager({
-        data: {
-          team: S.team,
-          entites: S.entites || [],
-          projects: S.projects,
-          tasks: S.tasks
-        },
-        initialFilters: S.filters,
-        onChange: (filters) => {
-          S.filters = filters;
-          render();
-          updateFilterButton();
-        },
-        onBroadcast: (filters) => {
-          try { grist.docApi.broadcast({ type: 'filters', data: filters }); } catch (e) {}
-        },
-        effCharges: effCharges,
-        teamById: teamById,
-        theme: 'dark'
-      });
-  
-      // Initialiser l'UI avec le panneau de filtres
-      S.filterManager.initUI(containers, filterPanel);
-      resolve();
-    }
-    tryInit();
-  });
-}
-
-// Backward compatibility
+// Initialiser le FilterManager
 function initFilterManager() {
-  initFilterManagerAsync();
+  const containers = {
+    assignee: document.getElementById('filterPersonContainer'),
+    team: document.getElementById('filterTeamContainer'),
+    project: document.getElementById('filterProjectContainer'),
+    task: document.getElementById('filterTaskContainer')
+  };
+  
+  S.filterManager = new FilterManager({
+    data: {
+      team: S.team,
+      entites: S.entites || [],
+      projects: S.projects,
+      tasks: S.tasks
+    },
+    initialFilters: S.filters,
+    onChange: (filters) => {
+      S.filters = filters;
+      render();
+    },
+    onBroadcast: (filters) => {
+      try { grist.docApi.broadcast({ type: 'filters', data: filters }); } catch (e) {}
+    },
+    effCharges: effCharges,
+    teamById: teamById,
+    theme: 'dark'
+  });
+  
+  // Initialiser l'UI avec le panneau de filtres
+  const filterPanel = document.getElementById('filterPanel');
+  S.filterManager.initUI(containers, filterPanel);
 }
 
-// Met à jour l'indicateur visuel du bouton Filtres
-function updateFilterButton() {
-  const btn = document.getElementById('btnFilterToggle');
-  if (!btn) return;
-  const count = S.filters.assignee.length + S.filters.team.length + S.filters.project.length + S.filters.task.length;
-  const countEl = btn.querySelector('.filter-count');
-  
-  if (count > 0) {
-    btn.classList.add('has-filter');
-    if (countEl) {
-      countEl.textContent = count;
-      countEl.style.display = 'inline-flex';
-    }
-    btn.title = 'Filtres actifs (' + count + ') - cliquer pour modifier';
-  } else {
-    btn.classList.remove('has-filter');
-    if (countEl) {
-      countEl.style.display = 'none';
-    }
-    btn.title = 'Filtres - cliquer pour ouvrir';
-  }
-}
+
 
 function keyFn() {
   // Projet/Rôle = clé COMPOSITE "groupe|personne" → on garde la personne (vue ressource, distincte du Gantt).
@@ -1536,36 +1465,8 @@ function bindToolbar() {
   document.getElementById('btnInit').onclick = initCharges;
   document.getElementById('btnTimeline').onclick = toggleTimeline;
   document.getElementById('tlClose').onclick = toggleTimeline;
-  document.getElementById('pClose').onclick = closePanel;
-  document.getElementById('overlay').onclick = closePanel;
-  
-    // Menu déroulant des filtres avec le nouveau système
-    const btnFilterToggle = document.getElementById('btnFilterToggle');
-    const filterPanel = document.getElementById('filterPanel');
-    const btnClearFilters = document.getElementById('btnClearFilters');
-    
-    if (btnFilterToggle && filterPanel) {
-      // Initialiser le dropdown
-      btnFilterToggle.onclick = (e) => { 
-        filterPanel.classList.toggle('open'); 
-        e.stopPropagation(); 
-      };
-      
-      // Fermer le panneau quand on clique à l'extérieur
-      document.addEventListener('click', (e) => {
-        if (!filterPanel.contains(e.target) && e.target !== btnFilterToggle) {
-          filterPanel.classList.remove('open');
-        }
-      });
-      
-      // Bouton Effacer tout
-      if (btnClearFilters) {
-        btnClearFilters.onclick = (e) => { 
-          if (S.filterManager) S.filterManager.clearAll(); 
-          e.stopPropagation(); 
-        };
-      }
-    }
+    document.getElementById('pClose').onclick = closePanel;
+    document.getElementById('overlay').onclick = closePanel;
 }
 
 async function loadGrist() {
@@ -1592,7 +1493,7 @@ async function loadGrist() {
   S.hasPortef = !!(projects && ('portefeuille' in projects) && portef);
   buildDispoIndex();
   try { statusCfg = await TF.loadStatusConfig(grist, 'Tasks', 'statut', S.tasks.map(t => t && t.statut)); } catch (e) {}
-  await initFilterManagerAsync();
+  initFilterManager();
   render();
 }
 
@@ -1679,8 +1580,7 @@ async function loadDemo() {
   ];
   S.hasEntries = true;
     buildDispoIndex();
-    await initFilterManagerAsync();
-    updateFilterButton();
+    initFilterManager();
     render();
 }
 
