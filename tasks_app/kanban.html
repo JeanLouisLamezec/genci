@@ -581,26 +581,16 @@
         <div class="hdr-right">
             <div class="search-box"><input type="text" id="searchInput" placeholder="Rechercher..." oninput="handleSearch(this.value)"></div>
             <div class="filter-dropdown">
-                <button class="filter-btn" id="filterBtn" onclick="toggleFilterPanel()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon></svg> Filtres<span class="filter-count" id="filterCount" style="display:none">0</span></button>
-                <div class="filter-menu filter-panel" id="filterPanel">
-                  <div class="filter-section">
-                    <div class="filter-section-header">Personnes</div>
-                    <div class="filter-checkboxes" id="filterPersonContainer"></div>
-                  </div>
-                  <div class="filter-section">
-                    <div class="filter-section-header">Équipes</div>
-                    <div class="filter-checkboxes" id="filterTeamContainer"></div>
-                  </div>
-                  <div class="filter-section">
-                    <div class="filter-section-header">Projets</div>
-                    <div class="filter-checkboxes" id="filterProjectContainer"></div>
-                  </div>
-                  <div class="filter-section">
-                    <div class="filter-section-header">Tâches</div>
-                    <div class="filter-checkboxes" id="filterTaskContainer"></div>
+                <button class="filter-btn" id="filterBtn"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon></svg> Filtres<span class="filter-count" id="filterCount" style="display:none">0</span></button>
+                <div class="filter-panel" id="filterPanel">
+                  <div class="filter-sections">
+                    <div id="filterPersonContainer"></div>
+                    <div id="filterTeamContainer"></div>
+                    <div id="filterProjectContainer"></div>
+                    <div id="filterTaskContainer"></div>
                   </div>
                   <div class="filter-actions">
-                    <button class="btn ghost" id="btnClearFilters" onclick="clearAllKanbanFilters()">× Effacer tout</button>
+                    <button class="btn ghost" id="btnClearFilters">× Effacer tout</button>
                   </div>
                 </div>
             </div>
@@ -1566,6 +1556,7 @@ if $projet and $projet.responsable:
             return (est > 0 && asg.length) ? asg.map(id => ({ teamId: id, heures: est / asg.length })) : [];
           };
           
+          // Initialiser le FilterManager avec gestion complète de l'UI
           filterManager = new FilterManager({
             data: {
               team: team,
@@ -1584,55 +1575,32 @@ if $projet and $projet.responsable:
               broadcastKanbanFilters();
             },
             effCharges: effCharges,
-            teamById: teamById
+            teamById: teamById,
+            theme: 'light'
           });
 
-          // Initialiser l'UI
+          // Initialiser l'UI avec le panneau de filtres
+          const filterPanel = document.getElementById('filterPanel');
           filterManager.initUI({
             assignee: document.getElementById('filterPersonContainer'),
             team: document.getElementById('filterTeamContainer'),
             project: document.getElementById('filterProjectContainer'),
             task: document.getElementById('filterTaskContainer')
-          });
-
-          // Gestion de l'accordéon pour les sections de filtres
-          const filterPanel = document.getElementById('filterPanel');
-          if (filterPanel) {
-            const sectionHeaders = filterPanel.querySelectorAll('.filter-section-header');
-            sectionHeaders.forEach(header => {
-              header.addEventListener('click', (e) => {
-                e.stopPropagation();
-                header.classList.toggle('open');
-                const checkboxes = header.nextElementSibling;
-                if (checkboxes && checkboxes.classList.contains('filter-checkboxes')) {
-                  checkboxes.classList.toggle('open');
-                }
-              });
-            });
-          }
+          }, filterPanel);
         }
         
-        function toggleFilterPanel() {
-          const panel = document.getElementById('filterPanel');
-          panel.classList.toggle('open');
+        function updateFilterCount() {
+          const cnt = document.getElementById('filterCount');
+          if (!cnt) return;
+          const total = filters.assignee.length + filters.team.length + filters.project.length + filters.task.length;
+          cnt.textContent = total;
+          cnt.style.display = total > 0 ? 'inline-flex' : 'none';
+          const fbtn = document.getElementById('filterBtn');
+          if (fbtn) fbtn.classList.toggle('has-filter', total > 0);
         }
-        
-         function updateFilterCount() {
-           const cnt = document.getElementById('filterCount');
-           if (!cnt) return;
-           const total = filters.assignee.length + filters.team.length + filters.project.length + filters.task.length;
-           cnt.textContent = total;
-           cnt.style.display = total > 0 ? 'inline-flex' : 'none';
-           const fbtn = document.getElementById('filterBtn');
-           if (fbtn) fbtn.classList.toggle('has-filter', total > 0);
-         }
         
         function broadcastKanbanFilters() {
           try { grist.docApi.broadcast({ type: 'filters', data: filters }); } catch (e) {}
-        }
-        
-        function clearAllKanbanFilters() {
-          if (filterManager) filterManager.clearAll();
         }
         async function setProjectColor(projectId, color) {
             const p = projects.find(x => x.id === projectId);
@@ -1677,7 +1645,7 @@ if $projet and $projet.responsable:
             if (searchQuery) chips.push(`<span class="fc-chip">« ${escapeHtml(searchQuery)} »<span class="fc-x" title="Effacer la recherche" onclick="clearSearchChip()">${X}</span></span>`);
             if (!chips.length) { bar.style.display = 'none'; bar.innerHTML = ''; return; }
             bar.style.display = 'flex';
-            bar.innerHTML = '<span class="fc-label">Filtres actifs</span>' + chips.join('') + '<span class="fc-clear-all" onclick="clearAllKanbanFilters()">Tout effacer</span>';
+            bar.innerHTML = '<span class="fc-label">Filtres actifs</span>' + chips.join('') + '<span class="fc-clear-all" onclick="filterManager.clearAll()">Tout effacer</span>';
         }
         function removeFilterChip(type, val) { 
           if (filterManager) {

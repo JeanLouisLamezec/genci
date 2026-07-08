@@ -128,17 +128,7 @@
 }
 
 .filter-section-count {
-  background: var(--filter-primary, var(--primary, #6366f1));
-  color: white;
-  border-radius: 999px;
-  min-width: 17px;
-  height: 17px;
-  padding: 0 4px;
-  font-size: 0.62rem;
-  font-weight: 700;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+  display: none;
 }
 
 .filter-section-chevron {
