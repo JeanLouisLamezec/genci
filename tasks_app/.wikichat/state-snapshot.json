@@ -1,0 +1,23 @@
+{
+  "ts": "2026-06-22T16:54:16.274Z",
+  "path": "C:\\Users\\Omen\\Desktop\\LAVAL\\Github Repositories\\Widgets Grist\\projects\\tasks_app",
+  "name": "tasks_app",
+  "git": null,
+  "files": {
+    "CLAUDE.md": {
+      "size": 29486,
+      "modified": "2026-06-21T22:45:36.066Z"
+    },
+    "README.md": {
+      "size": 13553,
+      "modified": "2026-02-05T08:45:16.593Z"
+    },
+    "_sourceFileCount": 1
+  },
+  "deps": null,
+  "claudeMd": {
+    "size": 28720,
+    "hash": 1469849128,
+    "lines": 569
+  }
+}

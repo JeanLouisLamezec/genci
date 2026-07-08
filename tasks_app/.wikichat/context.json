@@ -1,0 +1,15 @@
+{
+  "_managed_by": "wikichat-service",
+  "_do_not_edit": "This file is overwritten automatically by the WikiChat service.",
+  "slug": "tasks-app",
+  "name": "tasks_app",
+  "path": "C:\\Users\\Omen\\Desktop\\LAVAL\\Github Repositories\\Widgets Grist\\projects\\tasks_app",
+  "stack": [],
+  "description": "Guide de développement pour la suite de widgets **TaskFlow** (Grist).",
+  "status": "discovered",
+  "activeTasks": [],
+  "blockers": [],
+  "agents": [],
+  "serverUrl": "http://localhost:3777",
+  "updatedAt": "2026-05-09T21:38:16.322Z"
+}
