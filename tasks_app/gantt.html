@@ -6,6 +6,8 @@
     <title>Gantt - TaskFlow v15</title>
     <script src="https://docs.getgrist.com/grist-plugin-api.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
+    <script src="core/filters/filter-manager.js"></script>
+    <link rel="stylesheet" href="core/filters/filter-styles.css">
     <style>
         :root {
             /* Primary */
@@ -601,11 +603,6 @@
                     <option value="assignee">Couleur: Assigné</option>
                     <option value="status">Couleur: Statut</option>
                 </select>
-                <select id="levelSelect" onchange="changeWorkLevel(this.value)" title="Niveau affiché — Tous = arbre ; Synthèses = tâches mères (parents) ; Actions = tâches sans sous-tâche (feuilles), vue aplatie">
-                    <option value="all">Niveau : Tous</option>
-                    <option value="parents">Niveau : Synthèses</option>
-                    <option value="actions">Niveau : Actions</option>
-                </select>
             </div>
         </div>
         <div class="header-center">
@@ -621,19 +618,22 @@
                 <button class="btn" data-view="semester" onclick="setView('semester')">6M</button>
                 <button class="btn" data-view="year" onclick="setView('year')">An</button>
             </div>
-        </div>
-        <div class="header-right">
-            <div class="filter-dropdown" id="filterGantt">
-                <button class="filter-btn" onclick="toggleFilterMenu('filterGantt')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon></svg> Filtres<span class="filter-count" id="filterCount" style="display:none">0</span></button>
-                <div class="filter-menu wide" id="filterAllMenu"></div>
-            </div>
-            <div class="filter-dropdown" id="moreDropdown">
-                <button class="btn icon-btn" onclick="toggleFilterMenu('moreDropdown')" title="Plus d'actions"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.7"></circle><circle cx="12" cy="12" r="1.7"></circle><circle cx="19" cy="12" r="1.7"></circle></svg></button>
-                <div class="filter-menu" id="moreDropdownMenu" style="right:0;left:auto;min-width:200px">
-                    <div class="filter-option" onclick="exportPrint()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 6 2 18 2 18 9"></polyline><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path><rect x="6" y="14" width="12" height="8"></rect></svg> Imprimer / PDF</div>
-                    <div class="filter-option" onclick="exportPNG()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg> Image PNG</div>
+            <div class="filter-dropdown">
+                <button class="filter-btn" id="btnFilterToggle"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon></svg> Filtres <span class="filter-count" style="display:none"></span>▾</button>
+                <div class="filter-panel" id="filterPanel">
+                  <div class="filter-sections">
+                    <div id="filterPersonContainer"></div>
+                    <div id="filterTeamContainer"></div>
+                    <div id="filterProjectContainer"></div>
+                    <div id="filterTaskContainer"></div>
+                  </div>
+                  <div class="filter-actions">
+                    <button class="btn ghost" id="btnClearFilters">× Effacer tout</button>
+                  </div>
                 </div>
             </div>
+        </div>
+        <div class="header-right">
             <button class="btn primary" onclick="openCreatePanel()">+ Tâche</button>
         </div>
     </div>
@@ -1104,13 +1104,11 @@
         let selectedTaskId = null;
         let sortMode = localStorage.getItem('taskflow_gantt_sort') || 'priority';
         let colorMode = localStorage.getItem('taskflow_gantt_colormode') || 'priority';
-        // #9 niveau de travail (par widget, opt-in, defaut 'all' = arbre) : 'actions'/'parents' = vue aplatie du niveau.
-        let workLevel = localStorage.getItem('taskflow_gantt_worklevel') || 'all';
         // WBS-02: état expand/collapse par tâche parente
         let expandedTasks = new Set();
         try { expandedTasks = new Set(JSON.parse(localStorage.getItem('taskflow_gantt_expanded') || '[]').map(Number).filter(n => !isNaN(n))); } catch (e) {}
         let sortableInstance = null;
-        let filters = { project: [], assignee: [], priority: [] };  // GEN-02: Arrays pour compatibilité inter-widgets
+        let filters = { assignee: [], team: [], project: [], task: [] };  // Filtres unifiés avec Kanban/Plan
         let dragState = { active: false, type: null, taskId: null, startX: 0, originalLeft: 0, originalWidth: 0, originalStart: null, originalEnd: null };
         let panelState = { open: false, isNew: false, taskId: null, taskIndex: -1, taskList: [], editData: null };
         let overlayPointerStart = { x: 0, y: 0 };
@@ -1331,9 +1329,7 @@
         // Renvoie [{task, depth, dimmed}]
         function buildVisibleTasks() {
             const filtered = getFilteredTasks();
-            // #9 : niveau != 'all' -> vue APLATIE du niveau (pas d'arbre), coherent avec le Kanban.
-            if (workLevel === 'actions') return filtered.filter(t => !hasChildren(t)).map(t => ({ task: t, depth: 0, dimmed: false }));
-            if (workLevel === 'parents') return filtered.filter(t => hasChildren(t)).map(t => ({ task: t, depth: 0, dimmed: false }));
+            // Affichage en arbre avec toutes les tâches filtrées
             const directMatches = new Set(filtered.map(t => t.id));
             // branches = tâches dont elles-mêmes OU un ancêtre OU un descendant match
             const branchTasks = new Set();
@@ -1544,13 +1540,6 @@
             localStorage.setItem('taskflow_gantt_colormode', mode);
             render();
         }
-        // #9 : niveau de travail affiche (persistance locale par widget).
-        function changeWorkLevel(v) {
-            workLevel = v;
-            localStorage.setItem('taskflow_gantt_worklevel', v);
-            const s = document.getElementById('levelSelect'); if (s) s.value = v;
-            render();
-        }
         // Édite la couleur d'un projet (lue par tous les widgets TaskFlow via getProjectColor)
         async function setProjectColor(projectId, color) {
             const p = projects.find(x => x.id === projectId);
@@ -1578,59 +1567,75 @@
             else if (sortMode === 'date') tasks.sort((a, b) => (a.dateDebut || 0) - (b.dateDebut || 0));
         }
         function toggleFilterMenu(id) { const m = document.querySelector('#' + id + ' .filter-menu'); const open = m.classList.contains('open'); document.querySelectorAll('.filter-menu').forEach(x => x.classList.remove('open')); if (!open) m.classList.add('open'); }
-        // GEN-02: Gestion des filtres avec arrays et synchronisation
-        function toggleFilter(key, val) { 
-            const arr = filters[key]; 
-            const idx = arr.indexOf(val); 
-            if (idx === -1) arr.push(val); 
-            else arr.splice(idx, 1); 
-            updateFilterUI(); 
-            broadcastFilters();
-            render(); 
+        // Fonctions de filtrage unifiées avec Kanban/Plan
+        function updateFilterCount() {
+          const cnt = document.querySelector('.filter-count');
+          if (!cnt) return;
+          const total = filters.assignee.length + filters.team.length + filters.project.length + filters.task.length;
+          cnt.textContent = total;
+          cnt.style.display = total > 0 ? 'inline-flex' : 'none';
+          const fbtn = document.getElementById('btnFilterToggle');
+          if (fbtn) fbtn.classList.toggle('has-filter', total > 0);
         }
-        function clearFilter(key) { filters[key] = []; updateFilterUI(); broadcastFilters(); render(); }
-        function broadcastFilters() {
-            if (gristReady && typeof grist !== 'undefined' && grist.setOption) {
-                try { grist.setOption('filters', { project: filters.project, priority: filters.priority, assignee: filters.assignee }); } 
-                catch (e) { console.log('setOption not available'); }
-            }
-        }
-        function updateFilterMenus() {
-            const grp = (label, html, first) => '<div class="fm-group-label'+(first?' first':'')+'">'+label+'</div>'+html;
-            const projHtml = projects.length ? projects.map(p => `<div class="filter-option" onclick="toggleFilter('project', ${p.id})"><input type="checkbox" ${filters.project.includes(p.id)?'checked':''}><span class="dot" style="background:${p.couleur||'#6366f1'}"></span>${escapeHtml(p.nom)}</div>`).join('') : '<div class="filter-option muted">Aucun projet</div>';
-            const prioHtml = [1,2,3,4].map(p => `<div class="filter-option" onclick="toggleFilter('priority', ${p})"><input type="checkbox" ${filters.priority.includes(p)?'checked':''}><span class="dot" style="background:${PRIORITY_COLORS[p]}"></span>${PRIORITY_LABELS[p]}</div>`).join('');
-            const team2 = team.filter(m => m.actif !== false);
-            const assHtml = team2.length ? team2.map(m => `<div class="filter-option" onclick="toggleFilter('assignee', ${m.id})"><input type="checkbox" ${filters.assignee.includes(m.id)?'checked':''}>${escapeHtml(m.nom)}</div>`).join('') : '<div class="filter-option muted">Aucun membre</div>';
-            const total = filters.project.length + filters.priority.length + filters.assignee.length;
-            const menu = document.getElementById('filterAllMenu');
-            if (menu) menu.innerHTML = grp('Projets', projHtml, true) + grp('Priorités', prioHtml) + grp('Assignés', assHtml) + (total ? '<div class="fm-foot"><span class="fm-clear" onclick="clearAllGanttFilters()">Tout effacer</span></div>' : '');
-            updateFilterUI();
-        }
+        
         function updateFilterUI() {
-            const total = filters.project.length + filters.priority.length + filters.assignee.length;
-            const cnt = document.getElementById('filterCount'); if (cnt) { cnt.textContent = total; cnt.style.display = total ? 'inline-flex' : 'none'; }
-            const fbtn = document.querySelector('#filterGantt .filter-btn'); if (fbtn) fbtn.classList.toggle('has-filter', total > 0);
-            renderFilterChips();
+          updateFilterCount();
+          renderFilterChips();
+          // Mettre à jour l'UI du FilterManager
+          if (filterManager) {
+            filterManager._updateUIFromState();
+          }
         }
+        
         function renderFilterChips() {
             const bar = document.getElementById('filterChips'); if (!bar) return;
             const X = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
-            const chip = (key, val, label, color) => { const dot = color ? `<span class="fc-dot" style="background:${color}"></span>` : ''; return `<span class="fc-chip">${dot}${label}<span class="fc-x" title="Retirer" onclick="toggleFilter('${key}', ${val})">${X}</span></span>`; };
+            const chip = (type, val, label, color) => { 
+              const dot = color ? `<span class="fc-dot" style="background:${color}"></span>` : ''; 
+              return `<span class="fc-chip">${dot}${label}<span class="fc-x" title="Retirer" onclick="removeFilterChip('${type}', ${val})">${X}</span></span>`; 
+            };
             const chips = [];
             filters.project.forEach(id => { const p = projects.find(x=>x.id===id); chips.push(chip('project', id, p?escapeHtml(p.nom):'Projet', p&&p.couleur)); });
-            filters.priority.forEach(v => chips.push(chip('priority', v, PRIORITY_LABELS[v], PRIORITY_COLORS[v])));
+            filters.task.forEach(id => { const t = tasks.find(x=>x.id===id); chips.push(chip('task', id, t?escapeHtml(t.titre):'Tâche')); });
             filters.assignee.forEach(id => { const m = team.find(x=>x.id===id); chips.push(chip('assignee', id, m?escapeHtml(m.nom):'Membre')); });
+            filters.team.forEach(id => { const m = team.find(x=>x.id===id); chips.push(chip('team', id, m?escapeHtml(m.nom):'Équipe')); });
             if (!chips.length) { bar.style.display = 'none'; bar.innerHTML = ''; return; }
             bar.style.display = 'flex';
-            bar.innerHTML = '<span class="fc-label">Filtres actifs</span>' + chips.join('') + '<span class="fc-clear-all" onclick="clearAllGanttFilters()">Tout effacer</span>';
+            bar.innerHTML = '<span class="fc-label">Filtres actifs</span>' + chips.join('') + '<span class="fc-clear-all" onclick="clearAllFilters()">Tout effacer</span>';
         }
-                function taskMatchesFilters(t) {
-            if (filters.project.length && !filters.project.includes(t.projet)) return false;
-            if (filters.assignee.length && !getAssigneesArray(t).some(a => filters.assignee.includes(a))) return false;
-            if (filters.priority.length && !filters.priority.includes(getTaskPriority(t))) return false;
-            return true;
+        
+        function removeFilterChip(type, val) { 
+          if (filterManager) {
+            const currentFilters = filterManager.getState();
+            const arr = currentFilters[type];
+            const idx = arr.indexOf(val);
+            if (idx === -1) arr.push(val); else arr.splice(idx, 1);
+            filterManager.setState(currentFilters);
+          }
         }
-        function getFilteredTasks() { return tasks.filter(taskMatchesFilters); }
+        
+        function clearAllFilters() { 
+          if (filterManager) {
+            filterManager.clearAll();
+          }
+        }
+        
+        function broadcastFilters() {
+            if (gristReady && typeof grist !== 'undefined' && grist.setOption) {
+                try { 
+                  grist.setOption('filters', { 
+                    project: filters.project, 
+                    assignee: filters.assignee,
+                    team: filters.team,
+                    task: filters.task
+                  }); 
+                } catch (e) { console.log('setOption not available'); }
+            }
+        }
+        
+        function getFilteredTasks() { 
+          return filterManager ? filterManager.filterTasks(tasks) : tasks; 
+        }
 
         // ═══════════════════════════════════════════════════════════════════════
         // RENDER FUNCTIONS
@@ -3017,16 +3022,76 @@
             } catch (e) { console.log('Seed error:', e); }
         }
 
+        let filterManager = null;
+        
         async function loadAllData() {
             try { const _raw = await grist.docApi.fetchTable('Tasks'); TASK_COLS = new Set(Object.keys(_raw || {})); tasks = convert(_raw); } catch (e) { tasks = []; }
             try { team = convert(await grist.docApi.fetchTable('Team')); } catch (e) { team = []; }
             try { projects = convert(await grist.docApi.fetchTable('Projects')); } catch (e) { projects = []; }
+            try { entites = convert(await grist.docApi.fetchTable('Entites')); } catch (e) { entites = []; }
             gristReady = true;
             rebuildChildrenCache();
             sortTasks();
             try { statusCfg = await TF.loadStatusConfig(grist, 'Tasks', 'statut', tasks.map(t => t && t.statut)); } catch (e) {}
-            updateFilterMenus();
+            
+            // Initialiser le FilterManager
+            initGanttFilterManager();
+            
+            // Mettre à jour les données du FilterManager
+            if (filterManager) {
+                filterManager.setData({
+                    team: team,
+                    entites: entites,
+                    projects: projects,
+                    tasks: tasks
+                });
+            }
+            
+            updateFilterUI();
             render();
+        }
+        
+        // Initialiser le FilterManager pour le Gantt
+        function initGanttFilterManager() {
+          const teamById = (id) => team.find(m => m.id === id);
+          const effCharges = (t) => {
+            const c = TF.parseCharges(t.charges);
+            if (c.length) return c;
+            const est = Number(t.estimationH) || 0, asg = getAssigneesArray(t);
+            return (est > 0 && asg.length) ? asg.map(id => ({ teamId: id, heures: est / asg.length })) : [];
+          };
+          
+          // Initialiser le FilterManager
+          filterManager = new FilterManager({
+            initialFilters: filters,
+            onChange: (newFilters) => {
+              // Mettre à jour les filtres globaux
+              filters.assignee = newFilters.assignee || [];
+              filters.team = newFilters.team || [];
+              filters.project = newFilters.project || [];
+              filters.task = newFilters.task || [];
+              updateFilterUI();
+              broadcastFilters();
+              render();
+            },
+            onBroadcast: (newFilters) => {
+              broadcastFilters();
+            },
+            effCharges: effCharges,
+            teamById: teamById,
+            theme: 'light'
+          });
+
+          // Initialiser l'UI avec le panneau de filtres
+          const filterPanel = document.getElementById('filterPanel');
+          if (filterPanel) {
+            filterManager.initUI({
+              assignee: document.getElementById('filterPersonContainer'),
+              team: document.getElementById('filterTeamContainer'),
+              project: document.getElementById('filterProjectContainer'),
+              task: document.getElementById('filterTaskContainer')
+            }, filterPanel);
+          }
         }
 
         async function initGrist() {
@@ -3077,11 +3142,24 @@
                 grist.onOptions((options, interaction) => {
                     if (options?.filters && interaction?.source !== 'self') {
                         const f = options.filters;
-                        filters.project = Array.isArray(f.project) ? f.project : [];
-                        filters.priority = Array.isArray(f.priority) ? f.priority : [];
-                        filters.assignee = Array.isArray(f.assignee) ? f.assignee : [];
-                        updateFilterMenus();
-                        render();
+                        // Appliquer les filtres via FilterManager
+                        if (filterManager) {
+                          const newFilters = {
+                            assignee: Array.isArray(f.assignee) ? f.assignee.map(String) : [],
+                            team: Array.isArray(f.team) ? f.team.map(String) : [],
+                            project: Array.isArray(f.project) ? f.project.map(String) : [],
+                            task: Array.isArray(f.task) ? f.task.map(String) : []
+                          };
+                          filterManager.setState(newFilters);
+                        } else {
+                          // Fallback
+                          filters.project = Array.isArray(f.project) ? f.project.map(String) : [];
+                          filters.assignee = Array.isArray(f.assignee) ? f.assignee.map(String) : [];
+                          filters.team = Array.isArray(f.team) ? f.team.map(String) : [];
+                          filters.task = Array.isArray(f.task) ? f.task.map(String) : [];
+                          updateFilterUI();
+                          render();
+                        }
                     }
                 });
             } catch (e) {
@@ -3125,7 +3203,7 @@
 
             rebuildChildrenCache();
             sortTasks();
-            updateFilterMenus();
+            updateFilterUI();
             render();
         }
 
@@ -3179,7 +3257,6 @@
         { const s = document.getElementById('sortSelect'); if (s) s.value = sortMode; }
         // Idem pour le <select> de couleur
         { const s = document.getElementById('colorSelect'); if (s) s.value = colorMode; }
-        { const s = document.getElementById('levelSelect'); if (s) s.value = workLevel; }
         // Relancer le rendu quand le widget est redimensionné (ex: panel ouvert/fermé, fenêtre)
         new ResizeObserver(() => render()).observe(document.getElementById('timelineScroll'));
         // Décorateur panneau (look « Propriétés / B ») : icône devant chaque libellé, sans toucher au rendu

@@ -45,10 +45,10 @@ class FilterManager {
    */
    initUI(containers, filterPanel) {
     this.ui = {
-      assignee: this._createFilterSection(containers.assignee, 'assignee', 'Personnes', this.data.team || []),
-      team: this._createFilterSection(containers.team, 'team', 'Équipes', this.data.entites || []),
-      project: this._createFilterSection(containers.project, 'project', 'Projets', this.data.projects || []),
-      task: this._createFilterSection(containers.task, 'task', 'Tâches', this.data.tasks || [])
+      assignee: containers.assignee ? this._createFilterSection(containers.assignee, 'assignee', 'Personnes', this.data.team || []) : null,
+      team: containers.team ? this._createFilterSection(containers.team, 'team', 'Équipes', this.data.entites || []) : null,
+      project: containers.project ? this._createFilterSection(containers.project, 'project', 'Projets', this.data.projects || []) : null,
+      task: containers.task ? this._createFilterSection(containers.task, 'task', 'Tâches', this.data.tasks || []) : null
     };
     
     this.filterPanel = filterPanel;
@@ -263,18 +263,18 @@ class FilterManager {
     // Mettre à jour les checkboxes
     Object.keys(this.ui).forEach(type => {
       const section = this.ui[type];
-      if (section && section.checkboxContainer) {
-        const checkboxes = section.checkboxContainer.querySelectorAll('.filter-checkbox');
-        checkboxes.forEach(cb => {
-          cb.checked = this.filters[type].includes(cb.value);
-        });
-        
-        // Mettre à jour le compteur
-        const count = this.filters[type].length;
-        const countElement = section.header.querySelector('.filter-section-count');
-        if (countElement) {
-          countElement.textContent = count > 0 ? count : '';
-        }
+      if (!section || !section.checkboxContainer) return; // Section non initialisée (ex: team dans Gantt)
+      
+      const checkboxes = section.checkboxContainer.querySelectorAll('.filter-checkbox');
+      checkboxes.forEach(cb => {
+        cb.checked = this.filters[type].includes(cb.value);
+      });
+      
+      // Mettre à jour le compteur
+      const count = this.filters[type].length;
+      const countElement = section.header.querySelector('.filter-section-count');
+      if (countElement) {
+        countElement.textContent = count > 0 ? count : '';
       }
     });
     
@@ -325,7 +325,7 @@ class FilterManager {
     let result = [...tasks];
  
     // Filtre par assignee (via charges ou assignees directement)
-    if (this.filters.assignee.length > 0) {
+    if (this.filters.assignee && this.filters.assignee.length > 0) {
       result = result.filter(t => {
         const charges = this.effCharges(t);
         // Vérifier dans les charges d'abord
@@ -342,7 +342,7 @@ class FilterManager {
     }
  
     // Filtre par équipe/entité (via entité des membres)
-    if (this.filters.team.length > 0) {
+    if (this.filters.team && this.filters.team.length > 0) {
       result = result.filter(t => {
         const charges = this.effCharges(t);
         // Vérifier dans les charges d'abord
@@ -365,12 +365,12 @@ class FilterManager {
     }
  
     // Filtre par projet
-    if (this.filters.project.length > 0) {
+    if (this.filters.project && this.filters.project.length > 0) {
       result = result.filter(t => t.projet && this.filters.project.includes(String(t.projet)));
     }
  
     // Filtre par tâche spécifique
-    if (this.filters.task.length > 0) {
+    if (this.filters.task && this.filters.task.length > 0) {
       result = result.filter(t => t.id && this.filters.task.includes(String(t.id)));
     }
  
@@ -470,13 +470,13 @@ class FilterManager {
     // Reconstruire l'UI si elle existe déjà
     if (this.ui) {
       Object.keys(this.ui).forEach(type => {
-        const container = this.ui[type].checkboxContainer;
-        if (container) {
-          const items = data[type === 'assignee' ? 'team' : 
-                        type === 'team' ? 'entites' : 
-                        type === 'project' ? 'projects' : 'tasks'] || [];
-          this._createCheckboxGroup(container, type, items);
-        }
+        const section = this.ui[type];
+        if (!section || !section.checkboxContainer) return; // Section non initialisée (ex: team dans Gantt)
+        
+        const items = data[type === 'assignee' ? 'team' : 
+                      type === 'team' ? 'entites' : 
+                      type === 'project' ? 'projects' : 'tasks'] || [];
+        this._createCheckboxGroup(section.checkboxContainer, type, items);
       });
       this._updateUIFromState();
     }
