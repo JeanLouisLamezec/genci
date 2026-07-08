@@ -78,7 +78,14 @@
 
         /* Columns */
         .kanban-column { min-width: 280px; max-width: 320px; flex: 1; background: var(--bg); border-radius: 12px; display: flex; flex-direction: column; max-height: 100%; }
-        .column-header { padding: 12px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border); }
+        .kanban-column.sortable-ghost { opacity: 0.3; background: var(--border); }
+        .kanban-column.sortable-chosen { 
+            box-shadow: 0 8px 20px rgba(0,0,0,0.15);
+            transform: scale(1.02);
+            z-index: 100;
+        }
+        .column-header { padding: 12px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border); cursor: grab; }
+        .column-header:active { cursor: grabbing; }
         .column-title { font-weight: 600; font-size: 0.85rem; display: flex; align-items: center; gap: 8px; }
         .column-count { background: var(--border); color: var(--text-muted); padding: 2px 8px; border-radius: 10px; font-size: 0.7rem; font-weight: 600; }
         .column-add { width: 28px; height: 28px; border: none; background: var(--card-bg); border-radius: 6px; cursor: pointer; color: var(--text-muted); font-size: 1rem; }
@@ -641,7 +648,8 @@
             Team: [{ id: 'nom', type: 'Text' }, { id: 'email', type: 'Text' }, { id: 'avatar', type: 'Text' }, { id: 'role', type: 'Choice' }, { id: 'actif', type: 'Bool' }, { id: 'couleur', type: 'Text' }],  // TEAM-01 (capaciteHebdo/indispos creees a la demande par le widget Plan)
             Projects: [{ id: 'nom', type: 'Text' }, { id: 'couleur', type: 'Text' }, { id: 'dateDebut', type: 'Date' }, { id: 'dateFin', type: 'Date' }, { id: 'responsable', type: 'Ref:Team' }, { id: 'actif', type: 'Bool' }],
             Tasks: [{ id: 'titre', type: 'Text' }, { id: 'description', type: 'Text' }, { id: 'dateDebut', type: 'Date' }, { id: 'dateEcheance', type: 'Date' }, { id: 'priorite', type: 'Choice' }, { id: 'statut', type: 'Choice' }, { id: 'progression', type: 'Numeric' }, { id: 'projet', type: 'Ref:Projects' }, { id: 'assignees', type: 'RefList:Team' }, { id: 'type', type: 'Choice' }, { id: 'dependDe', type: 'RefList:Tasks' }, { id: 'tags', type: 'ChoiceList' }, { id: 'estimationH', type: 'Numeric' }, { id: 'tempsPasse', type: 'Numeric' }, { id: 'couleur', type: 'Text' }, { id: 'subtasks', type: 'Text' }, { id: 'parentTask', type: 'Ref:Tasks' }],  // WBS-01: parentTask (charges/dateCloture creees a la demande par le widget Plan)
-            Actions: [{ id: 'titre', type: 'Text' }, { id: 'task', type: 'Ref:Tasks' }, { id: 'description', type: 'Text' }, { id: 'statut', type: 'Choice' }, { id: 'assignee', type: 'Ref:Team' }, { id: 'priorite', type: 'Choice' }, { id: 'estimationH', type: 'Numeric' }, { id: 'progression', type: 'Int' }, { id: 'dateDebut', type: 'Date' }, { id: 'dateEcheance', type: 'Date' }, { id: 'couleur', type: 'Text' }, { id: 'tags', type: 'ChoiceList' }, { id: 'ordre', type: 'Int' }]
+            Actions: [{ id: 'titre', type: 'Text' }, { id: 'task', type: 'Ref:Tasks' }, { id: 'description', type: 'Text' }, { id: 'statut', type: 'Choice' }, { id: 'assignee', type: 'Ref:Team' }, { id: 'priorite', type: 'Choice' }, { id: 'estimationH', type: 'Numeric' }, { id: 'progression', type: 'Int' }, { id: 'dateDebut', type: 'Date' }, { id: 'dateEcheance', type: 'Date' }, { id: 'couleur', type: 'Text' }, { id: 'tags', type: 'ChoiceList' }, { id: 'ordre', type: 'Int' }],
+            KanbanSteps: [{ id: 'nom', type: 'Text' }, { id: 'valeur', type: 'Text' }, { id: 'couleur', type: 'Text' }, { id: 'ordre', type: 'Int' }, { id: 'actif', type: 'Bool' }]
         };
         const PRIORITY_LABELS = { 1: 'Critique', 2: 'Haute', 3: 'Moyenne', 4: 'Basse' };
         const PRIORITY_COLORS = { 1: '#e5484d', 2: '#f0982d', 3: '#4c7ef3', 4: '#8a97ab' };
@@ -1043,7 +1051,7 @@
         // ═══════════════════════════════════════════════════════════════════════
         // STATE
         // ═══════════════════════════════════════════════════════════════════════
-        let tasks = [], team = [], projects = [], actions = [], gristReady = false;  // NOUVEAU: actions
+        let tasks = [], team = [], projects = [], actions = [], kanbanSteps = [], gristReady = false;  // NOUVEAU: actions + kanbanSteps
         let TASK_COLS = new Set(); // colonnes reelles de la table Tasks (sweet spot : charges/dateCloture n'existent que si le widget Plan a ete ouvert)
         let CRA_ACTIVE = false; // si la Feuille de temps (TimeEntries) est active, tempsPasse devient un rollup CRA -> saisie manuelle figee (anti-doublon)
         let statusCfg = TF.buildStatusConfig(TF.DEFAULT_STATUSES, 'default'); // #1 : statuts dynamiques, alimente par TF.loadStatusConfig en mode Grist
@@ -1265,7 +1273,35 @@
         function convertGristToRecords(data) { if (!data || Array.isArray(data)) return data || []; const cols = Object.keys(data); if (!cols.length) return []; const n = data[cols[0]]?.length || 0; const records = []; for (let i = 0; i < n; i++) { const rec = {}; cols.forEach(k => { rec[k] = data[k][i]; }); records.push(rec); } return records; }
         // sweet spot : ne jamais ecrire une colonne absente du schema (ex. charges/dateCloture si le Plan n'a jamais ete ouvert). Fail-open si TASK_COLS pas encore peuple.
         function pruneTaskRecord(rec) { if (TASK_COLS.size) { for (const k in rec) if (!TASK_COLS.has(k)) delete rec[k]; } return rec; }
-        async function ensureSchema() { let created = 0; const tablesCreated = []; for (const [tableName, columns] of Object.entries(TASKFLOW_SCHEMA)) { let existingCols = [], tableExists = false; try { const data = await grist.docApi.fetchTable(tableName); existingCols = Object.keys(data).filter(c => c !== 'id' && c !== 'manualSort'); tableExists = true; } catch (e) { try { await grist.docApi.applyUserActions([['AddTable', tableName, columns.map(c => ({ id: c.id, type: c.type }))]]); tablesCreated.push(tableName); created++; continue; } catch (e2) { continue; } } if (tableExists) { const missing = columns.filter(c => !existingCols.includes(c.id)); for (const col of missing) { try { await grist.docApi.applyUserActions([['AddColumn', tableName, col.id, { type: col.type }]]); } catch (e) {} } } } if (tablesCreated.includes('Tasks')) await seedData();
+        async function ensureSchema() {
+            let created = 0;
+            const tablesCreated = [];
+            for (const [tableName, columns] of Object.entries(TASKFLOW_SCHEMA)) {
+                let existingCols = [], tableExists = false;
+                try {
+                    const data = await grist.docApi.fetchTable(tableName);
+                    existingCols = Object.keys(data).filter(c => c !== 'id' && c !== 'manualSort');
+                    tableExists = true;
+                } catch (e) {
+                    try {
+                        await grist.docApi.applyUserActions([['AddTable', tableName, columns.map(c => ({ id: c.id, type: c.type }))]]);
+                        tablesCreated.push(tableName);
+                        created++;
+                        continue;
+                    } catch (e2) { continue; }
+                }
+                if (tableExists) {
+                    const missing = columns.filter(c => !existingCols.includes(c.id));
+                    for (const col of missing) {
+                        try { await grist.docApi.applyUserActions([['AddColumn', tableName, col.id, { type: col.type }]]); } catch (e) {}
+                    }
+                }
+            }
+            if (tablesCreated.includes('Tasks')) await seedData();
+            // Initialiser les étapes par défaut si la table KanbanSteps vient d'être créée
+            if (tablesCreated.includes('KanbanSteps')) {
+                await initKanbanSteps();
+            }
             // #1 : semer les statuts par defaut (choix + couleurs) sur la colonne Choice si vierge
             await TF.seedStatusChoices(grist, 'Tasks', 'statut', TF.DEFAULT_STATUSES);
             await TF.seedStatusChoices(grist, 'Actions', 'statut', TF.DEFAULT_STATUSES);  // NOUVEAU: pour Actions
@@ -1490,6 +1526,86 @@ if $projet and $projet.responsable:
             if (btn) { btn.style.opacity = ''; btn.style.pointerEvents = ''; }
         }
 
+        // ═══════════════════════════════════════════════════════════════════════
+        // KANBAN STEPS — table dédiée pour persister les étapes du kanban
+        // ═══════════════════════════════════════════════════════════════════════
+        // Étapes par défaut
+        const DEFAULT_KANBAN_STEPS = [
+            { nom: 'À faire', valeur: 'todo', couleur: '#94a3b8', ordre: 0, actif: true },
+            { nom: 'En cours', valeur: 'inprogress', couleur: '#f59e0b', ordre: 1, actif: true },
+            { nom: 'En revue', valeur: 'review', couleur: '#3b82f6', ordre: 2, actif: true },
+            { nom: 'Terminé', valeur: 'done', couleur: '#10b981', ordre: 3, actif: true }
+        ];
+
+        // Initialiser la table KanbanSteps avec les étapes par défaut
+        async function initKanbanSteps() {
+            try {
+                const actions = DEFAULT_KANBAN_STEPS.map((step, i) => 
+                    ['AddRecord', 'KanbanSteps', null, { ...step, ordre: i }]
+                );
+                await grist.docApi.applyUserActions(actions);
+                console.log('KanbanSteps initialized with default steps');
+            } catch (e) {
+                console.error('initKanbanSteps error:', e);
+            }
+        }
+
+        // Sauvegarder une nouvelle étape
+        async function saveKanbanStep(nom, valeur, couleur) {
+            const maxOrdre = kanbanSteps.reduce((max, s) => Math.max(max, s.ordre || 0), -1);
+            const rec = {
+                nom: nom,
+                valeur: valeur,
+                couleur: couleur,
+                ordre: maxOrdre + 1,
+                actif: true
+            };
+            const result = await grist.docApi.applyUserActions([
+                ['AddRecord', 'KanbanSteps', null, rec]
+            ]);
+            // Mettre à jour le cache local
+            rec.id = result?.retValues?.[0] || Date.now();
+            kanbanSteps.push(rec);
+            return rec;
+        }
+
+        // Mettre à jour une étape existante
+        async function updateKanbanStep(id, updates) {
+            const actions = [['UpdateRecord', 'KanbanSteps', parseInt(id), updates]];
+            await grist.docApi.applyUserActions(actions);
+            // Mettre à jour le cache local
+            const step = kanbanSteps.find(s => s.id === id);
+            if (step) Object.assign(step, updates);
+        }
+
+        // Supprimer une étape (marquer comme inactive)
+        async function deleteKanbanStep(id) {
+            const actions = [['UpdateRecord', 'KanbanSteps', parseInt(id), { actif: false }]];
+            await grist.docApi.applyUserActions(actions);
+            // Mettre à jour le cache local
+            const step = kanbanSteps.find(s => s.id === id);
+            if (step) step.actif = false;
+        }
+
+        // Synchroniser les choix de la colonne Choice avec les étapes Kanban
+        async function syncKanbanStepsToChoice() {
+            try {
+                const activeSteps = kanbanSteps
+                    .filter(s => s.actif !== false)
+                    .sort((a, b) => (a.ordre || 0) - (b.ordre || 0));
+                
+                const choices = activeSteps.map(s => s.valeur);
+                const choiceOptions = {};
+                for (const s of activeSteps) {
+                    choiceOptions[s.valeur] = { fillColor: s.couleur || '#94a3b8', textColor: '#ffffff' };
+                }
+                
+                await _writeStatutChoices(choices, choiceOptions);
+            } catch (e) {
+                console.error('syncKanbanStepsToChoice error:', e);
+            }
+        }
+
         async function seedData() {
             const today = new Date();
             const day = (d) => Math.floor(new Date(today.getFullYear(), today.getMonth(), today.getDate() + d).getTime() / 1000);
@@ -1527,9 +1643,21 @@ if $projet and $projet.responsable:
           try { projects = convertGristToRecords(await grist.docApi.fetchTable('Projects')); } catch (e) { projects = []; } 
           try { actions = convertGristToRecords(await grist.docApi.fetchTable('Actions')); } catch (e) { actions = []; } 
           try { entites = convertGristToRecords(await grist.docApi.fetchTable('Entites')); } catch (e) { entites = []; }
+          try { kanbanSteps = convertGristToRecords(await grist.docApi.fetchTable('KanbanSteps')); } catch (e) { kanbanSteps = []; }
           gristReady = true; 
           rebuildChildrenCache(); 
-          try { statusCfg = await TF.loadStatusConfig(grist, 'Actions', 'statut', actions.map(a => a && a.statut)); } catch (e) {} 
+          // Si des étapes Kanban existent, les utiliser pour configurer les statuts
+          if (kanbanSteps && kanbanSteps.length > 0) {
+            const stepList = kanbanSteps
+              .filter(s => s.actif !== false)
+              .sort((a, b) => (a.ordre || 0) - (b.ordre || 0))
+              .map(s => ({ value: s.valeur || s.nom, label: s.nom, fillColor: s.couleur || '#94a3b8', textColor: '#ffffff' }));
+            if (stepList.length) {
+              statusCfg = TF.buildStatusConfig(stepList, 'kanban');
+            }
+          } else {
+            try { statusCfg = await TF.loadStatusConfig(grist, 'Actions', 'statut', actions.map(a => a && a.statut)); } catch (e) {}
+          }
           initKanbanFilterManager();
           // Mettre à jour les données du FilterManager après initialisation
           if (filterManager) {
@@ -1821,9 +1949,13 @@ if $projet and $projet.responsable:
         // ═══════════════════════════════════════════════════════════════════════
         // RENDER
         // ═══════════════════════════════════════════════════════════════════════
+        let columnSortable = null;  // Référence pour le sortable des colonnes
+        
         function render() {
             sortableInstances.forEach(s => s.destroy());
             sortableInstances = [];
+            if (columnSortable) { columnSortable.destroy(); columnSortable = null; }
+            
             const container = document.getElementById('kanbanContainer');
             // Utiliser le FilterManager pour obtenir les Actions filtrées
             // Le post-filter Kanban transforme les tâches filtrées en actions filtrées
@@ -1838,8 +1970,8 @@ if $projet and $projet.responsable:
             
             container.innerHTML = columns.map(col => `
                 <div class="kanban-column" data-key="${col.key}">
-                    <div class="column-header">
-                        <span class="column-title ${groupBy === 'statut' ? 'editable' : ''}" ${groupBy === 'statut' ? `ondblclick="renameStatusColumn('${col.key}')"` : ''} title="${groupBy === 'statut' ? 'Double-cliquer pour renommer' : ''}">
+                    <div class="column-header" data-column-key="${col.key}" style="cursor: grab;">
+                        <span class="column-title ${groupBy === 'statut' ? 'editable' : ''}" ${groupBy === 'statut' ? `ondblclick="renameStatusColumn('${col.key}')"` : ''} title="${groupBy === 'statut' ? 'Double-cliquer pour renommer (drag depuis le header pour réordonner)' : ''}">
                             ${groupBy === 'statut' ? `<span class="column-color-dot" style="background:${statusCfg.byValue[col.key]?.fillColor || '#94a3b8'}"></span>` : (col.icon || '')}
                             ${escapeHtml(col.label)} <span class="column-count">${col.tasks.length}</span>
                         </span>
@@ -1852,12 +1984,31 @@ if $projet and $projet.responsable:
                 </div>
             `).join('') + (groupBy === 'statut' ? `<div class="kanban-add-column"><button onclick="addStatusColumn()" title="Ajouter une étape">+</button></div>` : '');
             
-            // Initialize Sortable
+            // Initialize Sortable sur les colonnes (drag & drop des étapes) - uniquement en mode statut
+            // Utiliser 'handle' pour ne draguer que depuis le header, évitant le conflit avec les tâches
+            if (groupBy === 'statut') {
+                columnSortable = new Sortable(container, {
+                    animation: 150,
+                    ghostClass: 'sortable-ghost',
+                    chosenClass: 'sortable-chosen',
+                    handle: '.column-header',  // Ne draguer que depuis le header
+                    onEnd: (evt) => {
+                        if (evt.from === container && evt.to === container) {
+                            handleColumnReorder(evt);
+                        }
+                    }
+                });
+            }
+            
+            // Initialize Sortable sur les corps des colonnes (drag & drop des tâches)
             columns.forEach(col => {
                 const el = document.getElementById(`col-${col.key}`);
                 if (el) {
                     sortableInstances.push(new Sortable(el, {
-                        group: 'tasks', animation: 150, ghostClass: 'sortable-ghost', chosenClass: 'sortable-chosen',
+                        group: 'tasks',
+                        animation: 150,
+                        ghostClass: 'sortable-ghost',
+                        chosenClass: 'sortable-chosen',
                         onEnd: (evt) => handleDrop(evt)
                     }));
                 }
@@ -1929,12 +2080,18 @@ if $projet and $projet.responsable:
         // Couleur par defaut pour un nouveau statut (palette harmonisee)
         const STATUS_COLOR_PALETTE = ['#94a3b8', '#f59e0b', '#3b82f6', '#10b981', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316', '#6366f1', '#ef4444'];
 
-        // Ajoute une nouvelle étape au Kanban (nouveau choix dans la colonne statut).
-        // S'assure que la valeur est unique et met a jour le widgetOptions.
+        // Génère une valeur slugifiée depuis un nom
+        function slugify(text) {
+            return text.toLowerCase()
+                .replace(/[^a-z0-9-]/g, '-')
+                .replace(/-+/g, '-')
+                .replace(/^-|-$/g, '') || Date.now().toString();
+        }
+
+        // Ajoute une nouvelle étape au Kanban (table KanbanSteps + sync Choice).
         async function addStatusColumn() {
             if (TF.isReadOnly()) { showToast('Lecture seule : action impossible', 'error'); return; }
             if (groupBy !== 'statut') { showToast('Activez le groupement par Statut', 'info'); return; }
-            // Input inline : on cree un faux input temporaire dans la zone add-column
             const addCol = document.querySelector('.kanban-add-column');
             if (!addCol || addCol.querySelector('input')) return;
             const input = document.createElement('input');
@@ -1947,29 +2104,42 @@ if $projet and $projet.responsable:
             let done = false;
             const finish = async (commit) => {
                 if (done) return; done = true;
-                const val = input.value.trim();
+                const nom = input.value.trim();
                 addCol.innerHTML = '<button onclick="addStatusColumn()" title="Ajouter une étape">+</button>';
-                if (!commit || !val) return;
+                if (!commit || !nom) return;
                 try {
-                    const opts = await _readStatutColumnOptions();
-                    if (!opts) { showToast('Colonne statut introuvable', 'error'); return; }
-                    // Slug : on garde la valeur telle quelle (le Choice stocke la string)
-                    if (opts.choices.includes(val)) { showToast('Cette étape existe déjà', 'info'); return; }
-                    const newChoices = opts.choices.concat([val]);
-                    const newChoiceOptions = Object.assign({}, opts.choiceOptions);
-                    newChoiceOptions[val] = { fillColor: STATUS_COLOR_PALETTE[newChoices.length % STATUS_COLOR_PALETTE.length] || '#94a3b8', textColor: '#ffffff' };
-                    await _writeStatutChoices(newChoices, newChoiceOptions);
-                    statusCfg = await TF.loadStatusConfig(grist, 'Tasks', 'statut', tasks.map(t => t && t.statut));
-                    updateFilterMenus();
+                    // Vérifier si une étape avec ce nom existe déjà
+                    if (kanbanSteps.some(s => s.nom.toLowerCase() === nom.toLowerCase() && s.actif !== false)) {
+                        showToast('Cette étape existe déjà', 'info');
+                        return;
+                    }
+                    // Générer une valeur unique
+                    let valeur = slugify(nom);
+                    let counter = 1;
+                    while (kanbanSteps.some(s => s.valeur === valeur && s.actif !== false)) {
+                        valeur = slugify(nom) + '-' + counter++;
+                    }
+                    // Trouver une couleur disponible
+                    const usedColors = kanbanSteps.filter(s => s.actif !== false).map(s => s.couleur);
+                    const couleur = STATUS_COLOR_PALETTE.find(c => !usedColors.includes(c)) || STATUS_COLOR_PALETTE[0];
+                    
+                    // Sauvegarder dans la table KanbanSteps
+                    await saveKanbanStep(nom, valeur, couleur);
+                    
+                    // Synchroniser avec la colonne Choice
+                    await syncKanbanStepsToChoice();
+                    
+                    // Recharger les données
+                    await loadAllData();
                     render();
-                    showToast('Étape « ' + val + ' » ajoutée', 'success');
+                    showToast('Étape « ' + nom + ' » ajoutée', 'success');
                 } catch (e) { console.error('addStatusColumn:', e); showToast('Erreur: ' + (e?.message || e), 'error'); }
             };
             input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); finish(true); } else if (e.key === 'Escape') { finish(false); } });
             input.addEventListener('blur', () => finish(true));
         }
 
-        // Renomme une étape existante (met a jour la valeur du Choice + toutes les taches qui l'utilisent).
+        // Renomme une étape existante (met à jour KanbanSteps + sync Choice + update tâches).
         async function renameStatusColumn(oldValue) {
             if (TF.isReadOnly()) { showToast('Lecture seule : action impossible', 'error'); return; }
             if (groupBy !== 'statut') return;
@@ -1991,35 +2161,123 @@ if $projet and $projet.responsable:
                 // Si pas de changement ou annule, on restore
                 if (!commit || !newLabel || newLabel === oldLabel) { render(); return; }
                 try {
-                    const opts = await _readStatutColumnOptions();
-                    if (!opts) { showToast('Colonne statut introuvable', 'error'); render(); return; }
-                    // On renomme la VALEUR du choice (newLabel devient la nouvelle valeur stockee).
-                    // Si une autre valeur existe deja avec ce nom, on alerte.
-                    if (opts.choices.includes(newLabel) && newLabel !== oldValue) { showToast('Une étape « ' + newLabel + ' » existe déjà', 'info'); render(); return; }
-                    // 1. Mettre a jour toutes les taches qui ont oldValue -> newLabel
+                    // Trouver l'étape dans KanbanSteps
+                    const step = kanbanSteps.find(s => s.valeur === oldValue && s.actif !== false);
+                    if (!step) { showToast('Étape introuvable', 'error'); render(); return; }
+                    
+                    // Vérifier si une autre étape a déjà ce nom
+                    if (kanbanSteps.some(s => s.nom.toLowerCase() === newLabel.toLowerCase() && s.valeur !== oldValue && s.actif !== false)) {
+                        showToast('Une étape « ' + newLabel + ' » existe déjà', 'info');
+                        render();
+                        return;
+                    }
+                    
+                    // 1. Mettre à jour toutes les tâches qui ont oldValue -> garder la même valeur, juste changer le label
                     const tasksToUpdate = tasks.filter(t => t.statut === oldValue);
                     if (tasksToUpdate.length) {
-                        const actions = tasksToUpdate.map(t => ['UpdateRecord', 'Tasks', t.id, { statut: newLabel }]);
+                        const actions = tasksToUpdate.map(t => ['UpdateRecord', 'Tasks', t.id, { statut: oldValue }]);
                         await grist.docApi.applyUserActions(actions);
                     }
-                    // 2. Mettre a jour la liste des choices (remplacer oldValue par newLabel, garder la couleur)
-                    const newChoices = opts.choices.map(c => c === oldValue ? newLabel : c);
-                    const newChoiceOptions = {};
-                    for (const c of newChoices) {
-                        const src = c === newLabel ? (opts.choiceOptions[oldValue] || {}) : (opts.choiceOptions[c] || {});
-                        newChoiceOptions[c] = { fillColor: src.fillColor || '#94a3b8', textColor: src.textColor || '#ffffff' };
-                    }
-                    await _writeStatutChoices(newChoices, newChoiceOptions);
-                    statusCfg = await TF.loadStatusConfig(grist, 'Tasks', 'statut', tasks.map(t => t && t.statut));
-                    // Mettre a jour les taches locales
-                    tasksToUpdate.forEach(t => { t.statut = newLabel; });
-                    updateFilterMenus();
+                    
+                    // 2. Mettre à jour l'étape dans KanbanSteps (juste le nom, pas la valeur)
+                    await updateKanbanStep(step.id, { nom: newLabel });
+                    
+                    // 3. Synchroniser avec la colonne Choice
+                    await syncKanbanStepsToChoice();
+                    
+                    // 4. Recharger les données
+                    await loadAllData();
                     render();
                     showToast('Étape renommée en « ' + newLabel + ' »' + (tasksToUpdate.length ? ' (' + tasksToUpdate.length + ' tâche' + (tasksToUpdate.length > 1 ? 's' : '') + ' mise à jour)' : ''), 'success');
                 } catch (e) { console.error('renameStatusColumn:', e); showToast('Erreur: ' + (e?.message || e), 'error'); render(); }
             };
             input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); finish(true); } else if (e.key === 'Escape') { finish(false); } });
             input.addEventListener('blur', () => finish(true));
+        }
+
+        // Réordonnancement des étapes par drag & drop
+        async function handleColumnReorder(evt) {
+            if (groupBy !== 'statut') return;
+            
+            const oldIndex = evt.oldIndex;
+            const newIndex = evt.newIndex;
+            
+            if (oldIndex === newIndex) return;
+            
+            console.log('handleColumnReorder:', { oldIndex, newIndex, kanbanStepsCount: kanbanSteps.length });
+            
+            try {
+                // Filtrer uniquement les étapes actives et triées par ordre
+                const activeSteps = kanbanSteps
+                    .filter(s => s.actif !== false)
+                    .sort((a, b) => (a.ordre || 0) - (b.ordre || 0));
+                
+                console.log('Active steps before reorder:', activeSteps.map(s => ({ id: s.id, nom: s.nom, ordre: s.ordre })));
+                
+                // Réordonner le tableau local
+                const movedStep = activeSteps.splice(oldIndex, 1)[0];
+                activeSteps.splice(newIndex, 0, movedStep);
+                
+                console.log('Active steps after reorder:', activeSteps.map(s => ({ id: s.id, nom: s.nom, ordre: s.ordre })));
+                
+                // Mettre à jour les ordres dans Grist
+                const actions = activeSteps.map((step, index) => 
+                    ['UpdateRecord', 'KanbanSteps', step.id, { ordre: index }]
+                );
+                
+                console.log('Grist actions:', actions);
+                
+                const result = await grist.docApi.applyUserActions(actions);
+                console.log('Grist update result:', result);
+                
+                // Mettre à jour le cache local avec les nouveaux ordres
+                activeSteps.forEach((step, index) => {
+                    const local = kanbanSteps.find(s => s.id === step.id);
+                    if (local) {
+                        local.ordre = index;
+                        console.log('Updated local step:', local);
+                    }
+                });
+                
+                // Mettre à jour statusCfg pour refléter le nouvel ordre
+                const stepList = activeSteps.map(s => ({
+                    value: s.valeur || s.nom,
+                    label: s.nom,
+                    fillColor: s.couleur || '#94a3b8',
+                    textColor: '#ffffff'
+                }));
+                statusCfg = TF.buildStatusConfig(stepList, 'kanban');
+                
+                // Re-render pour appliquer le nouvel ordre
+                render();
+                showToast('Ordre des étapes mis à jour', 'success');
+            } catch (e) {
+                console.error('handleColumnReorder:', e);
+                // En mode démo ou erreur, on garde l'ordre localement quand même
+                const activeSteps = kanbanSteps
+                    .filter(s => s.actif !== false)
+                    .sort((a, b) => (a.ordre || 0) - (b.ordre || 0));
+                const movedStep = activeSteps.splice(oldIndex, 1)[0];
+                activeSteps.splice(newIndex, 0, movedStep);
+                
+                // Mettre à jour localement sans Grist
+                const newOrderMap = new Map(activeSteps.map((s, i) => [s.id, i]));
+                kanbanSteps.forEach(s => {
+                    if (newOrderMap.has(s.id)) s.ordre = newOrderMap.get(s.id);
+                });
+                
+                // Mettre à jour statusCfg
+                const stepList = activeSteps.map(s => ({
+                    value: s.valeur || s.nom,
+                    label: s.nom,
+                    fillColor: s.couleur || '#94a3b8',
+                    textColor: '#ffffff'
+                }));
+                statusCfg = TF.buildStatusConfig(stepList, 'kanban');
+                
+                render();
+                showToast('Ordre mis à jour (mode démo)', 'info');
+            }
         }
 
         function buildColumns(fa) {  // fa = filtered Actions
