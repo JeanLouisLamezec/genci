@@ -1,0 +1,442 @@
+/* =============================================
+   FILTER STYLES - Styles communs pour les filtres v2
+   Utilisé par plan.html, kanban.html, gantt.html, etc.
+   
+   Ce fichier définit une structure CSS cohérente pour les filtres
+   qui fonctionne avec le FilterManager.js.
+   
+   Variables CSS pour l'adaptation aux thèmes clair/sombre :
+   - --filter-bg: Fond du panneau de filtres
+   - --filter-border: Bordure du panneau
+   - --filter-text: Texte principal
+   - --filter-text-muted: Texte secondaire
+   - --filter-primary: Couleur principale (surlignage)
+   - --filter-radius: Rayon des bordures
+   - --filter-shadow: Ombre du panneau
+   =============================================
+*/
+
+/* ========== VARIABLES PAR DÉFAUT ========== */
+:root {
+  /* Thème sombre (par défaut pour Plan) */
+  --filter-bg: #1e293b;
+  --filter-border: #334155;
+  --filter-text: #e2e8f0;
+  --filter-text-muted: #94a3b8;
+  --filter-primary: #6366f1;
+  --filter-radius: 8px;
+  --filter-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
+  
+  /* Transition pour l'accordéon */
+  --filter-transition: 0.2s ease;
+}
+
+/* Thème clair (pour Kanban, Gantt) */
+@media (prefers-color-scheme: light) {
+  :root {
+    --filter-bg: #ffffff;
+    --filter-border: #e2e8f0;
+    --filter-text: #1e293b;
+    --filter-text-muted: #64748b;
+    --filter-primary: #3e5de7;
+    --filter-shadow: 0 6px 16px rgba(0, 0, 0, 0.15);
+  }
+}
+
+/* ========== STRUCTURE DE BASE ========== */
+
+/* Conteneur parent pour positionnement relatif */
+.filter-dropdown {
+  position: relative;
+  display: inline-block;
+}
+
+/* Panneau de filtres */
+.filter-panel {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 4px;
+  background: var(--filter-bg, var(--surface-2, var(--card-bg, #1e293b)));
+  border: 1px solid var(--filter-border, var(--border, #334155));
+  border-radius: var(--filter-radius, var(--radius, 8px));
+  box-shadow: var(--filter-shadow, 0 6px 16px rgba(0, 0, 0, 0.4));
+  z-index: 1000;
+  min-width: 250px;
+  max-height: 60vh;
+  overflow-y: auto;
+  display: none;
+  color: var(--filter-text, var(--text, #e2e8f0));
+  font-size: 0.85rem;
+  padding: 8px;
+}
+
+.filter-panel.open,
+.filter-panel.show {
+  display: block;
+  animation: fadeIn 0.15s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(-5px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* ========== EN-TÊTES DE SECTION (ACCORDÉON) ========== */
+
+.filter-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.filter-section {
+  margin-bottom: 0;
+  border-bottom: none;
+}
+
+.filter-section-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: background-color var(--filter-transition, 0.2s);
+  font-weight: 600;
+  font-size: 0.85rem;
+  color: var(--filter-text, var(--text, #e2e8f0));
+  position: relative;
+}
+
+.filter-section-header:hover {
+  background: rgba(99, 102, 241, 0.1);
+  color: var(--filter-primary, var(--primary, #6366f1));
+}
+
+.filter-section-header.open {
+  background: rgba(99, 102, 241, 0.15);
+}
+
+.filter-section-header.open .filter-section-chevron {
+  transform: rotate(180deg);
+}
+
+.filter-section-label {
+  flex: 1;
+  white-space: nowrap;
+}
+
+.filter-section-count {
+  background: var(--filter-primary, var(--primary, #6366f1));
+  color: white;
+  border-radius: 999px;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  font-size: 0.62rem;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.filter-section-chevron {
+  font-size: 0.7rem;
+  transition: transform var(--filter-transition, 0.2s);
+  color: var(--filter-text-muted, var(--text-muted, #94a3b8));
+  flex-shrink: 0;
+}
+
+/* ========== CHECKBOXES ========== */
+
+.filter-checkboxes {
+  padding-left: 18px;
+  margin-top: 0;
+  max-height: 200px;
+  overflow-y: auto;
+  display: none;
+  background: transparent;
+}
+
+.filter-checkboxes.open {
+  display: block;
+  animation: slideDown 0.15s ease;
+}
+
+@keyframes slideDown {
+  from { opacity: 0; max-height: 0; }
+  to { opacity: 1; max-height: 200px; }
+}
+
+.filter-checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 0.1s;
+  font-size: 0.85rem;
+}
+
+.filter-checkbox-label:hover {
+  color: var(--filter-primary, var(--primary, #6366f1));
+}
+
+.filter-checkbox {
+  margin: 0;
+  accent-color: var(--filter-primary, var(--primary, #6366f1));
+  cursor: pointer;
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
+.filter-checkbox-text {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--filter-text, var(--text, #e2e8f0));
+}
+
+/* ========== BOUTON DE FILTRES ========== */
+
+.filter-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: var(--card-bg, #ffffff);
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.75rem;
+  white-space: nowrap;
+  color: var(--text-muted, #64748b);
+  transition: all 0.15s;
+  position: relative;
+}
+
+.filter-btn:hover {
+  border-color: var(--border-dark, #cbd5e1);
+  color: var(--text, #1e293b);
+  background: var(--bg, #f8fafc);
+}
+
+.filter-btn.has-filter {
+  background: var(--primary-light, #dce6ff);
+  border-color: var(--primary, #3e5de7);
+  color: var(--primary, #3e5de7);
+}
+
+.filter-btn .filter-count {
+  background: var(--primary, #3e5de7);
+  color: white;
+  border-radius: 999px;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  font-size: 0.62rem;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: 2px;
+}
+
+/* ========== ACTIONS ========== */
+
+.filter-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--filter-border, var(--border, #334155));
+}
+
+.filter-actions .btn {
+  font-size: 0.8rem;
+  padding: 5px 10px;
+}
+
+.filter-actions .btn.ghost {
+  background: transparent;
+  border: 1px solid var(--filter-border, var(--border, #334155));
+  color: var(--filter-text-muted, var(--text-muted, #94a3b8));
+}
+
+.filter-actions .btn.ghost:hover {
+  background: var(--filter-border, var(--border, #334155));
+  color: var(--filter-text, var(--text, #e2e8f0));
+}
+
+/* ========== BARRE DE FILTRES EN CHIPS (Kanban) ========== */
+
+.filter-chips {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+  padding: 9px 18px;
+  background: var(--card-bg, #ffffff);
+  border-bottom: 1px solid var(--border, #e2e8f0);
+  flex-shrink: 0;
+}
+
+.fc-label {
+  font-size: 0.72rem;
+  color: var(--text-light, #94a3b8);
+  font-weight: 600;
+}
+
+.fc-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 27px;
+  padding: 0 5px 0 11px;
+  border-radius: 999px;
+  background: var(--primary-light, #dce6ff);
+  color: var(--primary, #3e5de7);
+  border: 1px solid var(--primary, #3e5de7);
+  font-size: 0.73rem;
+  font-weight: 550;
+  white-space: nowrap;
+}
+
+.fc-chip .fc-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+
+.fc-chip .fc-x {
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  opacity: 0.65;
+  color: inherit;
+}
+
+.fc-chip .fc-x:hover {
+  opacity: 1;
+  background: rgba(62, 93, 231, 0.18);
+}
+
+.fc-clear-all {
+  margin-left: auto;
+  font-size: 0.72rem;
+  color: var(--text-muted, #64748b);
+  cursor: pointer;
+  padding: 5px 9px;
+  border-radius: 7px;
+  font-weight: 550;
+}
+
+.fc-clear-all:hover {
+  background: var(--bg, #f8fafc);
+  color: var(--text, #1e293b);
+}
+
+/* ========== SCROLLBAR CUSTOM ========== */
+
+.filter-checkboxes::-webkit-scrollbar {
+  width: 4px;
+}
+
+.filter-checkboxes::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.filter-checkboxes::-webkit-scrollbar-thumb {
+  background: var(--filter-border, var(--border, #334155));
+  border-radius: 2px;
+}
+
+.filter-checkboxes::-webkit-scrollbar-thumb:hover {
+  background: var(--filter-text-muted, var(--text-muted, #94a3b8));
+}
+
+/* ========== ADAPTATION POUR THÈME SOMBRE (Plan) ========== */
+
+body {
+  --filter-bg: var(--surface-2, #243044);
+  --filter-border: var(--border, #334155);
+  --filter-text: var(--text, #e2e8f0);
+  --filter-text-muted: var(--text-muted, #94a3b8);
+  --filter-primary: var(--primary, #6366f1);
+}
+
+/* Bouton de filtre */
+.filter-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: var(--surface-2, #243044);
+  border: 1px solid var(--border, #334155);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  white-space: nowrap;
+  color: var(--text-muted, #94a3b8);
+  transition: all 0.15s;
+  position: relative;
+}
+
+.filter-btn:hover {
+  border-color: var(--border, #475569);
+  color: var(--text, #e2e8f0);
+  background: var(--surface, #1e293b);
+}
+
+.filter-btn.has-filter {
+  background: var(--primary, #6366f1);
+  border-color: var(--primary, #6366f1);
+  color: white;
+}
+
+/* ========== RESPONSIVE ========== */
+
+@media (max-width: 768px) {
+  .filter-menu {
+    min-width: 200px;
+    max-height: 50vh;
+  }
+  
+  .filter-panel {
+    min-width: 200px;
+    max-width: 80vw;
+  }
+  
+  .filter-section-header {
+    padding: 6px 8px;
+    font-size: 0.8rem;
+  }
+  
+  .filter-checkbox-label {
+    font-size: 0.8rem;
+    padding: 3px 0;
+  }
+}
+
+/* ========== COMPATIBILITÉ AVEC LES ANCIENS STYLES ========== */
+
+/* Pour maintenir la compatibilité avec les anciens widgets */
+.filter-panel.show,
+.filter-menu.filter-panel.open {
+  display: block;
+}
+
+.filter-checkboxes.open {
+  display: block !important;
+}
+
+/* Fin du fichier */
