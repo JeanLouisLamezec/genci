@@ -1053,6 +1053,7 @@
         // STATE
         // ═══════════════════════════════════════════════════════════════════════
         let tasks = [], team = [], projects = [], actions = [], kanbanSteps = [], gristReady = false;  // NOUVEAU: actions + kanbanSteps
+        let schemaInitializing = false; // Empêche les écritures pendant l'initialisation du schéma
         let TASK_COLS = new Set(); // colonnes reelles de la table Tasks (sweet spot : charges/dateCloture n'existent que si le widget Plan a ete ouvert)
         let CRA_ACTIVE = false; // si la Feuille de temps (TimeEntries) est active, tempsPasse devient un rollup CRA -> saisie manuelle figee (anti-doublon)
         let statusCfg = TF.buildStatusConfig(TF.DEFAULT_STATUSES, 'default'); // #1 : statuts dynamiques, alimente par TF.loadStatusConfig en mode Grist
@@ -1157,7 +1158,7 @@
         }
         
         // NOUVEAU: Met à jour un champ d'Action
-        function updateActionField(field, value, noSave = false) {
+        function updateActionField(field, value, noSave = false, noRender = false) {
             const data = panelState.editData;
             if (!data) return;
             if (field === 'dateDebut' || field === 'dateEcheance') {
@@ -1169,7 +1170,8 @@
             }
             data[field] = value;
             syncLocalAction();
-            renderPanelAction();
+            // Ne re-render que si nécessaire (pas pendant la saisie texte)
+            if (!noRender) renderPanelAction();
             if (!noSave && gristReady && panelState.actionId) {
                 saveActionToGrist();
             }
@@ -1519,6 +1521,8 @@ if $projet and $projet.responsable:
                     { table: 'Team', column: 'responsable', visibleColId: 'nom' },
                     { table: 'Team', column: 'competences', visibleColId: 'nom' },
                     { table: 'Programmes', column: 'responsable', visibleColId: 'nom' },
+                    { table: 'Actions', column: 'task', visibleColId: 'titre' },
+                    { table: 'Actions', column: 'assignee', visibleColId: 'nom' },
                     { table: 'TimeEntries', column: 'membre', visibleColId: 'nom' },
                     { table: 'TimeEntries', column: 'tache', visibleColId: 'titre' },
                     { table: 'Feuilles', column: 'membre', visibleColId: 'nom' },
@@ -1526,8 +1530,9 @@ if $projet and $projet.responsable:
                     { table: 'Disponibilites', column: 'membre', visibleColId: 'nom' }
                 ]);
             } catch (e) { console.warn('setRefDisplayColumns:', e?.message); }
-            // 6. Seed si Tasks vient d'etre cree et est vide
+            // 7. Seed si Tasks vient d'etre cree et est vide
             try {
+                console.log('[GENCI] Checking if Tasks table is empty...');
                 const tasksData = await grist.docApi.fetchTable('Tasks');
                 const n = (tasksData && tasksData.id && tasksData.id.length) || 0;
                 if (n === 0) await seedData();
@@ -2552,7 +2557,7 @@ if $projet and $projet.responsable:
             content.innerHTML = `
                 <div class="panel-accent-bar" style="background:${priorityColor}"></div>
                 ${task ? `<div class="panel-crumb"><span class="pd" style="background:${projectColor}"></span>${escapeHtml(taskProject?.nom || 'Projet')}</div>` : ''}
-                <input type="text" class="panel-title-edit" id="actionTitle" placeholder="Titre de l'action..." value="${escapeHtml(data.titre)}" oninput="updateActionField('titre', this.value, true)">
+                <input type="text" class="panel-title-edit" id="actionTitle" placeholder="Titre de l'action..." value="${escapeHtml(data.titre)}" oninput="updateActionField('titre', this.value, true, true)">
 
                 <div class="props-list">
                     <div class="prop-row pr-status">
@@ -2630,7 +2635,7 @@ if $projet and $projet.responsable:
                 <!-- Description -->
                 <div class="panel-section">
                     <div class="panel-section-header"><span class="panel-section-title">Description</span></div>
-                    <div class="form-group"><textarea class="form-textarea" placeholder="Description de l'action..." oninput="updateActionField('description', this.value, true)">${escapeHtml(data.description)}</textarea></div>
+                    <div class="form-group"><textarea class="form-textarea" placeholder="Description de l'action..." oninput="updateActionField('description', this.value, true, true)">${escapeHtml(data.description)}</textarea></div>
                 </div>
 
                 <!-- Tags -->
@@ -2935,26 +2940,77 @@ if $projet and $projet.responsable:
         // INIT
         // ═══════════════════════════════════════════════════════════════════════
         async function initGrist() {
+            console.log('[Kanban] ===== initGrist START =====');
             // Phase 1 : tenter grist.ready — si Grist absent, basculer en démo
             try {
+                console.log('[Kanban] Calling grist.ready({ requiredAccess: "full" })...');
                 await grist.ready({ requiredAccess: 'full' });
+                console.log('[Kanban] ✓ grist.ready() succeeded');
             } catch (e) {
-                console.log('Grist unavailable, using demo:', e);
+                console.log('[Kanban] ✗ Grist unavailable, using demo:', e);
+                showToast('Grist non disponible: ' + (e?.message || e), 'error');
                 useDemoMode();
                 return;
             }
+            // Grist est prêt, on peut initialiser
+            gristReady = true;
+            console.log('[Kanban] ✓ gristReady = true');
             // #7 respect des droits : bandeau lecture seule + garde transverse sur toutes les ecritures.
             TF.readOnlyBanner();
             TF.guardWrites(grist, {
                 onReadOnly: () => showToast('Lecture seule : modification non autorisee', 'error'),
                 onDenied: () => { showToast('Modification refusee par vos droits', 'error'); loadAllData(); }
             });
-            // Phase 2 : ici on est dans Grist. Toute erreur est logguée mais ne bascule PAS en démo.
-            // En lecture seule, on ne tente pas de creer le schema (ecritures bloquees).
-            if (!TF.isReadOnly()) { try { await ensureSchema(); } catch (e) { console.error('ensureSchema error (continuing):', e); showToast('Schéma: ' + (e?.message || e), 'error'); } }
+            // Phase 2 : Vérifier si le schéma GENCI existe déjà
+            // On considère que le schéma est initialisé si les tables essentielles existent
+            let schemaInitialized = false;
+            try {
+                console.log('[Kanban] Checking if schema exists...');
+                const tables = await grist.docApi.listTables();
+                console.log('[Kanban] Available tables:', tables);
+                // Tables essentielles pour le Kanban
+                const essentialTables = ['Team', 'Projects', 'Tasks'];
+                const allExist = essentialTables.every(t => tables.includes(t));
+                
+                if (allExist) {
+                    // Vérifier en plus que Tasks a la colonne statut
+                    const tasksData = await grist.docApi.fetchTable('Tasks');
+                    if (tasksData && tasksData.statut !== undefined) {
+                        schemaInitialized = true;
+                        console.log('[Kanban] ✓ Schéma GENCI déjà initialisé');
+                    } else {
+                        console.log('[Kanban] ✗ Tasks existe mais pas de colonne statut');
+                    }
+                } else {
+                    const missing = essentialTables.filter(t => !tables.includes(t));
+                    console.log('[Kanban] ✗ Tables manquantes:', missing);
+                }
+            } catch (e) {
+                // Erreur d'accès ou autre : on considère que le schéma n'est pas initialisé
+                // et on tentera de l'initialiser ci-dessous
+                console.warn('[Kanban] ✗ Erreur vérification schéma:', e?.message);
+                schemaInitialized = false;
+            }
+            // Initialiser TOUT le schéma GENCI seulement si nécessaire
+            if (!TF.isReadOnly() && !schemaInitialized) {
+                console.log('[Kanban] → Initializing GENCI schema...');
+                showToast('Initialisation du schéma GENCI…', 'info');
+                try {
+                    await initGenciSchema(null); // null = pas d'événement bouton
+                    console.log('[Kanban] ✓ GENCI schema initialization complete');
+                } catch (e) {
+                    console.error('[Kanban] ✗ initGenciSchema error:', e);
+                    showToast('Schéma GENCI: ' + (e?.message || e), 'error');
+                }
+            } else {
+                if (TF.isReadOnly()) console.log('[Kanban] → Lecture seule, skip schema init');
+                if (schemaInitialized) console.log('[Kanban] → Schema already initialized, skip init');
+            }
             try { CRA_ACTIVE = (await grist.docApi.listTables()).includes('TimeEntries'); } catch (e) {}
-            try { await loadAllData(); } catch (e) { console.error('loadAllData error (continuing):', e); showToast('Chargement: ' + (e?.message || e), 'error'); }
-             try {
+            console.log('[Kanban] → Calling loadAllData()...');
+            try { await loadAllData(); console.log('[Kanban] ✓ loadAllData() complete'); } catch (e) { console.error('[Kanban] ✗ loadAllData error:', e); showToast('Chargement: ' + (e?.message || e), 'error'); }
+            console.log('[Kanban] ===== initGrist END =====');
+            try {
                 grist.onRecords(async () => await loadAllData());
                 grist.onRecord((rec) => { 
                     if (rec?.id && rec.id !== selectedTaskId && rec.id !== selectedActionId) { 
