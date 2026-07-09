@@ -244,11 +244,13 @@ class FilterManager {
     const filterArray = this.filters[type];
     
     if (checked) {
-      if (!filterArray.includes(value)) {
+      // COMPARER MEMES TYPES : value est string, filterArray peut contenir nombres
+      if (!filterArray.some(f => String(f) === String(value))) {
         filterArray.push(value);
       }
     } else {
-      const index = filterArray.indexOf(value);
+      // COMPARER MEMES TYPES pour remove aussi
+      const index = filterArray.findIndex(f => String(f) === String(value));
       if (index > -1) {
         filterArray.splice(index, 1);
       }
@@ -274,7 +276,8 @@ class FilterManager {
       const checkboxes = section.checkboxContainer.querySelectorAll('.filter-checkbox');
       checkboxes.forEach(cb => {
         const filterArray = this.filters[type] || [];
-        cb.checked = filterArray.includes(cb.value);
+        // COMPARER MEMES TYPES : cb.value est string, filterArray peut contenir nombres ou strings
+        cb.checked = filterArray.some(f => String(f) === String(cb.value));
       });
       
       // Mettre à jour le compteur

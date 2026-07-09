@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>TaskFlow - Feuille de temps</title>
 <script src="https://docs.getgrist.com/grist-plugin-api.js"></script>
+<script src="core/filters/filter-manager.js"></script>
+<link rel="stylesheet" href="core/filters/filter-styles.css">
 <style>
 :root {
   --primary: #3e5de7; --primary-dark: #2845c1;
@@ -53,7 +55,10 @@ td.day { width: 70px; }
 td.day input { width: 100%; height: 38px; border: none; background: var(--cell); color: var(--text); text-align: center; font-family: inherit; font-size: .82rem; outline: none; }
 td.day input:focus { background: var(--cell-fill); box-shadow: inset 0 0 0 2px var(--primary); }
 td.day.filled input { background: var(--cell-fill); font-weight: 600; }
+td.day.indispo-cell { background: var(--bg); }
+td.day.indispo-cell div { background: repeating-linear-gradient(45deg, var(--bg), var(--bg) 10px, color-mix(in srgb, var(--border) 30%, var(--bg)) 10px, color-mix(in srgb, var(--border) 30%, var(--bg)) 20px); }
 td.today { background: color-mix(in srgb, var(--primary) 7%, transparent); }
+th.indispo { background: color-mix(in srgb, var(--warn) 15%, var(--card-bg)); color: var(--warn); }
 td.total, th.total { text-align: center; font-weight: 700; background: var(--card-bg); padding: 8px 10px; }
 tfoot td { background: var(--card-bg); font-weight: 700; text-align: center; padding: 9px 10px; }
 tfoot td.left { text-align: left; color: var(--text-muted); font-weight: 600; }
@@ -95,7 +100,20 @@ tfoot td.left { text-align: left; color: var(--text-muted); font-weight: 600; }
 <body>
 <div class="topbar">
   <h1>Feuille de temps</h1>
-  <div class="status"><span class="dot" id="stDot"></span><span id="stTxt">Demo</span></div>
+  <div class="filter-dropdown">
+    <button class="filter-btn" id="btnFilterToggle" title="Filtres"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon></svg> Filtres <span class="filter-count" style="display:none"></span>▾</button>
+    <div class="filter-panel" id="filterPanel">
+      <div class="filter-sections">
+        <div id="filterPersonContainer"></div>
+        <div id="filterTeamContainer"></div>
+        <div id="filterProjectContainer"></div>
+        <div id="filterProgramContainer"></div>
+      </div>
+      <div class="filter-actions">
+        <button class="btn ghost" id="btnClearFilters">× Effacer tout</button>
+      </div>
+    </div>
+  </div>
   <div class="seg" id="tabSeg">
     <button data-t="saisie" class="active">Ma semaine</button>
     <button data-t="valider" id="tabValider">A valider</button>
@@ -130,22 +148,28 @@ tfoot td.left { text-align: left; color: var(--text-muted); font-weight: 600; }
 //  Spec : CRA_FEUILLE_DE_TEMPS_SPEC.md. Opt-in, configurable, natif Grist.
 // =========================================================================
 const DAY = 86400000;
-const JOURS = ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim'];
+const JOURS = ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven'];  // 5 jours uniquement
 
 const S = {
   alone: false, gOk: false,
-  me: null,                 // id Team du connecte
+  me: null,                 // id Team du connecte (pour soumission)
   meName: '',               // nom du connecte
   meUserId: null,           // userId Grist
   team: [], tasks: [], projects: [], entries: [], feuilles: [],
   weekStart: 0,             // ms, lundi
   unit: 'heures',           // heures | jours | demi
   hoursPerDay: 7,
-  extraRows: [],            // taches ajoutees manuellement a la grille (ids)
+  extraRows: {},            // taches ajoutees manuellement: {personId: [ids]}
   hasTable: false,
   tab: 'saisie',            // saisie | valider
   feuilles: [],             // enveloppes personne x semaine (workflow)
   mesGeres: [],             // ids Team que je supervise (agents_geres de l'annuaire)
+  disponibilites: [],       // table Disponibilites (congés, etc.)
+  hasCharges: false,        // true si Tasks.charges existe
+  filterManager: null,      // FilterManager pour les filtres inter-widgets
+  filters: { assignee: [], team: [], project: [], programme: [] },  // filtres actifs
+  visiblePersonIds: [],     // Personnes affichees (apres filtres)
+  dirtyByPerson: {}         // Modifications par personne {personId: [entries]}
 };
 
 // ---- Utils ----------------------------------------------------------------
@@ -154,7 +178,12 @@ const gristToMs = (ts) => ts ? ts * 1000 : 0;
 const msToGrist = (ms) => Math.floor(ms / 1000);
 function refIds(v) { return Array.isArray(v) && v[0] === 'L' ? v.slice(1).map(Number) : []; }
 function mondayOf(ms) { const x = new Date(ms); const dow = (x.getDay() + 6) % 7; x.setHours(0, 0, 0, 0); x.setDate(x.getDate() - dow); return x.getTime(); }
-function weekDays() { const r = []; for (let i = 0; i < 7; i++) r.push(S.weekStart + i * DAY); return r; }
+function weekDays() { 
+  const r = []; 
+  for (let i = 0; i < 5; i++)  // Lun-Ven uniquement (5 jours)
+    r.push(S.weekStart + i * DAY); 
+  return r; 
+}
 function sameDay(a, b) { return mondayOf(a) === mondayOf(b) && new Date(a).getDate() === new Date(b).getDate(); }
 
 // unite : facteur de conversion heures <-> unite
@@ -164,25 +193,420 @@ function hoursToQty(h) { const q = h / unitFactor(); return Math.round(q * 100) 
 function qtyToHours(q) { return (Number(q) || 0) * unitFactor(); }
 function fmtQty(h) { if (!h) return ''; const q = hoursToQty(h); return String(q); }
 
-// somme heures d'une (tache, jour) pour moi
-function cellHours(taskId, dayMs) {
+// somme heures d'une (tache, jour) pour une personne
+function cellHours(taskId, dayMs, personId) {
   let h = 0;
-  for (const e of S.entries) if (e.membre === S.me && e.tache === taskId && sameDay(gristToMs(e.date), dayMs)) h += (Number(e.heures) || 0);
+  for (const e of S.entries) 
+    if (e.membre === personId && e.tache === taskId && sameDay(gristToMs(e.date), dayMs)) 
+      h += (Number(e.heures) || 0);
   return h;
 }
-function dayHours(dayMs) { let h = 0; for (const e of S.entries) if (e.membre === S.me && sameDay(gristToMs(e.date), dayMs)) h += (Number(e.heures) || 0); return h; }
-function taskWeekHours(taskId) { let h = 0; for (const d of weekDays()) h += cellHours(taskId, d); return h; }
-function weekHours() { let h = 0; for (const d of weekDays()) h += dayHours(d); return h; }
 
-// taches de la grille = mes taches assignees + celles avec saisie cette semaine + ajoutees
-function gridTasks() {
+function dayHours(dayMs, personId) { 
+  let h = 0; 
+  for (const e of S.entries) 
+    if (e.membre === personId && sameDay(gristToMs(e.date), dayMs)) 
+      h += (Number(e.heures) || 0); 
+  return h; 
+}
+
+function taskWeekHours(taskId, personId) { 
+  let h = 0; 
+  for (const d of weekDays()) 
+    h += cellHours(taskId, d, personId); 
+  return h; 
+}
+
+function weekHours(personId) { 
+  let h = 0; 
+  for (const d of weekDays()) 
+    h += dayHours(d, personId); 
+  return h; 
+}
+
+// Tâches pour une personne donnée
+function gridTasksForPerson(personId) {
   const ids = new Set();
-  for (const t of S.tasks) if (refIds(t.assignees).includes(S.me)) ids.add(t.id);
-  for (const e of S.entries) if (e.membre === S.me && weekDays().some(d => sameDay(gristToMs(e.date), d))) ids.add(e.tache);
-  for (const id of S.extraRows) ids.add(id);
-  return [...ids].map(id => S.tasks.find(t => t.id === id)).filter(Boolean);
+  
+  // Tâches assignées à cette personne
+  for (const t of S.tasks) {
+    if (refIds(t.assignees).includes(personId)) {
+      ids.add(t.id);
+    }
+  }
+  
+  // Tâches avec saisie cette semaine pour cette personne
+  for (const e of S.entries) {
+    if (e.membre === personId && weekDays().some(d => sameDay(gristToMs(e.date), d))) {
+      ids.add(e.tache);
+    }
+  }
+  
+  // Tâches ajoutées manuellement pour cette personne
+  const extraForPerson = S.extraRows[personId] || [];
+  for (const id of extraForPerson) {
+    ids.add(id);
+  }
+  
+  // Appliquer le filtre par projet si présent
+  let tasks = [...ids].map(id => S.tasks.find(t => t.id === id)).filter(Boolean);
+  
+  if (S.filters.project && S.filters.project.length > 0) {
+    tasks = tasks.filter(t => S.filters.project.includes(String(t.projet)));
+  }
+  
+  return tasks;
+}
+
+// taches de la grille = pour toutes les personnes visibles
+function gridTasks() {
+  const allTasks = new Set();
+  for (const personId of S.visiblePersonIds) {
+    const tasks = gridTasksForPerson(personId);
+    tasks.forEach(t => allTasks.add(t.id));
+  }
+  return [...allTasks].map(id => S.tasks.find(t => t.id === id)).filter(Boolean);
 }
 function projName(t) { const p = S.projects.find(x => x.id === t.projet); return p ? p.nom : ''; }
+
+// ---- Filter Manager (inter-widgets) ---------------------------------------
+function initFilterManager() {
+  // Nettoyer l'ancien si existe
+  if (S.filterManager && S.filterManager.filterPanel) {
+    S.filterManager.filterPanel.remove();
+  }
+  
+  // Initialiser le FilterManager
+  S.filterManager = new FilterManager({
+    data: {
+      team: S.team,
+      entites: S.entites || [],
+      projects: S.projects,
+      tasks: S.tasks,
+      programmes: S.programmes || []
+    },
+    initialFilters: S.filters,
+    onChange: (filters) => {
+      S.filters = filters;
+      
+      console.log('[CRA] onChange - Filtres reçus:', JSON.stringify(filters));
+      console.log('[CRA] onChange - assignee:', filters.assignee, 'types:', filters.assignee.map(x => typeof x));
+      console.log('[CRA] onChange - team:', filters.team);
+      
+      // Calculer les personnes visibles selon les filtres
+      S.visiblePersonIds = S.team.filter(m => {
+        // Si pas de filtres, afficher tout le monde
+        if (!filters.assignee.length && !filters.team.length) {
+          console.log('[CRA] Pas de filtres, on affiche tout le monde');
+          return true;
+        }
+        // Filtre par personne
+        if (filters.assignee.length && !filters.assignee.includes(Number(m.id))) {
+          console.log('[CRA] Personne', m.nom, '(' + m.id + ') exclue par filtre assignee:', filters.assignee);
+          return false;
+        }
+        // Filtre par équipe/entité
+        if (filters.team.length && !filters.team.includes(Number(m.entite))) {
+          console.log('[CRA] Personne', m.nom, 'exclue par filtre team:', filters.team, 'vs entite', m.entite);
+          return false;
+        }
+        console.log('[CRA] Personne', m.nom, '(' + m.id + ') INCLUSE');
+        return true;
+      }).map(m => m.id);
+      
+      console.log('[CRA] visiblePersonIds brut:', S.visiblePersonIds);
+      
+      // Si aucune personne visible, afficher au moins la première
+      if (S.visiblePersonIds.length === 0 && S.team.length > 0) {
+        S.visiblePersonIds = [S.team[0].id];
+        console.log('[CRA] Aucune personne visible, default sur Alice');
+      }
+      
+      // Mettre à jour S.me :
+      // - Si une seule personne visible → S.me = cette personne
+      // - Si S.me n'est plus visible → S.me = première personne visible
+      // - Sinon → on garde S.me actuel
+      if (S.visiblePersonIds.length === 1) {
+        S.me = S.visiblePersonIds[0];
+        const meRow = S.team.find(t => t.id === S.me);
+        S.meName = meRow ? meRow.nom : '';
+        console.log('[CRA] S.me mis à jour (1 personne):', S.me, S.meName);
+      } else if (!S.visiblePersonIds.includes(S.me)) {
+        S.me = S.visiblePersonIds[0];
+        const meRow = S.team.find(t => t.id === S.me);
+        S.meName = meRow ? meRow.nom : '';
+        console.log('[CRA] S.me mis à jour (default):', S.me, S.meName);
+      }
+      
+      console.log('[CRA] Personnes visibles:', S.visiblePersonIds.length, S.visiblePersonIds.map(id => S.team.find(t => t.id === id).nom));
+      console.log('[CRA] S.me actuel:', S.me, S.meName);
+      
+      render();
+    },
+    onBroadcast: (filters) => {
+      // Diffuser les filtres aux autres widgets via Grist
+      if (grist?.widgetApi) {
+        grist.widgetApi.setOptions({ filters });
+      }
+    },
+    effCharges: (t) => {
+      try {
+        return t.charges ? JSON.parse(t.charges) : [];
+      } catch (e) { return []; }
+    },
+    teamById: (id) => S.team.find(t => t.id === Number(id)) || null,
+    theme: 'light'
+  });
+  
+  // Initialiser l'UI avec les conteneurs
+  const containers = {
+    assignee: document.getElementById('filterPersonContainer'),
+    team: document.getElementById('filterTeamContainer'),
+    project: document.getElementById('filterProjectContainer'),
+    programme: document.getElementById('filterProgramContainer')
+  };
+  const filterPanel = document.getElementById('filterPanel');
+  
+  S.filterManager.initUI(containers, filterPanel);
+  
+  // Initialiser les personnes visibles (toutes par défaut)
+  S.visiblePersonIds = S.team.map(m => m.id);
+  
+  // Écouter les filtres externes (depuis d'autres widgets)
+  if (grist?.onOptions) {
+    grist.onOptions((options) => {
+      if (options?.filters) {
+        S.filterManager.applyExternalFilters(options.filters);
+      }
+    });
+  }
+}
+
+// ---- Capacité & indisponibilités ------------------------------------------
+// Parse Team.indispos (JSON) + Disponibilites table pour une personne donnée
+function parseIndisposFor(personId) {
+  const indispos = [];
+  // Depuis Team.indispos (JSON inline)
+  const person = S.team.find(t => t.id === personId);
+  if (person && person.indispos) {
+    try {
+      const arr = JSON.parse(person.indispos);
+      if (Array.isArray(arr)) indispos.push(...arr);
+    } catch (e) {}
+  }
+  // Depuis Disponibilites table
+  for (const d of S.disponibilites) {
+    if (d.membre === personId) {
+      indispos.push({
+        start: gristToMs(d.dateDebut),
+        end: gristToMs(d.dateFin),
+        type: d.type || 'autre',
+        dispo: d.dispo != null ? d.dispo : 0,  // % de dispo (0 = indispo totale)
+        label: d.commentaire || d.type
+      });
+    }
+  }
+  return indispos;
+}
+
+// Parse pour moi (legacy)
+function parseIndispos() {
+  return parseIndisposFor(S.me);
+}
+
+// Est-ce qu'un jour (ms) est en indisponibilité ?
+function isIndispo(dayMs, indispos) {
+  for (const ind of indispos) {
+    if (dayMs >= ind.start && dayMs <= ind.end) {
+      // Si dispo=0 ou non défini = indispo totale
+      if (!ind.dispo || ind.dispo === 0) return { isIndispo: true, type: ind.type, label: ind.label };
+      // Sinon dispo partielle (ex: 50% = on peut travailler 50% de la capacité)
+      return { isIndispo: true, type: ind.type, label: ind.label, dispo: ind.dispo };
+    }
+  }
+  return { isIndispo: false };
+}
+
+// Capacité par jour (en heures) pour une personne donnée
+function dayCapacityForPerson(dayMs, personId) {
+  const person = S.team.find(t => t.id === personId);
+  const baseHeures = (person && person.capaciteHebdo) ? person.capaciteHebdo : S.hoursPerDay;
+  const baseParJour = baseHeures / 5;  // réparti sur 5 jours (Lun-Ven)
+  
+  const indispos = parseIndisposFor(personId);
+  const ind = isIndispo(dayMs, indispos);
+  
+  if (ind.isIndispo) {
+    // Si dispo partielle (%), on réduit la capacité
+    if (ind.dispo != null && ind.dispo > 0 && ind.dispo < 100) {
+      return baseParJour * (ind.dispo / 100);
+    }
+    // Indispo totale
+    return 0;
+  }
+  return baseParJour;
+}
+
+// Capacité par jour (en heures) pour moi (legacy)
+function dayCapacity(dayMs) {
+  return dayCapacityForPerson(dayMs, S.me);
+}
+
+// ---- Pré-remplissage depuis Tasks.charges ---------------------------------
+// Calcule la charge prévue pour une tâche et une personne sur une semaine
+function plannedHoursForTaskWeek(taskId, teamId) {
+  const task = S.tasks.find(t => t.id === taskId);
+  if (!task || !task.charges) return 0;
+  
+  try {
+    const charges = JSON.parse(task.charges);
+    const chargeEntry = charges.find(c => c.teamId === teamId);
+    if (!chargeEntry) return 0;
+    
+    const totalHeures = chargeEntry.heures || 0;
+    
+    // Calculer la durée de la tâche en semaines
+    const start = gristToMs(task.dateDebut);
+    const end = gristToMs(task.dateEcheance);
+    const dureeMs = end - start;
+    const nbSemaines = Math.max(1, Math.ceil(dureeMs / (7 * DAY)));
+    
+    // Répartir sur la durée
+    const heuresParSemaine = totalHeures / nbSemaines;
+    
+    // Vérifier que la semaine courante est dans la période de la tâche
+    const weekEnd = S.weekStart + 6 * DAY;
+    if (S.weekStart < start || S.weekStart > end) return 0;
+    
+    return heuresParSemaine;
+  } catch (e) {
+    return 0;
+  }
+}
+
+// Répartir les heures prévues sur les jours de la semaine (en tenant compte des congés)
+function distributePlannedHours(taskId, teamId, weekDaysArr) {
+  const totalHeures = plannedHoursForTaskWeek(taskId, teamId);
+  if (totalHeures <= 0) return {};
+  
+  // Calculer la capacité totale de la semaine (jours dispos uniquement)
+  let capaciteTotale = 0;
+  const capacities = {};
+  for (const d of weekDaysArr) {
+    const cap = dayCapacity(d);
+    capacities[d] = cap;
+    capaciteTotale += cap;
+  }
+  
+  if (capaciteTotale === 0) return {};
+  
+  // Répartir proportionnellement à la capacité de chaque jour
+  const distribution = {};
+  for (const d of weekDaysArr) {
+    if (capacities[d] > 0) {
+      // Proportionnelle : (capacité_jour / capacité_totale) * total_heures
+      distribution[d] = (capacities[d] / capaciteTotale) * totalHeures;
+    } else {
+      distribution[d] = 0;
+    }
+  }
+  
+  return distribution;
+}
+
+// Pré-remplir la grille avec le prévu (Tasks.charges) pour TOUTES les personnes visibles
+// Retourne le nombre de cellules remplies
+async function applyPlannedFill() {
+  const weekDaysArr = weekDays();
+  const actions = [];
+  let totalCells = 0;
+  let alreadyFilled = 0;
+  
+  console.log('[CRA] applyPlannedFill - Personnes visibles:', S.visiblePersonIds.length);
+  
+  // Pour chaque personne visible
+  for (const personId of S.visiblePersonIds) {
+    const tasks = gridTasksForPerson(personId);
+    console.log('[CRA] applyPlannedFill -', S.team.find(t => t.id === personId).nom, ':', tasks.length, 'tâches');
+    
+    // Pour chaque tâche de cette personne
+    for (const t of tasks) {
+      const planned = distributePlannedHours(t.id, personId, weekDaysArr);
+      
+      // Pour chaque jour de la semaine
+      for (const d of weekDaysArr) {
+        const plannedQty = planned[d] || 0;
+        if (plannedQty > 0) {
+          // VÉRIFIER DOUBLON - Critique !
+          const existing = S.entries.find(e => 
+            e.membre === personId && 
+            e.tache === t.id && 
+            sameDay(gristToMs(e.date), d)
+          );
+          
+          if (!existing) {
+            // Créer une entrée avec le prévu
+            actions.push(['AddRecord', 'TimeEntries', null, { 
+              membre: personId, 
+              tache: t.id, 
+              date: msToGrist(d), 
+              heures: plannedQty 
+            }]);
+            totalCells++;
+          } else {
+            alreadyFilled++;
+          }
+        }
+      }
+    }
+  }
+  
+  if (actions.length === 0 && alreadyFilled === 0) {
+    console.log('[CRA] applyPlannedFill - Aucune donnée à pré-remplir');
+    return { newCells: 0, existingCells: 0 };
+  }
+  
+  console.log('[CRA] applyPlannedFill - Actions:', actions.length, 'cellules:', totalCells);
+  
+  if (!S.alone) {
+    try {
+      const result = await grist.docApi.applyUserActions(actions);
+      console.log('[CRA] applyPlannedFill - Succès');
+      
+      // Mettre à jour S.entries avec les nouvelles entrées créées
+      // Les IDs sont dans result.retValues
+      if (result && result.retValues) {
+        for (let i = 0; i < actions.length; i++) {
+          const action = actions[i];
+          const newId = result.retValues[i];
+          S.entries.push({
+            id: newId,
+            membre: action[3].membre,
+            tache: action[3].tache,
+            date: action[3].date,
+            heures: action[3].heures
+          });
+        }
+      }
+      
+      render();
+      return { newCells: totalCells, existingCells: alreadyFilled };
+    } catch (e) {
+      toast('Erreur pré-remplissage: ' + (e.message || e));
+      console.error('[CRA] Erreur:', e);
+      return { newCells: 0, existingCells: alreadyFilled, error: true };
+    }
+  } else {
+    // Mode démo
+    let nid = Math.max(0, ...S.entries.map(e => e.id)) + 1;
+    actions.forEach(a => {
+      S.entries.push({ id: nid++, membre: a[3].membre, tache: a[3].tache, date: a[3].date, heures: a[3].heures });
+    });
+    console.log('[CRA] applyPlannedFill - Demo: +' + totalCells + ' cellules');
+    render();
+    return { newCells: totalCells, existingCells: alreadyFilled };
+  }
+}
 
 // ---- Demo -----------------------------------------------------------------
 function loadDemo() {
@@ -216,8 +640,6 @@ function loadDemo() {
 
 // ---- Rendu : grille hebdo -------------------------------------------------
 function render() {
-  document.getElementById('stDot').className = 'dot' + (S.gOk ? ' ok' : '');
-  document.getElementById('stTxt').textContent = (S.gOk ? 'Connecte' : 'Demo') + (S.meName ? ' · ' + S.meName : '');
   document.getElementById('wLabel').textContent = weekLabel();
   document.getElementById('lgUnit').textContent = 'Unite : ' + unitLabel() + (S.unit !== 'heures' ? ' (' + S.hoursPerDay + ' h/jour)' : '');
   // Onglet "A valider" : visible seulement si je supervise des agents (annuaire)
@@ -235,52 +657,122 @@ function render() {
     const b = document.getElementById('activateBtn'); if (b) b.onclick = activate;
     return;
   }
-  if (!S.me) { main.innerHTML = '<div class="empty-cta">Impossible de t\'identifier dans la table Team.<br>Verifie que ta ligne Team a le bon email / gristUserId.</div>'; return; }
   if (S.tab === 'valider') return renderValider();
   renderSaisie();
 }
 
 function updateSubmitBtn() {
   const sb = document.getElementById('submitBtn'), eb = document.getElementById('exportBtn');
-  eb.style.display = (S.hasTable && S.me) ? '' : 'none';
-  if (!(S.tab === 'saisie' && S.hasTable && S.me)) { sb.style.display = 'none'; return; }
+  eb.style.display = (S.hasTable && S.visiblePersonIds.length > 0) ? '' : 'none';
+  if (!(S.tab === 'saisie' && S.hasTable && S.visiblePersonIds.length > 0)) { sb.style.display = 'none'; return; }
   sb.style.display = '';
-  const st = myStatut();
+  
+  // Utiliser la première personne visible pour le statut
+  const firstPersonId = S.visiblePersonIds[0];
+  const st = myStatutForPerson(firstPersonId);
+  
   if (st === 'valide') { sb.textContent = 'Semaine validee'; sb.disabled = true; sb.className = 'btn ghost'; sb.onclick = null; }
-  else if (st === 'soumis') { sb.textContent = 'Retirer (soumise)'; sb.disabled = false; sb.className = 'btn ghost'; sb.onclick = withdrawWeek; }
-  else { sb.textContent = 'Soumettre la semaine' + (st === 'rejete' ? ' (rejetee)' : ''); sb.disabled = false; sb.className = 'btn'; sb.onclick = submitWeek; }
+  else if (st === 'soumis') { sb.textContent = 'Retirer (soumise)'; sb.disabled = false; sb.className = 'btn ghost'; sb.onclick = withdrawWeekForPerson.bind(null, firstPersonId); }
+  else { sb.textContent = 'Soumettre la semaine' + (st === 'rejete' ? ' (rejetee)' : ''); sb.disabled = false; sb.className = 'btn'; sb.onclick = submitWeekForPerson.bind(null, firstPersonId); }
 }
 
 function renderSaisie() {
   const main = document.getElementById('main');
-  const days = weekDays(), todayMs = Date.now(), locked = isLocked(), st = myStatut();
+  const todayMs = Date.now();
+  const weekDaysArr = weekDays();
+  
+  if (S.visiblePersonIds.length === 0) {
+    main.innerHTML = '<div class="empty-cta">Aucune personne à afficher avec les filtres actuels</div>';
+    return;
+  }
+  
   let html = '';
-  if (st !== 'brouillon') html += '<div class="fstatus ' + st + '">Feuille ' + ({ soumis: 'SOUMISE - en attente de validation', valide: 'VALIDEE', rejete: 'REJETEE - a corriger et resoumettre' }[st] || st) + '</div>';
-  html += '<table class="grid"><thead><tr><th class="left">Tache</th><th class="left">Projet / imputation</th>';
-  days.forEach((d, i) => { const dt = new Date(d); html += '<th class="day' + (sameDay(d, todayMs) ? ' today' : '') + '">' + JOURS[i] + '<br><small>' + dt.getDate() + '/' + (dt.getMonth() + 1) + '</small></th>'; });
-  html += '<th class="total">Total</th></tr></thead><tbody>';
-  const tasks = gridTasks();
-  if (!tasks.length) html += '<tr><td class="tcell" colspan="' + (days.length + 3) + '" style="color:var(--text-muted)">Aucune tache. Ajoute-en une ci-dessous.</td></tr>';
-  for (const t of tasks) {
-    html += '<tr><td class="tcell"><div class="tt">' + esc(t.titre) + '</div></td><td class="tcell"><div class="tp">' + esc(projName(t)) + '</div></td>';
-    days.forEach((d) => {
-      const h = cellHours(t.id, d);
-      html += '<td class="day' + (h ? ' filled' : '') + (sameDay(d, todayMs) ? ' today' : '') + '">'
-        + '<input type="number" min="0" step="' + (S.unit === 'heures' ? '0.5' : '0.25') + '" value="' + fmtQty(h) + '"' + (locked ? ' disabled' : '') + ' onchange="setCell(' + t.id + ',' + d + ',this.value)"></td>';
+  
+  // Une section par personne
+  for (const personId of S.visiblePersonIds) {
+    const person = S.team.find(t => t.id === personId);
+    if (!person) continue;
+    
+    const indispos = parseIndisposFor(personId);
+    const st = myStatutForPerson(personId);
+    const isLocked = ['soumis', 'valide'].includes(st);
+    
+    // En-tête de section
+    html += '<div class="person-section" style="margin-bottom:24px;padding:16px;background:var(--card-bg);border:1px solid var(--border);border-radius:8px;page-break-inside:avoid">'
+      + '<h2 style="margin:0 0 12px 0;font-size:1.1rem;color:var(--primary);border-bottom:2px solid var(--primary);padding-bottom:8px">' + esc(person.nom) + '</h2>'
+      + '<div style="font-size:.8rem;color:var(--text-muted);margin-bottom:12px">Capacité: ' + (person.capaciteHebdo || 35) + 'h/semaine';
+    
+    if (st !== 'brouillon') {
+      html += ' | Statut: <span class="fbadge ' + st + '">' + st + '</span>';
+    }
+    html += '</div>';
+    
+    // Grille pour cette personne
+    html += '<table class="grid" style="table-layout:fixed;width:100%"><thead><tr><th class="left" style="width:25%;min-width:120px">Tâche / Projet</th>';
+    weekDaysArr.forEach((d, i) => {
+      const dt = new Date(d);
+      const cap = dayCapacityForPerson(d, personId);
+      const ind = isIndispo(d, indispos);
+      let thClass = 'day' + (sameDay(d, todayMs) ? ' today' : '');
+      if (ind.isIndispo && (!ind.dispo || ind.dispo === 0)) thClass += ' indispo';
+      html += '<th class="' + thClass + '" style="width:15%">' + JOURS[i] + '<br><small>' + dt.getDate() + '/' + (dt.getMonth() + 1) + '</small></th>';
     });
-    html += '<td class="total">' + (fmtQty(taskWeekHours(t.id)) || '0') + '</td></tr>';
+    html += '<th class="total" style="width:10%;text-align:right">Total</th></tr></thead><tbody>';
+    
+    const tasks = gridTasksForPerson(personId);
+    if (!tasks.length) {
+      html += '<tr><td class="tcell" colspan="' + (weekDaysArr.length + 2) + '" style="color:var(--text-muted)">Aucune tâche pour cette personne</td></tr>';
+    } else {
+      for (const t of tasks) {
+        html += '<tr><td class="tcell"><div class="tt" style="font-size:.85rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(t.titre) + '</div><div class="tp" style="font-size:.75rem;color:var(--text-muted)">' + esc(projName(t)) + '</div></td>';
+        weekDaysArr.forEach((d) => {
+          const h = cellHours(t.id, d, personId);
+          const cap = dayCapacityForPerson(d, personId);
+          const ind = isIndispo(d, indispos);
+          const isDayIndispo = ind.isIndispo && (!ind.dispo || ind.dispo === 0);
+          
+          let tdClass = 'day';
+          if (h) tdClass += ' filled';
+          if (sameDay(d, todayMs)) tdClass += ' today';
+          if (isDayIndispo) tdClass += ' indispo-cell';
+          
+          let cellHtml = '<td class="' + tdClass + '">';
+          if (isDayIndispo) {
+            cellHtml += '<div style="height:38px;display:flex;align-items:center;justify-content:center;background:var(--bg);color:var(--text-muted);font-size:.75rem">' 
+              + (ind.label || 'Indispo') + '</div>';
+          } else {
+            cellHtml += '<input type="number" min="0" step="0.5" value="' + fmtQty(h) + '"' 
+              + (isLocked ? ' disabled' : '')
+              + ' onchange="setCell(' + t.id + ',' + d + ',' + personId + ',this.value)" style="width:100%;font-size:.85rem">';
+          }
+          cellHtml += '</td>';
+          html += cellHtml;
+        });
+        html += '<td class="total" style="text-align:right;font-weight:700;padding-right:12px">' + (fmtQty(taskWeekHours(t.id, personId)) || '0') + '</td></tr>';
+      }
+    }
+    
+    // Pied de tableau avec totaux
+    html += '</tbody><tfoot><tr><td class="left" style="text-align:right;font-weight:600;padding:8px">Total ' + (S.unit === 'heures' ? 'heures' : (S.unit === 'jours' ? 'jours' : 'demi-journees')) + '</td>';
+    weekDaysArr.forEach((d) => {
+      const cap = dayCapacityForPerson(d, personId);
+      html += '<td style="text-align:center;font-weight:600;padding:8px">' + (fmtQty(dayHours(d, personId)) || '0')
+        + '<br><small style="color:var(--text-muted);font-size:.75rem">Cap: ' + cap.toFixed(1) + 'h</small>'
+        + '</td>';
+    });
+    const weekCap = weekDaysArr.reduce((s,d) => s + dayCapacityForPerson(d, personId), 0);
+    html += '<td class="total" style="text-align:center;font-weight:700;padding:8px">' + (fmtQty(weekHours(personId)) || '0')
+      + '<br><small style="color:var(--text-muted);font-size:.75rem">Cap: ' + weekCap.toFixed(1) + 'h</small>'
+      + '</td></tr></tfoot></table>';
+    
+    html += '</div>';  // Fin person-section
   }
-  html += '</tbody><tfoot><tr><td class="left" colspan="2">Total ' + unitLabel() + '</td>';
-  days.forEach((d) => html += '<td>' + (fmtQty(dayHours(d)) || '0') + '</td>');
-  html += '<td class="total">' + (fmtQty(weekHours()) || '0') + '</td></tr></tfoot></table>';
-  if (!locked) {
-    const inGrid = new Set(tasks.map(t => t.id));
-    const addable = S.tasks.filter(t => !inGrid.has(t.id));
-    if (addable.length) html += '<div class="addrow"><select id="addSel"><option value="">+ Ajouter une tache...</option>' + addable.map(t => '<option value="' + t.id + '">' + esc(t.titre) + ' (' + esc(projName(t)) + ')</option>').join('') + '</select></div>';
-  }
+  
   main.innerHTML = html;
-  const sel = document.getElementById('addSel');
-  if (sel) sel.onchange = () => { if (sel.value) { S.extraRows.push(Number(sel.value)); render(); } };
+  
+  // Attacher le gestionnaire d'événement au bouton
+  const applyBtn = document.getElementById('applyPlannedBtn');
+  if (applyBtn) applyBtn.onclick = () => applyPlannedFill();
 }
 
 function renderValider() {
@@ -309,25 +801,31 @@ function weekLabel() {
 }
 
 // ---- Saisie d'une cellule -------------------------------------------------
-async function setCell(taskId, dayMs, qtyStr) {
+async function setCell(taskId, dayMs, personId, qtyStr) {
   const hours = qtyToHours(qtyStr);
-  const ex = S.entries.find(e => e.membre === S.me && e.tache === taskId && sameDay(gristToMs(e.date), dayMs));
+  const cap = dayCapacityForPerson(dayMs, personId);
+  
+  // Bloquer la saisie si le jour est en indisponibilité totale
+  if (cap === 0) {
+    toast('Impossible de saisir du temps sur un jour en congé/indisponibilité');
+    render();
+    return;
+  }
+  
+  const ex = S.entries.find(e => e.membre === personId && e.tache === taskId && sameDay(gristToMs(e.date), dayMs));
   if (S.alone) {
     if (ex) { if (hours > 0) ex.heures = hours; else S.entries = S.entries.filter(e => e !== ex); }
-    else if (hours > 0) { const nid = Math.max(0, ...S.entries.map(e => e.id)) + 1; S.entries.push({ id: nid, membre: S.me, tache: taskId, date: msToGrist(dayMs), heures: hours }); }
+    else if (hours > 0) { const nid = Math.max(0, ...S.entries.map(e => e.id)) + 1; S.entries.push({ id: nid, membre: personId, tache: taskId, date: msToGrist(dayMs), heures: hours }); }
     render(); return;
   }
   try {
     if (ex && hours > 0) { ex.heures = hours; await grist.docApi.applyUserActions([['UpdateRecord', 'TimeEntries', ex.id, { heures: hours }]]); }
     else if (ex && hours <= 0) { S.entries = S.entries.filter(e => e !== ex); await grist.docApi.applyUserActions([['RemoveRecord', 'TimeEntries', ex.id]]); }
     else if (!ex && hours > 0) {
-      const r = await grist.docApi.applyUserActions([['AddRecord', 'TimeEntries', null, { membre: S.me, tache: taskId, date: msToGrist(dayMs), heures: hours }]]);
-      S.entries.push({ id: r.retValues[0], membre: S.me, tache: taskId, date: msToGrist(dayMs), heures: hours });
+      const r = await grist.docApi.applyUserActions([['AddRecord', 'TimeEntries', null, { membre: personId, tache: taskId, date: msToGrist(dayMs), heures: hours }]]);
+      S.entries.push({ id: r.retValues[0], membre: personId, tache: taskId, date: msToGrist(dayMs), heures: hours });
     }
     // INTEGRATION (source unique du realise) : la CRA alimente Tasks.tempsPasse
-    // = somme des TimeEntries de la tache. Ainsi Plan/Dashboard/Kanban/Gantt/Calendar
-    // (qui lisent deja tempsPasse) refletent le realise EXACT, sans le dupliquer.
-    // Echoue en silence si la colonne n'existe pas (doc hors TaskFlow).
     try { await grist.docApi.applyUserActions([['UpdateRecord', 'Tasks', taskId, { tempsPasse: taskRealizedHours(taskId) }]]); } catch (e) {}
     render();
   } catch (e) { toast('Ecriture refusee : ' + (e.message || e)); render(); }
@@ -339,9 +837,9 @@ function taskRealizedHours(taskId) { let h = 0; for (const e of S.entries) if (e
 function toast(msg) { const t = document.getElementById('toast'); t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2600); }
 
 // ---- Controles ------------------------------------------------------------
-document.getElementById('wPrev').onclick = () => { S.weekStart -= 7 * DAY; render(); };
-document.getElementById('wNext').onclick = () => { S.weekStart += 7 * DAY; render(); };
-document.getElementById('wNow').onclick = () => { S.weekStart = mondayOf(Date.now()); render(); };
+document.getElementById('wPrev').onclick = () => { S.weekStart -= 7 * DAY; if (S.filterManager) S.filterManager.setData({ tasks: S.tasks }); render(); };
+document.getElementById('wNext').onclick = () => { S.weekStart += 7 * DAY; if (S.filterManager) S.filterManager.setData({ tasks: S.tasks }); render(); };
+document.getElementById('wNow').onclick = () => { S.weekStart = mondayOf(Date.now()); if (S.filterManager) S.filterManager.setData({ tasks: S.tasks }); render(); };
 document.getElementById('unitSeg').querySelectorAll('button').forEach(b => b.onclick = () => {
   document.querySelectorAll('#unitSeg button').forEach(x => x.classList.remove('active'));
   b.classList.add('active'); S.unit = b.dataset.u; render();
@@ -350,7 +848,13 @@ document.getElementById('tabSeg').querySelectorAll('button').forEach(b => b.oncl
 document.getElementById('exportBtn').onclick = () => exportCSV();
 
 // ---- Workflow : soumission / validation par le chef (via l'annuaire) ------
-function myStatut() { const f = S.feuilles.find(x => x.membre === S.me && sameDay(gristToMs(x.semaine), S.weekStart)); return f ? f.statut : 'brouillon'; }
+function myStatutForPerson(personId) { 
+  const f = S.feuilles.find(x => x.membre === personId && sameDay(gristToMs(x.semaine), S.weekStart)); 
+  return f ? f.statut : 'brouillon'; 
+}
+
+function myStatut() { return myStatutForPerson(S.me); }
+
 function isLocked() { return ['soumis', 'valide'].includes(myStatut()); }
 function weekTotalFor(membre, wkMs) { let h = 0; for (let i = 0; i < 7; i++) { const d = wkMs + i * DAY; for (const e of S.entries) if (e.membre === membre && sameDay(gristToMs(e.date), d)) h += Number(e.heures) || 0; } return h; }
 async function setFeuille(membre, wkSec, patch) {
@@ -361,8 +865,28 @@ async function setFeuille(membre, wkSec, patch) {
   const r = await grist.docApi.applyUserActions([['AddRecord', 'Feuilles', null, base]]);
   const f = Object.assign({ id: r.retValues[0] }, base); S.feuilles.push(f); return f;
 }
-async function submitWeek() { try { await setFeuille(S.me, msToGrist(S.weekStart), { statut: 'soumis' }); render(); toast('Semaine soumise pour validation'); } catch (e) { toast('Refuse : ' + (e.message || e)); } }
-async function withdrawWeek() { try { await setFeuille(S.me, msToGrist(S.weekStart), { statut: 'brouillon' }); render(); toast('Soumission retiree'); } catch (e) { toast('Refuse : ' + (e.message || e)); } }
+async function submitWeekForPerson(personId) { 
+  try { 
+    await setFeuille(personId, msToGrist(S.weekStart), { statut: 'soumis' }); 
+    render(); 
+    toast('Semaine soumise pour validation (' + S.team.find(t => t.id === personId).nom + ')'); 
+  } catch (e) { 
+    toast('Refuse : ' + (e.message || e)); 
+  } 
+}
+
+async function withdrawWeekForPerson(personId) { 
+  try { 
+    await setFeuille(personId, msToGrist(S.weekStart), { statut: 'brouillon' }); 
+    render(); 
+    toast('Soumission retiree (' + S.team.find(t => t.id === personId).nom + ')'); 
+  } catch (e) { 
+    toast('Refuse : ' + (e.message || e)); 
+  } 
+}
+
+async function submitWeek() { await submitWeekForPerson(S.me); }
+async function withdrawWeek() { await withdrawWeekForPerson(S.me); }
 window.validerFeuille = async (id) => { const f = S.feuilles.find(x => x.id === id); if (!f) return; f.statut = 'valide'; render(); if (!S.alone) { try { await grist.docApi.applyUserActions([['UpdateRecord', 'Feuilles', id, { statut: 'valide', validePar: S.me, dateValidation: msToGrist(Date.now()) }]]); } catch (e) { toast('Refuse : ' + (e.message || e)); } } toast('Feuille validee'); };
 window.rejeterFeuille = async (id) => { const f = S.feuilles.find(x => x.id === id); if (!f) return; f.statut = 'rejete'; render(); if (!S.alone) { try { await grist.docApi.applyUserActions([['UpdateRecord', 'Feuilles', id, { statut: 'rejete' }]]); } catch (e) { toast('Refuse : ' + (e.message || e)); } } toast('Feuille rejetee'); };
 
@@ -392,25 +916,84 @@ async function loadGrist() {
   S.weekStart = S.weekStart || mondayOf(Date.now());
   const tables = await grist.docApi.listTables();
   S.hasTable = tables.includes('TimeEntries');
-  S.team = colObjToRows(await grist.docApi.fetchTable('Team')).map(r => ({ id: r.id, nom: r.nom, email: r.email, gristUserId: r.gristUserId, entite: Number(r.entite) || 0, agentsGeres: refIds(r.agents_geres) }));
+  S.team = colObjToRows(await grist.docApi.fetchTable('Team')).map(r => ({ 
+    id: r.id, nom: r.nom, email: r.email, gristUserId: r.gristUserId, 
+    entite: Number(r.entite) || 0, agentsGeres: refIds(r.agents_geres),
+    capaciteHebdo: r.capaciteHebdo || 35, indispos: r.indispos || ''
+  }));
   // Annuaire (Entites) : Refs SIMPLES parent/chef — necessaires pour recalculer "qui je gere" cote client
   // (la colonne FORMULE Team.agents_geres se vide en passant par le relais launcher : valeurs null).
-  S.entites = tables.includes('Entites') ? colObjToRows(await grist.docApi.fetchTable('Entites')).map(e => ({ id: e.id, parent: Number(e.parent) || 0, chef: Number(e.chef) || 0 })) : [];
-  S.tasks = tables.includes('Tasks') ? colObjToRows(await grist.docApi.fetchTable('Tasks')).map(r => ({ id: r.id, titre: r.titre, projet: r.projet, assignees: r.assignees })) : [];
+  S.entites = tables.includes('Entites') ? colObjToRows(await grist.docApi.fetchTable('Entites')).map(e => ({ 
+    id: e.id, 
+    nom: e.nom || '', 
+    parent: Number(e.parent) || 0, 
+    chef: Number(e.chef) || 0 
+  })) : [];
+  S.tasks = tables.includes('Tasks') ? colObjToRows(await grist.docApi.fetchTable('Tasks')).map(r => ({ 
+    id: r.id, titre: r.titre, projet: r.projet, assignees: r.assignees, 
+    charges: r.charges || null, dateDebut: r.dateDebut, dateEcheance: r.dateEcheance 
+  })) : [];
+  // Detecter si Tasks.charges existe et contient des donnees (pour le pre-remplissage)
+  const tasksWithCharges = S.tasks.filter(t => t.charges && t.charges !== 'null' && t.charges !== '[]');
+  S.hasCharges = tasksWithCharges.length > 0;
+  console.log('[CRA] Tasks avec charges:', tasksWithCharges.length, 'sur', S.tasks.length);
+  if (S.hasCharges) {
+    console.log('[CRA] Exemple de charges:', tasksWithCharges[0].charges);
+  }
   S.projects = tables.includes('Projects') ? colObjToRows(await grist.docApi.fetchTable('Projects')).map(r => ({ id: r.id, nom: r.nom })) : [];
   S.entries = S.hasTable ? colObjToRows(await grist.docApi.fetchTable('TimeEntries')).map(r => ({ id: r.id, membre: r.membre, tache: r.tache, date: r.date, heures: r.heures })) : [];
   S.feuilles = tables.includes('Feuilles') ? colObjToRows(await grist.docApi.fetchTable('Feuilles')).map(r => ({ id: r.id, membre: r.membre, semaine: r.semaine, statut: r.statut, validePar: r.validePar, motifRejet: r.motifRejet })) : [];
+  // Charger Disponibilites si la table existe
+  S.disponibilites = tables.includes('Disponibilites') ? colObjToRows(await grist.docApi.fetchTable('Disponibilites')) : [];
   S.meUserId = await getMyUserId();
-  // resolution "moi" : par gristUserId (si pont present) sinon 1er membre (fallback demo-like)
+  
+  // resolution "moi" : par gristUserId (si pont present) sinon premiere personne visible
   let me = S.team.find(t => t.gristUserId && t.gristUserId === S.meUserId);
+  
+  // Initialiser les personnes visibles (toutes par défaut)
+  S.visiblePersonIds = S.team.map(m => m.id);
+  
+  // Si pas de gristUserId, prendre la première personne
   S.me = me ? me.id : (S.team[0] ? S.team[0].id : null);
   const meRow = S.team.find(t => t.id === S.me);
   S.meName = meRow ? meRow.nom : '';
+  
+  // Si gristUserId trouvé, filtrer automatiquement sur cette personne
+  if (me && S.filterManager) {
+    S.filters = { assignee: [String(me.id)], team: [], project: [], programme: [] };
+    S.visiblePersonIds = [me.id];
+    S.filterManager.setState(S.filters);
+  }
+  
   // "Qui je gere" : recalcul cote client depuis l'annuaire (Refs simples, robuste au relais) ;
   // repli sur la formule agents_geres si pas d'Entites mais ids valides (widget direct hors relais).
   S.mesGeres = S.me ? computeMesGeres(S.me) : [];
   if (!S.mesGeres.length && meRow) { const f = (meRow.agentsGeres || []).filter(id => id && id !== S.me); if (f.length) S.mesGeres = f; }
   S.gOk = true;
+  
+  // Initialiser le FilterManager
+  initFilterManager();
+  
+  // Pré-remplir automatiquement si en mode brouillon et qu'il y a des charges
+  if (S.hasCharges && S.visiblePersonIds.length > 0) {
+    // Vérifier si on est en mode brouillon (au moins une personne en brouillon)
+    const hasBrouillon = S.visiblePersonIds.some(pid => myStatutForPerson(pid) === 'brouillon');
+    if (hasBrouillon) {
+      console.log('[CRA] Pré-remplissage automatique déclenché');
+      // Petit délai pour laisser le temps à l'UI de s'initialiser
+      setTimeout(async () => {
+        const result = await applyPlannedFill();
+        if (result && !result.error) {
+          const msg = result.newCells > 0 
+            ? '✅ Plan de charge appliqué : ' + result.newCells + ' cellules pré-remplies' 
+              + (result.existingCells > 0 ? ' (' + result.existingCells + ' déjà saisies)' : '')
+            : 'ℹ️ Toutes les cellules sont déjà saisies';
+          toast(msg);
+        }
+      }, 100);
+    }
+  }
+  
   render();
 }
 // chaine_chefs d'une personne = chefs de son entite + entites ancetres (Entites.parent), borne anti-cycle.
