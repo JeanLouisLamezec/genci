@@ -621,10 +621,11 @@
             <div class="filter-dropdown">
                 <button class="filter-btn" id="btnFilterToggle"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon></svg> Filtres <span class="filter-count" style="display:none"></span>▾</button>
                 <div class="filter-panel" id="filterPanel">
-                  <div class="filter-sections">
+                    <div class="filter-sections">
                     <div id="filterPersonContainer"></div>
                     <div id="filterTeamContainer"></div>
                     <div id="filterProjectContainer"></div>
+                    <div id="filterProgramContainer"></div>
                     <div id="filterTaskContainer"></div>
                   </div>
                   <div class="filter-actions">
@@ -1108,7 +1109,7 @@
         let expandedTasks = new Set();
         try { expandedTasks = new Set(JSON.parse(localStorage.getItem('taskflow_gantt_expanded') || '[]').map(Number).filter(n => !isNaN(n))); } catch (e) {}
         let sortableInstance = null;
-        let filters = { assignee: [], team: [], project: [], task: [] };  // Filtres unifiés avec Kanban/Plan
+        let filters = { assignee: [], team: [], project: [], programme: [], task: [] };  // Filtres unifiés avec Kanban/Plan
         let dragState = { active: false, type: null, taskId: null, startX: 0, originalLeft: 0, originalWidth: 0, originalStart: null, originalEnd: null };
         let panelState = { open: false, isNew: false, taskId: null, taskIndex: -1, taskList: [], editData: null };
         let overlayPointerStart = { x: 0, y: 0 };
@@ -3023,12 +3024,14 @@
         }
 
         let filterManager = null;
+        let programmes = [];
         
         async function loadAllData() {
             try { const _raw = await grist.docApi.fetchTable('Tasks'); TASK_COLS = new Set(Object.keys(_raw || {})); tasks = convert(_raw); } catch (e) { tasks = []; }
             try { team = convert(await grist.docApi.fetchTable('Team')); } catch (e) { team = []; }
             try { projects = convert(await grist.docApi.fetchTable('Projects')); } catch (e) { projects = []; }
             try { entites = convert(await grist.docApi.fetchTable('Entites')); } catch (e) { entites = []; }
+            try { programmes = convert(await grist.docApi.fetchTable('Programmes')); } catch (e) { programmes = []; }
             gristReady = true;
             rebuildChildrenCache();
             sortTasks();
@@ -3043,6 +3046,7 @@
                     team: team,
                     entites: entites,
                     projects: projects,
+                    programmes: programmes,
                     tasks: tasks
                 });
             }
@@ -3069,6 +3073,7 @@
               filters.assignee = newFilters.assignee || [];
               filters.team = newFilters.team || [];
               filters.project = newFilters.project || [];
+              filters.programme = newFilters.programme || [];
               filters.task = newFilters.task || [];
               updateFilterUI();
               broadcastFilters();
@@ -3089,6 +3094,7 @@
               assignee: document.getElementById('filterPersonContainer'),
               team: document.getElementById('filterTeamContainer'),
               project: document.getElementById('filterProjectContainer'),
+              programme: document.getElementById('filterProgramContainer'),
               task: document.getElementById('filterTaskContainer')
             }, filterPanel);
           }

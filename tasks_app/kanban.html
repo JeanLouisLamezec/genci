@@ -594,6 +594,7 @@
                     <div id="filterPersonContainer"></div>
                     <div id="filterTeamContainer"></div>
                     <div id="filterProjectContainer"></div>
+                    <div id="filterProgramContainer"></div>
                     <div id="filterTaskContainer"></div>
                   </div>
                   <div class="filter-actions">
@@ -1060,7 +1061,7 @@
         let showSubtasks = localStorage.getItem('taskflow_kanban_showsubs') === '1';  // WBS-03: afficher enfants
         // #9 niveau de travail (par widget, opt-in, defaut 'all') : 'actions' = feuilles, 'parents' = noeuds de synthese.
         let workLevel = localStorage.getItem('taskflow_kanban_worklevel') || 'all';
-        let filters = { assignee: [], team: [], project: [], task: [] };  // Filtres mutualisés avec Plan
+        let filters = { assignee: [], team: [], project: [], programme: [], task: [] };  // Filtres mutualisés avec Plan
         let filterManager = null;
         let panelState = { open: false, isNew: false, taskId: null, actionId: null, taskIndex: -1, columnTasks: [], columnKey: null, editData: null };  // NOUVEAU: actionId
         let sortableInstances = [];
@@ -1339,8 +1340,8 @@
                 { id: 'nom', type: 'Text' }, { id: 'couleur', type: 'Text' },
                 { id: 'dateDebut', type: 'Date' }, { id: 'dateFin', type: 'Date' },
                 { id: 'responsable', type: 'Ref:Team' }, { id: 'actif', type: 'Bool' },
-                // Portefeuille (JPP #11)
-                { id: 'portefeuille', type: 'Ref:Portefeuilles' }
+                // Programme (JPP #11)
+                { id: 'programme', type: 'Ref:Programmes' }
             ],
             Tasks: [
                 { id: 'titre', type: 'Text' }, { id: 'description', type: 'Text' },
@@ -1355,8 +1356,8 @@
                 // Plan de charge (opt-in)
                 { id: 'charges', type: 'Text' }, { id: 'dateCloture', type: 'Date' }
             ],
-            // Portefeuilles (JPP #11)
-            Portefeuilles: [
+            // Programmes (JPP #11)
+            Programmes: [
                 { id: 'nom', type: 'Text' }, { id: 'couleur', type: 'Text' },
                 { id: 'responsable', type: 'Ref:Team' }, { id: 'description', type: 'Text' },
                 { id: 'actif', type: 'Bool' }
@@ -1448,9 +1449,22 @@ if $projet and $projet.responsable:
             const btn = event?.currentTarget; if (btn) { btn.style.opacity = '0.5'; btn.style.pointerEvents = 'none'; }
             showToast('Initialisation du schéma GENCI…', 'info');
             const log = [];
+            
+            // Migration : Renommer Portefeuilles → Programmes si l'ancienne table existe
+            try {
+                const portefTable = await grist.docApi.fetchTable('_grist_Tables').then(data => {
+                    const rows = TF.columnarToRows(data);
+                    return rows.find(r => r.tableId === 'Portefeuilles');
+                }).catch(() => null);
+                if (portefTable) {
+                    await grist.docApi.applyUserActions([['RenameTable', 'Portefeuilles', 'Programmes']]);
+                    log.push('Renamed Portefeuilles → Programmes');
+                }
+            } catch (e) { console.warn('RenameTable Portefeuilles:', e?.message); }
+            
             const existingTables = new Set(await _listTables());
             // 1. Creer les tables manquantes (ordre pour que les Ref cibles existent d'abord)
-            const order = ['Team', 'Projects', 'Portefeuilles', 'Entites', 'Competences', 'Tasks', 'TimeEntries', 'Feuilles', 'Disponibilites'];
+            const order = ['Team', 'Projects', 'Programmes', 'Entites', 'Competences', 'Tasks', 'TimeEntries', 'Feuilles', 'Disponibilites'];
             for (const tableName of order) {
                 const columns = GENCI_FULL_SCHEMA[tableName] || [];
                 if (existingTables.has(tableName)) {
@@ -1498,13 +1512,13 @@ if $projet and $projet.responsable:
                     { table: 'Tasks', column: 'dependDe', visibleColId: 'titre' },
                     { table: 'Tasks', column: 'parentTask', visibleColId: 'titre' },
                     { table: 'Projects', column: 'responsable', visibleColId: 'nom' },
-                    { table: 'Projects', column: 'portefeuille', visibleColId: 'nom' },
+                    { table: 'Projects', column: 'programme', visibleColId: 'nom' },
                     { table: 'Entites', column: 'parent', visibleColId: 'nom' },
                     { table: 'Entites', column: 'chef', visibleColId: 'nom' },
                     { table: 'Team', column: 'entite', visibleColId: 'nom' },
                     { table: 'Team', column: 'responsable', visibleColId: 'nom' },
                     { table: 'Team', column: 'competences', visibleColId: 'nom' },
-                    { table: 'Portefeuilles', column: 'responsable', visibleColId: 'nom' },
+                    { table: 'Programmes', column: 'responsable', visibleColId: 'nom' },
                     { table: 'TimeEntries', column: 'membre', visibleColId: 'nom' },
                     { table: 'TimeEntries', column: 'tache', visibleColId: 'titre' },
                     { table: 'Feuilles', column: 'membre', visibleColId: 'nom' },
@@ -1637,12 +1651,14 @@ if $projet and $projet.responsable:
             } catch (e) { console.log('Seed error:', e); }
         }
         let entites = [];
+        let programmes = [];
         async function loadAllData() { 
           try { const _raw = await grist.docApi.fetchTable('Tasks'); TASK_COLS = new Set(Object.keys(_raw || {})); tasks = convertGristToRecords(_raw); } catch (e) { tasks = []; } 
           try { team = convertGristToRecords(await grist.docApi.fetchTable('Team')); } catch (e) { team = []; } 
           try { projects = convertGristToRecords(await grist.docApi.fetchTable('Projects')); } catch (e) { projects = []; } 
           try { actions = convertGristToRecords(await grist.docApi.fetchTable('Actions')); } catch (e) { actions = []; } 
           try { entites = convertGristToRecords(await grist.docApi.fetchTable('Entites')); } catch (e) { entites = []; }
+          try { programmes = convertGristToRecords(await grist.docApi.fetchTable('Programmes')); } catch (e) { programmes = []; }
           try { kanbanSteps = convertGristToRecords(await grist.docApi.fetchTable('KanbanSteps')); } catch (e) { kanbanSteps = []; }
           gristReady = true; 
           rebuildChildrenCache(); 
@@ -1665,6 +1681,7 @@ if $projet and $projet.responsable:
               team: team,
               entites: entites,
               projects: projects,
+              programmes: programmes,
               tasks: tasks,
               actions: actions
             });
@@ -1771,6 +1788,7 @@ if $projet and $projet.responsable:
               filters.assignee = newFilters.assignee || [];
               filters.team = newFilters.team || [];
               filters.project = newFilters.project || [];
+              filters.programme = newFilters.programme || [];
               filters.task = newFilters.task || [];
               
               updateFilterCount();
@@ -1782,7 +1800,9 @@ if $projet and $projet.responsable:
                   showSubtasks: showSubtasks,
                   searchQuery: searchQuery,
                   _assigneeFilter: filters.assignee,
-                  _teamFilter: filters.team
+                  _teamFilter: filters.team,
+                  _projectFilter: filters.project,
+                  _programmeFilter: filters.programme
                 });
               }
               render();
@@ -1809,6 +1829,7 @@ if $projet and $projet.responsable:
             assignee: document.getElementById('filterPersonContainer'),
             team: document.getElementById('filterTeamContainer'),
             project: document.getElementById('filterProjectContainer'),
+            programme: document.getElementById('filterProgramContainer'),
             task: document.getElementById('filterTaskContainer')
           }, filterPanel);
         }
@@ -1816,7 +1837,7 @@ if $projet and $projet.responsable:
         function updateFilterCount() {
           const cnt = document.getElementById('filterCount');
           if (!cnt) return;
-          const total = filters.assignee.length + filters.team.length + filters.project.length + filters.task.length;
+          const total = filters.assignee.length + filters.team.length + filters.project.length + filters.programme.length + filters.task.length;
           cnt.textContent = total;
           cnt.style.display = total > 0 ? 'inline-flex' : 'none';
           const fbtn = document.getElementById('filterBtn');

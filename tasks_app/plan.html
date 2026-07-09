@@ -138,7 +138,7 @@ tfoot td.colres{background:var(--surface-2);z-index:2}
     <label class="chk"><span>Grouper</span>
       <select class="btn" id="selGroup">
         <option value="person">Personne</option>
-        <option value="portefeuille">Portefeuille</option>
+        <option value="programme">Programme</option>
         <option value="project">Projet</option>
         <option value="role">Rôle</option>
       </select>
@@ -152,6 +152,7 @@ tfoot td.colres{background:var(--surface-2);z-index:2}
           <div id="filterPersonContainer"></div>
           <div id="filterTeamContainer"></div>
           <div id="filterProjectContainer"></div>
+          <div id="filterProgramContainer"></div>
           <div id="filterTaskContainer"></div>
         </div>
         <div class="filter-actions">
@@ -667,7 +668,7 @@ const TF = (function () {
 // État
 // ============================================================================
 const S = {
-  tasks: [], team: [], projects: [], portefeuilles: [], hasPortef: false, entries: [], hasEntries: false,
+  tasks: [], team: [], projects: [], programmes: [], hasProg: false, entries: [], hasEntries: false,
   granularity: 'week', offset: 0, horizon: 12,
   groupBy: 'person', unit: 'pct', includeDone: false, derive: false, mode: 'prevu', workdays: false, allocUnit: 'h',
   demo: false, extFilters: null, timeline: false,
@@ -681,10 +682,11 @@ const esc = (s) => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<':
 const getRefList = (v) => Array.isArray(v) && v[0] === 'L' ? v.slice(1).map(Number) : [];
 const teamById = (id) => S.team.find(m => m.id === id);
 const projById = (id) => S.projects.find(p => p.id === id);
-const portefById = (id) => S.portefeuilles.find(p => p.id === id);
-// Portefeuille d'une tâche = portefeuille de son projet (clé string ; '0' = sans portefeuille).
-function portefKeyOf(t) { const p = projById(t.projet); return (p && p.portefeuille) ? String(p.portefeuille) : '0'; }
-const groupLabel = (g) => g === 'project' ? 'Projet' : g === 'role' ? 'Rôle' : g === 'portefeuille' ? 'Portefeuille' : 'Personne';
+const progById = (id) => S.programmes.find(p => p.id === id);
+// Programme d'une tâche = programme/portefeuille de son projet (clé string ; '0' = sans programme).
+// Rétrocompatible : supporte programme (nouveau) ou portefeuille (ancien)
+function progKeyOf(t) { const p = projById(t.projet); if (!p) return '0'; return String(p.programme || p.portefeuille || '0'); }
+const groupLabel = (g) => g === 'project' ? 'Projet' : g === 'role' ? 'Rôle' : g === 'programme' ? 'Programme' : 'Personne';
 const activeTeam = () => S.team.filter(m => m.actif !== false);
 const isTerminal = (t) => TF.isTerminal(statusCfg, t.statut);
 const capOf = (m) => (Number(m && m.capaciteHebdo) > 0 ? Number(m.capaciteHebdo) : 35);
@@ -706,6 +708,15 @@ function planTasks() {
     if (f.project != null && f.project !== '') ts = ts.filter(t => String(t.projet) === String(f.project));
     if (Array.isArray(f.assignee) && f.assignee.length) ts = ts.filter(t => getRefList(t.assignees).some(a => f.assignee.map(Number).includes(a)));
     if (Array.isArray(f.statut) && f.statut.length) ts = ts.filter(t => f.statut.includes(t.statut));
+    // Filtre par programme (via projets)
+    if (Array.isArray(f.programme) && f.programme.length) {
+      ts = ts.filter(t => {
+        const p = S.projects?.find(proj => proj.id === t.projet);
+        if (!p) return false;
+        const progId = p.programme || p.portefeuille;
+        return progId != null && f.programme.map(String).includes(String(progId));
+      });
+    }
   }
   // Filtres locaux via FilterManager
   if (S.filterManager) {
@@ -757,7 +768,7 @@ const gToInput = (ts) => ts ? new Date(ts * 1000).toISOString().slice(0, 10) : '
 const inputToG = (s) => s ? Math.floor(Date.parse(s + 'T00:00:00Z') / 1000) : null;
 function tasksForKey(key) {
   if (S.groupBy === 'project') return planTasks().filter(t => String(t.projet || '0') === String(key)).map(t => t.id);
-  if (S.groupBy === 'portefeuille') return planTasks().filter(t => portefKeyOf(t) === String(key)).map(t => t.id);
+  if (S.groupBy === 'programme') return planTasks().filter(t => progKeyOf(t) === String(key)).map(t => t.id);
   if (S.groupBy === 'person') return planTasks().filter(t => getRefList(t.assignees).includes(Number(key))).map(t => t.id);
   return [];
 }
@@ -769,6 +780,7 @@ function initFilterManager() {
     assignee: document.getElementById('filterPersonContainer'),
     team: document.getElementById('filterTeamContainer'),
     project: document.getElementById('filterProjectContainer'),
+    programme: document.getElementById('filterProgramContainer'),
     task: document.getElementById('filterTaskContainer')
   };
   
@@ -777,6 +789,7 @@ function initFilterManager() {
       team: S.team,
       entites: S.entites || [],
       projects: S.projects,
+      programmes: S.programmes || [],
       tasks: S.tasks
     },
     initialFilters: S.filters,
@@ -802,7 +815,7 @@ function initFilterManager() {
 function keyFn() {
   // Projet/Rôle = clé COMPOSITE "groupe|personne" → on garde la personne (vue ressource, distincte du Gantt).
   if (S.groupBy === 'project') return (t, c) => (t.projet ? String(t.projet) : '0') + '|' + c.teamId;
-  if (S.groupBy === 'portefeuille') return (t, c) => portefKeyOf(t) + '|' + c.teamId;
+  if (S.groupBy === 'programme') return (t, c) => progKeyOf(t) + '|' + c.teamId;
   if (S.groupBy === 'role') return (t, c) => { const m = teamById(c.teamId); return ((m && m.role) ? m.role : '—') + '|' + c.teamId; };
   return (t, c) => String(c.teamId);
 }
@@ -825,11 +838,14 @@ function buildRows() {
     }
     return out;
   }
-  if (S.groupBy === 'portefeuille') {
+  if (S.groupBy === 'programme') {
     const ps = {};
     for (const t of planTasks()) {
-      const pk = portefKeyOf(t);
-      if (!ps[pk]) { const pf = portefById(Number(pk)); ps[pk] = { label: pf ? pf.nom : 'Sans portefeuille', color: (pf && pf.couleur) ? pf.couleur : '#64748b', mem: new Map() }; }
+      const pk = progKeyOf(t);
+      // Si un filtre programme est actif, ne garder que les programmes filtrés
+      const progFilter = S.filters?.programme || [];
+      if (progFilter.length > 0 && !progFilter.includes(String(pk))) continue;
+      if (!ps[pk]) { const pf = progById(Number(pk)); ps[pk] = { label: pf ? pf.nom : 'Sans programme', color: (pf && pf.couleur) ? pf.couleur : '#64748b', mem: new Map() }; }
       for (const c of effCharges(t)) { const m = teamById(c.teamId); if (m) ps[pk].mem.set(m.id, m); }
     }
     const out = [];
@@ -1015,9 +1031,9 @@ function render() {
     }
   }
   h += '<td class="sum"><div class="sh">' + r1(grand) + ' h</div></td></tr></tfoot></table>';
-  // #6 : groupement Portefeuille sans aucune affectation -> tout sous « Sans portefeuille » : on guide l'utilisateur.
-  if (S.groupBy === 'portefeuille' && !S.projects.some(p => Number(p.portefeuille) > 0)) {
-    h = '<div class="pf-hint">Aucun projet n\'est rattaché à un portefeuille — tout apparaît sous « Sans portefeuille ». Affectez vos projets dans la table <b>Projects</b> (colonne <b>Portefeuille</b>).</div>' + h;
+  // #6 : groupement Programme sans aucune affectation -> tout sous « Sans programme » : on guide l'utilisateur.
+  if (S.groupBy === 'programme' && !S.projects.some(p => Number(p.programme || p.portefeuille) > 0)) {
+    h = '<div class="pf-hint">Aucun projet n\'est rattaché à un programme — tout apparaît sous « Sans programme ». Affectez vos projets dans la table <b>Projects</b> (colonne <b>Programme</b>).</div>' + h;
   }
   wrap.innerHTML = h;
   wrap.querySelectorAll('td.cell').forEach(td => td.addEventListener('click', () => openCell(td.dataset.key, td.dataset.period)));
@@ -1446,13 +1462,13 @@ function bindToolbar() {
   document.getElementById('navToday').onclick = () => { S.offset = 0; render(); };
   document.getElementById('selGroup').onchange = async (e) => {
     const v = e.target.value;
-    // Portefeuille = opt-in : si la colonne Projects.portefeuille n'existe pas, proposer l'activation (création table + colonne).
-    if (v === 'portefeuille' && !S.hasPortef && !S.demo) {
-      const ok = await confirmModal('Activer les portefeuilles', 'Regrouper la charge par portefeuille nécessite la table « Portefeuilles » et la colonne « Projects.portefeuille ».\nLes créer maintenant ? (rétro-compatible, sans impact sur l\'existant)');
+    // Programme = opt-in : si la colonne Projects.programme n'existe pas, proposer l'activation (création table + colonne).
+    if (v === 'programme' && !S.hasProg && !S.demo) {
+      const ok = await confirmModal('Activer les programmes', 'Regrouper la charge par programme nécessite la table « Programmes » et la colonne « Projects.programme ».\nLes créer maintenant ? (rétro-compatible, sans impact sur l\'existant)');
       if (!ok) { e.target.value = S.groupBy; return; }
-      await ensurePortefSchema();
-      if (!S.hasPortef) { toast('Activation impossible (droits ?).'); e.target.value = S.groupBy; return; }
-      toast('Portefeuilles activés. Affectez les projets dans la table « Projects » (colonne Portefeuille).');
+      await ensureProgSchema();
+      if (!S.hasProg) { toast('Activation impossible (droits ?).'); e.target.value = S.groupBy; return; }
+      toast('Programmes activés. Affectez les projets dans la table « Projects » (colonne Programme).');
     }
     S.groupBy = v;
     if (S.groupBy !== 'person' && S.mode === 'dispo') { S.mode = 'prevu'; toast('Dispo indisponible en groupement « ' + groupLabel(S.groupBy) + ' » (marge = notion globale) — vue Prévu rétablie'); }
@@ -1470,12 +1486,12 @@ function bindToolbar() {
 }
 
 async function loadGrist() {
-  let [tasks, team, projects, dispos, portef, entries, entites] = await Promise.all([
+  let [tasks, team, projects, dispos, prog, entries, entites] = await Promise.all([
     grist.docApi.fetchTable('Tasks').catch(() => null),
     grist.docApi.fetchTable('Team').catch(() => null),
     grist.docApi.fetchTable('Projects').catch(() => null),
     grist.docApi.fetchTable('Disponibilites').catch(() => null),
-    grist.docApi.fetchTable('Portefeuilles').catch(() => null),
+    grist.docApi.fetchTable('Programmes').catch(() => null),
     grist.docApi.fetchTable('TimeEntries').catch(() => null),
     grist.docApi.fetchTable('Entites').catch(() => null)
   ]);
@@ -1484,13 +1500,13 @@ async function loadGrist() {
   S.team = team ? TF.columnarToRows(team) : [];
   S.projects = projects ? TF.columnarToRows(projects) : [];
   S.dispos = dispos ? TF.columnarToRows(dispos) : [];
-  S.portefeuilles = portef ? TF.columnarToRows(portef) : [];
+  S.programmes = prog ? TF.columnarToRows(prog) : [];
   S.entites = entites ? TF.columnarToRows(entites) : [];
   // #5 : réalisé daté EXACT depuis la Feuille de temps (TimeEntries). Opt-in : actif seulement si la table existe.
   S.entries = entries ? TF.columnarToRows(entries) : [];
   S.hasEntries = !!(entries && S.entries.length);
-  // Portefeuille = opt-in : actif seulement si la colonne Projects.portefeuille existe. Sinon le groupement propose l'activation.
-  S.hasPortef = !!(projects && ('portefeuille' in projects) && portef);
+  // Programme = opt-in : actif seulement si la colonne Projects.programme (ou portefeuille) existe. Sinon le groupement propose l'activation.
+  S.hasProg = !!(projects && (('programme' in projects) || ('portefeuille' in projects)) && prog);
   buildDispoIndex();
   try { statusCfg = await TF.loadStatusConfig(grist, 'Tasks', 'statut', S.tasks.map(t => t && t.statut)); } catch (e) {}
   initFilterManager();
@@ -1522,28 +1538,44 @@ async function ensurePlanColumns(team, tasks, dispos) {
   } catch (e) { return { team, tasks, dispos }; }
 }
 
-// Portefeuille (JPP #11) : regroupement simple de projets. Satellite opt-in, créé seulement sur action
-// explicite (sélection du groupement Portefeuille). Table Portefeuilles + colonne Projects.portefeuille.
-// L'affectation projet -> portefeuille se fait nativement dans la table Projects (colonne Ref).
-async function ensurePortefSchema() {
+// Programme (JPP #11) : regroupement simple de projets. Satellite opt-in, créé seulement sur action
+// explicite (sélection du groupement Programme). Table Programmes + colonne Projects.programme.
+// L'affectation projet -> programme se fait nativement dans la table Projects (colonne Ref).
+async function ensureProgSchema() {
   try {
+    // Migration : Renommer Portefeuilles → Programmes si l'ancienne table existe
+    const portefTable = await grist.docApi.fetchTable('_grist_Tables').then(data => {
+      const rows = TF.columnarToRows(data);
+      return rows.find(r => r.tableId === 'Portefeuilles');
+    }).catch(() => null);
+    if (portefTable) {
+      await grist.docApi.applyUserActions([['RenameTable', 'Portefeuilles', 'Programmes']]);
+    }
+    
     const projects = await grist.docApi.fetchTable('Projects').catch(() => null);
-    const portefExists = await grist.docApi.fetchTable('Portefeuilles').then(() => true).catch(() => false);
+    const progExists = await grist.docApi.fetchTable('Programmes').then(() => true).catch(() => false);
     const acts = [];
-    if (!portefExists) acts.push(['AddTable', 'Portefeuilles', [
+    if (!progExists) acts.push(['AddTable', 'Programmes', [
       { id: 'nom', type: 'Text' }, { id: 'couleur', type: 'Text' },
       { id: 'responsable', type: 'Ref:Team' }, { id: 'description', type: 'Text' }, { id: 'actif', type: 'Bool' }
     ]]);
-    if (projects && !('portefeuille' in projects)) acts.push(['AddColumn', 'Projects', 'portefeuille', { type: 'Ref:Portefeuilles' }]);
+    // Migration : portefeuille → programme (si ancienne colonne existe, on la garde, sinon on crée programme)
+    if (projects && !('programme' in projects)) {
+      // Si portefeuille existe déjà, on ne fait rien (rétrocompatible)
+      if (!('portefeuille' in projects)) {
+        acts.push(['AddColumn', 'Projects', 'programme', { type: 'Ref:Programmes' }]);
+      }
+    }
     if (acts.length) await grist.docApi.applyUserActions(acts);
     const [pj2, pf2] = await Promise.all([
       grist.docApi.fetchTable('Projects').catch(() => null),
-      grist.docApi.fetchTable('Portefeuilles').catch(() => null)
+      grist.docApi.fetchTable('Programmes').catch(() => null)
     ]);
     S.projects = pj2 ? TF.columnarToRows(pj2) : S.projects;
-    S.portefeuilles = pf2 ? TF.columnarToRows(pf2) : S.portefeuilles;
-    S.hasPortef = !!(pj2 && ('portefeuille' in pj2) && pf2);
-  } catch (e) { /* droits insuffisants : hasPortef reste false */ }
+    S.programmes = pf2 ? TF.columnarToRows(pf2) : S.programmes;
+    // hasProg = true si programme OU portefeuille existe
+    S.hasProg = !!(pj2 && (('programme' in pj2) || ('portefeuille' in pj2)) && pf2);
+  } catch (e) { /* droits insuffisants : hasProg reste false */ }
 }
 
 async function loadDemo() {
@@ -1557,9 +1589,9 @@ async function loadDemo() {
     { id: 3, nom: 'Claire Bernard', role: 'Design', couleur: '#f59e0b', capaciteHebdo: 28, actif: true },
     { id: 4, nom: 'David Roy', role: 'PM', couleur: '#ec4899', capaciteHebdo: 35, actif: true, indispos: '[{"start":"' + isoD(8) + '","end":"' + isoD(14) + '","label":"Congés"}]' }
   ];
-  S.portefeuilles = [{ id: 1, nom: 'Portail & services', couleur: '#6366f1', actif: true }, { id: 2, nom: 'Mobilité', couleur: '#f59e0b', actif: true }];
-  S.projects = [{ id: 1, nom: 'Refonte Portail', couleur: '#6366f1', portefeuille: 1 }, { id: 2, nom: 'App Mobile', couleur: '#10b981', portefeuille: 2 }];
-  S.hasPortef = true;
+  S.programmes = [{ id: 1, nom: 'Portail & services', couleur: '#6366f1', actif: true }, { id: 2, nom: 'Mobilité', couleur: '#f59e0b', actif: true }];
+  S.projects = [{ id: 1, nom: 'Refonte Portail', couleur: '#6366f1', programme: 1 }, { id: 2, nom: 'App Mobile', couleur: '#10b981', programme: 2 }];
+  S.hasProg = true;
   S.tasks = [
     { id: 1, titre: 'Dev Backend', statut: 'inprogress', projet: 1, dateDebut: g(-3), dateEcheance: g(9), charges: '[{"teamId":1,"heures":24},{"teamId":2,"heures":12}]', tempsPasse: 20 },
     { id: 2, titre: 'Design UI', statut: 'inprogress', projet: 2, dateDebut: g(0), dateEcheance: g(6), charges: '[{"teamId":3,"heures":30}]', tempsPasse: 24 },

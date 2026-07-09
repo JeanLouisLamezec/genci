@@ -23,7 +23,8 @@ class FilterManager {
       assignee: [],
       team: [],
       project: [],
-      task: []
+      task: [],
+      programme: []
     };
     this.onChange = options.onChange || (() => {});
     this.onBroadcast = options.onBroadcast || (() => {});
@@ -48,7 +49,8 @@ class FilterManager {
       assignee: containers.assignee ? this._createFilterSection(containers.assignee, 'assignee', 'Personnes', this.data.team || []) : null,
       team: containers.team ? this._createFilterSection(containers.team, 'team', 'Équipes', this.data.entites || []) : null,
       project: containers.project ? this._createFilterSection(containers.project, 'project', 'Projets', this.data.projects || []) : null,
-      task: containers.task ? this._createFilterSection(containers.task, 'task', 'Tâches', this.data.tasks || []) : null
+      task: containers.task ? this._createFilterSection(containers.task, 'task', 'Tâches', this.data.tasks || []) : null,
+      programme: containers.programme ? this._createFilterSection(containers.programme, 'programme', 'Programmes', this.data.programmes || []) : null
     };
     
     this.filterPanel = filterPanel;
@@ -235,6 +237,10 @@ class FilterManager {
    * @private
    */
   _handleCheckboxChange(type, value, checked) {
+    // Initialiser le filtre s'il n'existe pas
+    if (!this.filters[type]) {
+      this.filters[type] = [];
+    }
     const filterArray = this.filters[type];
     
     if (checked) {
@@ -267,11 +273,13 @@ class FilterManager {
       
       const checkboxes = section.checkboxContainer.querySelectorAll('.filter-checkbox');
       checkboxes.forEach(cb => {
-        cb.checked = this.filters[type].includes(cb.value);
+        const filterArray = this.filters[type] || [];
+        cb.checked = filterArray.includes(cb.value);
       });
       
       // Mettre à jour le compteur
-      const count = this.filters[type].length;
+      const filterArray = this.filters[type] || [];
+      const count = filterArray.length;
       const countElement = section.header.querySelector('.filter-section-count');
       if (countElement) {
         countElement.textContent = count > 0 ? count : '';
@@ -369,6 +377,17 @@ class FilterManager {
       result = result.filter(t => t.projet && this.filters.project.includes(String(t.projet)));
     }
  
+    // Filtre par programme (via projets) - rétrocompatible portefeuille/programme
+    if (this.filters.programme && this.filters.programme.length > 0) {
+      result = result.filter(t => {
+        const p = this.data.projects?.find(proj => proj.id === t.projet);
+        if (!p) return false;
+        const progId = p.programme || p.portefeuille; // rétrocompatible
+        // Debug: console.log('Filter programme:', { taskId: t.id, taskProjet: t.projet, project: p?.nom, progId: progId, filterValues: this.filters.programme });
+        return progId != null && this.filters.programme.includes(String(progId));
+      });
+    }
+ 
     // Filtre par tâche spécifique
     if (this.filters.task && this.filters.task.length > 0) {
       result = result.filter(t => t.id && this.filters.task.includes(String(t.id)));
@@ -425,6 +444,11 @@ class FilterManager {
       changed = true;
     }
 
+    if (externalFilters.programme && Array.isArray(externalFilters.programme)) {
+      this.filters.programme = externalFilters.programme.map(Number);
+      changed = true;
+    }
+
     if (changed) {
       this._updateUIFromState();
       this.onChange(this.filters);
@@ -437,7 +461,7 @@ class FilterManager {
    * Efface tous les filtres
    */
   clearAll() {
-    this.filters = { assignee: [], team: [], project: [], task: [] };
+    this.filters = { assignee: [], team: [], project: [], task: [], programme: [] };
     this._updateUIFromState();
     this.onChange(this.filters);
     this.onBroadcast(this.filters);
@@ -475,7 +499,8 @@ class FilterManager {
         
         const items = data[type === 'assignee' ? 'team' : 
                       type === 'team' ? 'entites' : 
-                      type === 'project' ? 'projects' : 'tasks'] || [];
+                      type === 'project' ? 'projects' :
+                      type === 'programme' ? 'programmes' : 'tasks'] || [];
         this._createCheckboxGroup(section.checkboxContainer, type, items);
       });
       this._updateUIFromState();
