@@ -1326,6 +1326,17 @@
         // Idempotent : ne touche pas aux tables/colonnes qui existent deja.
         // ═══════════════════════════════════════════════════════════════════════
         const GENCI_FULL_SCHEMA = {
+            // Org-chart #4 competences (doit etre cree avant Team)
+            Competences: [
+                { id: 'nom', type: 'Text' }, { id: 'categorie', type: 'Choice' },
+                { id: 'description', type: 'Text' }, { id: 'actif', type: 'Bool' }
+            ],
+            // Annuaire / Organigramme (Lot 3) (doit etre cree avant Team)
+            Entites: [
+                { id: 'nom', type: 'Text' }, { id: 'parent', type: 'Ref:Entites' },
+                { id: 'niveau', type: 'Choice' }, { id: 'chef', type: 'Ref:Team' },
+                { id: 'actif', type: 'Bool' }
+            ],
             // Core (deja dans TASKFLOW_SCHEMA, mais on etend avec les colonnes opt-in)
             Team: [
                 { id: 'nom', type: 'Text' }, { id: 'email', type: 'Text' }, { id: 'avatar', type: 'Text' },
@@ -1337,6 +1348,12 @@
                 { id: 'gristUserId', type: 'Int' },
                 // Org-chart #4 competences (lien simple)
                 { id: 'competences', type: 'RefList:Competences' }
+            ],
+            // Programmes (JPP #11)
+            Programmes: [
+                { id: 'nom', type: 'Text' }, { id: 'couleur', type: 'Text' },
+                { id: 'responsable', type: 'Ref:Team' }, { id: 'description', type: 'Text' },
+                { id: 'actif', type: 'Bool' }
             ],
             Projects: [
                 { id: 'nom', type: 'Text' }, { id: 'couleur', type: 'Text' },
@@ -1358,16 +1375,20 @@
                 // Plan de charge (opt-in)
                 { id: 'charges', type: 'Text' }, { id: 'dateCloture', type: 'Date' }
             ],
-            // Programmes (JPP #11)
-            Programmes: [
-                { id: 'nom', type: 'Text' }, { id: 'couleur', type: 'Text' },
-                { id: 'responsable', type: 'Ref:Team' }, { id: 'description', type: 'Text' },
-                { id: 'actif', type: 'Bool' }
+            // Actions (secondaires)
+            Actions: [
+                { id: 'titre', type: 'Text' }, { id: 'description', type: 'Text' },
+                { id: 'statut', type: 'Choice' }, { id: 'priorite', type: 'Choice' },
+                { id: 'progression', type: 'Numeric' }, { id: 'estimationH', type: 'Numeric' },
+                { id: 'dateDebut', type: 'Date' }, { id: 'dateEcheance', type: 'Date' },
+                { id: 'couleur', type: 'Text' }, { id: 'tags', type: 'ChoiceList' },
+                { id: 'ordre', type: 'Int' },
+                { id: 'task', type: 'Ref:Tasks' }, { id: 'assignee', type: 'Ref:Team' }
             ],
-            // Annuaire / Organigramme (Lot 3)
-            Entites: [
-                { id: 'nom', type: 'Text' }, { id: 'parent', type: 'Ref:Entites' },
-                { id: 'niveau', type: 'Choice' }, { id: 'chef', type: 'Ref:Team' },
+            // KanbanSteps — Étapes personnalisables du Kanban
+            KanbanSteps: [
+                { id: 'nom', type: 'Text' }, { id: 'valeur', type: 'Text' },
+                { id: 'couleur', type: 'Text' }, { id: 'ordre', type: 'Int' },
                 { id: 'actif', type: 'Bool' }
             ],
             // CRA / Feuille de temps (Lot temps)
@@ -1380,11 +1401,6 @@
                 { id: 'membre', type: 'Ref:Team' }, { id: 'semaine', type: 'Date' },
                 { id: 'statut', type: 'Choice' }, { id: 'validePar', type: 'Ref:Team' },
                 { id: 'dateValidation', type: 'Date' }, { id: 'motifRejet', type: 'Text' }
-            ],
-            // Org-chart #4 competences
-            Competences: [
-                { id: 'nom', type: 'Text' }, { id: 'categorie', type: 'Choice' },
-                { id: 'description', type: 'Text' }, { id: 'actif', type: 'Bool' }
             ],
             // Plan de charge — historique disponibilites (optionnel, table datée)
             Disponibilites: [
@@ -1445,10 +1461,13 @@ if $projet and $projet.responsable:
             } catch (e) { return new Set(); }
         }
 
-        async function initGenciSchema() {
+        async function initGenciSchema(btn) {
             if (TF.isReadOnly()) { showToast('Lecture seule : action impossible', 'error'); return; }
             if (!gristReady) { showToast('Grist pas prêt, réessayez', 'error'); return; }
-            const btn = event?.currentTarget; if (btn) { btn.style.opacity = '0.5'; btn.style.pointerEvents = 'none'; }
+            if (btn) {
+                btn.style.opacity = '0.5';
+                btn.style.pointerEvents = 'none';
+            }
             showToast('Initialisation du schéma GENCI…', 'info');
             const log = [];
             
@@ -1466,7 +1485,7 @@ if $projet and $projet.responsable:
             
             const existingTables = new Set(await _listTables());
             // 1. Creer les tables manquantes (ordre pour que les Ref cibles existent d'abord)
-            const order = ['Team', 'Projects', 'Programmes', 'Entites', 'Competences', 'Tasks', 'TimeEntries', 'Feuilles', 'Disponibilites'];
+            const order = ['Competences', 'Entites', 'Team', 'Programmes', 'Projects', 'Tasks', 'Actions', 'KanbanSteps', 'TimeEntries', 'Feuilles', 'Disponibilites'];
             for (const tableName of order) {
                 const columns = GENCI_FULL_SCHEMA[tableName] || [];
                 if (existingTables.has(tableName)) {
@@ -1706,6 +1725,7 @@ if $projet and $projet.responsable:
         // ═══════════════════════════════════════════════════════════════════════
         // FILTERS
         // ═══════════════════════════════════════════════════════════════════════
+        function toggleFilterMenu(id) { const m = document.querySelector('#' + id + ' .filter-menu'); const open = m && m.classList.contains('open'); document.querySelectorAll('.filter-menu').forEach(x => x.classList.remove('open')); if (m && !open) m.classList.add('open'); }
         function setGroupBy(g) { groupBy = g; document.querySelectorAll('.group-selector .btn').forEach(b => b.classList.remove('active')); document.getElementById('group' + g.charAt(0).toUpperCase() + g.slice(1)).classList.add('active'); render(); }
         function changeColorMode(mode) {
             colorMode = mode;
