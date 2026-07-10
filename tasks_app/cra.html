@@ -939,6 +939,13 @@ async function loadGrist() {
   console.log('[CRA] Tasks avec charges:', tasksWithCharges.length, 'sur', S.tasks.length);
   if (S.hasCharges) {
     console.log('[CRA] Exemple de charges:', tasksWithCharges[0].charges);
+    console.log('[CRA] Détail des tâches avec charges:');
+    tasksWithCharges.forEach(t => {
+      console.log('  - Tâche', t.id, t.titre, ':', t.charges, '| assignees:', t.assignees);
+    });
+  } else {
+    console.log('[CRA] AUCUNE tâche avec charges trouvée!');
+    console.log('[CRA] Contenu brut de S.tasks:', S.tasks);
   }
   S.projects = tables.includes('Projects') ? colObjToRows(await grist.docApi.fetchTable('Projects')).map(r => ({ id: r.id, nom: r.nom })) : [];
   S.entries = S.hasTable ? colObjToRows(await grist.docApi.fetchTable('TimeEntries')).map(r => ({ id: r.id, membre: r.membre, tache: r.tache, date: r.date, heures: r.heures })) : [];
@@ -974,27 +981,33 @@ async function loadGrist() {
   // Initialiser le FilterManager
   initFilterManager();
   
-  // Pré-remplir automatiquement si en mode brouillon et qu'il y a des charges
-  if (S.hasCharges && S.visiblePersonIds.length > 0) {
-    // Vérifier si on est en mode brouillon (au moins une personne en brouillon)
-    const hasBrouillon = S.visiblePersonIds.some(pid => myStatutForPerson(pid) === 'brouillon');
-    if (hasBrouillon) {
-      console.log('[CRA] Pré-remplissage automatique déclenché');
-      // Petit délai pour laisser le temps à l'UI de s'initialiser
-      setTimeout(async () => {
-        const result = await applyPlannedFill();
-        if (result && !result.error) {
-          const msg = result.newCells > 0 
-            ? '✅ Plan de charge appliqué : ' + result.newCells + ' cellules pré-remplies' 
-              + (result.existingCells > 0 ? ' (' + result.existingCells + ' déjà saisies)' : '')
-            : 'ℹ️ Toutes les cellules sont déjà saisies';
-          toast(msg);
-        }
-      }, 100);
-    }
-  }
-  
   render();
+  
+  // Appel automatique du pre-remplissage si TimeEntries est vide pour cette semaine
+  setTimeout(async () => {
+    const weekStart = S.weekStart || mondayOf(Date.now());
+    const weekEnd = weekStart + 6 * DAY;
+    
+    // Verifier s'il y a deja des entrees pour cette semaine
+    const hasEntriesThisWeek = S.entries.some(e => {
+      const d = gristToMs(e.date);
+      return d >= weekStart && d <= weekEnd;
+    });
+    
+    if (!hasEntriesThisWeek && S.hasCharges) {
+      console.log('[CRA] TimeEntries vide pour cette semaine → pre-remplissage automatique');
+      const result = await applyPlannedFill();
+      if (result && !result.error && result.newCells > 0) {
+        toast('✅ ' + result.newCells + ' cellules pre-remplies depuis le plan de charge');
+      } else if (result && result.existingCells > 0) {
+        toast('ℹ️ Toutes les cellules sont deja saisies');
+      }
+    } else if (hasEntriesThisWeek) {
+      console.log('[CRA] TimeEntries deja rempli pour cette semaine → pas de pre-remplissage auto');
+    } else if (!S.hasCharges) {
+      console.log('[CRA] Pas de charges disponibles → pas de pre-remplissage');
+    }
+  }, 500);
 }
 // chaine_chefs d'une personne = chefs de son entite + entites ancetres (Entites.parent), borne anti-cycle.
 function chaineChefsOf(entiteId) {
