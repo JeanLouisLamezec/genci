@@ -724,10 +724,17 @@
         // SCHEMA & CONSTANTS
         // ═══════════════════════════════════════════════════════════════════════
         const TASKFLOW_SCHEMA = {
-            Team: [{ id: 'nom', type: 'Text' }, { id: 'email', type: 'Text' }, { id: 'avatar', type: 'Text' }, { id: 'role', type: 'Choice' }, { id: 'actif', type: 'Bool' }, { id: 'couleur', type: 'Text' }],  // TEAM-01 (capaciteHebdo/indispos creees a la demande par le widget Plan)
-            Projects: [{ id: 'nom', type: 'Text' }, { id: 'couleur', type: 'Text' }, { id: 'dateDebut', type: 'Date' }, { id: 'dateFin', type: 'Date' }, { id: 'responsable', type: 'Ref:Team' }, { id: 'actif', type: 'Bool' }],
-            Tasks: [{ id: 'titre', type: 'Text' }, { id: 'description', type: 'Text' }, { id: 'dateDebut', type: 'Date' }, { id: 'dateEcheance', type: 'Date' }, { id: 'priorite', type: 'Choice' }, { id: 'statut', type: 'Choice' }, { id: 'progression', type: 'Numeric' }, { id: 'projet', type: 'Ref:Projects' }, { id: 'assignees', type: 'RefList:Team' }, { id: 'type', type: 'Choice' }, { id: 'dependDe', type: 'RefList:Tasks' }, { id: 'tags', type: 'ChoiceList' }, { id: 'estimationH', type: 'Numeric' }, { id: 'tempsPasse', type: 'Numeric' }, { id: 'couleur', type: 'Text' }, { id: 'subtasks', type: 'Text' }, { id: 'parentTask', type: 'Ref:Tasks' }],
-            Actions: [{ id: 'titre', type: 'Text' }, { id: 'task', type: 'Ref:Tasks' }, { id: 'description', type: 'Text' }, { id: 'statut', type: 'Choice' }, { id: 'assignee', type: 'Ref:Team' }, { id: 'priorite', type: 'Choice' }, { id: 'estimationH', type: 'Numeric' }, { id: 'progression', type: 'Int' }, { id: 'dateDebut', type: 'Date' }, { id: 'dateEcheance', type: 'Date' }, { id: 'couleur', type: 'Text' }, { id: 'tags', type: 'ChoiceList' }, { id: 'ordre', type: 'Int' }]
+            Team: [{ id: 'nom', type: 'Text' }, { id: 'email', type: 'Text' }, { id: 'avatar', type: 'Text' }, { id: 'role', type: 'Choice' }, { id: 'actif', type: 'Bool' }, { id: 'couleur', type: 'Text' }, { id: 'capaciteHebdo', type: 'Numeric' }, { id: 'indispos', type: 'Text' }, { id: 'entite', type: 'Ref:Entites' }, { id: 'responsable', type: 'Ref:Team' }, { id: 'gristUserId', type: 'Int' }, { id: 'competences', type: 'RefList:Competences' }],
+            Projects: [{ id: 'nom', type: 'Text' }, { id: 'couleur', type: 'Text' }, { id: 'dateDebut', type: 'Date' }, { id: 'dateFin', type: 'Date' }, { id: 'responsable', type: 'Ref:Team' }, { id: 'actif', type: 'Bool' }, { id: 'programme', type: 'Ref:Programmes' }],
+            Tasks: [{ id: 'titre', type: 'Text' }, { id: 'description', type: 'Text' }, { id: 'dateDebut', type: 'Date' }, { id: 'dateEcheance', type: 'Date' }, { id: 'priorite', type: 'Choice' }, { id: 'statut', type: 'Choice' }, { id: 'progression', type: 'Numeric' }, { id: 'projet', type: 'Ref:Projects' }, { id: 'assignees', type: 'RefList:Team' }, { id: 'type', type: 'Choice' }, { id: 'dependDe', type: 'RefList:Tasks' }, { id: 'tags', type: 'ChoiceList' }, { id: 'estimationH', type: 'Numeric' }, { id: 'tempsPasse', type: 'Numeric' }, { id: 'couleur', type: 'Text' }, { id: 'subtasks', type: 'Text' }, { id: 'parentTask', type: 'Ref:Tasks' }, { id: 'charges', type: 'Text' }, { id: 'dateCloture', type: 'Date' }],
+            Actions: [{ id: 'titre', type: 'Text' }, { id: 'task', type: 'Ref:Tasks' }, { id: 'description', type: 'Text' }, { id: 'statut', type: 'Choice' }, { id: 'assignee', type: 'Ref:Team' }, { id: 'priorite', type: 'Choice' }, { id: 'estimationH', type: 'Numeric' }, { id: 'progression', type: 'Int' }, { id: 'dateDebut', type: 'Date' }, { id: 'dateEcheance', type: 'Date' }, { id: 'couleur', type: 'Text' }, { id: 'tags', type: 'ChoiceList' }, { id: 'ordre', type: 'Int' }],
+            KanbanSteps: [{ id: 'nom', type: 'Text' }, { id: 'valeur', type: 'Text' }, { id: 'couleur', type: 'Text' }, { id: 'ordre', type: 'Int' }, { id: 'actif', type: 'Bool' }],
+            Competences: [{ id: 'nom', type: 'Text' }, { id: 'categorie', type: 'Choice' }, { id: 'description', type: 'Text' }, { id: 'actif', type: 'Bool' }],
+            Entites: [{ id: 'nom', type: 'Text' }, { id: 'parent', type: 'Ref:Entites' }, { id: 'niveau', type: 'Choice' }, { id: 'chef', type: 'Ref:Team' }, { id: 'actif', type: 'Bool' }],
+            Programmes: [{ id: 'nom', type: 'Text' }, { id: 'couleur', type: 'Text' }, { id: 'responsable', type: 'Ref:Team' }, { id: 'description', type: 'Text' }, { id: 'actif', type: 'Bool' }],
+            TimeEntries: [{ id: 'membre', type: 'Ref:Team' }, { id: 'tache', type: 'Ref:Tasks' }, { id: 'date', type: 'Date' }, { id: 'heures', type: 'Numeric' }, { id: 'imputation', type: 'Text' }, { id: 'description', type: 'Text' }],
+            Feuilles: [{ id: 'membre', type: 'Ref:Team' }, { id: 'semaine', type: 'Date' }, { id: 'statut', type: 'Choice' }, { id: 'validePar', type: 'Ref:Team' }, { id: 'dateValidation', type: 'Date' }, { id: 'motifRejet', type: 'Text' }],
+            Disponibilites: [{ id: 'membre', type: 'Ref:Team' }, { id: 'type', type: 'Choice' }, { id: 'dateDebut', type: 'Date' }, { id: 'dateFin', type: 'Date' }, { id: 'dispo', type: 'Numeric' }, { id: 'commentaire', type: 'Text' }]
         };
 
         const PRIORITY_LABELS = { 1: 'Critique', 2: 'Haute', 3: 'Moyenne', 4: 'Basse' };
@@ -1386,13 +1393,49 @@
                 if (tableExists) { const missing = columns.filter(c => !existingCols.includes(c.id)); for (const col of missing) { try { await grist.docApi.applyUserActions([['AddColumn', tableName, col.id, { type: col.type }]]); added++; } catch (e) {} } }
             }
             if (tablesCreated.includes('Tasks')) await seedData();
+            // Initialiser les étapes par défaut si la table KanbanSteps vient d'être créée
+            if (tablesCreated.includes('KanbanSteps')) {
+                await grist.docApi.applyUserActions([
+                    ['AddRecord', 'KanbanSteps', null, { nom: 'À faire', valeur: 'todo', couleur: '#94a3b8', ordre: 0, actif: true }],
+                    ['AddRecord', 'KanbanSteps', null, { nom: 'En cours', valeur: 'inprogress', couleur: '#f59e0b', ordre: 1, actif: true }],
+                    ['AddRecord', 'KanbanSteps', null, { nom: 'En revue', valeur: 'review', couleur: '#3b82f6', ordre: 2, actif: true }],
+                    ['AddRecord', 'KanbanSteps', null, { nom: 'Terminé', valeur: 'done', couleur: '#10b981', ordre: 3, actif: true }]
+                ]);
+            }
+            // Initialiser les données de référence si les tables viennent d'être créées
+            if (tablesCreated.includes('Competences')) {
+                await grist.docApi.applyUserActions([
+                    ['AddRecord', 'Competences', null, { nom: 'JavaScript', categorie: 'technique', actif: true }],
+                    ['AddRecord', 'Competences', null, { nom: 'Python', categorie: 'technique', actif: true }],
+                    ['AddRecord', 'Competences', null, { nom: 'Gestion de projet', categorie: 'fonctionnel', actif: true }]
+                ]);
+            }
+            if (tablesCreated.includes('Entites')) {
+                await grist.docApi.applyUserActions([
+                    ['AddRecord', 'Entites', null, { nom: 'Direction', niveau: 'direction', actif: true }],
+                    ['AddRecord', 'Entites', null, { nom: 'Développement', parent: 1, niveau: 'service', actif: true }],
+                    ['AddRecord', 'Entites', null, { nom: 'Marketing', parent: 1, niveau: 'service', actif: true }]
+                ]);
+            }
+            if (tablesCreated.includes('Programmes')) {
+                await grist.docApi.applyUserActions([
+                    ['AddRecord', 'Programmes', null, { nom: 'Transformation Digitale', couleur: '#4f46e5', actif: true }]
+                ]);
+            }
             await TF.seedStatusChoices(grist, 'Tasks', 'statut', TF.DEFAULT_STATUSES);
+            await TF.seedStatusChoices(grist, 'Actions', 'statut', TF.DEFAULT_STATUSES);
             await TF.setRefDisplayColumns(grist, [
                 { table: 'Tasks', column: 'projet', visibleColId: 'nom' },
                 { table: 'Tasks', column: 'assignees', visibleColId: 'nom' },
                 { table: 'Tasks', column: 'dependDe', visibleColId: 'titre' },
                 { table: 'Tasks', column: 'parentTask', visibleColId: 'titre' },
-                { table: 'Projects', column: 'responsable', visibleColId: 'nom' }
+                { table: 'Projects', column: 'responsable', visibleColId: 'nom' },
+                { table: 'Projects', column: 'programme', visibleColId: 'nom' },
+                { table: 'Actions', column: 'task', visibleColId: 'titre' },
+                { table: 'Actions', column: 'assignee', visibleColId: 'nom' },
+                { table: 'Entites', column: 'parent', visibleColId: 'nom' },
+                { table: 'Team', column: 'entite', visibleColId: 'nom' },
+                { table: 'Team', column: 'responsable', visibleColId: 'nom' }
             ]);
             if (created > 0 || added > 0) showToast(`Schema OK`, 'success');
         }
