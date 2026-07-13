@@ -3139,6 +3139,9 @@ if (typeof globalThis !== 'undefined') {
         function updateActionField(field, value, noSave = false, noRender = false) {
             const data = panelState.editData;
             if (!data) return;
+            
+            console.log('[DIAG assignee] updateActionField called:', { field, value, valueIsObject: typeof value === 'object', editDataBefore: structuredClone(data) });
+            
             if (field === 'dateDebut' || field === 'dateEcheance') {
                 value = value ? dateToGrist(parseInputDate(value)) : null;
             }
@@ -3147,6 +3150,9 @@ if (typeof globalThis !== 'undefined') {
                 data.dateDebut = value;
             }
             data[field] = value;
+            
+            console.log('[DIAG assignee] updateActionField after assignment:', { field, value, editDataAfter: structuredClone(data) });
+            
             syncLocalAction();
             // Ne re-render que si nécessaire (pas pendant la saisie texte)
             if (!noRender) renderPanelAction();
@@ -3255,7 +3261,15 @@ if (typeof globalThis !== 'undefined') {
         // sweet spot : ne jamais ecrire une colonne absente du schema (ex. charges/dateCloture si le Plan n'a jamais ete ouvert). Fail-open si TASK_COLS pas encore peuple.
         function pruneTaskRecord(rec) { if (TASK_COLS.size) { for (const k in rec) if (!TASK_COLS.has(k)) delete rec[k]; } return rec; }
         let ACTION_COLS = new Set();
-        function pruneActionRecord(rec) { if (ACTION_COLS.size) { for (const k in rec) if (!ACTION_COLS.has(k)) delete rec[k]; } return rec; }
+        function pruneActionRecord(rec) {
+          if (ACTION_COLS.size) {
+            // S'assurer que les colonnes critiques sont toujours préservées
+            ACTION_COLS.add('assignee');
+            ACTION_COLS.add('task');
+            for (const k in rec) if (!ACTION_COLS.has(k)) delete rec[k];
+          }
+          return rec;
+        }
         async function ensureSchema() {
             let created = 0;
             const tablesCreated = [];
@@ -3636,11 +3650,29 @@ if $projet and $projet.responsable:
         async function loadAllData() { 
           try { const _raw = await grist.docApi.fetchTable('Tasks'); TASK_COLS = new Set(Object.keys(_raw || {})); tasks = convertGristToRecords(_raw); } catch (e) { tasks = []; } 
           try { const _araw = await grist.docApi.fetchTable('Actions'); ACTION_COLS = new Set(Object.keys(_araw || {})); actions = convertGristToRecords(_araw); } catch (e) { actions = []; ACTION_COLS = new Set(); } 
-          try { team = convertGristToRecords(await grist.docApi.fetchTable('Team')); } catch (e) { team = []; } 
+          try { 
+            const teamRaw = await grist.docApi.fetchTable('Team'); 
+            console.log('[DIAG assignee] Team raw:', teamRaw);
+            team = convertGristToRecords(teamRaw); 
+            console.log('[DIAG assignee] Team converted:', team);
+            console.log('[DIAG assignee] Team members:', team.map(m => ({ id: m.id, nom: m.nom, actif: m.actif })));
+          } catch (e) { 
+            console.error('[DIAG assignee] Team fetch error:', e);
+            team = []; 
+          } 
           try { projects = convertGristToRecords(await grist.docApi.fetchTable('Projects')); } catch (e) { projects = []; } 
           try { entites = convertGristToRecords(await grist.docApi.fetchTable('Entites')); } catch (e) { entites = []; }
           try { programmes = convertGristToRecords(await grist.docApi.fetchTable('Programmes')); } catch (e) { programmes = []; }
-          try { kanbanSteps = convertGristToRecords(await grist.docApi.fetchTable('KanbanSteps')); } catch (e) { kanbanSteps = []; }
+          try { 
+            kanbanSteps = convertGristToRecords(await grist.docApi.fetchTable('KanbanSteps')); 
+            console.log('[DIAG kanban steps] rawKanbanSteps:', kanbanSteps);
+            const activeKanbanSteps = kanbanSteps.filter(s => s.actif !== false);
+            console.log('[DIAG kanban steps] activeKanbanSteps:', activeKanbanSteps);
+          } catch (e) { 
+            console.error('[DIAG kanban steps] KanbanSteps fetch error:', e);
+            kanbanSteps = []; 
+          }
+          console.log('[DIAG kanban steps] actionsStatuses:', actions.map(a => a.statut));
           gristReady = true; 
           rebuildChildrenCache(); 
           // Si des étapes Kanban existent, les utiliser pour configurer les statuts
@@ -3651,10 +3683,20 @@ if $projet and $projet.responsable:
               .map(s => ({ value: s.valeur || s.nom, label: s.nom, fillColor: s.couleur || '#94a3b8', textColor: '#ffffff' }));
             if (stepList.length) {
               statusCfg = TF.buildStatusConfig(stepList, 'kanban');
+              console.log('[DIAG kanban steps] statusCfg from KanbanSteps:', statusCfg);
             }
           } else {
-            try { statusCfg = await TF.loadStatusConfig(grist, 'Actions', 'statut', actions.map(a => a && a.statut)); } catch (e) {}
+            try { 
+              statusCfg = await TF.loadStatusConfig(grist, 'Actions', 'statut', actions.map(a => a && a.statut)); 
+              console.log('[DIAG kanban steps] statusCfg from loadStatusConfig:', statusCfg);
+            } catch (e) { 
+              console.error('[DIAG kanban steps] loadStatusConfig error:', e);
+            }
           }
+          console.log('[DIAG columns] groupBy:', groupBy);
+          console.log('[DIAG columns] statusSource:', statusCfg && statusCfg.source);
+          console.log('[DIAG columns] statusValues:', statusCfg && statusCfg.values);
+          console.log('[DIAG columns] statusList:', statusCfg && statusCfg.list);
           initKanbanFilterManager();
           // Mettre à jour les données du FilterManager après initialisation
           if (filterManager) {
@@ -4299,6 +4341,7 @@ if $projet and $projet.responsable:
         function renderActionCard(a) {  // NOUVEAU: carte pour Action
             const p = a.priorite || '3';
             const assignee = a.assignee;
+            console.log('[DIAG assignee] renderActionCard:', { actionId: a.id, assigneeRaw: assignee, assigneeType: typeof assignee });
             const taskObj = a.task ? tasks.find(tk => tk.id === a.task) : null;
             const projectName = taskObj ? getProjectName(taskObj.projet) : null;
             const projectColor = taskObj ? getProjectColor(taskObj.projet) : '#94a3b8';
@@ -4321,6 +4364,12 @@ if $projet and $projet.responsable:
             }
             // Pas de dueHtml pour les Actions (pas de deadline obligatoire)
             const taskTitle = a.task ? (tasks.find(t => t.id === a.task)?.titre || 'Tâche #'+a.task) : 'Sans tâche';
+            
+            // Trouver le membre assigné
+            const assigneeId = assignee;
+            const member = team.find(m => Number(m.id) === Number(assigneeId));
+            console.log('[DIAG assignee] renderActionCard member lookup:', { assigneeId, member, teamLength: team.length });
+            
             return `<div class="task-card p${p} ${TF.isTerminal(statusCfg, a.statut) ? 'done' : ''} ${a.id === selectedActionId ? 'selected' : ''}" data-id="${a.id}" style="border-left-color:${barColor}" onclick="openActionPanel(${a.id})">
                 <div class="card-header">
                     <span class="card-title">${escapeHtml(a.titre) || 'Sans titre'}</span>
@@ -4856,7 +4905,15 @@ if $projet and $projet.responsable:
                 couleur: data.couleur || null,
                 ordre: data.ordre || 0
             };
-            try { await grist.docApi.applyUserActions([['UpdateRecord', 'Actions', panelState.actionId, record]]); showSaveIndicator(); } catch (e) { showToast('Erreur sauvegarde', 'error'); }
+            console.log('[DIAG assignee] update record:', record);
+            try { 
+                const result = await grist.docApi.applyUserActions([['UpdateRecord', 'Actions', panelState.actionId, record]]);
+                console.log('[DIAG assignee] update result:', result);
+                showSaveIndicator(); 
+            } catch (e) { 
+                console.error('[DIAG assignee] update error:', e);
+                showToast('Erreur sauvegarde', 'error'); 
+            }
         }
 
         async function createTask() {
@@ -4874,6 +4931,13 @@ if $projet and $projet.responsable:
             const data = panelState.editData;
             if (!data || !data.titre?.trim()) { showToast('Titre requis', 'error'); return; }
             if (data.dateDebut && data.dateEcheance && data.dateDebut > data.dateEcheance) { showToast('La date de début ne peut pas dépasser la date de fin', 'error'); return; }
+            
+            console.log('[DIAG assignee] create before prune:', {
+                dataAssignee: data.assignee,
+                dataTask: data.task,
+                recordBefore: structuredClone(data),
+                ACTION_COLS: Array.from(ACTION_COLS)
+            });
             
             // Vérifier que la table Actions existe
             if (gristReady) {
@@ -4901,9 +4965,29 @@ if $projet and $projet.responsable:
                 couleur: data.couleur || null,
                 ordre: data.ordre || 0
             };
+            
+            console.log('[DIAG assignee] create record before prune:', record);
+            const prunedRecord = pruneActionRecord({ ...record });
+            console.log('[DIAG assignee] create after prune:', prunedRecord);
+            
             if (gristReady) {
-                try { await grist.docApi.applyUserActions([['AddRecord', 'Actions', null, pruneActionRecord(record)]]); showToast('Créée', 'success'); await loadAllData(); closePanel(); } catch (e) { console.error('createAction error:', e); showToast('Erreur création: ' + (e?.message || e), 'error'); }
-            } else { record.id = Date.now(); actions.push(record); showToast('Créée', 'success'); render(); closePanel(); }
+                try { 
+                    const result = await grist.docApi.applyUserActions([['AddRecord', 'Actions', null, prunedRecord]]);
+                    console.log('[DIAG assignee] create result:', result);
+                    showToast('Créée', 'success'); 
+                    await loadAllData(); 
+                    closePanel(); 
+                } catch (e) { 
+                    console.error('createAction error:', e); 
+                    showToast('Erreur création: ' + (e?.message || e), 'error'); 
+                }
+            } else { 
+                record.id = Date.now(); 
+                actions.push(record); 
+                showToast('Créée', 'success'); 
+                render(); 
+                closePanel(); 
+            }
         }
 
         async function confirmDelete() {
