@@ -3614,6 +3614,13 @@ if (typeof globalThis !== 'undefined') {
         // RENDER FUNCTIONS
         // ═══════════════════════════════════════════════════════════════════════
         function render() {
+            // En mode loading, afficher uniquement le skeleton
+            if (appMode === 'loading') {
+                renderGanttSkeleton();
+                return;
+            }
+            
+            // Rendu normal pour les modes 'grist', 'demo' et 'error'
             updatePeriodLabel();
             computeEffectiveRange();
             renderTimelineHeader();
@@ -4958,8 +4965,6 @@ if (typeof globalThis !== 'undefined') {
                 catch (e) { try { await grist.docApi.applyUserActions([['AddTable', tableName, columns.map(c => ({ id: c.id, type: c.type }))]]); tablesCreated.push(tableName); created++; continue; } catch (e2) { continue; } }
                 if (tableExists) { const missing = columns.filter(c => !existingCols.includes(c.id)); for (const col of missing) { try { await grist.docApi.applyUserActions([['AddColumn', tableName, col.id, { type: col.type }]]); added++; } catch (e) {} } }
             }
-            if (tablesCreated.includes('Tasks')) await seedData();
-            // Initialiser les étapes par défaut si la table KanbanSteps vient d'être créée
             if (tablesCreated.includes('KanbanSteps')) {
                 await grist.docApi.applyUserActions([
                     ['AddRecord', 'KanbanSteps', null, { nom: 'À faire', valeur: 'todo', couleur: '#94a3b8', ordre: 0, actif: true }],
@@ -5006,47 +5011,31 @@ if (typeof globalThis !== 'undefined') {
             if (created > 0 || added > 0) showToast('Schema initialisé (' + created + ' tables, ' + added + ' colonnes)', 'success');
         }
 
-        async function seedData() {
-            const today = new Date();
-            const day = (d) => new Date(today.getFullYear(), today.getMonth(), today.getDate() + d).getTime() / 1000;
-            try {
-                await grist.docApi.applyUserActions([
-                    ['AddRecord', 'Team', null, { nom: 'Alice Martin', email: 'alice@cerema.fr', role: 'Chef de projet', actif: true }],
-                    ['AddRecord', 'Team', null, { nom: 'Bob Durant', email: 'bob@cerema.fr', role: 'Développeur', actif: true }],
-                    ['AddRecord', 'Team', null, { nom: 'Claire Bernard', email: 'claire@cerema.fr', role: 'Designer', actif: true }]
-                ]);
-                await grist.docApi.applyUserActions([
-                    ['AddRecord', 'Projects', null, { nom: 'Refonte Portail', couleur: '#4f46e5', dateDebut: day(-15), dateFin: day(45), responsable: 1, actif: true }],
-                    ['AddRecord', 'Projects', null, { nom: 'App Mobile', couleur: '#10b981', dateDebut: day(-5), dateFin: day(60), responsable: 2, actif: true }]
-                ]);
-                const res = await grist.docApi.applyUserActions([
-                    ['AddRecord', 'Tasks', null, { titre: 'Cahier des charges', dateDebut: day(-15), dateEcheance: day(-8), priorite: '1', statut: 'done', progression: 100, projet: 1, type: 'tache', assignees: ['L', 1] }],
-                    ['AddRecord', 'Tasks', null, { titre: 'Maquettes UI/UX', dateDebut: day(-10), dateEcheance: day(-2), priorite: '2', statut: 'done', progression: 100, projet: 1, type: 'tache', assignees: ['L', 3] }],
-                    ['AddRecord', 'Tasks', null, { titre: 'Développement frontend', dateDebut: day(-3), dateEcheance: day(12), priorite: '1', statut: 'inprogress', progression: 35, projet: 1, type: 'tache', assignees: ['L', 2, 3], dependDe: ['L', 2] }],
-                    ['AddRecord', 'Tasks', null, { titre: 'Validation design', dateDebut: day(-2), dateEcheance: day(-2), priorite: '2', statut: 'done', progression: 100, projet: 1, type: 'jalon' }],
-                    ['AddRecord', 'Tasks', null, { titre: 'API backend', dateDebut: day(-5), dateEcheance: day(10), priorite: '1', statut: 'inprogress', progression: 55, projet: 1, type: 'tache', assignees: ['L', 2] }],
-                    ['AddRecord', 'Tasks', null, { titre: 'Proto mobile v1', dateDebut: day(1), dateEcheance: day(20), priorite: '2', statut: 'todo', progression: 0, projet: 2, type: 'tache', assignees: ['L', 2] }],
-                    ['AddRecord', 'Tasks', null, { titre: 'Livraison MVP', dateDebut: day(28), dateEcheance: day(28), priorite: '1', statut: 'todo', progression: 0, projet: 1, type: 'jalon', dependDe: ['L', 3, 5] }]
-                ]);
-                // WBS-01: exemple hiérarchique — 3 sous-tâches de "API backend" (id=5)
-                const apiBackendId = Array.isArray(res?.retValues) ? res.retValues[4] : 5;
-                await grist.docApi.applyUserActions([
-                    ['AddRecord', 'Tasks', null, { titre: 'Modèle de données', dateDebut: day(-5), dateEcheance: day(-1), priorite: '1', statut: 'done', progression: 100, projet: 1, type: 'tache', assignees: ['L', 2], estimationH: 12, tempsPasse: 12, parentTask: apiBackendId }],
-                    ['AddRecord', 'Tasks', null, { titre: 'Routes /users /auth', dateDebut: day(0), dateEcheance: day(5), priorite: '1', statut: 'inprogress', progression: 60, projet: 1, type: 'tache', assignees: ['L', 2], estimationH: 16, tempsPasse: 10, parentTask: apiBackendId }],
-                    ['AddRecord', 'Tasks', null, { titre: 'Tests unitaires API', dateDebut: day(6), dateEcheance: day(10), priorite: '2', statut: 'todo', progression: 0, projet: 1, type: 'tache', assignees: ['L', 2], estimationH: 8, parentTask: apiBackendId }]
-                ]);
-            } catch (e) { console.log('Seed error:', e); }
-        }
-
         let filterManager = null;
         let programmes = [];
         
         async function loadAllData() {
+            const generation = ++loadGeneration;
+            console.log('[Gantt data] loadAllData started', { generation, appMode: appMode });
+            
             try { const _raw = await grist.docApi.fetchTable('Tasks'); TASK_COLS = new Set(Object.keys(_raw || {})); tasks = convert(_raw); } catch (e) { tasks = []; }
             try { team = convert(await grist.docApi.fetchTable('Team')); } catch (e) { team = []; }
             try { projects = convert(await grist.docApi.fetchTable('Projects')); } catch (e) { projects = []; }
             try { entites = convert(await grist.docApi.fetchTable('Entites')); } catch (e) { entites = []; }
             try { programmes = convert(await grist.docApi.fetchTable('Programmes')); } catch (e) { programmes = []; }
+            
+            // Vérifier que cette génération est toujours la courante
+            if (generation !== loadGeneration) {
+                console.log('[Gantt data] loadAllData cancelled: stale generation', { generation, current: loadGeneration });
+                return;
+            }
+            
+            // Vérifier que le mode est toujours 'grist'
+            if (appMode !== 'grist') {
+                console.log('[Gantt data] loadAllData cancelled: appMode changed', { appMode: appMode });
+                return;
+            }
+            
             gristReady = true;
             rebuildChildrenCache();
             sortTasks();
@@ -5068,6 +5057,12 @@ if (typeof globalThis !== 'undefined') {
             
             updateFilterUI();
             render();
+            console.log('[Gantt data] loadAllData complete', {
+                generation: generation,
+                tasks: tasks.length,
+                team: team.length,
+                projects: projects.length
+            });
         }
         
         // Initialiser le FilterManager pour le Gantt
@@ -5116,14 +5111,27 @@ if (typeof globalThis !== 'undefined') {
         }
 
         async function initGrist() {
+            console.log('[Gantt init] initGrist started', { appMode: appMode });
+            
             // Phase 1 : tenter grist.ready — si Grist absent, basculer en démo
             try {
                 await grist.ready({ requiredAccess: 'full' });
             } catch (e) {
                 console.log('Grist unavailable, using demo:', e);
+                appMode = 'demo';
                 useDemoMode();
                 return;
             }
+            
+            // Succès de grist.ready() : mode Grist confirmé
+            appMode = 'grist';
+            gristReady = true;
+            
+            // Supprimer tout badge démo résiduel
+            document.querySelectorAll('.demo-badge').forEach(el => el.remove());
+            
+            console.log('[Gantt init] grist.ready() succeeded, appMode = grist');
+            
             // #7 respect des droits : bandeau lecture seule + garde transverse sur toutes les ecritures.
             TF.readOnlyBanner();
             TF.guardWrites(grist, {
@@ -5146,7 +5154,13 @@ if (typeof globalThis !== 'undefined') {
             } catch (e) {
                 console.error('loadAllData error (continuing):', e);
                 showToast('Chargement: ' + (e?.message || e), 'error');
+                appMode = 'error';
             }
+            console.log('[Gantt data] loaded', {
+                tasks: tasks.length,
+                team: team.length,
+                projects: projects.length
+            });
             try {
                 grist.onRecords(async () => await loadAllData());
                 grist.onRecord((rec) => {
@@ -5188,8 +5202,47 @@ if (typeof globalThis !== 'undefined') {
             }
         }
 
+        // État d'initialisation explicite
+        let appMode = 'loading';  // 'loading' | 'grist' | 'demo' | 'error'
+        let loadGeneration = 0;
+        
+        // Vérifier si le mode démo est demandé explicitement via l'URL
+        function isExplicitDemoMode() {
+            try {
+                return new URLSearchParams(location.search).get('demo') === '1';
+            } catch (e) {
+                return false;
+            }
+        }
+        
+        // Fonction protégée pour le mode démo
         function useDemoMode() {
-            document.body.insertAdjacentHTML('beforeend', '<div class="demo-badge">Démo</div>');
+            // Empêcher l'activation en mode Grist
+            if (gristReady || appMode === 'grist') {
+                console.warn('[Gantt] useDemoMode ignoré : le widget est connecté à Grist', {
+                    appMode: appMode,
+                    gristReady: gristReady
+                });
+                return;
+            }
+            
+            // Éviter les appels multiples
+            if (appMode === 'demo') {
+                console.warn('[Gantt] useDemoMode déjà activé');
+                return;
+            }
+            
+            console.warn('[Gantt demo] useDemoMode activé', {
+                appMode: appMode,
+                gristReady: gristReady
+            });
+            
+            appMode = 'demo';
+            
+            // Ajouter le badge démo (une seule fois)
+            if (!document.querySelector('.demo-badge')) {
+                document.body.insertAdjacentHTML('beforeend', '<div class="demo-badge">Démo</div>');
+            }
 
             team = [
                 { id: 1, nom: 'Alice Martin', actif: true, couleur: '#4f46e5' },
@@ -5324,10 +5377,27 @@ if (typeof globalThis !== 'undefined') {
             document.addEventListener('click', function(ev){ document.querySelectorAll('.tfc.tfo').forEach(function(o){ if(!o.contains(ev.target)) o.classList.remove('tfo'); }); });
         })();
         renderGanttSkeleton();  // 06 · squelette pendant le chargement
-        // Repli auto vers données d'exemple si Grist ne renvoie rien sous 2.8s (aperçu / hors-ligne)
-        setTimeout(function(){ try { if ((typeof tasks==='undefined' || !tasks || !tasks.length) && typeof useDemoMode==='function') useDemoMode(); } catch(e){ console.log(e); } }, 2800);
+        
+        // Initialisation : mode démo explicite OU Grist
+        (function initApp() {
+            console.log('[Gantt init] initApp called', { 
+                explicitDemo: isExplicitDemoMode(),
+                appMode: appMode 
+            });
+            
+            // Si mode démo explicite demandé
+            if (isExplicitDemoMode()) {
+                console.log('[Gantt init] explicit demo mode requested');
+                appMode = 'demo';
+                useDemoMode();
+                return;
+            }
+            
+            // Sinon, initialisation Grist normale
+            initGrist();
+        })();
+        
         try { if (new URLSearchParams(location.search).has('nav')) document.body.classList.add('suite-nav'); } catch (e) {}
-        initGrist();
     </script>
 <style>
 /* 12 · Barre d'onglets mobile commune + bouton central */
