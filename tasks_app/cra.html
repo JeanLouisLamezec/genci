@@ -465,21 +465,32 @@ function plannedHoursForTaskWeek(taskId, teamId) {
     
     const totalHeures = chargeEntry.heures || 0;
     
+    // Les dates Grist sont en secondes UTC. On les convertit en ms pour les calculs.
+    const start = task.dateDebut * 1000;
+    const end = task.dateEcheance * 1000;
+    
+    // Normaliser S.weekStart et weekEnd au début de journée (ignorer le décalage timezone)
+    // S.weekStart est en ms (depuis mondayOf), on le garde tel quel
+    const weekStartMs = S.weekStart;
+    const weekEndMs = weekStartMs + 6 * DAY;
+    
+    // Vérifier que la semaine courante chevauche la période de la tâche
+    // Comparaison large : on accepte si la semaine commence avant la fin de la tâche
+    // et se termine après le début de la tâche
+    if (weekEndMs < start || weekStartMs > end) {
+      return 0;
+    }
+    
     // Calculer la durée de la tâche en semaines
-    const start = gristToMs(task.dateDebut);
-    const end = gristToMs(task.dateEcheance);
     const dureeMs = end - start;
     const nbSemaines = Math.max(1, Math.ceil(dureeMs / (7 * DAY)));
     
     // Répartir sur la durée
     const heuresParSemaine = totalHeures / nbSemaines;
     
-    // Vérifier que la semaine courante est dans la période de la tâche
-    const weekEnd = S.weekStart + 6 * DAY;
-    if (S.weekStart < start || S.weekStart > end) return 0;
-    
     return heuresParSemaine;
   } catch (e) {
+    console.error('[CRA] Erreur plannedHoursForTaskWeek:', e);
     return 0;
   }
 }
