@@ -670,390 +670,2362 @@
         // MODULE COMMUN TASKFLOW (genere — voir projects/tasks_app/core/taskflow-core.js)
         // ═══════════════════════════════════════════════════════════════════════
         // <taskflow-core> -- GENERE par scripts/build-taskflow.js, NE PAS EDITER ICI
-        /* ============================================================================
-         * taskflow-core.js — Module commun aux widgets TaskFlow
-         * ----------------------------------------------------------------------------
-         * SOURCE UNIQUE. Inline dans chaque widget par scripts/build-taskflow.js entre
-         * les marqueurs de generation prevus a cet effet.
-         * NE PAS editer la copie inlinee dans les .html : editer CE fichier puis lancer
-         *   npm run build:taskflow
-         *
-         * Expose un objet `TF` (namespace) pour ne jamais entrer en collision avec les
-         * helpers locaux existants des widgets. Toutes les fonctions qui ecrivent dans
-         * Grist sont DEFENSIVES : en cas d'echec elles n'interrompent jamais le widget
-         * (au pire, comportement actuel inchange).
-         * ========================================================================== */
-        const TF = (function () {
-            'use strict';
+/* ============================================================================
+ * taskflow-core.js — Module commun aux widgets TaskFlow
+ * ----------------------------------------------------------------------------
+ * SOURCE UNIQUE. Inline dans chaque widget par scripts/build-taskflow.js entre
+ * les marqueurs de generation prevus a cet effet.
+ * NE PAS editer la copie inlinee dans les .html : editer CE fichier puis lancer
+ *   npm run build:taskflow
+ *
+ * Expose un objet `TF` (namespace) pour ne jamais entrer en collision avec les
+ * helpers locaux existants des widgets. Toutes les fonctions qui ecrivent dans
+ * Grist sont DEFENSIVES : en cas d'echec elles n'interrompent jamais le widget
+ * (au pire, comportement actuel inchange).
+ * ========================================================================== */
+const TF = (function () {
+    'use strict';
 
-            /* ----- Statuts ---------------------------------------------------------
-             * Convention : l'ORDRE fait foi. Le DERNIER statut de la liste est l'etat
-             * terminal ("termine") utilise par la logique de completion des widgets.
-             * Les statuts reels proviennent de la colonne Choice `statut` (editable par
-             * l'utilisateur dans Grist). DEFAULT_STATUSES n'est qu'un repli.
-             * --------------------------------------------------------------------- */
-            const DEFAULT_STATUSES = [
-                { value: 'todo',       label: 'À faire',  fillColor: '#94a3b8', textColor: '#ffffff' },
-                { value: 'inprogress', label: 'En cours', fillColor: '#f59e0b', textColor: '#ffffff' },
-                { value: 'review',     label: 'En revue', fillColor: '#3b82f6', textColor: '#ffffff' },
-                { value: 'done',       label: 'Terminé',  fillColor: '#10b981', textColor: '#ffffff' }
-            ];
-            // Repli libelle + couleur pour les CODES par defaut. Permet d'afficher un libelle
-            // FR (et la bonne couleur) meme quand la colonne Choice stocke le code brut
-            // (todo/inprogress/...). Une valeur renommee par l'utilisateur garde SON libelle.
-            const DEFAULTS_BY_VALUE = {};
-            for (var _i = 0; _i < DEFAULT_STATUSES.length; _i++) DEFAULTS_BY_VALUE[DEFAULT_STATUSES[_i].value] = DEFAULT_STATUSES[_i];
+    /* ----- Statuts ---------------------------------------------------------
+     * Convention : l'ORDRE fait foi. Le DERNIER statut de la liste est l'etat
+     * terminal ("termine") utilise par la logique de completion des widgets.
+     * Les statuts reels proviennent de la colonne Choice `statut` (editable par
+     * l'utilisateur dans Grist). DEFAULT_STATUSES n'est qu'un repli.
+     * --------------------------------------------------------------------- */
+    const DEFAULT_STATUSES = [
+        { value: 'todo',       label: 'À faire',  fillColor: '#94a3b8', textColor: '#ffffff' },
+        { value: 'inprogress', label: 'En cours', fillColor: '#f59e0b', textColor: '#ffffff' },
+        { value: 'review',     label: 'En revue', fillColor: '#3b82f6', textColor: '#ffffff' },
+        { value: 'done',       label: 'Terminé',  fillColor: '#10b981', textColor: '#ffffff' }
+    ];
+    // Repli libelle + couleur pour les CODES par defaut. Permet d'afficher un libelle
+    // FR (et la bonne couleur) meme quand la colonne Choice stocke le code brut
+    // (todo/inprogress/...). Une valeur renommee par l'utilisateur garde SON libelle.
+    const DEFAULTS_BY_VALUE = {};
+    for (var _i = 0; _i < DEFAULT_STATUSES.length; _i++) DEFAULTS_BY_VALUE[DEFAULT_STATUSES[_i].value] = DEFAULT_STATUSES[_i];
 
-            // Convertit un tableau Grist colonnaire en tableau d'objets lignes.
-            function columnarToRows(data) {
-                if (!data || Array.isArray(data)) return data || [];
-                const cols = Object.keys(data);
-                if (!cols.length) return [];
-                const n = (data[cols[0]] && data[cols[0]].length) || 0;
-                const rows = [];
-                for (let i = 0; i < n; i++) {
-                    const rec = {};
-                    for (const k of cols) rec[k] = data[k][i];
-                    rows.push(rec);
+    // Convertit un tableau Grist colonnaire en tableau d'objets lignes.
+    function columnarToRows(data) {
+        if (!data || Array.isArray(data)) return data || [];
+        const cols = Object.keys(data);
+        if (!cols.length) return [];
+        const n = (data[cols[0]] && data[cols[0]].length) || 0;
+        const rows = [];
+        for (let i = 0; i < n; i++) {
+            const rec = {};
+            for (const k of cols) rec[k] = data[k][i];
+            rows.push(rec);
+        }
+        return rows;
+    }
+
+    // Resout le rowId d'une table depuis son tableId via _grist_Tables.
+    async function tableRowId(grist, tableId) {
+        const meta = columnarToRows(await grist.docApi.fetchTable('_grist_Tables'));
+        const row = meta.find(r => r.tableId === tableId);
+        return row ? row.id : null;
+    }
+
+    // Verifie si un type est une reference (Ref ou RefList)
+    function isRefType(type) {
+        return /^(Ref|RefList):/.test(String(type || ''));
+    }
+
+    // Extrait la table cible d'un type Ref ou RefList
+    function getRefTarget(type) {
+        const match = /^(?:Ref|RefList):(.+)$/.exec(String(type || ''));
+        return match ? match[1] : null;
+    }
+
+    // Verifie si une colonne est une formule derivee
+    function isFormulaColumn(tableName, colId, formulasMap) {
+        if (!formulasMap || !formulasMap[tableName]) return false;
+        return Boolean(formulasMap[tableName][colId]);
+    }
+
+    // Helper : délai
+    function delay(ms) {
+        return new Promise(function (resolve) {
+            setTimeout(resolve, ms);
+        });
+    }
+
+    // Attend que les metadonnees de toutes les tables soient disponibles
+    async function waitForTablesMetadata(grist, expectedTableIds, options) {
+        options = options || {};
+        var maxAttempts = options.maxAttempts || 30;
+        var baseDelay = options.baseDelay || 200;
+        var attempt = 0;
+        var missing = [];
+        var unavailable = [];
+
+        while (attempt < maxAttempts) {
+            try {
+                var tablesData = await grist.docApi.fetchTable('_grist_Tables');
+                var tables = columnarToRows(tablesData);
+                var tableIds = tables.map(function(t) { return t.tableId; });
+                
+                missing = [];
+                unavailable = [];
+                
+                for (var i = 0; i < expectedTableIds.length; i++) {
+                    var tableId = expectedTableIds[i];
+                    
+                    // Vérifier si la table existe dans _grist_Tables
+                    if (tableIds.indexOf(tableId) === -1) {
+                        missing.push(tableId);
+                        continue;
+                    }
+                    
+                    // Vérifier que fetchTable(tableId) réussit
+                    try {
+                        await grist.docApi.fetchTable(tableId);
+                    } catch (e) {
+                        unavailable.push(tableId);
+                    }
                 }
-                return rows;
-            }
-
-            // Resout le rowId d'une table depuis son tableId via _grist_Tables.
-            async function tableRowId(grist, tableId) {
-                const meta = columnarToRows(await grist.docApi.fetchTable('_grist_Tables'));
-                const row = meta.find(r => r.tableId === tableId);
-                return row ? row.id : null;
-            }
-
-            // Construit une config de statuts normalisee depuis une liste brute.
-            function buildStatusConfig(list, source) {
-                const clean = (list || []).filter(s => s && s.value != null).map(s => {
-                    const v = String(s.value);
-                    const d = DEFAULTS_BY_VALUE[v];
-                    const hasExplicitLabel = s.label != null && s.label !== '' && String(s.label) !== v;
-                    return {
-                        value: v,
-                        label: hasExplicitLabel ? String(s.label) : (d ? d.label : v),
-                        fillColor: s.fillColor || (d ? d.fillColor : '#94a3b8'),
-                        textColor: s.textColor || (d ? d.textColor : '#ffffff')
+                
+                if (missing.length === 0 && unavailable.length === 0) {
+                    // Petit delai supplementaire pour stabilisation
+                    await delay(300);
+                    return { 
+                        success: true, 
+                        missing: [],
+                        unavailable: [],
+                        attempts: attempt + 1
                     };
-                });
-                const final = clean.length ? clean : DEFAULT_STATUSES.slice();
-                const byValue = {};
-                for (const s of final) byValue[s.value] = s;
-                return {
-                    list: final,
-                    byValue,
-                    values: final.map(s => s.value),
-                    terminalValue: final[final.length - 1].value, // convention "dernier = termine"
-                    firstValue: final[0].value,
-                    source: clean.length ? source : 'default'
-                };
-            }
-
-            /* Lit les statuts (libelles + couleurs + ordre) depuis la colonne Choice
-             * indiquee, via les metadonnees Grist. Repli en cascade :
-             *   1. options de la colonne Choice (cas ideal)
-             *   2. valeurs distinctes presentes dans les donnees (colonne Text)
-             *   3. DEFAULT_STATUSES
-             * Ne jette jamais : retourne toujours une config exploitable.
-             */
-            async function loadStatusConfig(grist, table, column, distinctFallback) {
-                try {
-                    const tid = await tableRowId(grist, table);
-                    if (tid != null) {
-                        const cols = columnarToRows(await grist.docApi.fetchTable('_grist_Tables_column'));
-                        const col = cols.find(c => c.parentId === tid && c.colId === column);
-                        if (col && col.widgetOptions) {
-                            let opt = {};
-                            try { opt = JSON.parse(col.widgetOptions) || {}; } catch (e) { opt = {}; }
-                            const choices = Array.isArray(opt.choices) ? opt.choices : [];
-                            const co = opt.choiceOptions || {};
-                            if (choices.length) {
-                                return buildStatusConfig(choices.map(ch => ({
-                                    value: ch,
-                                    label: ch,
-                                    fillColor: co[ch] && co[ch].fillColor,
-                                    textColor: co[ch] && co[ch].textColor
-                                })), 'choice');
-                            }
-                        }
-                    }
-                } catch (e) { /* repli silencieux */ }
-
-                if (Array.isArray(distinctFallback) && distinctFallback.length) {
-                    const seen = [];
-                    for (const v of distinctFallback) { if (v != null && v !== '' && seen.indexOf(v) === -1) seen.push(v); }
-                    if (seen.length) return buildStatusConfig(seen.map(v => ({ value: v, label: v })), 'data');
                 }
-                return buildStatusConfig(DEFAULT_STATUSES.slice(), 'default');
+            } catch (e) {
+                // Erreur globale, continuer a essayer
             }
+            
+            attempt++;
+            if (attempt < maxAttempts) {
+                await delay(baseDelay * Math.min(attempt, 5));
+            }
+        }
 
-            function getStatus(cfg, value) {
-                if (cfg && cfg.byValue && cfg.byValue[value]) return cfg.byValue[value];
-                return { value: value, label: value || '', fillColor: '#94a3b8', textColor: '#ffffff' };
-            }
-            function isTerminal(cfg, value) { return !!cfg && value === cfg.terminalValue; }
+        return { 
+            success: false, 
+            missing: missing,
+            unavailable: unavailable,
+            error: 'Timeout after ' + attempt + ' attempts. Missing: ' + missing.join(', ') + '. Unavailable: ' + unavailable.join(', '),
+            attempts: attempt
+        };
+    }
 
-            /* Seme les options (choix + couleurs) sur une colonne Choice si elle n'en a
-             * pas encore. Defensif. A appeler depuis ensureSchema apres creation.
-             */
-            async function seedStatusChoices(grist, table, column, statuses) {
-                try {
-                    const tid = await tableRowId(grist, table);
-                    if (tid == null) return;
-                    const cols = columnarToRows(await grist.docApi.fetchTable('_grist_Tables_column'));
-                    const col = cols.find(c => c.parentId === tid && c.colId === column);
-                    if (!col) return;
-                    let opt = {};
-                    try { opt = JSON.parse(col.widgetOptions || '{}') || {}; } catch (e) { opt = {}; }
-                    if (Array.isArray(opt.choices) && opt.choices.length) return; // deja configure : on respecte
-                    const list = statuses && statuses.length ? statuses : DEFAULT_STATUSES;
-                    const choiceOptions = {};
-                    for (const s of list) choiceOptions[s.value] = { fillColor: s.fillColor, textColor: s.textColor };
-                    const widgetOptions = JSON.stringify({ choices: list.map(s => s.value), choiceOptions: choiceOptions });
-                    await grist.docApi.applyUserActions([['ModifyColumn', table, column, { widgetOptions: widgetOptions }]]);
-                } catch (e) { console.warn('TF.seedStatusChoices:', e && e.message); }
-            }
-
-            /* ----- #2 : colonnes d'affichage des Ref (noms au lieu des IDs) ---------
-             * Pose le visibleCol + la display formula sur des colonnes Ref pour que les
-             * VUES NATIVES Grist affichent un libelle plutot que l'ID de ligne.
-             * specs : [{ table:'Tasks', column:'projet', visibleColId:'nom' }, ...]
-             * DEFENSIF : si Grist refuse une action, on log et on continue ; au pire
-             * l'affichage reste en IDs (comportement actuel), jamais de casse.
-             * --------------------------------------------------------------------- */
-            async function setRefDisplayColumns(grist, specs) {
-                if (!Array.isArray(specs) || !specs.length) return;
-                try {
-                    const tables = columnarToRows(await grist.docApi.fetchTable('_grist_Tables'));
-                    const cols = columnarToRows(await grist.docApi.fetchTable('_grist_Tables_column'));
-                    const tidOf = (tableId) => { const r = tables.find(t => t.tableId === tableId); return r ? r.id : null; };
-                    const colOf = (tableRow, colId) => cols.find(c => c.parentId === tableRow && c.colId === colId);
-
-                    const actions = [];
-                    for (const s of specs) {
-                        const srcTid = tidOf(s.table);
-                        if (srcTid == null) continue;
-                        const refCol = colOf(srcTid, s.column);
-                        if (!refCol) continue;
-                        // Table cible deduite du type "Ref:Target" / "RefList:Target".
-                        const m = /^(?:Ref|RefList):(.+)$/.exec(refCol.type || '');
-                        if (!m) continue;
-                        const targetTid = tidOf(m[1]);
-                        if (targetTid == null) continue;
-                        const visCol = colOf(targetTid, s.visibleColId);
-                        if (!visCol) continue;
-                        // Eviter de re-poser si deja correct.
-                        if (refCol.visibleCol === visCol.id) continue;
-                        actions.push(['SetDisplayFormula', s.table, null, refCol.id, '$' + s.column + '.' + s.visibleColId]);
-                        actions.push(['UpdateRecord', '_grist_Tables_column', refCol.id, { visibleCol: visCol.id }]);
-                    }
-                    if (actions.length) await grist.docApi.applyUserActions(actions);
-                } catch (e) { console.warn('TF.setRefDisplayColumns:', e && e.message); }
-            }
-
-            /* ----- #3 : plan de charge (heures par personne) ------------------------
-             * Stockage : colonne Text `charges` sur Tasks, JSON [{teamId, heures}].
-             * Parse defensif identique au pattern subtasks.
-             * --------------------------------------------------------------------- */
-            function parseCharges(v) {
-                try {
-                    const a = JSON.parse(v || '[]');
-                    if (!Array.isArray(a)) return [];
-                    return a.filter(x => x && x.teamId != null)
-                            .map(x => ({ teamId: Number(x.teamId), heures: Number(x.heures) || 0 }))
-                            .filter(x => !isNaN(x.teamId));
-                } catch (e) { return []; }
-            }
-            function chargesToJson(arr) {
-                return JSON.stringify((arr || [])
-                    .filter(x => x && x.teamId != null)
-                    .map(x => ({ teamId: Number(x.teamId), heures: Number(x.heures) || 0 }))
-                    .filter(x => !isNaN(x.teamId)));
-            }
-            // Heures totales d'une tache (somme des charges par personne).
-            function chargeTotal(charges) { return parseCharges(typeof charges === 'string' ? charges : JSON.stringify(charges || [])).reduce((s, c) => s + c.heures, 0); }
-            // Agrege la charge par membre sur une liste de taches (chaque tache expose .charges).
-            function chargeByMember(tasks) {
-                const by = {};
-                for (const t of (tasks || [])) {
-                    for (const c of parseCharges(t && t.charges)) {
-                        by[c.teamId] = (by[c.teamId] || 0) + c.heures;
-                    }
-                }
-                return by;
-            }
-
-            // Cle de periode : semaine ISO 'YYYY-Www' ou mois 'YYYY-MM'.
-            function periodKey(date, granularity) {
-                if (granularity === 'month') {
-                    return date.getUTCFullYear() + '-' + String(date.getUTCMonth() + 1).padStart(2, '0');
-                }
-                const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
-                const day = d.getUTCDay() || 7;
-                d.setUTCDate(d.getUTCDate() + 4 - day);
-                const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
-                const week = Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
-                return d.getUTCFullYear() + '-W' + String(week).padStart(2, '0');
-            }
-
-            // #3 plan de charge temporel : etale les charges PROPRES de chaque tache sur sa
-            // duree (jours calendaires), agrege par personne et par periode.
-            // dateDebut/dateEcheance = timestamps Unix SECONDES (Grist). Tache sans dates ou
-            // sans charge = ignoree. Retourne { teamId: { periodKey: heures } }.
-            function chargeByMemberPeriod(tasks, granularity) {
-                const g = granularity === 'month' ? 'month' : 'week';
-                const out = {};
-                for (const t of (tasks || [])) {
-                    const charges = parseCharges(t && t.charges);
-                    if (!charges.length) continue;
-                    const s = t.dateDebut, e = t.dateEcheance;
-                    if (s == null || e == null) continue;
-                    const day0 = Math.floor((s * 1000) / 86400000);
-                    const day1 = Math.floor((e * 1000) / 86400000);
-                    const nDays = Math.max(day1 - day0 + 1, 1);
-                    for (const c of charges) {
-                        const perDay = (Number(c.heures) || 0) / nDays;
-                        if (!perDay) continue;
-                        if (!out[c.teamId]) out[c.teamId] = {};
-                        for (let dd = day0; dd <= day1; dd++) {
-                            const key = periodKey(new Date(dd * 86400000), g);
-                            out[c.teamId][key] = (out[c.teamId][key] || 0) + perDay;
-                        }
-                    }
-                }
-                return out;
-            }
-
-            // Decale une date de n periodes (semaine = 7 jours, mois = 1 mois).
-            function shiftPeriods(date, granularity, n) {
-                const d = new Date(date.getTime());
-                if (granularity === 'month') d.setUTCMonth(d.getUTCMonth() + n);
-                else d.setUTCDate(d.getUTCDate() + n * 7);
-                return d;
-            }
-
-            // Liste contigue de cles de periode (semaine ISO ou mois) a partir d'une date,
-            // alignee sur le debut de periode (lundi / 1er du mois). Inclut les periodes vides.
-            function periodRange(startDate, granularity, count) {
-                const g = granularity === 'month' ? 'month' : 'week';
-                let d = new Date(Date.UTC(startDate.getUTCFullYear(), startDate.getUTCMonth(), startDate.getUTCDate()));
-                if (g === 'week') { const day = d.getUTCDay() || 7; d.setUTCDate(d.getUTCDate() - day + 1); }
-                else { d = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1)); }
-                const out = [];
-                for (let i = 0; i < count; i++) {
-                    out.push(periodKey(d, g));
-                    if (g === 'week') d.setUTCDate(d.getUTCDate() + 7);
-                    else d.setUTCMonth(d.getUTCMonth() + 1);
-                }
-                return out;
-            }
-
-            // chargeMatrix : generalise chargeByMemberPeriod. Etale les charges (via getCharges,
-            // defaut parseCharges) sur la duree, agrege par cle keyFn(t, charge) et periode.
-            function chargeMatrix(tasks, keyFn, granularity, getCharges, workdays) {
-                const g = granularity === 'month' ? 'month' : 'week';
-                const out = {};
-                for (const t of (tasks || [])) {
-                    const charges = getCharges ? getCharges(t) : parseCharges(t && t.charges);
-                    if (!charges.length || t.dateDebut == null || t.dateEcheance == null) continue;
-                    const d0 = Math.floor((t.dateDebut * 1000) / 86400000), d1 = Math.floor((t.dateEcheance * 1000) / 86400000);
-                    const days = [];
-                    for (let dd = d0; dd <= d1; dd++) { if (workdays) { const wd = new Date(dd * 86400000).getUTCDay(); if (wd < 1 || wd > 5) continue; } days.push(dd); }
-                    if (!days.length) days.push(d0);
-                    for (const c of charges) {
-                        const key = keyFn(t, c); if (key == null) continue;
-                        const perDay = c.heures / days.length; if (!perDay) continue;
-                        if (!out[key]) out[key] = {};
-                        for (const dd of days) { const pk = periodKey(new Date(dd * 86400000), g); out[key][pk] = (out[key][pk] || 0) + perDay; }
-                    }
-                }
-                return out;
-            }
-
-            /* ----- #7 : respect des droits (ACL) ------------------------------------
-             * Deux niveaux : (a) acces document lecture seule -> Grist passe
-             * `readonly=true` dans l'URL de l'iframe ; (b) ACL au niveau ligne ->
-             * l'acces widget peut etre `full` mais une ecriture sur une ligne donnee
-             * est refusee par le serveur. safeApply absorbe ce refus proprement.
-             * --------------------------------------------------------------------- */
-            function _qp(name) { try { return new URLSearchParams(location.search).get(name); } catch (e) { return null; } }
-            // Vrai si Grist a ouvert le widget en lecture seule (acces doc restreint).
-            function isReadOnly() { return _qp('readonly') === 'true'; }
-            // Niveau d'acces accorde au widget : 'full' | 'read table' | 'none' (defaut 'full').
-            function accessLevel() { return _qp('access') || 'full'; }
-            // Detecte un message d'erreur Grist correspondant a un refus de droits.
-            function isAccessError(e) {
-                const msg = (e && (e.message || e.toString())) || '';
-                return /access denied|not allowed|permission|forbidden|read[- ]?only|cannot (modify|add|remove)|acl/i.test(msg);
-            }
-            // Applique des actions en absorbant un refus de droits.
-            // Retourne { ok:true } ou { ok:false, denied:bool, message }. Ne fait PAS d'UI
-            // (chaque widget affiche son propre toast et recharge pour annuler l'optimiste).
-            async function safeApply(grist, actions) {
-                if (isReadOnly()) return { ok: false, denied: true, message: 'Document en lecture seule' };
-                try { const r = await grist.docApi.applyUserActions(actions); return { ok: true, ret: r }; }
-                catch (e) { return { ok: false, denied: isAccessError(e), message: (e && (e.message || e.toString())) || 'Erreur' }; }
-            }
-            // Garde transverse : enrobe grist.docApi.applyUserActions une seule fois pour
-            // respecter les droits sur TOUS les sites d'ecriture sans les modifier un a un.
-            // - lecture seule -> bloque + opts.onReadOnly()
-            // - refus ACL au niveau ligne -> opts.onDenied(err) (le widget toast + recharge)
-            // Les erreurs continuent d'etre levees (les try/catch existants les absorbent).
-            function guardWrites(grist, opts) {
-                opts = opts || {};
-                if (!grist || !grist.docApi || grist.docApi._tfGuarded) return;
-                const raw = grist.docApi.applyUserActions.bind(grist.docApi);
-                grist.docApi._tfGuarded = true;
-                grist.docApi.applyUserActions = async function (actions) {
-                    if (isReadOnly()) { try { opts.onReadOnly && opts.onReadOnly(); } catch (e) {} const err = new Error('Document en lecture seule'); err.tfReadOnly = true; throw err; }
-                    try { return await raw(actions); }
-                    catch (e) { if (isAccessError(e)) { try { opts.onDenied && opts.onDenied(e); } catch (e2) {} } throw e; }
-                };
-            }
-            // Bandeau "lecture seule" auto-contenu (aucun markup widget requis).
-            // Pousse le contenu vers le bas (padding-top sur body) pour NE PAS recouvrir l'en-tete du widget.
-            function readOnlyBanner() {
-                if (!isReadOnly() || (typeof document === 'undefined') || document.getElementById('tf-ro-banner')) return;
-                const b = document.createElement('div');
-                b.id = 'tf-ro-banner';
-                b.textContent = 'Lecture seule — vos droits ne permettent pas la modification';
-                b.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#b45309;color:#fff;font:600 12px/1.4 system-ui,-apple-system,sans-serif;text-align:center;padding:6px 10px;letter-spacing:.2px;box-sizing:border-box';
-                document.body.appendChild(b);
-                const h = b.offsetHeight || 28;
-                const prev = parseFloat(getComputedStyle(document.body).paddingTop) || 0;
-                document.body.style.paddingTop = (prev + h) + 'px';
-            }
-
+    // Construit une config de statuts normalisee depuis une liste brute.
+    function buildStatusConfig(list, source) {
+        const clean = (list || []).filter(s => s && s.value != null).map(s => {
+            const v = String(s.value);
+            const d = DEFAULTS_BY_VALUE[v];
+            const hasExplicitLabel = s.label != null && s.label !== '' && String(s.label) !== v;
             return {
-                DEFAULT_STATUSES: DEFAULT_STATUSES,
-                columnarToRows: columnarToRows,
-                loadStatusConfig: loadStatusConfig,
-                buildStatusConfig: buildStatusConfig,
-                getStatus: getStatus,
-                isTerminal: isTerminal,
-                seedStatusChoices: seedStatusChoices,
-                setRefDisplayColumns: setRefDisplayColumns,
-                parseCharges: parseCharges,
-                chargesToJson: chargesToJson,
-                chargeTotal: chargeTotal,
-                chargeByMember: chargeByMember,
-                periodKey: periodKey,
-                chargeByMemberPeriod: chargeByMemberPeriod,
-                shiftPeriods: shiftPeriods,
-                periodRange: periodRange,
-                chargeMatrix: chargeMatrix,
-                isReadOnly: isReadOnly,
-                accessLevel: accessLevel,
-                isAccessError: isAccessError,
-                safeApply: safeApply,
-                guardWrites: guardWrites,
-                readOnlyBanner: readOnlyBanner
+                value: v,
+                label: hasExplicitLabel ? String(s.label) : (d ? d.label : v),
+                fillColor: s.fillColor || (d ? d.fillColor : '#94a3b8'),
+                textColor: s.textColor || (d ? d.textColor : '#ffffff')
             };
+        });
+        const final = clean.length ? clean : DEFAULT_STATUSES.slice();
+        const byValue = {};
+        for (const s of final) byValue[s.value] = s;
+        return {
+            list: final,
+            byValue,
+            values: final.map(s => s.value),
+            terminalValue: final[final.length - 1].value, // convention "dernier = termine"
+            firstValue: final[0].value,
+            source: clean.length ? source : 'default'
+        };
+    }
+
+    /* Lit les statuts (libelles + couleurs + ordre) depuis la colonne Choice
+     * indiquee, via les metadonnees Grist. Repli en cascade :
+     *   1. options de la colonne Choice (cas ideal)
+     *   2. valeurs distinctes presentes dans les donnees (colonne Text)
+     *   3. DEFAULT_STATUSES
+     * Ne jette jamais : retourne toujours une config exploitable.
+     */
+    async function loadStatusConfig(grist, table, column, distinctFallback) {
+        try {
+            const tid = await tableRowId(grist, table);
+            if (tid != null) {
+                const cols = columnarToRows(await grist.docApi.fetchTable('_grist_Tables_column'));
+                const col = cols.find(c => c.parentId === tid && c.colId === column);
+                if (col && col.widgetOptions) {
+                    let opt = {};
+                    try { opt = JSON.parse(col.widgetOptions) || {}; } catch (e) { opt = {}; }
+                    const choices = Array.isArray(opt.choices) ? opt.choices : [];
+                    const co = opt.choiceOptions || {};
+                    if (choices.length) {
+                        return buildStatusConfig(choices.map(ch => ({
+                            value: ch,
+                            label: ch,
+                            fillColor: co[ch] && co[ch].fillColor,
+                            textColor: co[ch] && co[ch].textColor
+                        })), 'choice');
+                    }
+                }
+            }
+        } catch (e) { /* repli silencieux */ }
+
+        if (Array.isArray(distinctFallback) && distinctFallback.length) {
+            const seen = [];
+            for (const v of distinctFallback) { if (v != null && v !== '' && seen.indexOf(v) === -1) seen.push(v); }
+            if (seen.length) return buildStatusConfig(seen.map(v => ({ value: v, label: v })), 'data');
+        }
+        return buildStatusConfig(DEFAULT_STATUSES.slice(), 'default');
+    }
+
+    function getStatus(cfg, value) {
+        if (cfg && cfg.byValue && cfg.byValue[value]) return cfg.byValue[value];
+        return { value: value, label: value || '', fillColor: '#94a3b8', textColor: '#ffffff' };
+    }
+    function isTerminal(cfg, value) { return !!cfg && value === cfg.terminalValue; }
+
+    /* Seme les options (choix + couleurs) sur une colonne Choice si elle n'en a
+     * pas encore. Defensif. A appeler depuis ensureSchema apres creation.
+     * Retourne un resultat structure : { ok, changed, reason/error }
+     */
+    async function seedStatusChoices(grist, table, column, statuses) {
+        try {
+            const tid = await tableRowId(grist, table);
+            if (tid == null) {
+                return { ok: false, changed: false, reason: 'Table non trouvée: ' + table };
+            }
+            
+            const cols = columnarToRows(await grist.docApi.fetchTable('_grist_Tables_column'));
+            const col = cols.find(c => c.parentId === tid && c.colId === column);
+            
+            if (!col) {
+                return { ok: false, changed: false, reason: 'Colonne non trouvée: ' + table + '.' + column };
+            }
+            
+            let opt = {};
+            try { opt = JSON.parse(col.widgetOptions || '{}') || {}; } catch (e) { opt = {}; }
+            
+            // Si deja configure, on respecte les personnalisations
+            if (Array.isArray(opt.choices) && opt.choices.length) {
+                return { ok: true, changed: false, reason: 'already-configured' };
+            }
+            
+            const list = statuses && statuses.length ? statuses : DEFAULT_STATUSES;
+            const choiceOptions = {};
+            for (const s of list) choiceOptions[s.value] = { fillColor: s.fillColor, textColor: s.textColor };
+            const widgetOptions = JSON.stringify({ choices: list.map(s => s.value), choiceOptions: choiceOptions });
+            
+            await grist.docApi.applyUserActions([['ModifyColumn', table, column, { widgetOptions: widgetOptions }]]);
+            
+            return { ok: true, changed: true, reason: null };
+        } catch (e) {
+            console.warn('TF.seedStatusChoices:', e && e.message);
+            return { ok: false, changed: false, error: e.message || String(e) };
+        }
+    }
+
+    /* ----- #2 : colonnes d'affichage des Ref (noms au lieu des IDs) ---------
+     * Pose le visibleCol + la display formula sur des colonnes Ref pour que les
+     * VUES NATIVES Grist affichent un libelle plutot que l'ID de ligne.
+     * specs : [{ table:'Tasks', column:'projet', visibleColId:'nom' }, ...]
+     * ROBUSTE : verifie les metadonnees, gere les erreurs, retourne un rapport.
+     * --------------------------------------------------------------------- */
+    async function setRefDisplayColumns(grist, specs) {
+        var result = {
+            ok: true,
+            configured: [],
+            alreadyCorrect: [],
+            skipped: [],
+            errors: []
+        };
+
+        if (!Array.isArray(specs) || !specs.length) {
+            return result;
+        }
+
+        try {
+            // Relire les metadonnees fraîches
+            var tables = columnarToRows(await grist.docApi.fetchTable('_grist_Tables'));
+            var cols = columnarToRows(await grist.docApi.fetchTable('_grist_Tables_column'));
+            
+            var tidOf = function(tableId) {
+                var r = tables.find(function(t) { return t.tableId === tableId; });
+                return r ? r.id : null;
+            };
+            
+            var colOf = function(tableRowId, colId) {
+                return cols.find(function(c) { return c.parentId === tableRowId && c.colId === colId; });
+            };
+
+            for (var i = 0; i < specs.length; i++) {
+                var s = specs[i];
+                var srcTid = tidOf(s.table);
+                
+                if (srcTid == null) {
+                    result.skipped.push({ table: s.table, column: s.column, reason: 'Table source non trouvée' });
+                    continue;
+                }
+                
+                var refCol = colOf(srcTid, s.column);
+                if (!refCol) {
+                    result.skipped.push({ table: s.table, column: s.column, reason: 'Colonne référence absente des métadonnées' });
+                    result.ok = false;  // IMPORTANT : skipped = échec, pas ignoré
+                    continue;
+                }
+                
+                // Verifier que c'est bien une colonne Ref ou RefList
+                var typeMatch = /^(?:Ref|RefList):(.+)$/.exec(refCol.type || '');
+                if (!typeMatch) {
+                    result.errors.push({
+                        table: s.table,
+                        column: s.column,
+                        reason: 'Type incorrect: ' + (refCol.type || 'undefined') + ' (attendu Ref:*)'
+                    });
+                    result.ok = false;
+                    continue;
+                }
+                
+                // Table cible deduite du type
+                var targetTid = tidOf(typeMatch[1]);
+                if (targetTid == null) {
+                    result.errors.push({
+                        table: s.table,
+                        column: s.column,
+                        reason: 'Table cible non trouvée: ' + typeMatch[1]
+                    });
+                    result.ok = false;
+                    continue;
+                }
+                
+                var visCol = colOf(targetTid, s.visibleColId);
+                if (!visCol) {
+                    result.errors.push({
+                        table: s.table,
+                        column: s.column,
+                        reason: 'Colonne visible non trouvée: ' + s.visibleColId
+                    });
+                    result.ok = false;
+                    continue;
+                }
+                
+                // Verifier si deja configure correctement
+                var visibleColId = refCol.visibleCol;
+                var displayColId = refCol.displayCol;
+                
+                // Verifier visibleCol (comparaison numerique)
+                var visibleColIsCorrect = (Number(visibleColId) === Number(visCol.id));
+                
+                // Verifier display formula
+                var displayFormula = '$' + s.column + '.' + s.visibleColId;
+                var displayCol = displayColId ? cols.find(function(c) { return c.id === displayColId; }) : null;
+                var displayFormulaIsCorrect = displayCol && displayCol.formula === displayFormula;
+                
+                if (visibleColIsCorrect && displayFormulaIsCorrect) {
+                    result.alreadyCorrect.push({ table: s.table, column: s.column });
+                    continue;
+                }
+                
+                // Appliquer les corrections
+                var actions = [];
+                
+                // Configurer la formule d'affichage
+                actions.push(['SetDisplayFormula', s.table, null, s.column, displayFormula]);
+                
+                // Configurer le visibleCol
+                actions.push(['UpdateRecord', '_grist_Tables_column', refCol.id, { visibleCol: visCol.id }]);
+                
+                try {
+                    await grist.docApi.applyUserActions(actions);
+                    result.configured.push({ table: s.table, column: s.column });
+                } catch (e) {
+                    result.errors.push({
+                        table: s.table,
+                        column: s.column,
+                        reason: e.message || String(e)
+                    });
+                    result.ok = false;
+                }
+            }
+            
+            return result;
+        } catch (e) {
+            result.ok = false;
+            result.errors.push({ reason: 'Erreur globale: ' + (e.message || String(e)) });
+            return result;
+        }
+    }
+
+    /* ----- #3 : plan de charge (heures par personne) ------------------------
+     * Stockage : colonne Text `charges` sur Tasks, JSON [{teamId, heures}].
+     * Parse defensif identique au pattern subtasks.
+     * --------------------------------------------------------------------- */
+    function parseCharges(v) {
+        try {
+            const a = JSON.parse(v || '[]');
+            if (!Array.isArray(a)) return [];
+            return a.filter(x => x && x.teamId != null)
+                    .map(x => ({ teamId: Number(x.teamId), heures: Number(x.heures) || 0 }))
+                    .filter(x => !isNaN(x.teamId));
+        } catch (e) { return []; }
+    }
+    function chargesToJson(arr) {
+        return JSON.stringify((arr || [])
+            .filter(x => x && x.teamId != null)
+            .map(x => ({ teamId: Number(x.teamId), heures: Number(x.heures) || 0 }))
+            .filter(x => !isNaN(x.teamId)));
+    }
+    // Heures totales d'une tache (somme des charges par personne).
+    function chargeTotal(charges) { return parseCharges(typeof charges === 'string' ? charges : JSON.stringify(charges || [])).reduce((s, c) => s + c.heures, 0); }
+    // Agrege la charge par membre sur une liste de taches (chaque tache expose .charges).
+    function chargeByMember(tasks) {
+        const by = {};
+        for (const t of (tasks || [])) {
+            for (const c of parseCharges(t && t.charges)) {
+                by[c.teamId] = (by[c.teamId] || 0) + c.heures;
+            }
+        }
+        return by;
+    }
+
+    // Cle de periode : semaine ISO 'YYYY-Www' ou mois 'YYYY-MM'.
+    function periodKey(date, granularity) {
+        if (granularity === 'month') {
+            return date.getUTCFullYear() + '-' + String(date.getUTCMonth() + 1).padStart(2, '0');
+        }
+        const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+        const day = d.getUTCDay() || 7;
+        d.setUTCDate(d.getUTCDate() + 4 - day);
+        const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+        const week = Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+        return d.getUTCFullYear() + '-W' + String(week).padStart(2, '0');
+    }
+
+    // #3 plan de charge temporel : etale les charges PROPRES de chaque tache sur sa
+    // duree (jours calendaires), agrege par personne et par periode.
+    // dateDebut/dateEcheance = timestamps Unix SECONDES (Grist). Tache sans dates ou
+    // sans charge = ignoree. Retourne { teamId: { periodKey: heures } }.
+    function chargeByMemberPeriod(tasks, granularity) {
+        const g = granularity === 'month' ? 'month' : 'week';
+        const out = {};
+        for (const t of (tasks || [])) {
+            const charges = parseCharges(t && t.charges);
+            if (!charges.length) continue;
+            const s = t.dateDebut, e = t.dateEcheance;
+            if (s == null || e == null) continue;
+            const day0 = Math.floor((s * 1000) / 86400000);
+            const day1 = Math.floor((e * 1000) / 86400000);
+            const nDays = Math.max(day1 - day0 + 1, 1);
+            for (const c of charges) {
+                const perDay = (Number(c.heures) || 0) / nDays;
+                if (!perDay) continue;
+                if (!out[c.teamId]) out[c.teamId] = {};
+                for (let dd = day0; dd <= day1; dd++) {
+                    const key = periodKey(new Date(dd * 86400000), g);
+                    out[c.teamId][key] = (out[c.teamId][key] || 0) + perDay;
+                }
+            }
+        }
+        return out;
+    }
+
+    // Decale une date de n periodes (semaine = 7 jours, mois = 1 mois).
+    function shiftPeriods(date, granularity, n) {
+        const d = new Date(date.getTime());
+        if (granularity === 'month') d.setUTCMonth(d.getUTCMonth() + n);
+        else d.setUTCDate(d.getUTCDate() + n * 7);
+        return d;
+    }
+
+    // Liste contigue de cles de periode (semaine ISO ou mois) a partir d'une date,
+    // alignee sur le debut de periode (lundi / 1er du mois). Inclut les periodes vides.
+    function periodRange(startDate, granularity, count) {
+        const g = granularity === 'month' ? 'month' : 'week';
+        let d = new Date(Date.UTC(startDate.getUTCFullYear(), startDate.getUTCMonth(), startDate.getUTCDate()));
+        if (g === 'week') { const day = d.getUTCDay() || 7; d.setUTCDate(d.getUTCDate() - day + 1); }
+        else { d = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1)); }
+        const out = [];
+        for (let i = 0; i < count; i++) {
+            out.push(periodKey(d, g));
+            if (g === 'week') d.setUTCDate(d.getUTCDate() + 7);
+            else d.setUTCMonth(d.getUTCMonth() + 1);
+        }
+        return out;
+    }
+
+    // chargeMatrix : generalise chargeByMemberPeriod. Etale les charges (via getCharges,
+    // defaut parseCharges) sur la duree, agrege par cle keyFn(t, charge) et periode.
+    function chargeMatrix(tasks, keyFn, granularity, getCharges, workdays) {
+        const g = granularity === 'month' ? 'month' : 'week';
+        const out = {};
+        for (const t of (tasks || [])) {
+            const charges = getCharges ? getCharges(t) : parseCharges(t && t.charges);
+            if (!charges.length || t.dateDebut == null || t.dateEcheance == null) continue;
+            const d0 = Math.floor((t.dateDebut * 1000) / 86400000), d1 = Math.floor((t.dateEcheance * 1000) / 86400000);
+            const days = [];
+            for (let dd = d0; dd <= d1; dd++) { if (workdays) { const wd = new Date(dd * 86400000).getUTCDay(); if (wd < 1 || wd > 5) continue; } days.push(dd); }
+            if (!days.length) days.push(d0);
+            for (const c of charges) {
+                const key = keyFn(t, c); if (key == null) continue;
+                const perDay = c.heures / days.length; if (!perDay) continue;
+                if (!out[key]) out[key] = {};
+                for (const dd of days) { const pk = periodKey(new Date(dd * 86400000), g); out[key][pk] = (out[key][pk] || 0) + perDay; }
+            }
+        }
+        return out;
+    }
+
+    /* ----- #7 : respect des droits (ACL) ------------------------------------
+     * Deux niveaux : (a) acces document lecture seule -> Grist passe
+     * `readonly=true` dans l'URL de l'iframe ; (b) ACL au niveau ligne ->
+     * l'acces widget peut etre `full` mais une ecriture sur une ligne donnee
+     * est refusee par le serveur. safeApply absorbe ce refus proprement.
+     * --------------------------------------------------------------------- */
+    function _qp(name) { try { return new URLSearchParams(location.search).get(name); } catch (e) { return null; } }
+    // Vrai si Grist a ouvert le widget en lecture seule (acces doc restreint).
+    function isReadOnly() { return _qp('readonly') === 'true'; }
+    // Niveau d'acces accorde au widget : 'full' | 'read table' | 'none' (defaut 'full').
+    function accessLevel() { return _qp('access') || 'full'; }
+    // Detecte un message d'erreur Grist correspondant a un refus de droits.
+    function isAccessError(e) {
+        const msg = (e && (e.message || e.toString())) || '';
+        return /access denied|not allowed|permission|forbidden|read[- ]?only|cannot (modify|add|remove)|acl/i.test(msg);
+    }
+    // Applique des actions en absorbant un refus de droits.
+    // Retourne { ok:true } ou { ok:false, denied:bool, message }. Ne fait PAS d'UI
+    // (chaque widget affiche son propre toast et recharge pour annuler l'optimiste).
+    async function safeApply(grist, actions) {
+        if (isReadOnly()) return { ok: false, denied: true, message: 'Document en lecture seule' };
+        try { const r = await grist.docApi.applyUserActions(actions); return { ok: true, ret: r }; }
+        catch (e) { return { ok: false, denied: isAccessError(e), message: (e && (e.message || e.toString())) || 'Erreur' }; }
+    }
+    // Garde transverse : enrobe grist.docApi.applyUserActions une seule fois pour
+    // respecter les droits sur TOUS les sites d'ecriture sans les modifier un a un.
+    // - lecture seule -> bloque + opts.onReadOnly()
+    // - refus ACL au niveau ligne -> opts.onDenied(err) (le widget toast + recharge)
+    // Les erreurs continuent d'etre levees (les try/catch existants les absorbent).
+    function guardWrites(grist, opts) {
+        opts = opts || {};
+        if (!grist || !grist.docApi || grist.docApi._tfGuarded) return;
+        const raw = grist.docApi.applyUserActions.bind(grist.docApi);
+        grist.docApi._tfGuarded = true;
+        grist.docApi.applyUserActions = async function (actions) {
+            if (isReadOnly()) { try { opts.onReadOnly && opts.onReadOnly(); } catch (e) {} const err = new Error('Document en lecture seule'); err.tfReadOnly = true; throw err; }
+            try { return await raw(actions); }
+            catch (e) { if (isAccessError(e)) { try { opts.onDenied && opts.onDenied(e); } catch (e2) {} } throw e; }
+        };
+    }
+    // Bandeau "lecture seule" auto-contenu (aucun markup widget requis).
+    // Pousse le contenu vers le bas (padding-top sur body) pour NE PAS recouvrir l'en-tete du widget.
+    function readOnlyBanner() {
+        if (!isReadOnly() || (typeof document === 'undefined') || document.getElementById('tf-ro-banner')) return;
+        const b = document.createElement('div');
+        b.id = 'tf-ro-banner';
+        b.textContent = 'Lecture seule — vos droits ne permettent pas la modification';
+        b.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#b45309;color:#fff;font:600 12px/1.4 system-ui,-apple-system,sans-serif;text-align:center;padding:6px 10px;letter-spacing:.2px;box-sizing:border-box';
+        document.body.appendChild(b);
+        const h = b.offsetHeight || 28;
+        const prev = parseFloat(getComputedStyle(document.body).paddingTop) || 0;
+        document.body.style.paddingTop = (prev + h) + 'px';
+    }
+
+    return {
+        DEFAULT_STATUSES: DEFAULT_STATUSES,
+        columnarToRows: columnarToRows,
+        loadStatusConfig: loadStatusConfig,
+        buildStatusConfig: buildStatusConfig,
+        getStatus: getStatus,
+        isTerminal: isTerminal,
+        seedStatusChoices: seedStatusChoices,
+        setRefDisplayColumns: setRefDisplayColumns,
+        parseCharges: parseCharges,
+        chargesToJson: chargesToJson,
+        chargeTotal: chargeTotal,
+        chargeByMember: chargeByMember,
+        periodKey: periodKey,
+        chargeByMemberPeriod: chargeByMemberPeriod,
+        shiftPeriods: shiftPeriods,
+        periodRange: periodRange,
+        chargeMatrix: chargeMatrix,
+        isReadOnly: isReadOnly,
+        accessLevel: accessLevel,
+        isAccessError: isAccessError,
+        safeApply: safeApply,
+        guardWrites: guardWrites,
+        readOnlyBanner: readOnlyBanner,
+        // Helpers pour le schema
+        tableRowId: tableRowId,
+        isRefType: isRefType,
+        getRefTarget: getRefTarget,
+        isFormulaColumn: isFormulaColumn,
+        waitForTablesMetadata: waitForTablesMetadata,
+        delay: delay
+    };
+})();
+
+// Export explicite pour globalThis (fonctionne dans navigateur et autres environnements)
+if (typeof globalThis !== 'undefined') {
+    globalThis.TF = TF;
+}
+
+
+/* ============================================================================
+ * taskflow-schema.js — Source de vérité déclarative du schéma TaskFlow
+ * ----------------------------------------------------------------------------
+ * Ce fichier contient la définition COMPLÈTE et UNIQUE du modèle de données
+ * partagé par tous les widgets TaskFlow.
+ * 
+ * NE PAS modifier les widgets individuellement pour le schéma de base.
+ * Pour ajouter une table ou colonne, modifier CE fichier puis lancer :
+ *   npm run build:taskflow
+ * ============================================================================ */
+
+(function (global) {
+    'use strict';
+
+    // Helper pour créer une colonne de données (non formulée)
+    function dataColumn(type, options) {
+        return Object.assign({
+            type: type,
+            isFormula: false
+        }, options || {});
+    }
+
+    // Helper pour créer une colonne Ref
+    function refColumn(targetTable, options) {
+        return Object.assign({
+            type: 'Ref:' + targetTable,
+            isFormula: false
+        }, options || {});
+    }
+
+    // Helper pour créer une colonne RefList
+    function refListColumn(targetTable, options) {
+        return Object.assign({
+            type: 'RefList:' + targetTable,
+            isFormula: false
+        }, options || {});
+    }
+
+    // Version courante du schéma
+    var SCHEMA_VERSION = 1;
+
+    // Ordre de création des tables (important pour les dépendances)
+    var TABLE_ORDER = [
+        'Team',
+        'Programmes',
+        'Entites',
+        'Competences',
+        'Projects',
+        'Tasks',
+        'Actions',
+        'KanbanSteps',
+        'Disponibilites',
+        'TimeEntries',
+        'Feuilles',
+        'TaskFlow_Meta'
+    ];
+
+    // Définition complète des tables
+    var TABLES = {
+        // =========================================================================
+        // Team — Annuaire des membres
+        // =========================================================================
+        Team: {
+            label: 'Équipe',
+            columns: [
+                { id: 'nom',              opts: dataColumn('Text') },
+                { id: 'email',            opts: dataColumn('Text') },
+                { id: 'avatar',           opts: dataColumn('Text') },
+                { id: 'role',             opts: dataColumn('Choice') },
+                { id: 'actif',            opts: dataColumn('Bool') },
+                { id: 'couleur',          opts: dataColumn('Text') },
+                // Plan de charge (opt-in mais défini ici)
+                { id: 'capaciteHebdo',    opts: dataColumn('Numeric') },
+                { id: 'indispos',         opts: dataColumn('Text') },
+                // Annuaire / Organigramme
+                { id: 'entite',           opts: refColumn('Entites') },
+                { id: 'responsable',      opts: refColumn('Team') },
+                { id: 'gristUserId',      opts: dataColumn('Int') },
+                { id: 'competences',      opts: refListColumn('Competences') },
+                // ACL (formules)
+                { id: 'agents_geres',     opts: { type: 'RefList:Team', isFormula: true, formula: '[]' } },
+                { id: 'chaine_chefs',     opts: { type: 'RefList:Team', isFormula: true, formula: '[]' } }
+            ]
+        },
+
+        // =========================================================================
+        // Programmes — Regroupement de projets
+        // =========================================================================
+        Programmes: {
+            label: 'Programmes',
+            columns: [
+                { id: 'nom',              opts: dataColumn('Text') },
+                { id: 'couleur',          opts: dataColumn('Text') },
+                { id: 'responsable',      opts: refColumn('Team') },
+                { id: 'description',      opts: dataColumn('Text') },
+                { id: 'actif',            opts: dataColumn('Bool') }
+            ]
+        },
+
+        // =========================================================================
+        // Entites — Organigramme / Annuaire
+        // =========================================================================
+        Entites: {
+            label: 'Entités',
+            columns: [
+                { id: 'nom',              opts: dataColumn('Text') },
+                { id: 'parent',           opts: refColumn('Entites') },
+                { id: 'niveau',           opts: dataColumn('Choice') },
+                { id: 'chef',             opts: refColumn('Team') },
+                { id: 'actif',            opts: dataColumn('Bool') },
+                // Formule ancêtres
+                { id: 'ancetres',         opts: { type: 'RefList:Entites', isFormula: true, formula: '[]' } }
+            ]
+        },
+
+        // =========================================================================
+        // Competences — Compétences des membres
+        // =========================================================================
+        Competences: {
+            label: 'Compétences',
+            columns: [
+                { id: 'nom',              opts: dataColumn('Text') },
+                { id: 'categorie',        opts: dataColumn('Choice') },
+                { id: 'description',      opts: dataColumn('Text') },
+                { id: 'actif',            opts: dataColumn('Bool') }
+            ]
+        },
+
+        // =========================================================================
+        // Projects — Projets
+        // =========================================================================
+        Projects: {
+            label: 'Projets',
+            columns: [
+                { id: 'nom',              opts: dataColumn('Text') },
+                { id: 'couleur',          opts: dataColumn('Text') },
+                { id: 'dateDebut',        opts: dataColumn('Date') },
+                { id: 'dateFin',          opts: dataColumn('Date') },
+                { id: 'responsable',      opts: refColumn('Team') },
+                { id: 'actif',            opts: dataColumn('Bool') },
+                // Programme (opt-in mais défini ici)
+                { id: 'programme',        opts: refColumn('Programmes') }
+            ]
+        },
+
+        // =========================================================================
+        // Tasks — Tâches
+        // =========================================================================
+        Tasks: {
+            label: 'Tâches',
+            columns: [
+                { id: 'titre',            opts: dataColumn('Text') },
+                { id: 'description',      opts: dataColumn('Text') },
+                { id: 'dateDebut',        opts: dataColumn('Date') },
+                { id: 'dateEcheance',     opts: dataColumn('Date') },
+                { id: 'priorite',         opts: dataColumn('Choice') },
+                { id: 'statut',           opts: dataColumn('Choice') },
+                { id: 'progression',      opts: dataColumn('Numeric') },
+                { id: 'projet',           opts: refColumn('Projects') },
+                { id: 'assignees',        opts: refListColumn('Team') },
+                { id: 'type',             opts: dataColumn('Choice') },
+                { id: 'dependDe',         opts: refListColumn('Tasks') },
+                { id: 'tags',             opts: dataColumn('ChoiceList') },
+                { id: 'estimationH',      opts: dataColumn('Numeric') },
+                { id: 'tempsPasse',       opts: dataColumn('Numeric') },
+                { id: 'couleur',          opts: dataColumn('Text') },
+                { id: 'subtasks',         opts: dataColumn('Text') },
+                { id: 'parentTask',       opts: refColumn('Tasks') },
+                // Plan de charge (opt-in mais défini ici)
+                { id: 'charges',          opts: dataColumn('Text') },
+                { id: 'dateCloture',      opts: dataColumn('Date') }
+            ]
+        },
+
+        // =========================================================================
+        // Actions — Actions secondaires
+        // =========================================================================
+        Actions: {
+            label: 'Actions',
+            columns: [
+                { id: 'titre',            opts: dataColumn('Text') },
+                { id: 'description',      opts: dataColumn('Text') },
+                { id: 'statut',           opts: dataColumn('Choice') },
+                { id: 'priorite',         opts: dataColumn('Choice') },
+                { id: 'progression',      opts: dataColumn('Numeric') },
+                { id: 'estimationH',      opts: dataColumn('Numeric') },
+                { id: 'dateDebut',        opts: dataColumn('Date') },
+                { id: 'dateEcheance',     opts: dataColumn('Date') },
+                { id: 'couleur',          opts: dataColumn('Text') },
+                { id: 'tags',             opts: dataColumn('ChoiceList') },
+                { id: 'ordre',            opts: dataColumn('Int') },
+                { id: 'task',             opts: refColumn('Tasks') },
+                { id: 'assignee',         opts: refColumn('Team') }
+            ]
+        },
+
+        // =========================================================================
+        // KanbanSteps — Étapes personnalisables du Kanban
+        // =========================================================================
+        KanbanSteps: {
+            label: 'Étapes Kanban',
+            columns: [
+                { id: 'nom',              opts: dataColumn('Text') },
+                { id: 'valeur',           opts: dataColumn('Text') },
+                { id: 'couleur',          opts: dataColumn('Text') },
+                { id: 'ordre',            opts: dataColumn('Int') },
+                { id: 'actif',            opts: dataColumn('Bool') }
+            ]
+        },
+
+        // =========================================================================
+        // Disponibilites — Historique des indisponibilités
+        // =========================================================================
+        Disponibilites: {
+            label: 'Disponibilités',
+            columns: [
+                { id: 'membre',           opts: refColumn('Team') },
+                { id: 'type',             opts: dataColumn('Choice') },
+                { id: 'dateDebut',        opts: dataColumn('Date') },
+                { id: 'dateFin',          opts: dataColumn('Date') },
+                { id: 'dispo',            opts: dataColumn('Numeric') },
+                { id: 'commentaire',      opts: dataColumn('Text') }
+            ]
+        },
+
+        // =========================================================================
+        // TimeEntries — Feuille de temps (réalisé)
+        // =========================================================================
+        TimeEntries: {
+            label: 'Temps passé',
+            columns: [
+                { id: 'membre',           opts: refColumn('Team') },
+                { id: 'tache',            opts: refColumn('Tasks') },
+                { id: 'date',             opts: dataColumn('Date') },
+                { id: 'heures',           opts: dataColumn('Numeric') },
+                { id: 'imputation',       opts: dataColumn('Text') },
+                { id: 'description',      opts: dataColumn('Text') }
+            ]
+        },
+
+        // =========================================================================
+        // Feuilles — Feuilles de temps à valider
+        // =========================================================================
+        Feuilles: {
+            label: 'Feuilles de temps',
+            columns: [
+                { id: 'membre',           opts: refColumn('Team') },
+                { id: 'semaine',          opts: dataColumn('Date') },
+                { id: 'statut',           opts: dataColumn('Choice') },
+                { id: 'validePar',        opts: refColumn('Team') },
+                { id: 'dateValidation',   opts: dataColumn('Date') },
+                { id: 'motifRejet',       opts: dataColumn('Text') }
+            ]
+        },
+
+        // =========================================================================
+        // TaskFlow_Meta — Table technique de métadonnées
+        // =========================================================================
+        TaskFlow_Meta: {
+            label: 'Métadonnées TaskFlow',
+            columns: [
+                { id: 'schemaVersion',    opts: dataColumn('Int') },
+                { id: 'installationStatus', opts: dataColumn('Choice') },
+                { id: 'lastMigration',    opts: dataColumn('Text') },
+                { id: 'lastMigrationAt',  opts: dataColumn('DateTime') },
+                { id: 'lastError',        opts: dataColumn('Text') },
+                { id: 'installedBy',      opts: dataColumn('Text') }
+            ]
+        }
+    };
+
+    // Configuration des références (pour affichage humain dans les vues natives)
+    // Chaque référence doit afficher le nom/titre plutôt que l'ID
+    var REFERENCE_DISPLAYS = [
+        // Team refs
+        { table: 'Team', column: 'entite', targetTable: 'Entites', visibleColumn: 'nom' },
+        { table: 'Team', column: 'responsable', targetTable: 'Team', visibleColumn: 'nom' },
+        { table: 'Team', column: 'competences', targetTable: 'Competences', visibleColumn: 'nom' },
+        
+        // Projects refs
+        { table: 'Projects', column: 'responsable', targetTable: 'Team', visibleColumn: 'nom' },
+        { table: 'Projects', column: 'programme', targetTable: 'Programmes', visibleColumn: 'nom' },
+        
+        // Programmes refs
+        { table: 'Programmes', column: 'responsable', targetTable: 'Team', visibleColumn: 'nom' },
+        
+        // Entites refs
+        { table: 'Entites', column: 'parent', targetTable: 'Entites', visibleColumn: 'nom' },
+        { table: 'Entites', column: 'chef', targetTable: 'Team', visibleColumn: 'nom' },
+        
+        // Tasks refs
+        { table: 'Tasks', column: 'projet', targetTable: 'Projects', visibleColumn: 'nom' },
+        { table: 'Tasks', column: 'assignees', targetTable: 'Team', visibleColumn: 'nom' },
+        { table: 'Tasks', column: 'dependDe', targetTable: 'Tasks', visibleColumn: 'titre' },
+        { table: 'Tasks', column: 'parentTask', targetTable: 'Tasks', visibleColumn: 'titre' },
+        
+        // Actions refs
+        { table: 'Actions', column: 'task', targetTable: 'Tasks', visibleColumn: 'titre' },
+        { table: 'Actions', column: 'assignee', targetTable: 'Team', visibleColumn: 'nom' },
+        
+        // TimeEntries refs
+        { table: 'TimeEntries', column: 'membre', targetTable: 'Team', visibleColumn: 'nom' },
+        { table: 'TimeEntries', column: 'tache', targetTable: 'Tasks', visibleColumn: 'titre' },
+        
+        // Feuilles refs
+        { table: 'Feuilles', column: 'membre', targetTable: 'Team', visibleColumn: 'nom' },
+        { table: 'Feuilles', column: 'validePar', targetTable: 'Team', visibleColumn: 'nom' },
+        
+        // Disponibilites refs
+        { table: 'Disponibilites', column: 'membre', targetTable: 'Team', visibleColumn: 'nom' }
+    ];
+
+    // Statuts par défaut pour les colonnes Choice
+    var DEFAULT_STATUSES = [
+        { value: 'todo',       label: 'À faire',  fillColor: '#94a3b8', textColor: '#ffffff' },
+        { value: 'inprogress', label: 'En cours', fillColor: '#f59e0b', textColor: '#ffffff' },
+        { value: 'review',     label: 'En revue', fillColor: '#3b82f6', textColor: '#ffffff' },
+        { value: 'done',       label: 'Terminé',  fillColor: '#10b981', textColor: '#ffffff' }
+    ];
+
+    // Types de tâches par défaut
+    var DEFAULT_TASK_TYPES = [
+        { value: 'tache', label: 'Tâche' },
+        { value: 'jalon', label: 'Jalon' },
+        { value: 'epic',  label: 'Épopée' }
+    ];
+
+    // Priorités par défaut
+    var DEFAULT_PRIORITIES = [
+        { value: '1', label: 'Urgent', fillColor: '#ef4444', textColor: '#ffffff' },
+        { value: '2', label: 'Élevée', fillColor: '#f59e0b', textColor: '#ffffff' },
+        { value: '3', label: 'Normale', fillColor: '#3b82f6', textColor: '#ffffff' },
+        { value: '4', label: 'Basse',  fillColor: '#64748b', textColor: '#ffffff' }
+    ];
+
+    // Export public
+    global.TASKFLOW_SCHEMA = {
+        version: SCHEMA_VERSION,
+        tableOrder: TABLE_ORDER,
+        tables: TABLES,
+        referenceDisplays: REFERENCE_DISPLAYS,
+        defaultStatuses: DEFAULT_STATUSES,
+        defaultTaskTypes: DEFAULT_TASK_TYPES,
+        defaultPriorities: DEFAULT_PRIORITIES,
+        // Helpers exportés
+        dataColumn: dataColumn,
+        refColumn: refColumn,
+        refListColumn: refListColumn
+    };
+
+})(typeof window !== 'undefined' ? window : (typeof global !== 'undefined' ? global : this));
+
+
+/* ============================================================================
+ * taskflow-bootstrap.js — API unique d'initialisation du schéma TaskFlow/GENCI
+ * ----------------------------------------------------------------------------
+ * Ce module fournit une fonction unique `ensureGenciSchema(grist, options)` qui :
+ * 1. Attend que Grist soit accessible
+ * 2. Lit les métadonnées du document (Passe 0)
+ * 3. Crée toutes les tables manquantes SANS colonnes Ref (Passe 1)
+ * 4. Attend la stabilisation des métadonnées
+ * 5. Ajoute les colonnes Ref et RefList (Passe 2)
+ * 6. Ajoute les colonnes formules (Passe 3)
+ * 7. Configure les Choices (Passe 4)
+ * 8. Configure l'affichage des références (Passe 5)
+ * 9. Vérifie le résultat final
+ * 10. Seed les données de démo uniquement si tables vides
+ * 
+ * Résistant à la concurrence, idempotent, non destructif.
+ * ============================================================================ */
+
+(function (global) {
+    'use strict';
+
+    // Référence au schéma déclaré
+    var SCHEMA = global.TASKFLOW_SCHEMA;
+    var TF = global.TF;
+    
+    if (!SCHEMA) {
+        throw new Error('TASKFLOW_SCHEMA non chargé. Charger taskflow-schema.js en premier.');
+    }
+    if (!TF) {
+        throw new Error('TF (taskflow-core) non chargé. Charger taskflow-core.js en premier.');
+    }
+
+    // État interne pour sérialiser les appels dans une même iframe
+    var bootstrapPromise = null;
+    var bootstrapComplete = false;
+    var maxRetries = 3;
+
+    // Spécifications d'affichage des références (source unique)
+    var GENCI_REF_DISPLAY_SPECS = [
+        { table: 'Tasks', column: 'projet', visibleColId: 'nom' },
+        { table: 'Tasks', column: 'assignees', visibleColId: 'nom' },
+        { table: 'Tasks', column: 'dependDe', visibleColId: 'titre' },
+        { table: 'Tasks', column: 'parentTask', visibleColId: 'titre' },
+
+        { table: 'Projects', column: 'responsable', visibleColId: 'nom' },
+        { table: 'Projects', column: 'programme', visibleColId: 'nom' },
+
+        { table: 'Programmes', column: 'responsable', visibleColId: 'nom' },
+
+        { table: 'Entites', column: 'parent', visibleColId: 'nom' },
+        { table: 'Entites', column: 'chef', visibleColId: 'nom' },
+
+        { table: 'Team', column: 'entite', visibleColId: 'nom' },
+        { table: 'Team', column: 'responsable', visibleColId: 'nom' },
+        { table: 'Team', column: 'competences', visibleColId: 'nom' },
+
+        { table: 'Actions', column: 'task', visibleColId: 'titre' },
+        { table: 'Actions', column: 'assignee', visibleColId: 'nom' },
+
+        { table: 'TimeEntries', column: 'membre', visibleColId: 'nom' },
+        { table: 'TimeEntries', column: 'tache', visibleColId: 'titre' },
+
+        { table: 'Feuilles', column: 'membre', visibleColId: 'nom' },
+        { table: 'Feuilles', column: 'validePar', visibleColId: 'nom' },
+
+        { table: 'Disponibilites', column: 'membre', visibleColId: 'nom' }
+    ];
+
+    // Helper : convertit un tableau colonnaire Grist en tableau d'objets
+    function columnarToRows(data) {
+        if (!data || Array.isArray(data)) return data || [];
+        var cols = Object.keys(data);
+        if (!cols.length) return [];
+        var n = (data[cols[0]] && data[cols[0]].length) || 0;
+        var rows = [];
+        for (var i = 0; i < n; i++) {
+            var rec = {};
+            for (var j = 0; j < cols.length; j++) {
+                rec[cols[j]] = data[cols[j]][i];
+            }
+            rows.push(rec);
+        }
+        return rows;
+    }
+
+    // Helper : log structuré
+    function log(phase, data) {
+        var msg = '[GENCI schema] ' + phase;
+        if (typeof console !== 'undefined') {
+            if (data !== undefined) {
+                console.info(msg, data);
+            } else {
+                console.info(msg);
+            }
+        }
+    }
+
+    // Helper : délai
+    function delay(ms) {
+        return new Promise(function (resolve) { setTimeout(resolve, ms); });
+    }
+
+    // Helper : vérifie si un type est Ref ou RefList
+    function isRefType(type) {
+        return /^(Ref|RefList):/.test(String(type || ''));
+    }
+
+    // Helper : extrait la table cible d'un type Ref
+    function getRefTarget(type) {
+        var match = /^(?:Ref|RefList):(.+)$/.exec(String(type || ''));
+        return match ? match[1] : null;
+    }
+
+    // ========================================================================
+    // PASSE 0 — Migration et inspection
+    // ========================================================================
+    
+    async function migrateLegacyTables(grist) {
+        var migrationEntries = [];
+        try {
+            // Renommer Portefeuilles → Programmes si nécessaire
+            var tablesData = await grist.docApi.fetchTable('_grist_Tables');
+            var tables = columnarToRows(tablesData);
+            var hasPortefeuilles = tables.some(function(t) { return t.tableId === 'Portefeuilles'; });
+            var hasProgrammes = tables.some(function(t) { return t.tableId === 'Programmes'; });
+            
+            if (hasPortefeuilles && !hasProgrammes) {
+                await grist.docApi.applyUserActions([['RenameTable', 'Portefeuilles', 'Programmes']]);
+                migrationEntries.push('Renamed Portefeuilles → Programmes');
+                log('[GENCI tables] Migration: ' + migrationEntries[0]);
+            }
+        } catch (e) {
+            log('[GENCI tables] Migration error: ' + (e.message || e));
+        }
+        return migrationEntries;
+    }
+
+    async function loadSchemaMetadata(grist) {
+        var tablesData = await grist.docApi.fetchTable('_grist_Tables');
+        var columnsData = await grist.docApi.fetchTable('_grist_Tables_column');
+        
+        var tables = columnarToRows(tablesData);
+        var columns = columnarToRows(columnsData);
+        
+        // Index par tableId
+        var tableById = {};
+        for (var i = 0; i < tables.length; i++) {
+            tableById[tables[i].tableId] = tables[i];
+        }
+        
+        // Index par (tableId, colId)
+        var columnByKey = {};
+        var columnByRowId = {};
+        for (var j = 0; j < columns.length; j++) {
+            var col = columns[j];
+            var parentTable = tables.find(function (t) { t.id === col.parentId });
+            if (parentTable) {
+                var key = parentTable.tableId + '.' + col.colId;
+                columnByKey[key] = col;
+                columnByRowId[col.id] = col;
+            }
+        }
+        
+        return {
+            tables: tables,
+            columns: columns,
+            tableById: tableById,
+            columnByKey: columnByKey,
+            columnByRowId: columnByRowId
+        };
+    }
+
+    // ========================================================================
+    // PASSE 1 — Création de toutes les tables (colonnes non-Ref uniquement)
+    // ========================================================================
+    
+    // Normalise une définition de colonne pour Grist
+    function normalizeColumnDefinition(column) {
+        var opts = column.opts || column;
+        return {
+            id: column.id,
+            type: opts.type || 'Text',
+            isFormula: Boolean(opts.isFormula),
+            formula: opts.formula || ''
+        };
+    }
+    
+    function splitColumns(columns, formulasMap, tableName) {
+        var nonRefCols = [];
+        var refCols = [];
+        var formulaCols = [];
+        
+        for (var i = 0; i < columns.length; i++) {
+            var col = columns[i];
+            var type = col.type || (col.opts && col.opts.type);
+            
+            // Vérifier si c'est une formule définie
+            if (formulasMap && formulasMap[tableName] && formulasMap[tableName][col.id]) {
+                formulaCols.push(col);
+            } else if (isRefType(type)) {
+                refCols.push(col);
+            } else {
+                nonRefCols.push(col);
+            }
+        }
+        
+        return { nonRef: nonRefCols, ref: refCols, formula: formulaCols };
+    }
+
+    async function createTable(grist, tableId, columns, retryCount) {
+        var colSpecs = columns.map(function (column) {
+            var normalized = normalizeColumnDefinition(column);
+            var spec = {
+                id: normalized.id,
+                type: normalized.type,
+                isFormula: normalized.isFormula
+            };
+            if (normalized.isFormula && normalized.formula) {
+                spec.formula = normalized.formula;
+            }
+            return spec;
+        });
+        
+        // Validation avant appel Grist
+        for (var i = 0; i < colSpecs.length; i++) {
+            if (!colSpecs[i].id || !colSpecs[i].type) {
+                throw new Error(
+                    'Définition de colonne invalide pour ' + tableId +
+                    ': ' + JSON.stringify(colSpecs[i])
+                );
+            }
+        }
+        
+        log('[GENCI tables] Création table: ' + tableId + ' (' + colSpecs.length + ' colonnes)');
+        
+        try {
+            await grist.docApi.applyUserActions([
+                ['AddTable', tableId, colSpecs]
+            ]);
+            return true;
+        } catch (e) {
+            var msg = e.message || String(e);
+            if (msg.indexOf('already exists') !== -1 && retryCount < maxRetries) {
+                log('[GENCI tables] Table déjà créée, réessai ' + (retryCount + 1));
+                await delay(200 * (retryCount + 1));
+                return createTable(grist, tableId, columns, retryCount + 1);
+            }
+            throw e;
+        }
+    }
+
+    async function ensureBaseTables(grist, schemaDef, formulasMap) {
+        var metadata = await loadSchemaMetadata(grist);
+        var created = [];
+        var columnsAdded = [];
+        var invalidTypes = [];
+        var errors = [];
+        
+        for (var i = 0; i < SCHEMA.tableOrder.length; i++) {
+            var tableId = SCHEMA.tableOrder[i];
+            var tableDef = schemaDef.tables[tableId];
+            
+            if (!tableDef) continue;
+            
+            if (!metadata.tableById[tableId]) {
+                // Table manquante : la créer
+                var columns = tableDef.columns || [];
+                var split = splitColumns(columns, formulasMap, tableId);
+                
+                // Créer avec colonnes non-Ref UNIQUEMENT (pas les formules ici)
+                var baseCols = split.nonRef;
+                if (baseCols.length > 0) {
+                    await createTable(grist, tableId, baseCols, 0);
+                    created.push(tableId);
+                }
+            } else {
+                // Table existante : ajouter les colonnes simples manquantes
+                var columns = tableDef.columns || [];
+                var split = splitColumns(columns, formulasMap, tableId);
+                
+                for (var j = 0; j < split.nonRef.length; j++) {
+                    var colDef = split.nonRef[j];
+                    var key = tableId + '.' + colDef.id;
+                    if (!metadata.columnByKey[key]) {
+                        try {
+                            await addColumn(grist, tableId, colDef, 0);
+                            columnsAdded.push(key);
+                        } catch (e) {
+                            errors.push({
+                                table: tableId,
+                                column: colDef.id,
+                                action: 'add',
+                                error: e.message || String(e)
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        
+        return { 
+            created: created, 
+            columnsAdded: columnsAdded,
+            invalidTypes: invalidTypes,
+            errors: errors 
+        };
+    }
+
+    // ========================================================================
+    // SYNCHRONISATION — Attendre la stabilisation des métadonnées (3 tentatives max)
+    // ========================================================================
+    
+    async function syncMetadata(grist, expectedTables) {
+        log('[GENCI sync] Attente stabilisation métadonnées (3 tentatives)...');
+        
+        var lastMetadata = null;
+        
+        for (var attempt = 0; attempt < 3; attempt++) {
+            lastMetadata = await loadSchemaMetadata(grist);
+            
+            var missing = expectedTables.filter(function(tableId) {
+                return !lastMetadata.tableById[tableId];
+            });
+            
+            if (missing.length === 0) {
+                log('[GENCI sync] Métadonnées stabilisées');
+                return lastMetadata;
+            }
+            
+            if (attempt < 2) {
+                await delay(150);
+            }
+        }
+        
+        throw new Error(
+            'Tables absentes après création: ' +
+            expectedTables.filter(function(tableId) {
+                return !lastMetadata.tableById[tableId];
+            }).join(', ')
+        );
+    }
+
+    // ========================================================================
+    // PASSE 2 — Création et réparation des colonnes de référence
+    // ========================================================================
+    
+    async function addColumn(grist, tableId, colDef, retryCount) {
+        var normalized = normalizeColumnDefinition(colDef);
+        
+        log('[GENCI refs] Ajout colonne: ' + tableId + '.' + normalized.id + ' (' + normalized.type + ')');
+        
+        var action = ['AddColumn', tableId, normalized.id, {
+            type: normalized.type,
+            isFormula: normalized.isFormula
+        }];
+        
+        if (normalized.isFormula && normalized.formula) {
+            action[3].formula = normalized.formula;
+        }
+        
+        try {
+            await grist.docApi.applyUserActions([action]);
+            return true;
+        } catch (e) {
+            var msg = e.message || String(e);
+            
+            // Erreurs transitoires : retry avec délai progressif
+            var isTransientError = 
+                msg.indexOf('already exists') !== -1 ||
+                msg.indexOf('NoneType') !== -1 ||
+                msg.indexOf('table_id') !== -1 ||
+                msg.indexOf('table not found') !== -1 ||
+                msg.indexOf('unknown table') !== -1 ||
+                msg.indexOf('invalid table') !== -1;
+            
+            if (isTransientError && retryCount < maxRetries) {
+                log('[GENCI refs] Erreur transitoire, réessai ' + (retryCount + 1) + ': ' + msg);
+                await delay(300 * (retryCount + 1));
+                return addColumn(grist, tableId, colDef, retryCount + 1);
+            }
+            
+            // Après dernier essai ou erreur non transitoire : relancer l'erreur
+            throw e;
+        }
+    }
+
+    async function ensureRefColumns(grist, schemaDef, formulasMap) {
+        var metadata = await loadSchemaMetadata(grist);
+        var result = { added: [], repaired: [], errors: [] };
+        
+        for (var i = 0; i < SCHEMA.tableOrder.length; i++) {
+            var tableId = SCHEMA.tableOrder[i];
+            var tableDef = schemaDef.tables[tableId];
+            
+            if (!tableDef || !metadata.tableById[tableId]) continue;
+            
+            var columns = tableDef.columns || [];
+            var split = splitColumns(columns, formulasMap, tableId);
+            
+            // Traiter les colonnes Ref
+            for (var j = 0; j < split.ref.length; j++) {
+                var colDef = split.ref[j];
+                var key = tableId + '.' + colDef.id;
+                var existingCol = metadata.columnByKey[key];
+                
+                if (!existingCol) {
+                    // Colonne manquante : l'ajouter
+                    try {
+                        await addColumn(grist, tableId, colDef, 0);
+                        result.added.push(key);
+                    } catch (e) {
+                        result.errors.push({
+                            table: tableId,
+                            column: colDef.id,
+                            action: 'add',
+                            error: e.message || String(e)
+                        });
+                    }
+                } else {
+                    // Colonne existante : vérifier le type
+                    var expectedType = colDef.opts?.type || colDef.type;
+                    var existingType = existingCol.type;
+                    
+                    if (existingType !== expectedType) {
+                        // Type incorrect : tenter réparation
+                        log('[GENCI refs] Type incorrect: ' + key + ' (attendu: ' + expectedType + ', actuel: ' + existingType + ')');
+                        
+                        // Vérifier que la table cible existe
+                        var targetType = getRefTarget(expectedType);
+                        if (targetType && metadata.tableById[targetType]) {
+                            try {
+                                await grist.docApi.applyUserActions([
+                                    ['ModifyColumn', tableId, colDef.id, { type: expectedType }]
+                                ]);
+                                result.repaired.push(key);
+                            } catch (e) {
+                                result.errors.push({
+                                    table: tableId,
+                                    column: colDef.id,
+                                    action: 'repair',
+                                    expectedType: expectedType,
+                                    actualType: existingType,
+                                    error: e.message || String(e)
+                                });
+                            }
+                        } else {
+                            result.errors.push({
+                                table: tableId,
+                                column: colDef.id,
+                                action: 'repair-skipped',
+                                reason: 'Table cible non trouvée: ' + targetType
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        
+        return result;
+    }
+
+    // Attend que toutes les colonnes Ref soient visibles dans les métadonnées
+    async function waitForReferenceColumns(grist, schemaDef, formulasMap, options) {
+        options = options || {};
+        var maxAttempts = options.maxAttempts || 20;
+        var baseDelay = options.baseDelay || 200;
+        var attempt = 0;
+        var lastMissing = [];
+        var lastInvalid = [];
+        
+        // Construire la liste des colonnes Ref attendues
+        var expectedRefs = [];
+        for (var i = 0; i < SCHEMA.tableOrder.length; i++) {
+            var tableId = SCHEMA.tableOrder[i];
+            var tableDef = schemaDef.tables[tableId];
+            if (!tableDef) continue;
+            
+            var columns = tableDef.columns || [];
+            var split = splitColumns(columns, formulasMap, tableId);
+            
+            for (var j = 0; j < split.ref.length; j++) {
+                var colDef = split.ref[j];
+                expectedRefs.push({
+                    table: tableId,
+                    column: colDef.id,
+                    expectedType: colDef.opts?.type || colDef.type
+                });
+            }
+        }
+        
+        log('[GENCI sync] Attente des colonnes Ref (' + expectedRefs.length + ' colonnes)...');
+        
+        while (attempt < maxAttempts) {
+            try {
+                var metadata = await loadSchemaMetadata(grist);
+                var missing = [];
+                var invalid = [];
+                
+                for (var k = 0; k < expectedRefs.length; k++) {
+                    var ref = expectedRefs[k];
+                    var key = ref.table + '.' + ref.column;
+                    var col = metadata.columnByKey[key];
+                    
+                    // Vérifier principalement l'existence de la colonne
+                    if (!col) {
+                        missing.push(key);
+                    } else if (col.type !== ref.expectedType) {
+                        // Types incorrects collectés mais ne bloquent pas la stabilisation
+                        invalid.push({
+                            key: key,
+                            expected: ref.expectedType,
+                            actual: col.type
+                        });
+                    }
+                }
+                
+                // Sauvegarder pour le rapport final
+                lastMissing = missing.slice();
+                lastInvalid = invalid.slice();
+                
+                // Succès si toutes les colonnes existent (peu importe le type pour l'instant)
+                if (missing.length === 0) {
+                    log('[GENCI sync] Toutes les colonnes Ref sont présentes (' + attempt + ' tentatives)');
+                    if (invalid.length > 0) {
+                        log('[GENCI sync] Types incorrects détectés (seront réparés): ' + invalid.length);
+                    }
+                    return {
+                        success: true,
+                        missing: [],
+                        invalid: invalid,
+                        attempts: attempt + 1
+                    };
+                }
+                
+                if (missing.length > 0) {
+                    log('[GENCI sync] Colonnes Ref manquantes: ' + missing.join(', '));
+                }
+                
+            } catch (e) {
+                log('[GENCI sync] Erreur de lecture métadonnées: ' + (e.message || e));
+            }
+            
+            attempt++;
+            if (attempt < maxAttempts) {
+                await delay(baseDelay * Math.min(attempt, 5));
+            }
+        }
+        
+        return {
+            success: false,
+            error: 'Timeout après ' + attempt + ' tentatives',
+            attempts: attempt,
+            missing: lastMissing,
+            invalid: lastInvalid
+        };
+    }
+
+    // ========================================================================
+    // PASSE 3 — Colonnes calculées (formules)
+    // ========================================================================
+    
+    async function ensureFormulaColumns(grist, formulasMap) {
+        var metadata = await loadSchemaMetadata(grist);
+        var result = { added: [], skipped: [], errors: [] };
+        
+        for (var tableName in formulasMap) {
+            if (!formulasMap.hasOwnProperty(tableName)) continue;
+            
+            var formulas = formulasMap[tableName];
+            var tableMeta = metadata.tableById[tableName];
+            
+            if (!tableMeta) {
+                result.skipped.push({ table: tableName, reason: 'Table non trouvée' });
+                continue;
+            }
+            
+            for (var colId in formulas) {
+                if (!formulas.hasOwnProperty(colId)) continue;
+                
+                var formula = formulas[colId];
+                var key = tableName + '.' + colId;
+                var existingCol = metadata.columnByKey[key];
+                
+                if (!existingCol) {
+                    // Colonne manquante : l'ajouter
+                    try {
+                        await grist.docApi.applyUserActions([
+                            ['AddColumn', tableName, colId, {
+                                type: 'Any',
+                                isFormula: true,
+                                formula: formula
+                            }]
+                        ]);
+                        result.added.push(key);
+                    } catch (e) {
+                        result.errors.push({
+                            table: tableName,
+                            column: colId,
+                            error: e.message || String(e)
+                        });
+                    }
+                } else {
+                    result.skipped.push({ table: tableName, column: colId, reason: 'Déjà existe' });
+                }
+            }
+        }
+        
+        return result;
+    }
+
+    // ========================================================================
+    // PASSE 4 — Configuration des Choices et statuts
+    // ========================================================================
+    
+    async function configureChoiceColumns(grist, defaultChoices) {
+        var result = { configured: [], skipped: [] };
+        
+        for (var key in defaultChoices) {
+            if (!defaultChoices.hasOwnProperty(key)) continue;
+            
+            var parts = key.split('.');
+            if (parts.length !== 2) continue;
+            
+            var table = parts[0];
+            var column = parts[1];
+            var choices = defaultChoices[key];
+            
+            try {
+                var statusList = choices.map(function(v) {
+                    return { value: v, label: v, fillColor: '#94a3b8', textColor: '#ffffff' };
+                });
+                
+                var seedResult = await TF.seedStatusChoices(grist, table, column, statusList);
+                
+                if (seedResult.ok && seedResult.changed) {
+                    result.configured.push(key);
+                } else if (seedResult.ok && !seedResult.changed) {
+                    result.skipped.push({ key: key, reason: seedResult.reason || 'Déjà configuré' });
+                } else {
+                    result.skipped.push({ key: key, reason: seedResult.error || 'Erreur inconnue' });
+                }
+            } catch (e) {
+                result.skipped.push({ key: key, reason: e.message || String(e) });
+            }
+        }
+        
+        return result;
+    }
+
+    // ========================================================================
+    // PASSE 5 — Configuration des colonnes visibles des références
+    // ========================================================================
+    
+    async function configureAllRefDisplays(grist, specs) {
+        log('[GENCI display] Configuration affichage références...');
+        
+        var result = await TF.setRefDisplayColumns(grist, specs);
+        
+        if (result.configured && result.configured.length > 0) {
+            log('[GENCI display] Configurés: ' + result.configured.length);
+        }
+        if (result.alreadyCorrect && result.alreadyCorrect.length > 0) {
+            log('[GENCI display] Déjà corrects: ' + result.alreadyCorrect.length);
+        }
+        if (result.skipped && result.skipped.length > 0) {
+            log('[GENCI display] Ignorés: ' + result.skipped.length, result.skipped);
+        }
+        if (result.errors && result.errors.length > 0) {
+            log('[GENCI display] Erreurs: ' + result.errors.length, result.errors);
+        }
+        
+        return result;
+    }
+
+    // Helper : obtient toutes les spécifications de références depuis le schéma
+    function getExpectedReferenceSpecs(schema) {
+        var specs = [];
+        
+        for (var tableId in schema.tables) {
+            if (!Object.prototype.hasOwnProperty.call(schema.tables, tableId)) {
+                continue;
+            }
+            
+            var columns = schema.tables[tableId].columns || [];
+            
+            for (var i = 0; i < columns.length; i++) {
+                var column = columns[i];
+                var opts = column.opts || column;
+                var type = opts.type || '';
+                
+                if (/^(Ref|RefList):/.test(type)) {
+                    specs.push({
+                        table: tableId,
+                        column: column.id,
+                        expectedType: type,
+                        targetTable: getRefTarget(type)
+                    });
+                }
+            }
+        }
+        
+        return specs;
+    }
+    
+    // Helper : charge les colonnes réelles des tables utilisateur
+    async function loadActualTableColumns(grist, tableIds) {
+        var columnsByTable = {};
+        var errors = [];
+        
+        for (var i = 0; i < tableIds.length; i++) {
+            var tableId = tableIds[i];
+            
+            try {
+                var data = await grist.docApi.fetchTable(tableId);
+                columnsByTable[tableId] = new Set(Object.keys(data || {}));
+            } catch (e) {
+                columnsByTable[tableId] = new Set();
+                errors.push({
+                    table: tableId,
+                    error: e.message || String(e)
+                });
+            }
+        }
+        
+        return {
+            columnsByTable: columnsByTable,
+            errors: errors
+        };
+    }
+
+    // ========================================================================
+    // INSPECTION — Vérification complète du schéma
+    // ========================================================================
+    
+    async function inspectGenciSchema(grist, requiredTables, metadataSnapshot) {
+        var result = {
+            ready: true,
+            missingTables: [],
+            missingColumns: [],
+            metadataPending: [],
+            invalidColumnTypes: [],
+            invalidRefTargets: [],
+            invalidVisibleColumns: [],
+            missingFormulaColumns: []
+        };
+        
+        try {
+            // Utiliser le snapshot fourni ou charger les métadonnées
+            var metadata = metadataSnapshot || await loadSchemaMetadata(grist);
+            
+            // Vérifier les tables essentielles
+            for (var i = 0; i < requiredTables.length; i++) {
+                var tableId = requiredTables[i];
+                if (!metadata.tableById[tableId]) {
+                    result.missingTables.push(tableId);
+                    result.ready = false;
+                }
+            }
+            
+            // Vérifier TOUTES les références du schéma (pas juste 6)
+            var expectedRefs = getExpectedReferenceSpecs(SCHEMA);
+            
+            // Charger les colonnes réelles des tables pour distinguer absent vs retardé
+            var refTableIds = Array.from(new Set(expectedRefs.map(function(ref) {
+                return ref.table;
+            })));
+            
+            var actualColumns = await loadActualTableColumns(grist, refTableIds);
+            
+            for (var j = 0; j < expectedRefs.length; j++) {
+                var ref = expectedRefs[j];
+                var key = ref.table + '.' + ref.column;
+                var metadataCol = metadata.columnByKey[key];
+                var actualTableCols = actualColumns.columnsByTable[ref.table];
+                var existsInTable = actualTableCols && actualTableCols.has(ref.column);
+                
+                // Cas 1 : Colonne absente des métadonnées ET de la table réelle
+                if (!metadataCol && !existsInTable) {
+                    result.missingColumns.push(key);
+                    result.ready = false;
+                    continue;
+                }
+                
+                // Cas 2 : Colonne présente dans la table mais absente des métadonnées (retard)
+                if (!metadataCol && existsInTable) {
+                    result.metadataPending.push(key);
+                    // Ne pas mettre ready = false, c'est temporaire
+                    continue;
+                }
+                
+                // Cas 3 : Colonne présente dans les métadonnées, vérifier le type
+                if (metadataCol.type !== ref.expectedType) {
+                    result.invalidColumnTypes.push({
+                        column: key,
+                        expected: ref.expectedType,
+                        actual: metadataCol.type
+                    });
+                    result.ready = false;
+                    
+                    // Vérifier si la table cible existe
+                    var targetType = ref.targetTable;
+                    if (!metadata.tableById[targetType]) {
+                        result.invalidRefTargets.push({
+                            column: key,
+                            expectedTarget: targetType
+                        });
+                    }
+                }
+            }
+            
+            // Vérifier les visibleCol sur TOUTES les références de SCHEMA.referenceDisplays
+            var refDisplaySpecs = SCHEMA.referenceDisplays || [];
+            
+            for (var k = 0; k < refDisplaySpecs.length; k++) {
+                var spec = refDisplaySpecs[k];
+                var specKey = spec.table + '.' + spec.column;
+                var specCol = metadata.columnByKey[specKey];
+                
+                if (!specCol) {
+                    // Référence absente des métadonnées
+                    if (!result.metadataPending.includes(specKey)) {
+                        result.metadataPending.push(specKey);
+                    }
+                    continue;
+                }
+                
+                var targetTable = getRefTarget(specCol.type);
+                if (targetTable) {
+                    var visColKey = targetTable + '.' + spec.visibleColId;
+                    var visCol = metadata.columnByKey[visColKey];
+                    
+                    if (visCol) {
+                        // Vérification stricte du visibleCol
+                        if (Number(specCol.visibleCol) !== Number(visCol.id)) {
+                            result.invalidVisibleColumns.push({
+                                column: specKey,
+                                expected: visCol.id,
+                                actual: specCol.visibleCol
+                            });
+                            result.ready = false;
+                        }
+                    }
+                }
+            }
+            
+        } catch (e) {
+            result.error = e.message || String(e);
+            result.ready = false;
+        }
+        
+        return result;
+    }
+
+    // Helper : extrait l'ID d'un enregistrement créé
+    function getAddedRecordId(actionResult, label) {
+        var value = Array.isArray(actionResult)
+            ? actionResult[0]
+            : actionResult;
+
+        if (typeof value === 'number' && Number.isFinite(value)) {
+            return value;
+        }
+
+        if (
+            value &&
+            typeof value === 'object' &&
+            typeof value.id === 'number'
+        ) {
+            return value.id;
+        }
+
+        throw new Error(
+            'ID de ligne introuvable après AddRecord' +
+            (label ? ' (' + label + ')' : '') +
+            ': ' + JSON.stringify(actionResult)
+        );
+    }
+
+    // ========================================================================
+    // SEED — Données de démonstration (UNIQUEMENT si tables vides)
+    // ========================================================================
+    
+    async function seedInitialData(grist, context) {
+        var seedEntries = [];
+        context = context || {};
+        
+        try {
+            // Vérifier si Tasks est vide
+            var tasksData = await grist.docApi.fetchTable('Tasks');
+            var tasksCount = (tasksData && tasksData.id && tasksData.id.length) || 0;
+            
+            if (tasksCount > 0) {
+                log('[GENCI seed] Tables non vides (' + tasksCount + ' tasks) — seed ignoré');
+                return { seeded: false, reason: 'Tables non vides' };
+            }
+            
+            log('[GENCI seed] Tables vides — création données de démonstration...');
+            
+            // Créer les données dans l'ordre de dépendance
+            var createdIds = {};
+            
+            // 1. Entités
+            if (context.tablesCreated && context.tablesCreated.indexOf('Entites') !== -1) {
+                var entiteRacine = await grist.docApi.applyUserActions([
+                    ['AddRecord', 'Entites', null, { nom: 'Direction', niveau: 'direction', actif: true }]
+                ]);
+                createdIds.Entites = { racine: getAddedRecordId(entiteRacine, 'Entites.Direction') };
+                
+                var entiteDev = await grist.docApi.applyUserActions([
+                    ['AddRecord', 'Entites', null, { nom: 'Développement', parent: createdIds.Entites.racine, niveau: 'service', actif: true }]
+                ]);
+                createdIds.Entites.dev = getAddedRecordId(entiteDev, 'Entites.Développement');
+                
+                seedEntries.push('Créé: Entités (2)');
+            }
+            
+            // 2. Team
+            if (context.tablesCreated && context.tablesCreated.indexOf('Team') !== -1) {
+                var member1 = await grist.docApi.applyUserActions([
+                    ['AddRecord', 'Team', null, { nom: 'Alice Martin', role: 'chef_de_projet', actif: true }]
+                ]);
+                createdIds.Team = { alice: getAddedRecordId(member1, 'Team.Alice') };
+                
+                var member2 = await grist.docApi.applyUserActions([
+                    ['AddRecord', 'Team', null, { nom: 'Bob Durant', role: 'membre', actif: true }]
+                ]);
+                createdIds.Team.bob = getAddedRecordId(member2, 'Team.Bob');
+                
+                // Mettre à jour les références
+                if (createdIds.Entites && createdIds.Entites.dev) {
+                    await grist.docApi.applyUserActions([
+                        ['UpdateRecord', 'Team', createdIds.Team.alice, { entite: createdIds.Entites.dev }],
+                        ['UpdateRecord', 'Team', createdIds.Team.bob, { entite: createdIds.Entites.dev, responsable: createdIds.Team.alice }]
+                    ]);
+                }
+                
+                seedEntries.push('Créé: Team (2)');
+            }
+            
+            // 3. Programmes
+            if (context.tablesCreated && context.tablesCreated.indexOf('Programmes') !== -1) {
+                var programme = await grist.docApi.applyUserActions([
+                    ['AddRecord', 'Programmes', null, { nom: 'Transformation Digitale', couleur: '#4f46e5', actif: true }]
+                ]);
+                createdIds.Programmes = { digital: getAddedRecordId(programme, 'Programmes.Transformation') };
+                seedEntries.push('Créé: Programmes (1)');
+            }
+            
+            // 4. Competences
+            if (context.tablesCreated && context.tablesCreated.indexOf('Competences') !== -1) {
+                await grist.docApi.applyUserActions([
+                    ['AddRecord', 'Competences', null, { nom: 'JavaScript', categorie: 'technique', actif: true }],
+                    ['AddRecord', 'Competences', null, { nom: 'Python', categorie: 'technique', actif: true }],
+                    ['AddRecord', 'Competences', null, { nom: 'Gestion de projet', categorie: 'fonctionnel', actif: true }]
+                ]);
+                seedEntries.push('Créé: Competences (3)');
+            }
+            
+            // 5. KanbanSteps
+            if (context.tablesCreated && context.tablesCreated.indexOf('KanbanSteps') !== -1) {
+                await grist.docApi.applyUserActions([
+                    ['AddRecord', 'KanbanSteps', null, { nom: 'À faire', valeur: 'todo', couleur: '#94a3b8', ordre: 0, actif: true }],
+                    ['AddRecord', 'KanbanSteps', null, { nom: 'En cours', valeur: 'inprogress', couleur: '#f59e0b', ordre: 1, actif: true }],
+                    ['AddRecord', 'KanbanSteps', null, { nom: 'En revue', valeur: 'review', couleur: '#3b82f6', ordre: 2, actif: true }],
+                    ['AddRecord', 'KanbanSteps', null, { nom: 'Terminé', valeur: 'done', couleur: '#10b981', ordre: 3, actif: true }]
+                ]);
+                seedEntries.push('Créé: KanbanSteps (4)');
+            }
+            
+            return { seeded: true, ids: createdIds, log: seedEntries };
+            
+        } catch (e) {
+            log('[GENCI seed] Erreur: ' + (e.message || e));
+            return { seeded: false, error: e.message || String(e) };
+        }
+    }
+
+    // ========================================================================
+    // ORCHESTRATEUR PRINCIPAL
+    // ========================================================================
+    
+    async function ensureGenciSchema(grist, options) {
+        options = options || {};
+        
+        // Sérialise les appels dans une même iframe
+        if (bootstrapPromise) {
+            return bootstrapPromise;
+        }
+        
+        if (bootstrapComplete && !options.force) {
+            return Promise.resolve({ success: true, alreadyComplete: true });
+        }
+        
+        bootstrapPromise = (async function () {
+            var startTime = Date.now();
+            var globalLog = [];
+            var result = {
+                success: false,
+                phases: {},
+                errors: [],
+                warnings: []
+            };
+            
+            try {
+                log('Démarrage initialisation...');
+                
+                // Phase 0 : Migration et inspection
+                log('Phase 0: Migration...');
+                var migrationLog = await migrateLegacyTables(grist);
+                globalLog = globalLog.concat(migrationLog);
+                result.phases.migration = migrationLog;
+                
+                // Phase 1 : Création des tables (sans Ref)
+                log('Phase 1: Création tables...');
+                var phase1 = await ensureBaseTables(grist, SCHEMA, options.formulasMap || {});
+                globalLog.push('Tables créées: ' + phase1.created.join(', '));
+                result.phases.tables = phase1;
+                
+                // Synchronisation
+                var allExpectedTables = SCHEMA.tableOrder.slice();
+                var metadata = await syncMetadata(grist, allExpectedTables);
+                result.phases.sync = { success: true };
+                
+                // Phase 2 : Colonnes Ref
+                log('Phase 2: Colonnes Ref...');
+                var phase2 = await ensureRefColumns(grist, SCHEMA, options.formulasMap || {});
+                globalLog.push('Ref ajoutées: ' + phase2.added.join(', '));
+                if (phase2.repaired.length > 0) {
+                    globalLog.push('Ref réparées: ' + phase2.repaired.join(', '));
+                }
+                
+                // Vérifier les erreurs de création des Ref
+                if (phase2.errors.length > 0) {
+                    result.errors.push({
+                        phase: 'refs',
+                        errors: phase2.errors
+                    });
+                    result.success = false;
+                    log('Échec création des colonnes Ref, arrêt de l\'initialisation');
+                    return result;
+                }
+                
+                result.phases.refs = phase2;
+                
+                // Phase 2 : Colonnes Ref terminées (succès des AddColumn = confirmation)
+                log('Phase 2: Colonnes Ref terminées (' + phase2.added.length + ' créées)');
+                result.phases.refs = phase2;
+                
+                // Petite pause pour stabilisation Grist avant formules
+                await delay(500);
+                
+                // Phase 3 : Formules
+                if (options.formulasMap && Object.keys(options.formulasMap).length > 0) {
+                    log('Phase 3: Formules...');
+                    var phase3 = await ensureFormulaColumns(grist, options.formulasMap);
+                    globalLog.push('Formules ajoutées: ' + phase3.added.join(', '));
+                    result.phases.formulas = phase3;
+                }
+                
+                // Phase 4 : Choices
+                log('Phase 4: Choices...');
+                var phase4 = await configureChoiceColumns(grist, options.defaultChoices || {});
+                result.phases.choices = phase4;
+                
+                // Phase 5 : Affichage des références
+                log('Phase 5: Affichage références...');
+                var phase5 = await configureAllRefDisplays(grist, GENCI_REF_DISPLAY_SPECS);
+                result.phases.display = phase5;
+                
+                if (!phase5.ok) {
+                    result.warnings.push({ phase: 'display', errors: phase5.errors });
+                }
+                
+                // Phase 6 : Seed (seulement si demandé explicitement)
+                if (options.seedDemo === true) {
+                    log('Phase 6: Seed de démonstration...');
+                    var seedContext = { tablesCreated: phase1.created };
+                    var phase6 = await seedInitialData(grist, seedContext);
+                    result.phases.seed = phase6;
+                    if (phase6.seeded) {
+                        globalLog = globalLog.concat(phase6.log || []);
+                    }
+                    if (phase6.error) {
+                        result.errors.push({ phase: 'seed', error: phase6.error });
+                    }
+                } else {
+                    result.phases.seed = {
+                        seeded: false,
+                        reason: 'Seed de démonstration désactivé (options.seedDemo !== true)'
+                    };
+                }
+                
+                // Vérification finale
+                log('Vérification finale...');
+                
+                // Délai de stabilisation avant validation
+                await delay(300);
+                
+                // Relire les métadonnées fraîches
+                metadata = await loadSchemaMetadata(grist);
+                
+                var requiredTables = ['Team', 'Programmes', 'Entites', 'Projects', 'Tasks', 'Actions'];
+                var inspection = await inspectGenciSchema(grist, requiredTables, metadata);
+                
+                if (!inspection.ready) {
+                    result.errors.push({
+                        phase: 'validation',
+                        missingTables: inspection.missingTables,
+                        missingColumns: inspection.missingColumns,
+                        invalidTypes: inspection.invalidColumnTypes
+                    });
+                    
+                    // Ne pas considérer comme échec total si ce sont juste des visibleCol ou metadataPending
+                    if (inspection.missingTables.length === 0 && inspection.missingColumns.length === 0) {
+                        result.success = true;
+                        result.warnings.push({ phase: 'validation', details: inspection });
+                    } else {
+                        result.success = false;
+                    }
+                } else {
+                    result.success = true;
+                }
+                
+                // Afficher le détail de la validation
+                console.info(
+                    '[GENCI validation]',
+                    JSON.stringify({
+                        ready: inspection.ready,
+                        missingTables: inspection.missingTables,
+                        missingColumns: inspection.missingColumns,
+                        metadataPending: inspection.metadataPending,
+                        invalidColumnTypes: inspection.invalidColumnTypes.length,
+                        invalidRefTargets: inspection.invalidRefTargets.length,
+                        invalidVisibleColumns: inspection.invalidVisibleColumns.length
+                    }, null, 2)
+                );
+                
+                // Afficher les warnings techniques
+                if (result.warnings && result.warnings.length > 0) {
+                    console.warn('[GENCI] Warnings:', result.warnings);
+                }
+                
+                // Afficher les erreurs si échec
+                if (!result.success && result.errors && result.errors.length > 0) {
+                    console.error('[GENCI] Errors:', JSON.stringify(result.errors, null, 2));
+                }
+                
+                // bootstrapComplete seulement si succès
+                bootstrapComplete = result.success === true;
+                var duration = Date.now() - startTime;
+                log('Initialisation terminée (' + duration + 'ms)');
+                result.duration = duration;
+                result.log = globalLog;
+                
+                return result;
+                
+            } catch (e) {
+                log('Échec initialisation: ' + (e.message || e));
+                result.errors.push({ phase: 'global', error: e.message || String(e) });
+                result.success = false;
+                bootstrapComplete = false;
+                throw e;
+            } finally {
+                bootstrapPromise = null;
+            }
         })();
-        // </taskflow-core>
+        
+        return bootstrapPromise;
+    }
+
+    // Ancienne API pour compatibilité
+    async function ensureSchema(grist, options) {
+        return ensureGenciSchema(grist, options);
+    }
+
+    // Export public
+    global.TaskFlowBootstrap = {
+        ensureSchema: ensureSchema,
+        ensureGenciSchema: ensureGenciSchema,
+        inspectGenciSchema: inspectGenciSchema,
+        loadSchemaMetadata: loadSchemaMetadata,
+        reset: function () {
+            bootstrapPromise = null;
+            bootstrapComplete = false;
+        },
+        GENCI_REF_DISPLAY_SPECS: GENCI_REF_DISPLAY_SPECS
+    };
+
+})(typeof window !== 'undefined' ? window : (typeof global !== 'undefined' ? global : this));
+
+
+/* ============================================================================
+ * taskflow-migrations.js — Migrations versionnées du schéma TaskFlow
+ * ----------------------------------------------------------------------------
+ * Ce module gère les évolutions du schéma de manière contrôlée et réversible.
+ * Chaque migration est :
+ * - Idempotente (peut être réexécutée sans effet secondaire)
+ * - Non destructive (ne supprime jamais de données)
+ * - Testable indépendamment
+ * 
+ * Pour ajouter une migration :
+ * 1. Incrémenter SCHEMA_VERSION dans taskflow-schema.js
+ * 2. Ajouter une nouvelle entrée dans MIGRATIONS
+ * 3. Implémenter la fonction de migration
+ * 4. Tester sur un document de test
+ * ============================================================================ */
+
+(function (global) {
+    'use strict';
+
+    var SCHEMA = global.TASKFLOW_SCHEMA;
+
+    // Helper : délai
+    function delay(ms) {
+        return new Promise(function (resolve) { setTimeout(resolve, ms); });
+    }
+
+    // Helper : log
+    function log(msg, data) {
+        var prefix = '[TaskFlow Migration] ';
+        if (typeof console !== 'undefined') {
+            if (data !== undefined) {
+                console.info(prefix + msg, data);
+            } else {
+                console.info(prefix + msg);
+            }
+        }
+    }
+
+    // Helper : convertir tableau colonnaire en lignes
+    function columnarToRows(data) {
+        if (!data || Array.isArray(data)) return data || [];
+        var cols = Object.keys(data);
+        if (!cols.length) return [];
+        var n = (data[cols[0]] && data[cols[0]].length) || 0;
+        var rows = [];
+        for (var i = 0; i < n; i++) {
+            var rec = {};
+            for (var j = 0; j < cols.length; j++) {
+                rec[cols[j]] = data[cols[j]][i];
+            }
+            rows.push(rec);
+        }
+        return rows;
+    }
+
+    // ========================================================================
+    // MIGRATION V1 → V2 (exemple placeholder)
+    // ========================================================================
+    // Cette migration est un exemple. À remplacer par la première vraie
+    // migration lors de l'évolution du schéma.
+    
+    async function migrateToV2(grist, metadata) {
+        log('Migration v1 → v2: Exemple (pas d\'action réelle)');
+        
+        // Exemple : ajouter une colonne optionnelle
+        // await grist.docApi.applyUserActions([
+        //     ['AddColumn', 'Tasks', 'nouvelleColonne', { type: 'Text', isFormula: false }]
+        // ]);
+        
+        return { success: true, message: 'Migration v2 appliquée' };
+    }
+
+    // ========================================================================
+    // MIGRATION V2 → V3 (exemple placeholder)
+    // ========================================================================
+    
+    async function migrateToV3(grist, metadata) {
+        log('Migration v2 → v3: Exemple (pas d\'action réelle)');
+        return { success: true, message: 'Migration v3 appliquée' };
+    }
+
+    // ========================================================================
+    // LISTE DES MIGRATIONS
+    // ========================================================================
+    // Ordre croissant de version. Chaque migration fait passer de N à N+1.
+    
+    var MIGRATIONS = [
+        {
+            version: 2,
+            name: 'example-migration-v2',
+            description: 'Exemple de migration (à remplacer)',
+            run: migrateToV2
+        },
+        {
+            version: 3,
+            name: 'example-migration-v3',
+            description: 'Exemple de migration (à remplacer)',
+            run: migrateToV3
+        }
+    ];
+
+    // ========================================================================
+    // API PUBLIQUE
+    // ========================================================================
+
+    // Lit la version actuelle installée
+    async function getCurrentVersion(grist) {
+        try {
+            var meta = await grist.docApi.fetchTable('TaskFlow_Meta');
+            var rows = columnarToRows(meta);
+            if (rows && rows.length > 0) {
+                return rows[0].schemaVersion || 1;
+            }
+            return 1;
+        } catch (e) {
+            return 1; // Pas de table meta = version 1
+        }
+    }
+
+    // Calcule les migrations à appliquer
+    function getPendingMigrations(currentVersion) {
+        var pending = [];
+        for (var i = 0; i < MIGRATIONS.length; i++) {
+            if (MIGRATIONS[i].version > currentVersion) {
+                pending.push(MIGRATIONS[i]);
+            }
+        }
+        return pending;
+    }
+
+    // Exécute toutes les migrations en attente
+    async function runMigrations(grist, currentVersion) {
+        var pending = getPendingMigrations(currentVersion);
+        
+        if (pending.length === 0) {
+            log('Aucune migration en attente');
+            return {
+                success: true,
+                applied: 0,
+                message: 'Schéma à jour'
+            };
+        }
+        
+        log('Migrations en attente: ' + pending.length, pending.map(function (m) { return m.name; }));
+        
+        var results = [];
+        var metadata = null;
+        
+        for (var i = 0; i < pending.length; i++) {
+            var migration = pending[i];
+            
+            try {
+                log('Application migration: ' + migration.name + ' (v' + migration.version + ')');
+                
+                // Relit les métadonnées avant chaque migration
+                try {
+                    metadata = await grist.docApi.fetchTable('_grist_Tables_column');
+                    metadata = columnarToRows(metadata);
+                } catch (e) {
+                    metadata = {};
+                }
+                
+                // Exécute la migration
+                var result = await migration.run(grist, metadata);
+                
+                if (!result || !result.success) {
+                    throw new Error('Migration échouée: ' + migration.name);
+                }
+                
+                results.push({
+                    version: migration.version,
+                    name: migration.name,
+                    success: true,
+                    message: result.message
+                });
+                
+                log('Migration appliquée: ' + migration.name);
+                
+                // Petit délai entre les migrations
+                await delay(100);
+                
+            } catch (e) {
+                log('Échec migration: ' + migration.name, e);
+                
+                results.push({
+                    version: migration.version,
+                    name: migration.name,
+                    success: false,
+                    error: e.message || String(e)
+                });
+                
+                // Arrête au premier échec
+                throw new Error('Migration échouée à v' + migration.version + ': ' + (e.message || e));
+            }
+        }
+        
+        return {
+            success: true,
+            applied: pending.length,
+            results: results
+        };
+    }
+
+    // Export public
+    global.TaskFlowMigrations = {
+        getCurrentVersion: getCurrentVersion,
+        getPendingMigrations: getPendingMigrations,
+        runMigrations: runMigrations,
+        MIGRATIONS: MIGRATIONS
+    };
+
+})(typeof window !== 'undefined' ? window : (typeof global !== 'undefined' ? global : this));
+
+// </taskflow-core>
 
         // ═══════════════════════════════════════════════════════════════════════
         // STATE
@@ -1480,19 +3452,11 @@ if $projet and $projet.responsable:
             'Competences.categorie': ['technique', 'fonctionnel', 'transverse']
         };
 
-        async function _tableExists(tableId) {
-            try { await grist.docApi.fetchTable(tableId); return true; } catch (e) { return false; }
-        }
-        async function _listTables() {
-            try { return (await grist.docApi.listTables()) || []; } catch (e) { return []; }
-        }
-        async function _existingCols(tableId) {
-            try {
-                const data = await grist.docApi.fetchTable(tableId);
-                return new Set(Object.keys(data || {}).filter(c => c !== 'id' && c !== 'manualSort'));
-            } catch (e) { return new Set(); }
-        }
-
+        // ═══════════════════════════════════════════════════════════════════════
+        // SCHEMA GENCI ETENDU — Wrapper vers TaskFlowBootstrap.ensureGenciSchema
+        // Utilise le module bootstrap pour une initialisation multipasse robuste.
+        // ═══════════════════════════════════════════════════════════════════════
+        
         async function initGenciSchema(btn) {
             if (TF.isReadOnly()) { showToast('Lecture seule : action impossible', 'error'); return; }
             if (!gristReady) { showToast('Grist pas prêt, réessayez', 'error'); return; }
@@ -1500,117 +3464,61 @@ if $projet and $projet.responsable:
                 btn.style.opacity = '0.5';
                 btn.style.pointerEvents = 'none';
             }
+            
             showToast('Initialisation du schéma GENCI…', 'info');
-            const log = [];
             
-            // Migration : Renommer Portefeuilles → Programmes si l'ancienne table existe
             try {
-                const portefTable = await grist.docApi.fetchTable('_grist_Tables').then(data => {
-                    const rows = TF.columnarToRows(data);
-                    return rows.find(r => r.tableId === 'Portefeuilles');
-                }).catch(() => null);
-                if (portefTable) {
-                    await grist.docApi.applyUserActions([['RenameTable', 'Portefeuilles', 'Programmes']]);
-                    log.push('Renamed Portefeuilles → Programmes');
-                }
-            } catch (e) { console.warn('RenameTable Portefeuilles:', e?.message); }
-            
-            const existingTables = new Set(await _listTables());
-            
-            // PASSE 1 : Créer toutes les tables manquantes (SANS colonnes de formules)
-            console.log('[GENCI] PASS 1: Creating tables...');
-            const order = ['Competences', 'Entites', 'Team', 'Programmes', 'Projects', 'Tasks', 'Actions', 'KanbanSteps', 'TimeEntries', 'Feuilles', 'Disponibilites'];
-            for (const tableName of order) {
-                const columns = GENCI_FULL_SCHEMA[tableName] || [];
-                // Filtrer les colonnes de formules pour cette passe
-                const nonFormulaCols = columns.filter(c => !GENCI_DERIVED_FORMULAS[tableName] || !GENCI_DERIVED_FORMULAS[tableName][c.id]);
+                // Utiliser le nouveau bootstrap multipasse
+                var result = await TaskFlowBootstrap.ensureGenciSchema(grist, {
+                    formulasMap: GENCI_DERIVED_FORMULAS,
+                    defaultChoices: {
+                        'Entites.niveau': ['direction', 'service', 'equipe'],
+                        'Team.role': ['membre', 'chef', 'chef_de_projet'],
+                        'Feuilles.statut': ['brouillon', 'soumis', 'valide', 'rejete'],
+                        'Disponibilites.type': ['conge', 'maladie', 'ferie', 'formation', 'temps_partiel', 'autre'],
+                        'Competences.categorie': ['technique', 'fonctionnel', 'transverse']
+                    },
+                    seedDemo: false  // Seed de démo désactivé par défaut
+                });
                 
-                if (existingTables.has(tableName)) {
-                    const existing = await _existingCols(tableName);
-                    const missing = nonFormulaCols.filter(c => !existing.has(c.id));
-                    for (const col of missing) {
-                        try {
-                            await grist.docApi.applyUserActions([['AddColumn', tableName, col.id, { type: col.type }]]);
-                            log.push(`+ ${tableName}.${col.id}`);
-                        } catch (e) { console.warn(`AddColumn ${tableName}.${col.id}:`, e?.message); }
+                if (result.success) {
+                    var msg = 'Schéma GENCI prêt';
+                    if (result.duration) msg += ' (' + Math.round(result.duration) + 'ms)';
+                    if (result.phases && result.phases.tables && result.phases.tables.created.length > 0) {
+                        msg += ' — ' + result.phases.tables.created.length + ' tables';
+                    }
+                    showToast(msg, 'success');
+                    
+                    if (result.log && result.log.length > 0) {
+                        console.log('[GENCI] Initialization log:', result.log);
+                    }
+                    if (result.warnings && result.warnings.length > 0) {
+                        console.warn('[GENCI] Warnings:', result.warnings);
+                    }
+                    if (result.errors && result.errors.length > 0) {
+                        console.error('[GENCI] Errors:', JSON.stringify(result.errors, null, 2));
                     }
                 } else {
-                    try {
-                        await grist.docApi.applyUserActions([['AddTable', tableName, nonFormulaCols.map(c => ({ id: c.id, type: c.type }))]]);
-                        existingTables.add(tableName);
-                        log.push(`+ table ${tableName}`);
-                    } catch (e) { console.warn(`AddTable ${tableName}:`, e?.message); }
-                }
-            }
-            
-            // Attendre que Grist ait fini d'initialiser les tables (2 secondes)
-            console.log('[GENCI] Waiting for tables to stabilize...');
-            await new Promise(resolve => setTimeout(resolve, 2000));
-            
-            // PASSE 2 : Ajouter les colonnes de formules maintenant que toutes les tables existent
-            console.log('[GENCI] PASS 2: Creating formula columns...');
-            for (const [table, formulas] of Object.entries(GENCI_DERIVED_FORMULAS)) {
-                const existing = await _existingCols(table);
-                for (const [colId, formula] of Object.entries(formulas)) {
-                    if (!existing.has(colId)) {
-                        try {
-                            await grist.docApi.applyUserActions([['AddColumn', table, colId, { type: 'Any', isFormula: true, formula: formula }]]);
-                            log.push(`+ ${table}.${colId} (formule)`);
-                        } catch (e) { console.warn(`AddColumn formula ${table}.${colId}:`, e?.message); }
+                    var errorMsg = 'Échec initialisation GENCI';
+                    if (result.errors && result.errors.length > 0) {
+                        console.error('[GENCI] Errors:', JSON.stringify(result.errors, null, 2));
+                        errorMsg += ' — voir console';
                     }
+                    showToast(errorMsg, 'error');
+                }
+                
+                return result;
+                
+            } catch (e) {
+                console.error('[GENCI] Initialization error:', e);
+                showToast('Échec initialisation: ' + (e.message || e), 'error');
+                throw e;
+            } finally {
+                if (btn) {
+                    btn.style.opacity = '';
+                    btn.style.pointerEvents = '';
                 }
             }
-            
-            // PASSE 3 : Semer les Choices et configurer l'affichage
-            console.log('[GENCI] PASS 3: Seeding choices and display...');
-            
-            // 3.1 Semer les Choices par defaut
-            for (const [key, choices] of Object.entries(GENCI_DEFAULT_CHOICES)) {
-                const [table, col] = key.split('.');
-                try { await TF.seedStatusChoices(grist, table, col, choices.map(v => ({ value: v, label: v, fillColor: '#94a3b8', textColor: '#ffffff' }))); } catch (e) {}
-            }
-            
-            // 3.2 Statuts dynamiques
-            try { await TF.seedStatusChoices(grist, 'Tasks', 'statut', TF.DEFAULT_STATUSES); } catch (e) {}
-            try { await TF.seedStatusChoices(grist, 'Actions', 'statut', TF.DEFAULT_STATUSES); } catch (e) {}
-            
-            // 3.3 Afficher les NOMS plutot que les IDs (etendu)
-            try {
-                await TF.setRefDisplayColumns(grist, [
-                    { table: 'Tasks', column: 'projet', visibleColId: 'nom' },
-                    { table: 'Tasks', column: 'assignees', visibleColId: 'nom' },
-                    { table: 'Tasks', column: 'dependDe', visibleColId: 'titre' },
-                    { table: 'Tasks', column: 'parentTask', visibleColId: 'titre' },
-                    { table: 'Projects', column: 'responsable', visibleColId: 'nom' },
-                    { table: 'Projects', column: 'programme', visibleColId: 'nom' },
-                    { table: 'Entites', column: 'parent', visibleColId: 'nom' },
-                    { table: 'Entites', column: 'chef', visibleColId: 'nom' },
-                    { table: 'Team', column: 'entite', visibleColId: 'nom' },
-                    { table: 'Team', column: 'responsable', visibleColId: 'nom' },
-                    { table: 'Team', column: 'competences', visibleColId: 'nom' },
-                    { table: 'Programmes', column: 'responsable', visibleColId: 'nom' },
-                    { table: 'Actions', column: 'task', visibleColId: 'titre' },
-                    { table: 'Actions', column: 'assignee', visibleColId: 'nom' },
-                    { table: 'TimeEntries', column: 'membre', visibleColId: 'nom' },
-                    { table: 'TimeEntries', column: 'tache', visibleColId: 'titre' },
-                    { table: 'Feuilles', column: 'membre', visibleColId: 'nom' },
-                    { table: 'Feuilles', column: 'validePar', visibleColId: 'nom' },
-                    { table: 'Disponibilites', column: 'membre', visibleColId: 'nom' }
-                ]);
-            } catch (e) { console.warn('setRefDisplayColumns:', e?.message); }
-            
-            // 4. Seed si Tasks vient d'etre cree et est vide
-            try {
-                console.log('[GENCI] Checking if Tasks table is empty...');
-                const tasksData = await grist.docApi.fetchTable('Tasks');
-                const n = (tasksData && tasksData.id && tasksData.id.length) || 0;
-                if (n === 0) await seedData();
-            } catch (e) {}
-            
-            showSaveIndicator();
-            showToast(`Schéma GENCI prêt (${log.length} changements)`, 'success');
-            console.log('GENCI schema init:', log);
-            if (btn) { btn.style.opacity = ''; btn.style.pointerEvents = ''; }
         }
 
         // ═══════════════════════════════════════════════════════════════════════
@@ -3046,33 +4954,40 @@ if $projet and $projet.responsable:
                 onReadOnly: () => showToast('Lecture seule : modification non autorisee', 'error'),
                 onDenied: () => { showToast('Modification refusee par vos droits', 'error'); loadAllData(); }
             });
-            // Phase 2 : Vérifier si le schéma GENCI existe déjà
-            // On considère que le schéma est initialisé si les tables essentielles existent
+            // Phase 2 : Vérifier si le schéma GENCI existe déjà avec inspection complète
             let schemaInitialized = false;
             try {
                 console.log('[Kanban] Checking if schema exists...');
-                const tables = await grist.docApi.listTables();
-                console.log('[Kanban] Available tables:', tables);
-                // Tables essentielles pour le Kanban
-                const essentialTables = ['Team', 'Projects', 'Tasks'];
-                const allExist = essentialTables.every(t => tables.includes(t));
                 
-                if (allExist) {
-                    // Vérifier en plus que Tasks a la colonne statut
-                    const tasksData = await grist.docApi.fetchTable('Tasks');
-                    if (tasksData && tasksData.statut !== undefined) {
+                // Utiliser l'inspection complète du schéma
+                if (TaskFlowBootstrap && TaskFlowBootstrap.inspectGenciSchema) {
+                    var inspection = await TaskFlowBootstrap.inspectGenciSchema(grist, ['Team', 'Programmes', 'Entites', 'Projects', 'Tasks', 'Actions']);
+                    
+                    if (inspection.ready) {
                         schemaInitialized = true;
-                        console.log('[Kanban] ✓ Schéma GENCI déjà initialisé');
+                        console.log('[Kanban] ✓ Schéma GENCI déjà initialisé et valide');
                     } else {
-                        console.log('[Kanban] ✗ Tasks existe mais pas de colonne statut');
+                        console.log('[Kanban] ✗ Schéma incomplet:', {
+                            missingTables: inspection.missingTables,
+                            missingColumns: inspection.missingColumns,
+                            invalidTypes: inspection.invalidColumnTypes.length
+                        });
                     }
                 } else {
-                    const missing = essentialTables.filter(t => !tables.includes(t));
-                    console.log('[Kanban] ✗ Tables manquantes:', missing);
+                    // Fallback pour compatibilité
+                    const tables = await grist.docApi.listTables();
+                    const essentialTables = ['Team', 'Projects', 'Tasks'];
+                    const allExist = essentialTables.every(t => tables.includes(t));
+                    
+                    if (allExist) {
+                        const tasksData = await grist.docApi.fetchTable('Tasks');
+                        if (tasksData && tasksData.statut !== undefined) {
+                            schemaInitialized = true;
+                            console.log('[Kanban] ✓ Schéma GENCI déjà initialisé (fallback)');
+                        }
+                    }
                 }
             } catch (e) {
-                // Erreur d'accès ou autre : on considère que le schéma n'est pas initialisé
-                // et on tentera de l'initialiser ci-dessous
                 console.warn('[Kanban] ✗ Erreur vérification schéma:', e?.message);
                 schemaInitialized = false;
             }
@@ -3081,7 +4996,17 @@ if $projet and $projet.responsable:
                 console.log('[Kanban] → Initializing GENCI schema...');
                 showToast('Initialisation du schéma GENCI…', 'info');
                 try {
-                    await initGenciSchema(null); // null = pas d'événement bouton
+                    var schemaResult = await initGenciSchema(null); // null = pas d'événement bouton
+                    
+                    // Vérifier le résultat réel
+                    if (!schemaResult || schemaResult.success !== true) {
+                        console.error(
+                            '[Kanban] ✗ GENCI schema initialization failed',
+                            schemaResult && schemaResult.errors
+                        );
+                        throw new Error('Le schéma GENCI reste incomplet après initialisation');
+                    }
+                    
                     console.log('[Kanban] ✓ GENCI schema initialization complete');
                 } catch (e) {
                     console.error('[Kanban] ✗ initGenciSchema error:', e);

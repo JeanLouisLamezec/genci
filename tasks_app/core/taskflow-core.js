@@ -54,6 +54,94 @@ const TF = (function () {
         return row ? row.id : null;
     }
 
+    // Verifie si un type est une reference (Ref ou RefList)
+    function isRefType(type) {
+        return /^(Ref|RefList):/.test(String(type || ''));
+    }
+
+    // Extrait la table cible d'un type Ref ou RefList
+    function getRefTarget(type) {
+        const match = /^(?:Ref|RefList):(.+)$/.exec(String(type || ''));
+        return match ? match[1] : null;
+    }
+
+    // Verifie si une colonne est une formule derivee
+    function isFormulaColumn(tableName, colId, formulasMap) {
+        if (!formulasMap || !formulasMap[tableName]) return false;
+        return Boolean(formulasMap[tableName][colId]);
+    }
+
+    // Helper : délai
+    function delay(ms) {
+        return new Promise(function (resolve) {
+            setTimeout(resolve, ms);
+        });
+    }
+
+    // Attend que les metadonnees de toutes les tables soient disponibles
+    async function waitForTablesMetadata(grist, expectedTableIds, options) {
+        options = options || {};
+        var maxAttempts = options.maxAttempts || 30;
+        var baseDelay = options.baseDelay || 200;
+        var attempt = 0;
+        var missing = [];
+        var unavailable = [];
+
+        while (attempt < maxAttempts) {
+            try {
+                var tablesData = await grist.docApi.fetchTable('_grist_Tables');
+                var tables = columnarToRows(tablesData);
+                var tableIds = tables.map(function(t) { return t.tableId; });
+                
+                missing = [];
+                unavailable = [];
+                
+                for (var i = 0; i < expectedTableIds.length; i++) {
+                    var tableId = expectedTableIds[i];
+                    
+                    // Vérifier si la table existe dans _grist_Tables
+                    if (tableIds.indexOf(tableId) === -1) {
+                        missing.push(tableId);
+                        continue;
+                    }
+                    
+                    // Vérifier que fetchTable(tableId) réussit
+                    try {
+                        await grist.docApi.fetchTable(tableId);
+                    } catch (e) {
+                        unavailable.push(tableId);
+                    }
+                }
+                
+                if (missing.length === 0 && unavailable.length === 0) {
+                    // Petit delai supplementaire pour stabilisation
+                    await delay(300);
+                    return { 
+                        success: true, 
+                        missing: [],
+                        unavailable: [],
+                        attempts: attempt + 1
+                    };
+                }
+            } catch (e) {
+                // Erreur globale, continuer a essayer
+            }
+            
+            attempt++;
+            if (attempt < maxAttempts) {
+                await delay(baseDelay * Math.min(attempt, 5));
+            }
+        }
+
+        return { 
+            success: false, 
+            missing: missing,
+            unavailable: unavailable,
+            error: 'Timeout after ' + attempt + ' attempts. Missing: ' + missing.join(', ') + '. Unavailable: ' + unavailable.join(', '),
+            attempts: attempt
+        };
+    }
+
     // Construit une config de statuts normalisee depuis une liste brute.
     function buildStatusConfig(list, source) {
         const clean = (list || []).filter(s => s && s.value != null).map(s => {
@@ -126,60 +214,173 @@ const TF = (function () {
 
     /* Seme les options (choix + couleurs) sur une colonne Choice si elle n'en a
      * pas encore. Defensif. A appeler depuis ensureSchema apres creation.
+     * Retourne un resultat structure : { ok, changed, reason/error }
      */
     async function seedStatusChoices(grist, table, column, statuses) {
         try {
             const tid = await tableRowId(grist, table);
-            if (tid == null) return;
+            if (tid == null) {
+                return { ok: false, changed: false, reason: 'Table non trouvée: ' + table };
+            }
+            
             const cols = columnarToRows(await grist.docApi.fetchTable('_grist_Tables_column'));
             const col = cols.find(c => c.parentId === tid && c.colId === column);
-            if (!col) return;
+            
+            if (!col) {
+                return { ok: false, changed: false, reason: 'Colonne non trouvée: ' + table + '.' + column };
+            }
+            
             let opt = {};
             try { opt = JSON.parse(col.widgetOptions || '{}') || {}; } catch (e) { opt = {}; }
-            if (Array.isArray(opt.choices) && opt.choices.length) return; // deja configure : on respecte
+            
+            // Si deja configure, on respecte les personnalisations
+            if (Array.isArray(opt.choices) && opt.choices.length) {
+                return { ok: true, changed: false, reason: 'already-configured' };
+            }
+            
             const list = statuses && statuses.length ? statuses : DEFAULT_STATUSES;
             const choiceOptions = {};
             for (const s of list) choiceOptions[s.value] = { fillColor: s.fillColor, textColor: s.textColor };
             const widgetOptions = JSON.stringify({ choices: list.map(s => s.value), choiceOptions: choiceOptions });
+            
             await grist.docApi.applyUserActions([['ModifyColumn', table, column, { widgetOptions: widgetOptions }]]);
-        } catch (e) { console.warn('TF.seedStatusChoices:', e && e.message); }
+            
+            return { ok: true, changed: true, reason: null };
+        } catch (e) {
+            console.warn('TF.seedStatusChoices:', e && e.message);
+            return { ok: false, changed: false, error: e.message || String(e) };
+        }
     }
 
     /* ----- #2 : colonnes d'affichage des Ref (noms au lieu des IDs) ---------
      * Pose le visibleCol + la display formula sur des colonnes Ref pour que les
      * VUES NATIVES Grist affichent un libelle plutot que l'ID de ligne.
      * specs : [{ table:'Tasks', column:'projet', visibleColId:'nom' }, ...]
-     * DEFENSIF : si Grist refuse une action, on log et on continue ; au pire
-     * l'affichage reste en IDs (comportement actuel), jamais de casse.
+     * ROBUSTE : verifie les metadonnees, gere les erreurs, retourne un rapport.
      * --------------------------------------------------------------------- */
     async function setRefDisplayColumns(grist, specs) {
-        if (!Array.isArray(specs) || !specs.length) return;
-        try {
-            const tables = columnarToRows(await grist.docApi.fetchTable('_grist_Tables'));
-            const cols = columnarToRows(await grist.docApi.fetchTable('_grist_Tables_column'));
-            const tidOf = (tableId) => { const r = tables.find(t => t.tableId === tableId); return r ? r.id : null; };
-            const colOf = (tableRow, colId) => cols.find(c => c.parentId === tableRow && c.colId === colId);
+        var result = {
+            ok: true,
+            configured: [],
+            alreadyCorrect: [],
+            skipped: [],
+            errors: []
+        };
 
-            const actions = [];
-            for (const s of specs) {
-                const srcTid = tidOf(s.table);
-                if (srcTid == null) continue;
-                const refCol = colOf(srcTid, s.column);
-                if (!refCol) continue;
-                // Table cible deduite du type "Ref:Target" / "RefList:Target".
-                const m = /^(?:Ref|RefList):(.+)$/.exec(refCol.type || '');
-                if (!m) continue;
-                const targetTid = tidOf(m[1]);
-                if (targetTid == null) continue;
-                const visCol = colOf(targetTid, s.visibleColId);
-                if (!visCol) continue;
-                // Eviter de re-poser si deja correct.
-                if (refCol.visibleCol === visCol.id) continue;
-                actions.push(['SetDisplayFormula', s.table, null, refCol.id, '$' + s.column + '.' + s.visibleColId]);
+        if (!Array.isArray(specs) || !specs.length) {
+            return result;
+        }
+
+        try {
+            // Relire les metadonnees fraîches
+            var tables = columnarToRows(await grist.docApi.fetchTable('_grist_Tables'));
+            var cols = columnarToRows(await grist.docApi.fetchTable('_grist_Tables_column'));
+            
+            var tidOf = function(tableId) {
+                var r = tables.find(function(t) { return t.tableId === tableId; });
+                return r ? r.id : null;
+            };
+            
+            var colOf = function(tableRowId, colId) {
+                return cols.find(function(c) { return c.parentId === tableRowId && c.colId === colId; });
+            };
+
+            for (var i = 0; i < specs.length; i++) {
+                var s = specs[i];
+                var srcTid = tidOf(s.table);
+                
+                if (srcTid == null) {
+                    result.skipped.push({ table: s.table, column: s.column, reason: 'Table source non trouvée' });
+                    continue;
+                }
+                
+                var refCol = colOf(srcTid, s.column);
+                if (!refCol) {
+                    result.skipped.push({ table: s.table, column: s.column, reason: 'Colonne référence absente des métadonnées' });
+                    result.ok = false;  // IMPORTANT : skipped = échec, pas ignoré
+                    continue;
+                }
+                
+                // Verifier que c'est bien une colonne Ref ou RefList
+                var typeMatch = /^(?:Ref|RefList):(.+)$/.exec(refCol.type || '');
+                if (!typeMatch) {
+                    result.errors.push({
+                        table: s.table,
+                        column: s.column,
+                        reason: 'Type incorrect: ' + (refCol.type || 'undefined') + ' (attendu Ref:*)'
+                    });
+                    result.ok = false;
+                    continue;
+                }
+                
+                // Table cible deduite du type
+                var targetTid = tidOf(typeMatch[1]);
+                if (targetTid == null) {
+                    result.errors.push({
+                        table: s.table,
+                        column: s.column,
+                        reason: 'Table cible non trouvée: ' + typeMatch[1]
+                    });
+                    result.ok = false;
+                    continue;
+                }
+                
+                var visCol = colOf(targetTid, s.visibleColId);
+                if (!visCol) {
+                    result.errors.push({
+                        table: s.table,
+                        column: s.column,
+                        reason: 'Colonne visible non trouvée: ' + s.visibleColId
+                    });
+                    result.ok = false;
+                    continue;
+                }
+                
+                // Verifier si deja configure correctement
+                var visibleColId = refCol.visibleCol;
+                var displayColId = refCol.displayCol;
+                
+                // Verifier visibleCol (comparaison numerique)
+                var visibleColIsCorrect = (Number(visibleColId) === Number(visCol.id));
+                
+                // Verifier display formula
+                var displayFormula = '$' + s.column + '.' + s.visibleColId;
+                var displayCol = displayColId ? cols.find(function(c) { return c.id === displayColId; }) : null;
+                var displayFormulaIsCorrect = displayCol && displayCol.formula === displayFormula;
+                
+                if (visibleColIsCorrect && displayFormulaIsCorrect) {
+                    result.alreadyCorrect.push({ table: s.table, column: s.column });
+                    continue;
+                }
+                
+                // Appliquer les corrections
+                var actions = [];
+                
+                // Configurer la formule d'affichage
+                actions.push(['SetDisplayFormula', s.table, null, s.column, displayFormula]);
+                
+                // Configurer le visibleCol
                 actions.push(['UpdateRecord', '_grist_Tables_column', refCol.id, { visibleCol: visCol.id }]);
+                
+                try {
+                    await grist.docApi.applyUserActions(actions);
+                    result.configured.push({ table: s.table, column: s.column });
+                } catch (e) {
+                    result.errors.push({
+                        table: s.table,
+                        column: s.column,
+                        reason: e.message || String(e)
+                    });
+                    result.ok = false;
+                }
             }
-            if (actions.length) await grist.docApi.applyUserActions(actions);
-        } catch (e) { console.warn('TF.setRefDisplayColumns:', e && e.message); }
+            
+            return result;
+        } catch (e) {
+            result.ok = false;
+            result.errors.push({ reason: 'Erreur globale: ' + (e.message || String(e)) });
+            return result;
+        }
     }
 
     /* ----- #3 : plan de charge (heures par personne) ------------------------
@@ -378,6 +579,18 @@ const TF = (function () {
         isAccessError: isAccessError,
         safeApply: safeApply,
         guardWrites: guardWrites,
-        readOnlyBanner: readOnlyBanner
+        readOnlyBanner: readOnlyBanner,
+        // Helpers pour le schema
+        tableRowId: tableRowId,
+        isRefType: isRefType,
+        getRefTarget: getRefTarget,
+        isFormulaColumn: isFormulaColumn,
+        waitForTablesMetadata: waitForTablesMetadata,
+        delay: delay
     };
 })();
+
+// Export explicite pour globalThis (fonctionne dans navigateur et autres environnements)
+if (typeof globalThis !== 'undefined') {
+    globalThis.TF = TF;
+}
