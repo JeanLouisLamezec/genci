@@ -3645,7 +3645,7 @@ if (typeof globalThis !== 'undefined') {
         function updateGanttOverlay() {
             const ov = document.getElementById("ganttOverlay"); if (!ov) return;
             if (currentVisible && currentVisible.length > 0) { ov.style.display = "none"; ov.innerHTML = ""; return; }
-            const hasFilters = filters.project.length || filters.assignee.length || filters.priority.length;
+            const hasFilters = filters.project && filters.project.length || filters.assignee && filters.assignee.length || filters.priority && filters.priority.length || filters.team && filters.team.length || filters.programme && filters.programme.length;
             const gicon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>';
             const search = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>';
             let html;
