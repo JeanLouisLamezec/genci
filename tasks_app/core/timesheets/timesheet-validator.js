@@ -21,15 +21,16 @@ const ERROR_CODES = {
   INVALID_DATE: "INVALID_DATE",
   DUPLICATE_DAILY_ENTRY: "DUPLICATE_DAILY_ENTRY",
   INVALID_ACTUAL_HOURS: "INVALID_ACTUAL_HOURS",
+  INVALID_CAPACITY: "INVALID_CAPACITY",
   DATE_OUTSIDE_TIMESHEET_WEEK: "DATE_OUTSIDE_TIMESHEET_WEEK"
 };
 
 /**
- * Vérifie si une date est dans la période de la feuille (lundi-vendredi par défaut)
+ * Vérifie si une date est dans la période de la feuille
  * @param {string} dateStr - Date à vérifier
  * @param {string} weekStart - Date de début de semaine (lundi)
  * @param {Object} options - Options
- * @param {boolean} [options.allowWeekend=false] - Autoriser les week-ends
+ * @param {boolean} [options.allowWeekend=false] - Autoriser les week-ends (lundi-dimanche)
  * @returns {{ valid: boolean, error: string|null }}
  */
 function isDateInTimesheetWeek(dateStr, weekStart, options = {}) {
@@ -56,7 +57,7 @@ function isDateInTimesheetWeek(dateStr, weekStart, options = {}) {
     };
   }
   
-  const endOfWeek = addDaysUTC(start, 4);
+  const endOfWeek = addDaysUTC(start, allowWeekend ? 6 : 4);
   const endDateStr = formatDateUTC(endOfWeek);
   
   if (dateStr < weekStart || dateStr > endDateStr) {
@@ -111,7 +112,6 @@ function validateTimesheet(input) {
   } = input;
   
   const { allowWeekend = false } = options;
-  const precisionCentiHours = toCentiHours(precisionHours);
   
   if (!entries || entries.length === 0) {
     return {
@@ -122,14 +122,17 @@ function validateTimesheet(input) {
   }
   
   const capacityMap = new Map();
+  const invalidCapacityDates = new Set();
+  
   for (const cap of capacities || []) {
     const availCapValidation = validateNumber(cap.availableCapacityHours, 'availableCapacityHours');
     if (!availCapValidation.valid) {
       errors.push({
-        code: ERROR_CODES.INVALID_ACTUAL_HOURS,
+        code: ERROR_CODES.INVALID_CAPACITY,
         date: cap.date,
         message: `Capacité invalide : ${availCapValidation.error}`
       });
+      invalidCapacityDates.add(cap.date);
       continue;
     }
     capacityMap.set(cap.date, toCentiHours(cap.availableCapacityHours));
@@ -159,29 +162,28 @@ function validateTimesheet(input) {
       continue;
     }
     
-    const actualValidation = validateNumber(entry.actualHours, 'actualHours', { allowNull: true, allowNegative: true });
-    if (!actualValidation.valid) {
-      errors.push({
-        code: ERROR_CODES.INVALID_ACTUAL_HOURS,
-        date: entry.date,
-        taskId: entry.taskId,
-        actualHours: entry.actualHours,
-        message: `Heures invalides : ${actualValidation.error}`
-      });
-      continue;
-    }
-    
-    const actualCentiHours = toCentiHours(entry.actualHours);
-    
-    if (actualCentiHours < 0) {
-      errors.push({
-        code: ERROR_CODES.NEGATIVE_ACTUAL_HOURS,
-        date: entry.date,
-        taskId: entry.taskId,
-        actualHours: entry.actualHours,
-        message: `Heures négatives : ${entry.actualHours}h le ${entry.date}`
-      });
-      continue;
+    if (entry.actualHours !== null && entry.actualHours !== undefined && entry.actualHours !== '') {
+      if (typeof entry.actualHours !== 'number' || !Number.isFinite(entry.actualHours) || Number.isNaN(entry.actualHours)) {
+        errors.push({
+          code: ERROR_CODES.INVALID_ACTUAL_HOURS,
+          date: entry.date,
+          taskId: entry.taskId,
+          actualHours: entry.actualHours,
+          message: `Heures invalides : doit être un nombre fini`
+        });
+        continue;
+      }
+      
+      if (entry.actualHours < 0) {
+        errors.push({
+          code: ERROR_CODES.NEGATIVE_ACTUAL_HOURS,
+          date: entry.date,
+          taskId: entry.taskId,
+          actualHours: entry.actualHours,
+          message: `Heures négatives : ${entry.actualHours}h le ${entry.date}`
+        });
+        continue;
+      }
     }
     
     if (entriesByDate.has(entry.date)) {
@@ -215,11 +217,13 @@ function validateTimesheet(input) {
     const availableCapacityCentiHours = capacityMap.get(date);
     
     if (availableCapacityCentiHours === undefined) {
-      errors.push({
-        code: ERROR_CODES.MISSING_CAPACITY,
-        date,
-        message: `Capacité non définie pour le ${date}`
-      });
+      if (!invalidCapacityDates.has(date)) {
+        errors.push({
+          code: ERROR_CODES.MISSING_CAPACITY,
+          date,
+          message: `Capacité non définie pour le ${date}`
+        });
+      }
       
       dailyTotals.push({
         date,

@@ -885,4 +885,90 @@ describe('Planning Engine - Validation des nombres', () => {
     
     expect(result.diagnostics.some(d => d.code === 'INVALID_ALLOCATEDHOURS' || d.code.includes('INVALID'))).toBe(true);
   });
+
+  test('actualHours = "abc" dans une entrée existante produit INVALID_ACTUAL_HOURS', () => {
+    const assignment = {
+      id: 1,
+      taskId: 1,
+      memberId: 1,
+      allocatedHours: 10,
+      startDate: '2026-07-01',
+      endDate: '2026-07-02'
+    };
+    
+    const capacities = [
+      { date: '2026-07-01', baseCapacityHours: 7, availableCapacityHours: 7 },
+      { date: '2026-07-02', baseCapacityHours: 7, availableCapacityHours: 7 }
+    ];
+    
+    const existingEntries = [
+      {
+        id: 1,
+        assignmentId: 1,
+        date: '2026-07-01',
+        plannedHours: 3,
+        actualHours: 'abc',
+        sheetStatus: null,
+        description: null,
+        imputation: null
+      }
+    ];
+    
+    const result = buildAssignmentPlan({
+      assignment,
+      capacities,
+      existingEntries
+    });
+    
+    expect(result.diagnostics.some(d => d.code === 'INVALID_ACTUAL_HOURS')).toBe(true);
+  });
+
+  test('Doublon dans existingEntries ne produit aucun plan', () => {
+    const assignment = {
+      id: 1,
+      taskId: 1,
+      memberId: 1,
+      allocatedHours: 10,
+      startDate: '2026-07-01',
+      endDate: '2026-07-02'
+    };
+    
+    const capacities = [
+      { date: '2026-07-01', baseCapacityHours: 7, availableCapacityHours: 7 },
+      { date: '2026-07-02', baseCapacityHours: 7, availableCapacityHours: 7 }
+    ];
+    
+    const existingEntries = [
+      {
+        id: 1,
+        assignmentId: 1,
+        date: '2026-07-01',
+        plannedHours: 3,
+        actualHours: 0,
+        sheetStatus: null,
+        description: null,
+        imputation: null
+      },
+      {
+        id: 2,
+        assignmentId: 1,
+        date: '2026-07-01',
+        plannedHours: 4,
+        actualHours: 0,
+        sheetStatus: null,
+        description: null,
+        imputation: null
+      }
+    ];
+    
+    const result = buildAssignmentPlan({
+      assignment,
+      capacities,
+      existingEntries
+    });
+    
+    expect(result.desiredPlan.length).toBe(0);
+    expect(result.diagnostics.some(d => d.code === 'DUPLICATE_EXISTING_ENTRY')).toBe(true);
+    expect(result.summary.allocatedHours).toBe(0);
+  });
 });

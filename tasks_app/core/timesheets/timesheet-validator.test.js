@@ -160,6 +160,23 @@ describe('Timesheet Validator - Somme de plusieurs tâches', () => {
 
 describe('Timesheet Validator - Heures négatives', () => {
   
+  test('Heure négative -0.001 est refusée', () => {
+    const result = validateTimesheet({
+      memberId: 1,
+      weekStart: '2026-07-06',
+      entries: [
+        { taskId: 1, date: '2026-07-06', actualHours: -0.001 }
+      ],
+      capacities: [
+        { date: '2026-07-06', availableCapacityHours: 7 }
+      ]
+    });
+    
+    expect(result.valid).toBe(false);
+    expect(result.errors.length).toBe(1);
+    expect(result.errors[0].code).toBe(ERROR_CODES.NEGATIVE_ACTUAL_HOURS);
+  });
+
   test('Heure négative est refusée', () => {
     const result = validateTimesheet({
       memberId: 1,
@@ -419,9 +436,21 @@ describe('Timesheet Validator - Période de feuille', () => {
     expect(result.valid).toBe(true);
   });
 
-  test('isDateInTimesheetWeek avec allowWeekend=true refuse date hors semaine', () => {
-    const result = isDateInTimesheetWeek('2026-07-11', '2026-07-06', { allowWeekend: true });
+  test('isDateInTimesheetWeek avec allowWeekend=true autorise dimanche', () => {
+    const result = isDateInTimesheetWeek('2026-07-12', '2026-07-06', { allowWeekend: true });
+    expect(result.valid).toBe(true);
+  });
+
+  test('isDateInTimesheetWeek avec allowWeekend=true refuse lundi suivant', () => {
+    const result = isDateInTimesheetWeek('2026-07-13', '2026-07-06', { allowWeekend: true });
     expect(result.valid).toBe(false);
+    expect(result.error).toBe(ERROR_CODES.DATE_OUTSIDE_TIMESHEET_WEEK);
+  });
+
+  test('isDateInTimesheetWeek avec allowWeekend=true refuse date hors semaine', () => {
+    const result = isDateInTimesheetWeek('2026-07-14', '2026-07-06', { allowWeekend: true });
+    expect(result.valid).toBe(false);
+    expect(result.error).toBe(ERROR_CODES.DATE_OUTSIDE_TIMESHEET_WEEK);
   });
 });
 
@@ -491,7 +520,7 @@ describe('Timesheet Validator - Validation stricte des nombres', () => {
     expect(result.errors.some(e => e.code === ERROR_CODES.INVALID_ACTUAL_HOURS)).toBe(true);
   });
 
-  test('Capacité invalide est refusée', () => {
+  test('Capacité NaN retourne uniquement INVALID_CAPACITY', () => {
     const result = validateTimesheet({
       memberId: 1,
       weekStart: '2026-07-06',
@@ -504,7 +533,25 @@ describe('Timesheet Validator - Validation stricte des nombres', () => {
     });
     
     expect(result.valid).toBe(false);
-    expect(result.errors.some(e => e.code === ERROR_CODES.INVALID_ACTUAL_HOURS)).toBe(true);
+    expect(result.errors.length).toBe(1);
+    expect(result.errors[0].code).toBe(ERROR_CODES.INVALID_CAPACITY);
+    expect(result.errors.some(e => e.code === ERROR_CODES.MISSING_CAPACITY)).toBe(false);
+  });
+
+  test('Capacité invalide (chaîne) retourne INVALID_CAPACITY', () => {
+    const result = validateTimesheet({
+      memberId: 1,
+      weekStart: '2026-07-06',
+      entries: [
+        { taskId: 1, date: '2026-07-06', actualHours: 3 }
+      ],
+      capacities: [
+        { date: '2026-07-06', availableCapacityHours: 'abc' }
+      ]
+    });
+    
+    expect(result.valid).toBe(false);
+    expect(result.errors.some(e => e.code === ERROR_CODES.INVALID_CAPACITY)).toBe(true);
   });
 });
 

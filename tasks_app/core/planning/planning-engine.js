@@ -300,6 +300,38 @@ function buildAssignmentPlan(input) {
     if (entry.assignmentId !== assignmentId) continue;
     if (!isDateInRange(entry.date, startDate, endDate)) continue;
     
+    const plannedValidation = validateNumber(entry.plannedHours, 'plannedHours', { allowNull: true });
+    if (!plannedValidation.valid) {
+      diagnostics.push({
+        code: "INVALID_PLANNED_HOURS",
+        entryId: entry.id,
+        date: entry.date,
+        plannedHours: entry.plannedHours,
+        message: `plannedHours invalide : ${plannedValidation.error}`
+      });
+    }
+    
+    const actualValidation = validateNumber(entry.actualHours, 'actualHours', { allowNull: true, allowNegative: true });
+    if (!actualValidation.valid) {
+      diagnostics.push({
+        code: "INVALID_ACTUAL_HOURS",
+        entryId: entry.id,
+        date: entry.date,
+        actualHours: entry.actualHours,
+        message: `actualHours invalide : ${actualValidation.error}`
+      });
+    }
+    
+    if (typeof entry.actualHours === 'number' && Number.isFinite(entry.actualHours) && entry.actualHours < 0) {
+      diagnostics.push({
+        code: "INVALID_ACTUAL_HOURS",
+        entryId: entry.id,
+        date: entry.date,
+        actualHours: entry.actualHours,
+        message: `actualHours ne peut pas être négatif : ${entry.actualHours}`
+      });
+    }
+    
     const existing = existingByDate.get(entry.date);
     if (existing) {
       existing.push(entry);
@@ -320,6 +352,21 @@ function buildAssignmentPlan(input) {
         message: `Doublon détecté : entrées ${dup.firstEntry.id} et ${dup.entry.id} pour ${dup.key}`
       });
     }
+    
+    return {
+      desiredPlan: [],
+      summary: {
+        allocatedHours: 0,
+        validatedActualHours: 0,
+        protectedPlannedHours: 0,
+        remainingHours: 0,
+        newlyPlannedHours: 0,
+        unplannedHours: 0,
+        overconsumedHours: 0,
+        overprotectedHours: 0
+      },
+      diagnostics
+    };
   }
   
   let validatedActualCentiHours = 0;

@@ -13,9 +13,9 @@
   },
   "jest": {
     "testEnvironment": "jsdom",
-    "testMatch": ["**/core/filters/**/*.test.js"],
+    "testMatch": ["**/core/**/*.test.js"],
     "verbose": true,
-    "collectCoverageFrom": ["core/filters/**/*.js"],
+    "collectCoverageFrom": ["core/**/*.js"],
     "setupFilesAfterEnv": ["<rootDir>/core/filters/jest.setup.js"]
   }
 }
