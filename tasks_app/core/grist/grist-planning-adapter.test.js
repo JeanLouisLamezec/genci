@@ -8,7 +8,6 @@ const {
   gristDateToIso,
   isoToGristDate,
   normalizeSheetStatus,
-  buildMemberDailyCapacities,
   loadAssignmentContext,
   planAssignment,
   reconcileAssignmentPlan,
@@ -79,121 +78,6 @@ describe('Grist Planning Adapter - Normalisation des statuts', () => {
   });
 });
 
-describe('Grist Planning Adapter - Construction des capacités', () => {
-  
-  test('Capacité hebdomadaire 35h → 7h du lundi au vendredi', () => {
-    const result = buildMemberDailyCapacities({
-      member: { capaciteHebdo: 35 },
-      availabilities: [],
-      startDate: '2024-07-01', // Lundi
-      endDate: '2024-07-05'    // Vendredi
-    });
-    
-    expect(result.capacities.length).toBe(5);
-    
-    for (const cap of result.capacities) {
-      expect(cap.baseCapacityHours).toBe(7);
-      expect(cap.availableCapacityHours).toBe(7);
-    }
-  });
-  
-  test('Week-end → capacité zéro', () => {
-    const result = buildMemberDailyCapacities({
-      member: { capaciteHebdo: 35 },
-      availabilities: [],
-      startDate: '2024-07-06', // Samedi
-      endDate: '2024-07-07'    // Dimanche
-    });
-    
-    expect(result.capacities.length).toBe(2);
-    
-    for (const cap of result.capacities) {
-      expect(cap.baseCapacityHours).toBe(0);
-      expect(cap.availableCapacityHours).toBe(0);
-    }
-  });
-  
-  test('Congé à dispo = 0 → capacité disponible zéro', () => {
-    const result = buildMemberDailyCapacities({
-      member: { capaciteHebdo: 35 },
-      availabilities: [
-        {
-          membre: 1,
-          type: 'conges',
-          dateDebut: 1719792000, // 2024-07-01
-          dateFin: 1719792000,
-          dispo: 0
-        }
-      ],
-      startDate: '2024-07-01',
-      endDate: '2024-07-01'
-    });
-    
-    expect(result.capacities[0].baseCapacityHours).toBe(7);
-    expect(result.capacities[0].availableCapacityHours).toBe(0);
-  });
-  
-  test('Temps partiel à dispo = 0.5 → capacité disponible 3,5h', () => {
-    const result = buildMemberDailyCapacities({
-      member: { capaciteHebdo: 35 },
-      availabilities: [
-        {
-          membre: 1,
-          type: 'temps_partiel',
-          dateDebut: 1719792000,
-          dateFin: 1719792000,
-          dispo: 0.5
-        }
-      ],
-      startDate: '2024-07-01',
-      endDate: '2024-07-01'
-    });
-    
-    expect(result.capacities[0].baseCapacityHours).toBe(7);
-    expect(result.capacities[0].availableCapacityHours).toBe(3.5);
-  });
-  
-  test('Deux disponibilités qui se chevauchent utilisent le ratio minimum', () => {
-    const result = buildMemberDailyCapacities({
-      member: { capaciteHebdo: 35 },
-      availabilities: [
-        {
-          membre: 1,
-          type: 'conges',
-          dateDebut: 1719792000,
-          dateFin: 1719878400, // 2024-07-01 à 2024-07-02
-          dispo: 0.5
-        },
-        {
-          membre: 1,
-          type: 'formation',
-          dateDebut: 1719792000,
-          dateFin: 1719792000, // 2024-07-01 uniquement
-          dispo: 0
-        }
-      ],
-      startDate: '2024-07-01',
-      endDate: '2024-07-02'
-    });
-    
-    // 2024-07-01 : minimum de 0.5 et 0 = 0
-    expect(result.capacities[0].availableCapacityHours).toBe(0);
-    // 2024-07-02 : seulement 0.5
-    expect(result.capacities[1].availableCapacityHours).toBe(3.5);
-  });
-  
-  test('Utilise la capacité par défaut si absente', () => {
-    const result = buildMemberDailyCapacities({
-      member: {},
-      availabilities: [],
-      startDate: '2024-07-01',
-      endDate: '2024-07-01'
-    });
-    
-    expect(result.diagnostics.some(d => d.code === 'DEFAULT_CAPACITY_USED')).toBe(true);
-    expect(result.capacities[0].baseCapacityHours).toBe(7);
-  });
-});
 
 describe('Grist Planning Adapter - Réconciliation', () => {
   
@@ -222,13 +106,16 @@ describe('Grist Planning Adapter - Réconciliation', () => {
         ],
         TimeEntries: [],
         Feuilles: [],
-        Disponibilites: []
+        Disponibilites: [],
+        MemberDailyCapacities: []
       }
     });
   });
   
   test('Affectation de 35h sur 5 jours ouvrés → 5 créations à 7h', async () => {
-    const result = await planAssignment(mockGrist, 1);
+    const result = await planAssignment(mockGrist, 1, {
+      replanFromDate: '2024-07-01'
+    });
     
     expect(result.success).toBe(true);
     // Du 01/07 (lundi) au 07/07 (dimanche) = 6 jours dont 5 ouvrés + 1 week-end
@@ -241,7 +128,9 @@ describe('Grist Planning Adapter - Réconciliation', () => {
   });
   
   test('Les créations renseignent aussi tache et membre', async () => {
-    const result = await planAssignment(mockGrist, 1);
+    const result = await planAssignment(mockGrist, 1, {
+      replanFromDate: '2024-07-01'
+    });
     
     for (const item of result.desiredPlan) {
       expect(item.taskId).toBe(1);
@@ -278,7 +167,9 @@ describe('Grist Planning Adapter - Réconciliation', () => {
       }]
     ]);
     
-    const result = await planAssignment(mockGrist, 1);
+    const result = await planAssignment(mockGrist, 1, {
+      replanFromDate: '2024-07-01'
+    });
     
     // Le premier jour devrait avoir une capacité réduite
     const day1 = result.desiredPlan.find(d => d.date === '2024-07-01');
@@ -412,7 +303,10 @@ describe('Grist Planning Adapter - Réconciliation', () => {
   });
   
   test('dryRun retourne les actions sans les exécuter', async () => {
-    const result = await reconcileAssignmentPlan(mockGrist, 1, { dryRun: true });
+    const result = await reconcileAssignmentPlan(mockGrist, 1, {
+      dryRun: true,
+      replanFromDate: '2024-07-01'
+    });
     
     expect(result.dryRun).toBe(true);
     expect(result.actions.length).toBeGreaterThan(0);
@@ -439,10 +333,10 @@ describe('Grist Planning Adapter - Réconciliation', () => {
     
     const result = await reconcileAssignmentPlan(mockGrist, 1);
     
-    // Une affectation inactive doit échouer avec ASSIGNMENT_INACTIVE_CLEANUP
-    expect(result.success).toBe(false);
-    expect(result.error.code).toBe('ASSIGNMENT_INACTIVE_CLEANUP');
-    expect(result.actionsExecuted).toBe(0);
+    // Une affectation inactive retourne un succès avec un diagnostic ASSIGNMENT_INACTIVE_CLEANUP
+    expect(result.success).toBe(true);
+    expect(result.isInactive).toBe(true);
+    expect(result.diagnostics.some(d => d.code === 'ASSIGNMENT_INACTIVE_CLEANUP')).toBe(true);
   });
   
   test("Une surconsommation remet le futur mutable à zéro sans toucher à l'historique validé", async () => {
@@ -515,6 +409,81 @@ describe('Grist Planning Adapter - Réconciliation', () => {
     expect(result.assignmentCount).toBe(2);
     expect(result.results[0].memberId).toBe(1);
     expect(result.results[1].memberId).toBe(2);
+  });
+  
+  test('planAssignment est en lecture seule (n\'écrit pas les capacités)', async () => {
+    const mockGrist2 = createMockGrist({
+      initialData: {
+        TaskAssignments: [
+          {
+            id: 1,
+            tache: 1,
+            membre: 1,
+            heuresAllouees: 35,
+            dateDebut: 1719792000,
+            dateFin: 1720137600,
+            actif: true
+          }
+        ],
+        Tasks: [{ id: 1, titre: 'Tâche 1' }],
+        Team: [{ id: 1, nom: 'Alice', capaciteHebdo: 35 }],
+        TimeEntries: [],
+        Feuilles: [],
+        Disponibilites: [],
+        MemberDailyCapacities: []
+      }
+    });
+    
+    // Avant planAssignment : 0 capacité
+    let caps = await mockGrist2.fetchTable('MemberDailyCapacities');
+    expect(caps.id.length).toBe(0);
+    
+    const result = await planAssignment(mockGrist2, 1, {
+      replanFromDate: '2024-07-01'
+    });
+    
+    expect(result.success).toBe(true);
+    expect(result.desiredPlan.length).toBeGreaterThan(0);
+    
+    // Après planAssignment : toujours 0 capacité (lecture seule)
+    caps = await mockGrist2.fetchTable('MemberDailyCapacities');
+    expect(caps.id.length).toBe(0);
+  });
+  
+  test('reconcileAssignmentPlan écrit les capacités', async () => {
+    const mockGrist2 = createMockGrist({
+      initialData: {
+        TaskAssignments: [
+          {
+            id: 1,
+            tache: 1,
+            membre: 1,
+            heuresAllouees: 35,
+            dateDebut: 1719792000,
+            dateFin: 1720137600,
+            actif: true
+          }
+        ],
+        Tasks: [{ id: 1, titre: 'Tâche 1' }],
+        Team: [{ id: 1, nom: 'Alice', capaciteHebdo: 35 }],
+        TimeEntries: [],
+        Feuilles: [],
+        Disponibilites: [],
+        MemberDailyCapacities: []
+      }
+    });
+    
+    // Avant reconcileAssignmentPlan : 0 capacité
+    let caps = await mockGrist2.fetchTable('MemberDailyCapacities');
+    expect(caps.id.length).toBe(0);
+    
+    const result = await reconcileAssignmentPlan(mockGrist2, 1, { dryRun: true });
+    
+    expect(result.success).toBe(true);
+    
+    // Après réconciliation : capacités créées
+    caps = await mockGrist2.fetchTable('MemberDailyCapacities');
+    expect(caps.id.length).toBeGreaterThan(0);
   });
 });
 
@@ -617,5 +586,35 @@ describe('Grist Planning Adapter - diffToGristActions', () => {
     expect(actions.length).toBe(1);
     expect(actions[0][0]).toBe('RemoveRecord');
     expect(actions[0][2]).toBe(1);
+  });
+});
+
+describe('Grist Planning Adapter - resolveReplanFromDate', () => {
+  const { resolveReplanFromDate } = require('./grist-planning-adapter.js');
+  
+  test('replanFromDate explicite est prioritaire', () => {
+    const result = resolveReplanFromDate({
+      replanFromDate: '2026-07-20',
+      todayIso: '2026-07-15'
+    });
+    
+    expect(result).toBe('2026-07-20');
+  });
+  
+  test('todayIso utilisé si replanFromDate absent', () => {
+    const result = resolveReplanFromDate({
+      todayIso: '2026-07-15'
+    });
+    
+    expect(result).toBe('2026-07-15');
+  });
+  
+  test('date UTC du jour utilisée par défaut', () => {
+    const result = resolveReplanFromDate({});
+    
+    // La date devrait être la date UTC du jour
+    const today = new Date();
+    const expected = today.toISOString().split('T')[0];
+    expect(result).toBe(expected);
   });
 });

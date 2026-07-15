@@ -494,6 +494,11 @@ function createMockGrist(options = {}) {
       }
     }
     
+    // S'assurer que la colonne 'id' existe
+    if (!table.columns.has('id')) {
+      table.columns.set('id', []);
+    }
+    
     // Ajouter la ligne
     const row = { ...data, id };
     table.rows.set(id, row);
@@ -546,13 +551,16 @@ function createMockGrist(options = {}) {
       // Créer la colonne si elle n'existe pas
       if (!table.columns.has(key)) {
         // Initialiser avec null pour toutes les lignes existantes
-        const newCol = new Array(table.rows.size).fill(null);
+        // Utiliser la longueur de la colonne id comme référence
+        const idCol = table.columns.get('id');
+        const newCol = new Array(idCol ? idCol.length : 0).fill(null);
         table.columns.set(key, newCol);
       }
       
       const colData = table.columns.get(key);
       // Étendre la colonne si nécessaire
-      while (colData.length < table.rows.size) {
+      const idColumn = table.columns.get('id');
+      while (colData.length < (idColumn ? idColumn.length : 0)) {
         colData.push(null);
       }
       if (rowIndex < colData.length) {

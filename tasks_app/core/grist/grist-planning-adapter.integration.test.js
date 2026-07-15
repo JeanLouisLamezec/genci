@@ -27,6 +27,27 @@ const {
 const { createMockGrist } = require('./mock-grist.js');
 const { getDocApi } = require('./grist-api-helper.js');
 
+// Helper: convertir les données colonnaires en lignes
+function columnarToRows(data) {
+  if (!data || Array.isArray(data)) return data || [];
+  
+  const cols = Object.keys(data);
+  if (!cols.length) return [];
+  
+  const n = (data[cols[0]] && data[cols[0]].length) || 0;
+  const rows = [];
+  
+  for (let i = 0; i < n; i++) {
+    const rec = {};
+    for (const col of cols) {
+      rec[col] = data[col][i];
+    }
+    rows.push(rec);
+  }
+  
+  return rows;
+}
+
 describe('Lot 2 Corrections - Accès normalisé à Grist', () => {
   
   test('getDocApi accepte grist.docApi', () => {
@@ -99,7 +120,8 @@ describe('Lot 2 Corrections - Non-rattachement automatique', () => {
           }
         ],
         Feuilles: [],
-        Disponibilites: []
+        Disponibilites: [],
+        MemberDailyCapacities: []
       }
     });
   });
@@ -116,7 +138,9 @@ describe('Lot 2 Corrections - Non-rattachement automatique', () => {
   });
   
   test('Une ligne sans affectation ne réduit pas le reste à faire', async () => {
-    const result = await planAssignment(mockGrist, 1);
+    const result = await planAssignment(mockGrist, 1, {
+      replanFromDate: '2024-07-01'
+    });
     
     // La ligne 2 ne doit pas être incluse dans existingEntries
     expect(result.context.existingEntries.length).toBe(1);
@@ -149,7 +173,8 @@ describe('Lot 2 Corrections - Sémantique des lignes verrouillées', () => {
         Team: [{ id: 1, nom: 'Alice', capaciteHebdo: 35 }],
         TimeEntries: [],
         Feuilles: [],
-        Disponibilites: []
+        Disponibilites: [],
+        MemberDailyCapacities: []
       }
     });
   });
@@ -281,7 +306,10 @@ describe('Lot 2 Corrections - Sémantique des lignes verrouillées', () => {
       }]
     ]);
     
-    const result = await reconcileAssignmentPlan(mockGrist, 1, { dryRun: true });
+    const result = await reconcileAssignmentPlan(mockGrist, 1, {
+      dryRun: true,
+      replanFromDate: '2024-07-01'
+    });
     
     expect(result.success).toBe(true);
     // Devrait créer des entrées pour les jours 2-5 (02-05/07)
@@ -371,7 +399,8 @@ describe('Lot 2 Corrections - revisionPlan', () => {
           }
         ],
         Feuilles: [],
-        Disponibilites: []
+        Disponibilites: [],
+        MemberDailyCapacities: []
       }
     });
   });
@@ -432,11 +461,15 @@ describe('Lot 2 Corrections - revisionPlan', () => {
           }
         ],
         Feuilles: [],
-        Disponibilites: []
+        Disponibilites: [],
+        MemberDailyCapacities: []
       }
     });
     
-    const result = await reconcileAssignmentPlan(mockGrist2, 1, { dryRun: true });
+    const result = await reconcileAssignmentPlan(mockGrist2, 1, {
+      dryRun: true,
+      replanFromDate: '2024-07-01'
+    });
     
     expect(result.success).toBe(true);
     // Ne devrait rien faire car tout est déjà correct
@@ -487,17 +520,518 @@ describe('Lot 2 Corrections - Affectations inactives', () => {
           }
         ],
         Feuilles: [],
-        Disponibilites: []
+        Disponibilites: [],
+        MemberDailyCapacities: []
       }
     });
   });
   
-  test('Une affectation inactive retourne ASSIGNMENT_INACTIVE_CLEANUP', async () => {
+  test('Une affectation inactive retourne un succès avec diagnostic ASSIGNMENT_INACTIVE_CLEANUP', async () => {
     const result = await reconcileAssignmentPlan(mockGrist, 1, { dryRun: true });
     
-    // Devrait échouer avec ASSIGNMENT_INACTIVE_CLEANUP
+    // Devrait réussir avec un diagnostic non bloquant
+    expect(result.success).toBe(true);
+    expect(result.isInactive).toBe(true);
+    expect(result.diagnostics.some(d => d.code === 'ASSIGNMENT_INACTIVE_CLEANUP')).toBe(true);
+  });
+  
+  test('future mutable vide → suppression', async () => {
+    const mockGrist2 = createMockGrist({
+      initialData: {
+        TaskAssignments: [
+          {
+            id: 1,
+            tache: 1,
+            membre: 1,
+            heuresAllouees: 35,
+            dateDebut: 1719792000,
+            dateFin: 1720137600,
+            actif: false
+          }
+        ],
+        Tasks: [{ id: 1, titre: 'Tâche 1' }],
+        Team: [{ id: 1, nom: 'Alice', capaciteHebdo: 35 }],
+        TimeEntries: [
+          {
+            id: 1,
+            affectation: 1,
+            tache: 1,
+            membre: 1,
+            date: 1719878400, // Future
+            heuresPrevues: 0,
+            heures: 0,
+            revisionPlan: 1
+          }
+        ],
+        Feuilles: [],
+        Disponibilites: [],
+        MemberDailyCapacities: []
+      }
+    });
+    
+    const result = await reconcileAssignmentPlan(mockGrist2, 1, { dryRun: true, replanFromDate: '2024-07-01' });
+    
+    expect(result.success).toBe(true);
+    expect(result.isInactive).toBe(true);
+    // Devrait supprimer la ligne vide
+    const removeAction = result.actions.find(a => a[0] === 'RemoveRecord' && a[2] === 1);
+    expect(removeAction).toBeDefined();
+  });
+  
+  test('future mutable avec heuresPrevues → heuresPrevues = 0', async () => {
+    const mockGrist2 = createMockGrist({
+      initialData: {
+        TaskAssignments: [
+          {
+            id: 1,
+            tache: 1,
+            membre: 1,
+            heuresAllouees: 35,
+            dateDebut: 1719792000,
+            dateFin: 1720137600,
+            actif: false
+          }
+        ],
+        Tasks: [{ id: 1, titre: 'Tâche 1' }],
+        Team: [{ id: 1, nom: 'Alice', capaciteHebdo: 35 }],
+        TimeEntries: [
+          {
+            id: 1,
+            affectation: 1,
+            tache: 1,
+            membre: 1,
+            date: 1719878400, // Future
+            heuresPrevues: 5,
+            heures: 0,
+            revisionPlan: 1
+          }
+        ],
+        Feuilles: [],
+        Disponibilites: [],
+        MemberDailyCapacities: []
+      }
+    });
+    
+    const result = await reconcileAssignmentPlan(mockGrist2, 1, { dryRun: true, replanFromDate: '2024-07-01' });
+    
+    expect(result.success).toBe(true);
+    expect(result.isInactive).toBe(true);
+    // Devrait mettre heuresPrevues à 0
+    const updateAction = result.actions.find(a => a[0] === 'UpdateRecord' && a[2] === 1);
+    expect(updateAction).toBeDefined();
+    expect(updateAction[3].heuresPrevues).toBe(0);
+    expect(updateAction[3].revisionPlan).toBe(2);
+  });
+  
+  test('future mutable avec description → heuresPrevues = 0, description conservée', async () => {
+    const mockGrist2 = createMockGrist({
+      initialData: {
+        TaskAssignments: [
+          {
+            id: 1,
+            tache: 1,
+            membre: 1,
+            heuresAllouees: 35,
+            dateDebut: 1719792000,
+            dateFin: 1720137600,
+            actif: false
+          }
+        ],
+        Tasks: [{ id: 1, titre: 'Tâche 1' }],
+        Team: [{ id: 1, nom: 'Alice', capaciteHebdo: 35 }],
+        TimeEntries: [
+          {
+            id: 1,
+            affectation: 1,
+            tache: 1,
+            membre: 1,
+            date: 1719878400, // Future
+            heuresPrevues: 5,
+            heures: 0,
+            description: 'Note importante',
+            revisionPlan: 1
+          }
+        ],
+        Feuilles: [],
+        Disponibilites: [],
+        MemberDailyCapacities: []
+      }
+    });
+    
+    const result = await reconcileAssignmentPlan(mockGrist2, 1, { dryRun: true, replanFromDate: '2024-07-01' });
+    
+    expect(result.success).toBe(true);
+    expect(result.isInactive).toBe(true);
+    // Devrait mettre heuresPrevues à 0 mais conserver la description
+    const updateAction = result.actions.find(a => a[0] === 'UpdateRecord' && a[2] === 1);
+    expect(updateAction).toBeDefined();
+    expect(updateAction[3].heuresPrevues).toBe(0);
+    expect(updateAction[3].description).toBeUndefined(); // La description n'est pas modifiée
+  });
+  
+  test('passé mutable → inchangé', async () => {
+    const mockGrist2 = createMockGrist({
+      initialData: {
+        TaskAssignments: [
+          {
+            id: 1,
+            tache: 1,
+            membre: 1,
+            heuresAllouees: 35,
+            dateDebut: 1719792000,
+            dateFin: 1720137600,
+            actif: false
+          }
+        ],
+        Tasks: [{ id: 1, titre: 'Tâche 1' }],
+        Team: [{ id: 1, nom: 'Alice', capaciteHebdo: 35 }],
+        TimeEntries: [
+          {
+            id: 1,
+            affectation: 1,
+            tache: 1,
+            membre: 1,
+            date: 1719705600, // Passé (avant replanFromDate)
+            heuresPrevues: 5,
+            heures: 0,
+            revisionPlan: 1
+          }
+        ],
+        Feuilles: [],
+        Disponibilites: [],
+        MemberDailyCapacities: []
+      }
+    });
+    
+    const result = await reconcileAssignmentPlan(mockGrist2, 1, { dryRun: true, replanFromDate: '2024-07-01' });
+    
+    expect(result.success).toBe(true);
+    expect(result.isInactive).toBe(true);
+    // Aucune action pour les lignes passées
+    expect(result.actions.length).toBe(0);
+  });
+  
+  test('soumis → inchangé', async () => {
+    const mockGrist2 = createMockGrist({
+      initialData: {
+        TaskAssignments: [
+          {
+            id: 1,
+            tache: 1,
+            membre: 1,
+            heuresAllouees: 35,
+            dateDebut: 1719792000,
+            dateFin: 1720137600,
+            actif: false
+          }
+        ],
+        Tasks: [{ id: 1, titre: 'Tâche 1' }],
+        Team: [{ id: 1, nom: 'Alice', capaciteHebdo: 35 }],
+        TimeEntries: [],
+        Feuilles: [],
+        Disponibilites: [],
+        MemberDailyCapacities: []
+      }
+    });
+    
+    const sheetResult = await mockGrist2.applyUserActions([
+      ['AddRecord', 'Feuilles', null, {
+        membre: 1,
+        semaine: 1719792000,
+        statut: 'soumis'
+      }]
+    ]);
+    const sheetId = sheetResult[0].id;
+    
+    await mockGrist2.applyUserActions([
+      ['AddRecord', 'TimeEntries', null, {
+        affectation: 1,
+        tache: 1,
+        membre: 1,
+        date: 1719878400, // Future
+        heuresPrevues: 5,
+        heures: 0,
+        feuille: sheetId,
+        revisionPlan: 1
+      }]
+    ]);
+    
+    const result = await reconcileAssignmentPlan(mockGrist2, 1, { dryRun: true, replanFromDate: '2024-07-01' });
+    
+    expect(result.success).toBe(true);
+    expect(result.isInactive).toBe(true);
+    // Aucune action pour les lignes soumises
+    expect(result.actions.length).toBe(0);
+  });
+  
+  test('validé → inchangé', async () => {
+    const mockGrist2 = createMockGrist({
+      initialData: {
+        TaskAssignments: [
+          {
+            id: 1,
+            tache: 1,
+            membre: 1,
+            heuresAllouees: 35,
+            dateDebut: 1719792000,
+            dateFin: 1720137600,
+            actif: false
+          }
+        ],
+        Tasks: [{ id: 1, titre: 'Tâche 1' }],
+        Team: [{ id: 1, nom: 'Alice', capaciteHebdo: 35 }],
+        TimeEntries: [],
+        Feuilles: [],
+        Disponibilites: [],
+        MemberDailyCapacities: []
+      }
+    });
+    
+    const sheetResult = await mockGrist2.applyUserActions([
+      ['AddRecord', 'Feuilles', null, {
+        membre: 1,
+        semaine: 1719792000,
+        statut: 'valide'
+      }]
+    ]);
+    const sheetId = sheetResult[0].id;
+    
+    await mockGrist2.applyUserActions([
+      ['AddRecord', 'TimeEntries', null, {
+        affectation: 1,
+        tache: 1,
+        membre: 1,
+        date: 1719878400, // Future
+        heuresPrevues: 5,
+        heures: 3,
+        feuille: sheetId,
+        revisionPlan: 1
+      }]
+    ]);
+    
+    const result = await reconcileAssignmentPlan(mockGrist2, 1, { dryRun: true, replanFromDate: '2024-07-01' });
+    
+    expect(result.success).toBe(true);
+    expect(result.isInactive).toBe(true);
+    // Aucune action pour les lignes validées
+    expect(result.actions.length).toBe(0);
+  });
+  
+  test('seconde exécution → aucune action (idempotence)', async () => {
+    const mockGrist2 = createMockGrist({
+      initialData: {
+        TaskAssignments: [
+          {
+            id: 1,
+            tache: 1,
+            membre: 1,
+            heuresAllouees: 35,
+            dateDebut: 1719792000,
+            dateFin: 1720137600,
+            actif: false
+          }
+        ],
+        Tasks: [{ id: 1, titre: 'Tâche 1' }],
+        Team: [{ id: 1, nom: 'Alice', capaciteHebdo: 35 }],
+        TimeEntries: [
+          {
+            id: 1,
+            affectation: 1,
+            tache: 1,
+            membre: 1,
+            date: 1719878400, // Future
+            heuresPrevues: 5,
+            heures: 0,
+            revisionPlan: 1
+          }
+        ],
+        Feuilles: [],
+        Disponibilites: [],
+        MemberDailyCapacities: []
+      }
+    });
+    
+    // Première exécution - met heuresPrevues à 0
+    const result1 = await reconcileAssignmentPlan(mockGrist2, 1, { dryRun: false, replanFromDate: '2024-07-01' });
+    
+    expect(result1.success).toBe(true);
+    expect(result1.actionsExecuted).toBe(1);
+    expect(result1.actions[0][3].heuresPrevues).toBe(0);
+    
+    // Seconde exécution - devrait supprimer la ligne devenue vide
+    const result2 = await reconcileAssignmentPlan(mockGrist2, 1, { dryRun: true, replanFromDate: '2024-07-01' });
+    
+    expect(result2.success).toBe(true);
+    // La ligne est maintenant vide, donc elle devrait être supprimée
+    expect(result2.actions.length).toBe(1);
+    expect(result2.actions[0][0]).toBe('RemoveRecord');
+    
+    // Appliquer la suppression
+    await mockGrist2.applyUserActions(result2.actions);
+    
+    // Troisième exécution - aucune action car plus de lignes
+    const result3 = await reconcileAssignmentPlan(mockGrist2, 1, { dryRun: true, replanFromDate: '2024-07-01' });
+    
+    expect(result3.success).toBe(true);
+    expect(result3.actions.length).toBe(0);
+  });
+});
+
+describe('Member Daily Capacity Service - Invalid availability', () => {
+  
+  test('dispo = 2 → INVALID_AVAILABILITY_RATIO, aucune capacité écrite', async () => {
+    const mockGrist2 = createMockGrist({
+      initialData: {
+        TaskAssignments: [
+          {
+            id: 1,
+            tache: 1,
+            membre: 1,
+            heuresAllouees: 35,
+            dateDebut: 1719792000,
+            dateFin: 1720137600,
+            actif: true
+          }
+        ],
+        Tasks: [{ id: 1, titre: 'Tâche 1' }],
+        Team: [{ id: 1, nom: 'Alice', capaciteHebdo: 35 }],
+        TimeEntries: [],
+        Feuilles: [],
+        Disponibilites: [
+          {
+            membre: 1,
+            type: 'conges',
+            dateDebut: 1719792000,
+            dateFin: 1719792000,
+            dispo: 2 // Invalid: > 1
+          }
+        ],
+        MemberDailyCapacities: []
+      }
+    });
+    
+    const result = await reconcileAssignmentPlan(mockGrist2, 1, { dryRun: true, replanFromDate: '2024-07-01' });
+    
+    // Devrait échouer avec INVALID_AVAILABILITY_RATIO
     expect(result.success).toBe(false);
-    expect(result.error.code).toBe('ASSIGNMENT_INACTIVE_CLEANUP');
+    expect(result.error.code).toBe('INVALID_CAPACITY_INPUT');
+    expect(result.error.errors.some(e => e.code === 'INVALID_AVAILABILITY_RATIO')).toBe(true);
+    
+    // Vérifier qu'aucune capacité n'a été écrite
+    const caps = await mockGrist2.fetchTable('MemberDailyCapacities');
+    const capsRows = columnarToRows(caps);
+    expect(capsRows.length).toBe(0);
+    
+    // Vérifier qu'aucune TimeEntry n'a été écrite
+    const entries = await mockGrist2.fetchTable('TimeEntries');
+    const entriesRows = columnarToRows(entries);
+    expect(entriesRows.length).toBe(0);
+  });
+  
+  test('dispo = 0,5 → capacité 3,5 h, TimeEntry.capaciteJour renseignée', async () => {
+    const mockGrist2 = createMockGrist({
+      initialData: {
+        TaskAssignments: [
+          {
+            id: 1,
+            tache: 1,
+            membre: 1,
+            heuresAllouees: 7,
+            dateDebut: 1719792000,
+            dateFin: 1719792000,
+            actif: true
+          }
+        ],
+        Tasks: [{ id: 1, titre: 'Tâche 1' }],
+        Team: [{ id: 1, nom: 'Alice', capaciteHebdo: 35 }],
+        TimeEntries: [],
+        Feuilles: [],
+        Disponibilites: [
+          {
+            membre: 1,
+            type: 'temps_partiel',
+            dateDebut: 1719792000,
+            dateFin: 1719792000,
+            dispo: 0.5
+          }
+        ],
+        MemberDailyCapacities: []
+      }
+    });
+    
+    const result = await reconcileAssignmentPlan(mockGrist2, 1, { dryRun: false, replanFromDate: '2024-07-01' });
+    
+    expect(result.success).toBe(true);
+    
+    // Vérifier les capacités créées
+    const caps = await mockGrist2.fetchTable('MemberDailyCapacities');
+    const capsRows = columnarToRows(caps);
+    expect(capsRows.length).toBe(1);
+    expect(capsRows[0].capaciteTheorique).toBe(7);
+    expect(capsRows[0].capaciteDisponible).toBe(3.5);
+    expect(capsRows[0].disponibiliteRatio).toBe(0.5);
+    
+    // Vérifier les TimeEntries créées
+    const entries = await mockGrist2.fetchTable('TimeEntries');
+    const entriesRows = columnarToRows(entries);
+    expect(entriesRows.length).toBe(1);
+    expect(entriesRows[0].capaciteJour).toBe(capsRows[0].id);
+    expect(entriesRows[0].capaciteTheorique).toBe(7);
+    expect(entriesRows[0].capaciteDisponible).toBe(3.5);
+  });
+  
+  test('deuxième exécution → aucune nouvelle capacité, aucune nouvelle TimeEntry', async () => {
+    const mockGrist2 = createMockGrist({
+      initialData: {
+        TaskAssignments: [
+          {
+            id: 1,
+            tache: 1,
+            membre: 1,
+            heuresAllouees: 7,
+            dateDebut: 1719792000,
+            dateFin: 1719792000,
+            actif: true
+          }
+        ],
+        Tasks: [{ id: 1, titre: 'Tâche 1' }],
+        Team: [{ id: 1, nom: 'Alice', capaciteHebdo: 35 }],
+        TimeEntries: [],
+        Feuilles: [],
+        Disponibilites: [],
+        MemberDailyCapacities: []
+      }
+    });
+    
+    // Première exécution
+    const result1 = await reconcileAssignmentPlan(mockGrist2, 1, { dryRun: false, replanFromDate: '2024-07-01' });
+    
+    expect(result1.success).toBe(true);
+    expect(result1.actionsExecuted).toBeGreaterThan(0);
+    
+    const caps1 = await mockGrist2.fetchTable('MemberDailyCapacities');
+    const capsRows1 = columnarToRows(caps1);
+    const initialCapCount = capsRows1.length;
+    
+    const entries1 = await mockGrist2.fetchTable('TimeEntries');
+    const entriesRows1 = columnarToRows(entries1);
+    const initialEntryCount = entriesRows1.length;
+    
+    // Deuxième exécution
+    const result2 = await reconcileAssignmentPlan(mockGrist2, 1, { dryRun: true, replanFromDate: '2024-07-01' });
+    
+    expect(result2.success).toBe(true);
+    expect(result2.actions.length).toBe(0);
+    
+    // Vérifier qu'aucune nouvelle capacité n'a été créée
+    const caps2 = await mockGrist2.fetchTable('MemberDailyCapacities');
+    const capsRows2 = columnarToRows(caps2);
+    expect(capsRows2.length).toBe(initialCapCount);
+    
+    // Vérifier qu'aucune nouvelle TimeEntry n'a été créée
+    const entries2 = await mockGrist2.fetchTable('TimeEntries');
+    const entriesRows2 = columnarToRows(entries2);
+    expect(entriesRows2.length).toBe(initialEntryCount);
   });
 });
 
@@ -532,7 +1066,8 @@ describe('Lot 2 Corrections - Unicité des affectations actives', () => {
         Team: [{ id: 1, nom: 'Alice', capaciteHebdo: 35 }],
         TimeEntries: [],
         Feuilles: [],
-        Disponibilites: []
+        Disponibilites: [],
+        MemberDailyCapacities: []
       }
     });
   });
@@ -579,7 +1114,8 @@ describe('Lot 2 Corrections - Unicité des affectations actives', () => {
         Team: [{ id: 1, nom: 'Alice', capaciteHebdo: 35 }],
         TimeEntries: [],
         Feuilles: [],
-        Disponibilites: []
+        Disponibilites: [],
+        MemberDailyCapacities: []
       }
     });
     
@@ -620,7 +1156,8 @@ describe('Lot 2 Corrections - Unicité des affectations actives', () => {
         ],
         TimeEntries: [],
         Feuilles: [],
-        Disponibilites: []
+        Disponibilites: [],
+        MemberDailyCapacities: []
       }
     });
     
@@ -662,7 +1199,8 @@ describe('Lot 2 Corrections - Unicité des affectations actives', () => {
         Team: [{ id: 1, nom: 'Alice', capaciteHebdo: 35 }],
         TimeEntries: [],
         Feuilles: [],
-        Disponibilites: []
+        Disponibilites: [],
+        MemberDailyCapacities: []
       }
     });
     
@@ -697,7 +1235,8 @@ describe('Lot 2 Corrections - Test d\'intégration complet', () => {
         Team: [{ id: 1, nom: 'Alice', capaciteHebdo: 35 }],
         TimeEntries: [],
         Feuilles: [],
-        Disponibilites: []
+        Disponibilites: [],
+        MemberDailyCapacities: []
       }
     });
   });
@@ -744,3 +1283,198 @@ describe('Lot 2 Corrections - Test d\'intégration complet', () => {
     }
   });
 });
+
+describe('Lot 2 Corrections - revisionPlan parcours réel', () => {
+  
+  let mockGrist;
+  
+  beforeEach(() => {
+    mockGrist = createMockGrist({
+      initialData: {
+        TaskAssignments: [
+          {
+            id: 1,
+            tache: 1,
+            membre: 1,
+            heuresAllouees: 35,
+            dateDebut: 1719792000,
+            dateFin: 1720137600,
+            actif: true
+          }
+        ],
+        Tasks: [{ id: 1, titre: 'Tâche 1' }],
+        Team: [{ id: 1, nom: 'Alice', capaciteHebdo: 35 }],
+        TimeEntries: [],
+        Feuilles: [],
+        Disponibilites: [],
+        MemberDailyCapacities: []
+      }
+    });
+  });
+  
+  test('revisionPlan 5 → 6 après modification automatique de heuresPrevues', async () => {
+    // Créer une TimeEntry mutable avec revisionPlan = 5
+    await mockGrist.applyUserActions([
+      ['AddRecord', 'TimeEntries', null, {
+        affectation: 1,
+        tache: 1,
+        membre: 1,
+        date: 1719792000,
+        heuresPrevues: 2,
+        heures: 0,
+        revisionPlan: 5
+      }]
+    ]);
+    
+    // Première réconciliation - devrait modifier heuresPrevues et incrémenter revisionPlan
+    const result1 = await reconcileAssignmentPlan(mockGrist, 1, {
+      dryRun: false,
+      replanFromDate: '2024-07-01'
+    });
+    
+    expect(result1.success).toBe(true);
+    
+    // Trouver l'action de mise à jour pour cette entrée
+    const updateAction = result1.actions.find(a => 
+      a[0] === 'UpdateRecord' && a[2] === 1
+    );
+    
+    // Vérifier que l'action contient revisionPlan = 6
+    expect(updateAction).toBeDefined();
+    expect(updateAction[3].revisionPlan).toBe(6);
+    
+    // Appliquer l'action (déjà fait car dryRun: false)
+    
+    // Recharger les données pour vérifier l'état
+    const entriesAfterFirst = await mockGrist.fetchTable('TimeEntries');
+    const entriesRows = columnarToRows(entriesAfterFirst);
+    const entryAfterFirst = entriesRows.find(row => row.id === 1);
+    
+    // Vérifier que revisionPlan est maintenant 6
+    expect(entryAfterFirst.revisionPlan).toBe(6);
+    
+    // Seconde réconciliation - devrait être idempotente
+    const result2 = await reconcileAssignmentPlan(mockGrist, 1, {
+      dryRun: true,
+      replanFromDate: '2024-07-01'
+    });
+    
+    expect(result2.success).toBe(true);
+    // Aucune nouvelle action ne devrait être générée
+    expect(result2.actions.length).toBe(0);
+    
+    // Vérifier que revisionPlan reste à 6
+    const entriesAfterSecond = await mockGrist.fetchTable('TimeEntries');
+    const entriesRowsSecond = columnarToRows(entriesAfterSecond);
+    const entryAfterSecond = entriesRowsSecond.find(row => row.id === 1);
+    expect(entryAfterSecond.revisionPlan).toBe(6);
+  });
+  
+  test('ligne soumise avec revisionPlan = 5 reste inchangée', async () => {
+    // Ajouter une feuille soumise
+    const sheetResult = await mockGrist.applyUserActions([
+      ['AddRecord', 'Feuilles', null, {
+        membre: 1,
+        semaine: 1719792000,
+        statut: 'soumis'
+      }]
+    ]);
+    const sheetId = sheetResult[0].id;
+    
+    // Créer une TimeEntry soumise avec revisionPlan = 5
+    await mockGrist.applyUserActions([
+      ['AddRecord', 'TimeEntries', null, {
+        affectation: 1,
+        tache: 1,
+        membre: 1,
+        date: 1719792000,
+        heuresPrevues: 2,
+        heures: 0,
+        feuille: sheetId,
+        revisionPlan: 5
+      }]
+    ]);
+    
+    // Réconciliation - ne devrait pas modifier la ligne soumise
+    const result = await reconcileAssignmentPlan(mockGrist, 1, { dryRun: true });
+    
+    expect(result.success).toBe(true);
+    
+    // Aucune action de mise à jour pour cette entrée
+    const updateAction = result.actions.find(a => 
+      a[0] === 'UpdateRecord' && a[2] === 1
+    );
+    
+    expect(updateAction).toBeUndefined();
+    
+    // Vérifier que revisionPlan reste à 5
+    const entries = await mockGrist.fetchTable('TimeEntries');
+    const entriesRows = columnarToRows(entries);
+    const entry = entriesRows.find(row => row.id === 1);
+    expect(entry.revisionPlan).toBe(5);
+  });
+  
+  test('ligne validée avec revisionPlan = 5 reste inchangée', async () => {
+    // Ajouter une feuille validée
+    const sheetResult = await mockGrist.applyUserActions([
+      ['AddRecord', 'Feuilles', null, {
+        membre: 1,
+        semaine: 1719792000,
+        statut: 'valide'
+      }]
+    ]);
+    const sheetId = sheetResult[0].id;
+    
+    // Créer une TimeEntry validée avec revisionPlan = 5
+    await mockGrist.applyUserActions([
+      ['AddRecord', 'TimeEntries', null, {
+        affectation: 1,
+        tache: 1,
+        membre: 1,
+        date: 1719792000,
+        heuresPrevues: 3,
+        heures: 4,
+        feuille: sheetId,
+        revisionPlan: 5
+      }]
+    ]);
+    
+    // Réconciliation - ne devrait pas modifier la ligne validée
+    const result = await reconcileAssignmentPlan(mockGrist, 1, { dryRun: true });
+    
+    expect(result.success).toBe(true);
+    
+    // Aucune action de mise à jour ou suppression pour cette entrée
+    const updateAction = result.actions.find(a => 
+      (a[0] === 'UpdateRecord' || a[0] === 'RemoveRecord') && a[2] === 1
+    );
+    
+    expect(updateAction).toBeUndefined();
+    
+    // Vérifier que revisionPlan reste à 5
+    const entries = await mockGrist.fetchTable('TimeEntries');
+    const entriesRows = columnarToRows(entries);
+    const entry = entriesRows.find(row => row.id === 1);
+    expect(entry.revisionPlan).toBe(5);
+  });
+  
+  test('nouvelle création commence à revisionPlan = 1', async () => {
+    // Réconciliation sur une affectation sans entrées existantes
+    const result = await reconcileAssignmentPlan(mockGrist, 1, {
+      dryRun: true,
+      replanFromDate: '2024-07-01'
+    });
+    
+    expect(result.success).toBe(true);
+    
+    // Vérifier que toutes les créations ont revisionPlan = 1
+    const createActions = result.actions.filter(a => a[0] === 'AddRecord');
+    
+    expect(createActions.length).toBeGreaterThan(0);
+    
+    for (const action of createActions) {
+      expect(action[3].revisionPlan).toBe(1);
+    }
+  });
+});
+

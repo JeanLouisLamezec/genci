@@ -201,122 +201,26 @@ function normalizeSheetStatus(status) {
 // ============================================================================
 
 /**
- * Construit les capacités quotidiennes pour un membre
- * @param {Object} input - Paramètres d'entrée
- * @param {Object} input.member - Membre avec capaciteHebdo
- * @param {Array} input.availabilities - Disponibilités du membre
- * @param {string} input.startDate - Date de début (ISO)
- * @param {string} input.endDate - Date de fin (ISO)
- * @param {number} [input.defaultWeeklyCapacityHours=35] - Capacité hebdo par défaut
- * @returns {Object} Résultat avec capacities et diagnostics
+ * Construit les capacités quotidiennes pour le moteur de planification à partir des capacités Grist
+ * @param {Array} memberDailyCapacities - Capacités depuis Grist
+ * @returns {Array} Capacités formatées pour le moteur
  */
-function buildMemberDailyCapacities(input) {
-  const diagnostics = [];
+function buildCapacitiesFromGrist(memberDailyCapacities) {
+  const capacities = [];
   
-  const {
-    member,
-    availabilities,
-    startDate,
-    endDate,
-    defaultWeeklyCapacityHours = DEFAULT_WEEKLY_CAPACITY
-  } = input;
-  
-  // Capacité hebdomadaire
-  let weeklyCapacity = member?.capaciteHebdo;
-  
-  if (weeklyCapacity === null || weeklyCapacity === undefined || weeklyCapacity === '') {
-    weeklyCapacity = defaultWeeklyCapacityHours;
-    diagnostics.push({
-      code: 'DEFAULT_CAPACITY_USED',
-      message: `Capacité hebdomadaire par défaut utilisée : ${weeklyCapacity}h`
-    });
-  }
-  
-  // Capacité quotidienne de base (lundi-vendredi)
-  const dailyBaseCapacity = weeklyCapacity / DAYS_PER_WEEK;
-  
-  // Générer les dates
-  const dates = [];
-  const current = parseDateUTC(startDate);
-  const end = parseDateUTC(endDate);
-  
-  if (!current || !end) {
-    return {
-      capacities: [],
-      diagnostics: [{
-        code: 'INVALID_DATE_RANGE',
-        message: 'Intervalle de dates invalide'
-      }]
-    };
-  }
-  
-  // Traiter les disponibilités
-  const availabilityMap = new Map();
-  
-  for (const avail of availabilities || []) {
-    const availStart = parseDateUTC(gristDateToIso(avail.dateDebut));
-    const availEnd = parseDateUTC(gristDateToIso(avail.dateFin));
-    const dispoRatio = typeof avail.dispo === 'number' ? avail.dispo : 1;
+  for (const cap of memberDailyCapacities || []) {
+    const dateStr = typeof cap.date === 'number' 
+      ? formatDateUTC(new Date(cap.date * 1000))
+      : cap.date;
     
-    if (!availStart || !availEnd) continue;
-    
-    // Marquer les dates couvertes par cette disponibilité
-    let d = new Date(availStart.getTime());
-    while (d <= availEnd) {
-      const dateStr = formatDateUTC(d);
-      const existingRatio = availabilityMap.get(dateStr);
-      
-      // Prendre le ratio le plus restrictif (minimum)
-      if (existingRatio === undefined || dispoRatio < existingRatio) {
-        availabilityMap.set(dateStr, dispoRatio);
-      }
-      
-      d.setUTCDate(d.getUTCDate() + 1);
-    }
-  }
-  
-  // Construire les capacités quotidiennes
-  let d = new Date(current.getTime());
-  while (d <= end) {
-    const dateStr = formatDateUTC(d);
-    const dayOfWeek = d.getUTCDay();
-    
-    // Week-end = 0
-    const isWeekend = (dayOfWeek === 0 || dayOfWeek === 6);
-    
-    let baseCapacity = 0;
-    let availableCapacity = 0;
-    
-    if (!isWeekend) {
-      baseCapacity = dailyBaseCapacity;
-      
-      // Appliquer le ratio de disponibilité
-      const dispoRatio = availabilityMap.get(dateStr);
-      
-      if (dispoRatio !== undefined) {
-        availableCapacity = baseCapacity * dispoRatio;
-      } else {
-        availableCapacity = baseCapacity;
-      }
-    }
-    
-    // Arrondir à 0,01h
-    baseCapacity = toHours(Math.round(baseCapacity * 100));
-    availableCapacity = toHours(Math.round(availableCapacity * 100));
-    
-    dates.push({
+    capacities.push({
       date: dateStr,
-      baseCapacityHours: baseCapacity,
-      availableCapacityHours: availableCapacity
+      baseCapacityHours: cap.capaciteTheorique || 0,
+      availableCapacityHours: cap.capaciteDisponible || 0
     });
-    
-    d.setUTCDate(d.getUTCDate() + 1);
   }
   
-  return {
-    capacities: dates,
-    diagnostics
-  };
+  return capacities;
 }
 
 // ============================================================================
@@ -328,12 +232,14 @@ function buildMemberDailyCapacities(input) {
  * @param {Object} grist - API Grist
  * @param {number} assignmentId - ID de l'affectation
  * @param {Object} options - Options
+ * @param {boolean} [options.ensureCapacities=true] - Si true, assure les capacités dans Grist. Si false, construit en mémoire seulement.
  * @returns {Promise<Object>} Contexte adapté pour buildAssignmentPlan
  */
 async function loadAssignmentContext(grist, assignmentId, options = {}) {
   const docApi = getDocApi(grist);
   const {
-    includeAllEntries = true
+    includeAllEntries = true,
+    ensureCapacities = true
   } = options;
   
   // Charger toutes les tables nécessaires en parallèle
@@ -373,6 +279,10 @@ async function loadAssignmentContext(grist, assignmentId, options = {}) {
     };
   }
   
+  // Mapper les données de base (nécessaire même pour les affectations inactives)
+  const task = tasks.find(t => t.id === assignment.tache);
+  const member = team.find(m => m.id === assignment.membre);
+  
   // Vérifier si l'affectation est inactive
   if (assignment.actif === false) {
     // Pour une affectation inactive, charger quand même les entrées existantes
@@ -394,23 +304,30 @@ async function loadAssignmentContext(grist, assignmentId, options = {}) {
           sheetStatus,
           description: e.description || null,
           imputation: e.imputation || null,
-          feuille: e.feuille || null
+          feuille: e.feuille || null,
+          revisionPlan: Number(e.revisionPlan || 0)
         };
       });
     
+    // Retourner le contexte pour permettre le nettoyage
     return {
-      error: {
+      assignment: {
+        id: assignment.id,
+        taskId: task ? task.id : assignment.tache,
+        memberId: member ? member.id : assignment.membre,
+        allocatedHours: assignment.heuresAllouees || 0,
+        startDate: gristDateToIso(assignment.dateDebut),
+        endDate: gristDateToIso(assignment.dateFin),
+        actif: false
+      },
+      existingEntries: existingEntriesForInactive,
+      diagnostics: [{
         code: 'ASSIGNMENT_INACTIVE_CLEANUP',
-        assignmentId,
-        message: 'Une affectation inactive nécessite un nettoyage contrôlé',
-        existingEntries: existingEntriesForInactive
-      }
+        message: 'Une affectation inactive nécessite un nettoyage contrôlé'
+      }],
+      isInactive: true
     };
   }
-  
-  // Mapper les données
-  const task = tasks.find(t => t.id === assignment.tache);
-  const member = team.find(m => m.id === assignment.membre);
   
   if (!task || !member) {
     return {
@@ -426,29 +343,86 @@ async function loadAssignmentContext(grist, assignmentId, options = {}) {
   const startDate = gristDateToIso(assignment.dateDebut);
   const endDate = gristDateToIso(assignment.dateFin);
   
-  try {
-    await ensureMemberDailyCapacities(grist, member.id, startDate, endDate, {
+  let capacityEnsureResult = { success: true, diagnostics: [] };
+  let memberDailyCapacitiesInRange = [];
+  let capacityByDate = new Map();
+  
+  if (ensureCapacities) {
+    // Mode écriture : assurer les capacités dans Grist
+    capacityEnsureResult = await ensureMemberDailyCapacities(grist, member.id, startDate, endDate, {
       weeklyCapacity: member.capaciteHebdo,
       availabilities: availabilities.filter(a => a.membre === assignment.membre),
       defaultWeeklyCapacity: DEFAULT_WEEKLY_CAPACITY,
       source: 'calcul',
       dryRun: false
     });
-  } catch (e) {
-    diagnostics.push({
-      code: 'CAPACITY_ENSURE_FAILED',
-      message: `Échec de l'assurance des capacités: ${e.message || String(e)}`
+    
+    // Vérifier les erreurs ou conflits bloquants
+    if (!capacityEnsureResult.success) {
+      return {
+        error: {
+          code: capacityEnsureResult.error.code,
+          errors: capacityEnsureResult.error.errors || capacityEnsureResult.error.conflicts,
+          message: capacityEnsureResult.error.message || 'Erreur lors de l\'assurance des capacités'
+        }
+      };
+    }
+    
+    // Recharger les capacités quotidiennes depuis Grist (source de vérité unique)
+    const memberDailyCapacitiesData = await docApi.fetchTable('MemberDailyCapacities');
+    const memberDailyCapacities = columnarToRows(memberDailyCapacitiesData)
+      .filter(cap => cap.membre === assignment.membre);
+    
+    // Filtrer pour ne garder que celles dans la période de l'affectation
+    memberDailyCapacitiesInRange = memberDailyCapacities.filter(cap => {
+      const capDate = typeof cap.date === 'number' 
+        ? formatDateUTC(new Date(cap.date * 1000))
+        : cap.date;
+      return capDate >= startDate && capDate <= endDate;
     });
+  } else {
+    // Mode lecture : construire les capacités en mémoire sans écrire dans Grist
+    const { buildDesiredMemberDailyCapacities } = require('../capacity/member-daily-capacity-service.js');
+    
+    const desiredResult = buildDesiredMemberDailyCapacities({
+      memberId: member.id,
+      weeklyCapacity: member.capaciteHebdo,
+      availabilities: availabilities.filter(a => a.membre === assignment.membre),
+      startDate,
+      endDate,
+      defaultWeeklyCapacity: DEFAULT_WEEKLY_CAPACITY,
+      source: 'calcul',
+      revision: 1
+    });
+    
+    if (desiredResult.errors && desiredResult.errors.length > 0) {
+      return {
+        error: {
+          code: 'INVALID_CAPACITY_INPUT',
+          errors: desiredResult.errors,
+          message: 'Erreur de validation des capacités'
+        }
+      };
+    }
+    
+    // Utiliser les capacités désirées directement
+    memberDailyCapacitiesInRange = desiredResult.capacities.map(cap => ({
+      id: null, // Pas d'ID car pas encore dans Grist
+      membre: cap.memberId,
+      date: cap.date,
+      capaciteTheorique: cap.capaciteTheorique,
+      disponibiliteRatio: cap.disponibiliteRatio,
+      capaciteDisponible: cap.capaciteDisponible,
+      absenceHeures: cap.absenceHeures,
+      source: cap.source,
+      revision: cap.revision
+    }));
+    
+    capacityEnsureResult.diagnostics = desiredResult.diagnostics;
   }
   
-  // Recharger les capacités quotidiennes depuis Grist
-  const memberDailyCapacitiesData = await docApi.fetchTable('MemberDailyCapacities');
-  const memberDailyCapacities = columnarToRows(memberDailyCapacitiesData)
-    .filter(cap => cap.membre === assignment.membre);
-  
   // Construire un map des capacités par date
-  const capacityByDate = new Map();
-  for (const cap of memberDailyCapacities) {
+  for (const cap of memberDailyCapacitiesInRange) {
     const dateStr = typeof cap.date === 'number' 
       ? formatDateUTC(new Date(cap.date * 1000))
       : cap.date;
@@ -460,17 +434,11 @@ async function loadAssignmentContext(grist, assignmentId, options = {}) {
     });
   }
   
-  // Construire les capacités pour le moteur de planification
-  const capacityResult = buildMemberDailyCapacities({
-    member,
-    availabilities: availabilities.filter(a => a.membre === assignment.membre),
-    startDate,
-    endDate,
-    defaultWeeklyCapacityHours: DEFAULT_WEEKLY_CAPACITY
-  });
+  // Construire les capacités pour le moteur de planification à partir des données
+  const capacities = buildCapacitiesFromGrist(memberDailyCapacitiesInRange);
   
   // Mapper les entrées existantes et détecter les entrées orphelines
-  const diagnostics = [...(capacityResult.diagnostics || [])];
+  const diagnostics = [...(capacityEnsureResult.diagnostics || [])];
   const existingEntries = entries
     .filter(e => {
       // Inclure UNIQUEMENT les entrées de cette affectation
@@ -514,7 +482,8 @@ async function loadAssignmentContext(grist, assignmentId, options = {}) {
         feuille: e.feuille || null,
         capaciteJour: dailyCap ? dailyCap.id : null,
         baseCapacityHours: dailyCap ? dailyCap.capaciteTheorique : (e.capaciteTheorique || 0),
-        availableCapacityHours: dailyCap ? dailyCap.capaciteDisponible : (e.capaciteDisponible || 0)
+        availableCapacityHours: dailyCap ? dailyCap.capaciteDisponible : (e.capaciteDisponible || 0),
+        revisionPlan: Number(e.revisionPlan || 0)
       };
     });
   
@@ -527,7 +496,7 @@ async function loadAssignmentContext(grist, assignmentId, options = {}) {
       startDate: gristDateToIso(assignment.dateDebut),
       endDate: gristDateToIso(assignment.dateFin)
     },
-    capacities: capacityResult.capacities,
+    capacities,
     existingEntries,
     capacityByDate,
     diagnostics
@@ -568,13 +537,18 @@ function columnarToRows(data) {
  */
 async function planAssignment(grist, assignmentId, options = {}) {
   const {
-    replanFromDate,
     precisionHours = 0.01,
     capacityPolicy = 'cap'
   } = options;
   
-  // Charger le contexte
-  const context = await loadAssignmentContext(grist, assignmentId, options);
+  // Résoudre la date de replanification
+  const effectiveReplanFromDate = resolveReplanFromDate(options);
+  
+  // Charger le contexte en mode lecture seule (sans écrire les capacités)
+  const context = await loadAssignmentContext(grist, assignmentId, {
+    ...options,
+    ensureCapacities: false
+  });
   
   if (context.error) {
     return {
@@ -594,7 +568,7 @@ async function planAssignment(grist, assignmentId, options = {}) {
     assignment,
     capacities,
     existingEntries,
-    replanFromDate,
+    replanFromDate: effectiveReplanFromDate,
     precisionHours,
     capacityPolicy
   });
@@ -648,12 +622,14 @@ function isBlockingDiagnostic(diagnostic) {
 async function reconcileAssignmentPlan(grist, assignmentId, options = {}) {
   const {
     dryRun = false,
-    replanFromDate,
     precisionHours = 0.01,
     capacityPolicy = 'cap'
   } = options;
   
   const docApi = getDocApi(grist);
+  
+  // Résoudre la date de replanification
+  const effectiveReplanFromDate = resolveReplanFromDate(options);
   
   // Charger le contexte
   const context = await loadAssignmentContext(grist, assignmentId, options);
@@ -667,14 +643,115 @@ async function reconcileAssignmentPlan(grist, assignmentId, options = {}) {
     };
   }
   
-  const { assignment, capacities, existingEntries, diagnostics } = context;
+  const { assignment, capacities, existingEntries, diagnostics, isInactive } = context;
   
-  // Appeler le moteur de planification
+  // Si l'affectation est inactive, effectuer un nettoyage contrôé
+  if (isInactive) {
+    const allDiagnostics = [...(diagnostics || [])];
+    
+    // Générer les actions de nettoyage pour les entrées futures
+    const cleanupActions = [];
+    const existingEntriesMap = new Map();
+    
+    for (const entry of existingEntries) {
+      existingEntriesMap.set(entry.id, entry);
+      
+      const isBeforeReplan = entry.date < effectiveReplanFromDate;
+      const isSubmitted = entry.sheetStatus === 'submitted';
+      const isValidated = entry.sheetStatus === 'validated';
+      const isLocked = isSubmitted || isValidated;
+      
+      // Conserver toutes les lignes antérieures à replanFromDate
+      if (isBeforeReplan) {
+        continue;
+      }
+      
+      // Conserver toutes les lignes soumises ou validées
+      if (isLocked) {
+        continue;
+      }
+      
+      // Pour les lignes futures mutables
+      const hasPlannedHours = entry.plannedHours > 0;
+      const hasActualHours = entry.actualHours > 0;
+      const hasDescription = !!(entry.description && entry.description.trim());
+      const hasImputation = !!(entry.imputation && entry.imputation.trim());
+      const hasFeuille = !!(entry.feuille && entry.feuille !== null && entry.feuille !== undefined);
+      
+      const isEmpty = (
+        !hasPlannedHours &&
+        !hasActualHours &&
+        !hasDescription &&
+        !hasImputation &&
+        !hasFeuille
+      );
+      
+      if (isEmpty) {
+        // Supprimer la ligne vide
+        cleanupActions.push([
+          'RemoveRecord',
+          'TimeEntries',
+          entry.id
+        ]);
+      } else if (hasPlannedHours) {
+        // Mettre heuresPrevues à zéro tout en conservant le reste
+        const currentRevision = Number(entry.revisionPlan || 0);
+        cleanupActions.push([
+          'UpdateRecord',
+          'TimeEntries',
+          entry.id,
+          {
+            heuresPrevues: 0,
+            revisionPlan: currentRevision + 1
+          }
+        ]);
+      }
+      // Si pas de heuresPrevues mais d'autres champs, ne rien faire
+    }
+    
+    if (dryRun || cleanupActions.length === 0) {
+      return {
+        success: true,
+        dryRun,
+        actionsExecuted: 0,
+        actions: cleanupActions,
+        diagnostics: allDiagnostics,
+        isInactive: true
+      };
+    }
+    
+    // Appliquer les actions de nettoyage
+    try {
+      await docApi.applyUserActions(cleanupActions);
+      
+      return {
+        success: true,
+        actionsExecuted: cleanupActions.length,
+        actions: cleanupActions,
+        diagnostics: allDiagnostics,
+        isInactive: true
+      };
+    } catch (e) {
+      return {
+        success: false,
+        error: {
+          code: 'GRIST_ACTION_FAILED',
+          message: e.message || String(e)
+        },
+        actionsExecuted: 0,
+        actions: cleanupActions,
+        diagnostics: allDiagnostics,
+        isInactive: true
+      };
+    }
+  }
+  
+  // Traitement normal pour les affectations actives
   const planResult = buildAssignmentPlan({
     assignment,
     capacities,
     existingEntries,
-    replanFromDate,
+    replanFromDate: effectiveReplanFromDate,
     precisionHours,
     capacityPolicy
   });
@@ -950,7 +1027,7 @@ module.exports = {
   normalizeSheetStatus,
   
   // Construction des capacités
-  buildMemberDailyCapacities,
+  buildCapacitiesFromGrist,
   
   // Chargement du contexte
   loadAssignmentContext,
