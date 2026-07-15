@@ -439,9 +439,9 @@ describe('Grist Planning Adapter - Réconciliation', () => {
     
     const result = await reconcileAssignmentPlan(mockGrist, 1);
     
-    // Une affectation inactive doit échouer avec ASSIGNMENT_INACTIVE
+    // Une affectation inactive doit échouer avec ASSIGNMENT_INACTIVE_CLEANUP
     expect(result.success).toBe(false);
-    expect(result.error.code).toBe('ASSIGNMENT_INACTIVE');
+    expect(result.error.code).toBe('ASSIGNMENT_INACTIVE_CLEANUP');
     expect(result.actionsExecuted).toBe(0);
   });
   

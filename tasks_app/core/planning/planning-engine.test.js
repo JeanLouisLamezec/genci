@@ -972,3 +972,144 @@ describe('Planning Engine - Validation des nombres', () => {
     expect(result.summary.allocatedHours).toBe(0);
   });
 });
+
+describe('Planning Engine - Arrondi plus forts restes', () => {
+  
+  test('1h sur 3 jours identiques → 0,34 + 0,33 + 0,33, unplannedHours = 0', () => {
+    const assignment = {
+      id: 1,
+      taskId: 1,
+      memberId: 1,
+      allocatedHours: 1,
+      startDate: '2026-07-01',
+      endDate: '2026-07-03'
+    };
+    
+    const capacities = [
+      { date: '2026-07-01', baseCapacityHours: 7, availableCapacityHours: 7 },
+      { date: '2026-07-02', baseCapacityHours: 7, availableCapacityHours: 7 },
+      { date: '2026-07-03', baseCapacityHours: 7, availableCapacityHours: 7 }
+    ];
+    
+    const result = buildAssignmentPlan({
+      assignment,
+      capacities,
+      existingEntries: []
+    });
+    
+    expect(result.desiredPlan.length).toBe(3);
+    
+    const totalCentiHours = result.desiredPlan.reduce((sum, item) => {
+      return sum + toCentiHours(item.plannedHours);
+    }, 0);
+    
+    expect(totalCentiHours).toBe(100); // 1h = 100 centièmes
+    expect(result.summary.unplannedHours).toBe(0);
+    
+    // Vérifier la répartition : 34, 33, 33 centièmes
+    const sorted = result.desiredPlan.map(p => toCentiHours(p.plannedHours)).sort((a, b) => a - b);
+    expect(sorted).toEqual([33, 33, 34]);
+  });
+  
+  test('0,02h sur 5 jours de capacité 0,01 → deux jours à 0,01', () => {
+    const assignment = {
+      id: 1,
+      taskId: 1,
+      memberId: 1,
+      allocatedHours: 0.02,
+      startDate: '2026-07-01',
+      endDate: '2026-07-05'
+    };
+    
+    const capacities = [
+      { date: '2026-07-01', baseCapacityHours: 0.01, availableCapacityHours: 0.01 },
+      { date: '2026-07-02', baseCapacityHours: 0.01, availableCapacityHours: 0.01 },
+      { date: '2026-07-03', baseCapacityHours: 0.01, availableCapacityHours: 0.01 },
+      { date: '2026-07-04', baseCapacityHours: 0.01, availableCapacityHours: 0.01 },
+      { date: '2026-07-05', baseCapacityHours: 0.01, availableCapacityHours: 0.01 }
+    ];
+    
+    const result = buildAssignmentPlan({
+      assignment,
+      capacities,
+      existingEntries: []
+    });
+    
+    // 0.02h = 2 centièmes, répartis sur 5 jours de 1 centième chacun
+    expect(result.desiredPlan.length).toBe(2);
+    
+    const totalCentiHours = result.desiredPlan.reduce((sum, item) => {
+      return sum + toCentiHours(item.plannedHours);
+    }, 0);
+    
+    expect(totalCentiHours).toBe(2);
+    
+    for (const item of result.desiredPlan) {
+      expect(toCentiHours(item.plannedHours)).toBe(1);
+    }
+  });
+  
+  test('Capacité totale insuffisante → toute la capacité disponible est utilisée', () => {
+    const assignment = {
+      id: 1,
+      taskId: 1,
+      memberId: 1,
+      allocatedHours: 100,
+      startDate: '2026-07-01',
+      endDate: '2026-07-02'
+    };
+    
+    const capacities = [
+      { date: '2026-07-01', baseCapacityHours: 7, availableCapacityHours: 7 },
+      { date: '2026-07-02', baseCapacityHours: 7, availableCapacityHours: 7 }
+    ];
+    
+    const result = buildAssignmentPlan({
+      assignment,
+      capacities,
+      existingEntries: []
+    });
+    
+    // Capacité totale = 14h, allouée = 100h
+    expect(result.desiredPlan.length).toBe(2);
+    
+    const totalPlanned = result.desiredPlan.reduce((sum, item) => sum + item.plannedHours, 0);
+    expect(totalPlanned).toBe(14); // Toute la capacité utilisée
+    
+    expect(result.summary.unplannedHours).toBe(86); // 100 - 14
+  });
+  
+  test('Arrondi exact à 0,01h près sans dérive', () => {
+    const assignment = {
+      id: 1,
+      taskId: 1,
+      memberId: 1,
+      allocatedHours: 35,
+      startDate: '2026-07-01',
+      endDate: '2026-07-14'
+    };
+    
+    const capacities = [];
+    for (let i = 0; i < 14; i++) {
+      const date = `2026-07-${String(i + 1).padStart(2, '0')}`;
+      capacities.push({
+        date,
+        baseCapacityHours: 7,
+        availableCapacityHours: 7
+      });
+    }
+    
+    const result = buildAssignmentPlan({
+      assignment,
+      capacities,
+      existingEntries: []
+    });
+    
+    const totalCentiHours = result.desiredPlan.reduce((sum, item) => {
+      return sum + toCentiHours(item.plannedHours);
+    }, 0);
+    
+    expect(totalCentiHours).toBe(3500); // 35h exactes
+    expect(toHours(totalCentiHours)).toBe(35);
+  });
+});

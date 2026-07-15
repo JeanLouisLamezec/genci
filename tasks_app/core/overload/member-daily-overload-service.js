@@ -121,7 +121,7 @@ function checkUnicityConstraint(records, keyFn, errorCode) {
   const seen = new Map();
   const violations = [];
   
-  for (let i = 0; i < records; i++) {
+  for (let i = 0; i < records.length; i++) {
     const record = records[i];
     const key = keyFn(record);
     
@@ -129,7 +129,7 @@ function checkUnicityConstraint(records, keyFn, errorCode) {
       violations.push({
         code: errorCode,
         key,
-        records: [seen.get(key), record],
+        records: [seen.get(key).id, record.id],
         message: `Violation d'unicité pour ${key}`
       });
     } else {

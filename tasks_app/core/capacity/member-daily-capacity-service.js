@@ -30,17 +30,28 @@ function validateCapacityInput(input) {
   const errors = [];
   const diagnostics = [];
   
-  // Valider capaciteHebdo
-  const weeklyCapValidation = validateNumber(input.weeklyCapacity, 'capaciteHebdo');
-  if (!weeklyCapValidation.valid) {
+  // Valider capaciteHebdo (optionnel si defaultWeeklyCapacity est fourni)
+  const hasWeeklyCapacity = input.weeklyCapacity !== null && input.weeklyCapacity !== undefined && input.weeklyCapacity !== '';
+  const hasDefaultCapacity = input.defaultWeeklyCapacity !== null && input.defaultWeeklyCapacity !== undefined && input.defaultWeeklyCapacity !== '';
+  
+  if (hasWeeklyCapacity) {
+    const weeklyCapValidation = validateNumber(input.weeklyCapacity, 'capaciteHebdo');
+    if (!weeklyCapValidation.valid) {
+      errors.push({
+        code: 'INVALID_WEEKLY_CAPACITY',
+        message: weeklyCapValidation.error
+      });
+    } else if (input.weeklyCapacity < 0) {
+      errors.push({
+        code: 'INVALID_WEEKLY_CAPACITY',
+        message: 'capaciteHebdo doit être >= 0'
+      });
+    }
+  } else if (!hasDefaultCapacity) {
+    // Ni weeklyCapacity ni defaultWeeklyCapacity n'est fourni
     errors.push({
       code: 'INVALID_WEEKLY_CAPACITY',
-      message: weeklyCapValidation.error
-    });
-  } else if (input.weeklyCapacity < 0) {
-    errors.push({
-      code: 'INVALID_WEEKLY_CAPACITY',
-      message: 'capaciteHebdo doit être >= 0'
+      message: 'capaciteHebdo est requis ou defaultWeeklyCapacity doit être fourni'
     });
   }
   

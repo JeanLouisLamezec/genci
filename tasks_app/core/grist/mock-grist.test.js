@@ -236,4 +236,61 @@ describe('createMockGrist', () => {
       expect(test.value).toBeDefined();
     });
   });
+  
+  describe('Rollback avec erreur naturelle', () => {
+    it('devrait restaurer l\'état complet quand une action lève naturellement', async () => {
+      const initialState = {
+        Existing: [{ id: 1, name: 'Initial' }]
+      };
+      
+      mock = createMockGrist({
+        initialData: initialState
+      });
+      
+      // Première action réussit, deuxième action lève naturellement (RemoveRecord sur ligne inexistante)
+      await expect(mock.applyUserActions([
+        ['AddTable', 'NewTable', [{ id: 'name', type: 'Text' }]],
+        ['AddRecord', 'NewTable', null, { name: 'Test' }],
+        ['RemoveRecord', 'NewTable', 999] // Cette ligne n'existe pas -> erreur
+      ])).rejects.toThrow();
+      
+      // Après rollback, NewTable ne devrait pas exister
+      const tables = await mock.listTables();
+      expect(tables).toContain('Existing');
+      expect(tables).not.toContain('NewTable');
+      
+      // Vérifier que les données existantes sont intactes
+      const existing = await mock.fetchTable('Existing');
+      expect(existing.id).toEqual([1]);
+      expect(existing.name).toEqual(['Initial']);
+    });
+    
+    it('devrait préserver types et métadonnées après rollback', async () => {
+      const initialState = {
+        Typed: [{ id: 1, value: 42 }]
+      };
+      
+      mock = createMockGrist({
+        initialData: initialState
+      });
+      
+      // Obtenir l'état initial des métadonnées
+      const initialColumns = await mock.fetchTable('_grist_Tables_column');
+      const initialTypedCol = initialColumns.colId.indexOf('value');
+      const initialType = initialColumns.type[initialTypedCol];
+      
+      // Tenter une opération qui échoue
+      await expect(mock.applyUserActions([
+        ['AddColumn', 'Typed', 'newCol', { type: 'Text' }],
+        ['RemoveRecord', 'Typed', 999] // Erreur
+      ])).rejects.toThrow();
+      
+      // Vérifier que les métadonnées sont restaurées
+      const afterColumns = await mock.fetchTable('_grist_Tables_column');
+      const afterTypedCol = afterColumns.colId.indexOf('value');
+      const afterType = afterColumns.type[afterTypedCol];
+      
+      expect(afterType).toBe(initialType);
+    });
+  });
 });

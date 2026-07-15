@@ -201,56 +201,70 @@ function createMockGrist(options = {}) {
     async applyUserActions(actions) {
       const results = [];
       const stateSnapshot = mockApi.exportState();
+      const countersSnapshot = {
+        nextRowIdByTable: new Map(nextRowIdByTable),
+        gristTablesLength: gristTables.length,
+        gristTablesColumnLength: gristTablesColumn.length
+      };
       
-      for (let i = 0; i < actions.length; i++) {
-        const action = actions[i];
-        const [type, ...args] = action;
-        
-        // Injecter un échec si configuré
-        if (shouldFailAction && shouldFailAction(action, i)) {
-          // Rollback à l'état précédent
-          tables.clear();
-          columnsByTable.clear();
-          nextRowIdByTable.clear();
-          gristTables.length = 0;
-          gristTablesColumn.length = 0;
-          initializeWith(stateSnapshot);
+      try {
+        for (let i = 0; i < actions.length; i++) {
+          const action = actions[i];
+          const [type, ...args] = action;
           
-          throw new Error(`ACTION_FAILED: Échec simulé pour l'action ${i}: ${type}`);
+          // Injecter un échec si configuré
+          if (shouldFailAction && shouldFailAction(action, i)) {
+            throw new Error(`ACTION_FAILED: Échec simulé pour l'action ${i}: ${type}`);
+          }
+          
+          let result;
+          
+          switch (type) {
+            case 'AddTable':
+              result = handleAddTable(...args);
+              break;
+            case 'AddColumn':
+              result = handleAddColumn(...args);
+              break;
+            case 'AddRecord':
+              result = handleAddRecord(...args);
+              break;
+            case 'UpdateRecord':
+              result = handleUpdateRecord(...args);
+              break;
+            case 'RemoveRecord':
+              result = handleRemoveRecord(...args);
+              break;
+            case 'RenameTable':
+              result = handleRenameTable(...args);
+              break;
+            case 'ModifyColumn':
+              result = handleModifyColumn(...args);
+              break;
+            default:
+              throw new Error(`Action non supportée: ${type}`);
+          }
+          
+          results.push(result);
         }
         
-        let result;
+        return results;
+      } catch (e) {
+        // Rollback complet en cas d'erreur (injectée ou naturelle)
+        tables.clear();
+        columnsByTable.clear();
+        nextRowIdByTable.clear();
+        gristTables.length = 0;
+        gristTablesColumn.length = 0;
+        initializeWith(stateSnapshot);
         
-        switch (type) {
-          case 'AddTable':
-            result = handleAddTable(...args);
-            break;
-          case 'AddColumn':
-            result = handleAddColumn(...args);
-            break;
-          case 'AddRecord':
-            result = handleAddRecord(...args);
-            break;
-          case 'UpdateRecord':
-            result = handleUpdateRecord(...args);
-            break;
-          case 'RemoveRecord':
-            result = handleRemoveRecord(...args);
-            break;
-          case 'RenameTable':
-            result = handleRenameTable(...args);
-            break;
-          case 'ModifyColumn':
-            result = handleModifyColumn(...args);
-            break;
-          default:
-            throw new Error(`Action non supportée: ${type}`);
+        // Restaurer les compteurs
+        for (const [tableId, count] of countersSnapshot.nextRowIdByTable) {
+          nextRowIdByTable.set(tableId, count);
         }
         
-        results.push(result);
+        throw e;
       }
-      
-      return results;
     },
     
     /**
@@ -280,6 +294,14 @@ function createMockGrist(options = {}) {
         state[tableId] = rows;
       }
       
+      // Exporter aussi les métadonnées Grist et compteurs
+      state._gristTables = gristTables.map(t => ({ ...t }));
+      state._gristTablesColumn = gristTablesColumn.map(c => ({ ...c }));
+      state._counters = {};
+      for (const [tableId, count] of nextRowIdByTable) {
+        state._counters[tableId] = count;
+      }
+      
       return state;
     },
     
@@ -294,6 +316,23 @@ function createMockGrist(options = {}) {
       gristTables.length = 0;
       gristTablesColumn.length = 0;
       initializeWith(state);
+      
+      // Restaurer les métadonnées et compteurs si présents
+      if (state._gristTables) {
+        for (const t of state._gristTables) {
+          gristTables.push({ ...t });
+        }
+      }
+      if (state._gristTablesColumn) {
+        for (const c of state._gristTablesColumn) {
+          gristTablesColumn.push({ ...c });
+        }
+      }
+      if (state._counters) {
+        for (const tableId in state._counters) {
+          nextRowIdByTable.set(tableId, state._counters[tableId]);
+        }
+      }
     },
     
     /**

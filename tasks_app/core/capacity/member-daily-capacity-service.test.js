@@ -204,7 +204,7 @@ describe('Member Daily Capacity Service', () => {
     test('devrait mettre à jour les capacités changées', () => {
       // Convertir la date en timestamp Grist (13 juillet 2026 00:00:00 UTC)
       const existing = [
-        { id: 1, membre: 1, date: 1752364800, capaciteTheorique: 7, disponibiliteRatio: 1, capaciteDisponible: 7, absenceHeures: 0, revision: 1 }
+        { id: 1, membre: 1, date: 1783900800, capaciteTheorique: 7, disponibiliteRatio: 1, capaciteDisponible: 7, absenceHeures: 0, revision: 1 }
       ];
       const desired = [
         { memberId: 1, date: '2026-07-13', capaciteTheorique: 7, disponibiliteRatio: 0.5, capaciteDisponible: 3.5, absenceHeures: 3.5, source: 'calcul', revision: 1 }
@@ -218,9 +218,9 @@ describe('Member Daily Capacity Service', () => {
     });
     
     test('devrait être idempotent pour des capacités identiques', () => {
-      // Utiliser la même représentation de date
+      // Utiliser la même représentation de date et les mêmes champs
       const existing = [
-        { id: 1, membre: 1, date: '2026-07-13', capaciteTheorique: 7, disponibiliteRatio: 1, capaciteDisponible: 7, absenceHeures: 0, revision: 1 }
+        { id: 1, membre: 1, date: '2026-07-13', capaciteTheorique: 7, disponibiliteRatio: 1, capaciteDisponible: 7, absenceHeures: 0, source: 'calcul', revision: 1 }
       ];
       const desired = [
         { memberId: 1, date: '2026-07-13', capaciteTheorique: 7, disponibiliteRatio: 1, capaciteDisponible: 7, absenceHeures: 0, source: 'calcul', revision: 1 }

@@ -554,18 +554,21 @@ function buildAssignmentPlan(input) {
   let remainingToDistribute = remainingCentiHours;
   
   if (totalCapacityCentiHours > 0 && remainingToDistribute > 0) {
+    // Limiter à la capacité totale disponible
+    const toDistribute = Math.min(remainingToDistribute, totalCapacityCentiHours);
+    
     // Étape 1: Calculer la part théorique de chaque date et prendre la partie entière
     const distribution = distributableDates.map(date => {
       const cap = capacityForDistribution.get(date);
       const ratio = cap / totalCapacityCentiHours;
-      const rawCentiHours = Math.floor(ratio * remainingToDistribute);
-      const remainder = (ratio * remainingToDistribute) - rawCentiHours;
+      const rawCentiHours = Math.floor(ratio * toDistribute);
+      const remainder = (ratio * toDistribute) - rawCentiHours;
       return { 
         date, 
         rawCentiHours, 
         remainder,
         capacity: cap,
-        assigned: 0
+        assigned: rawCentiHours
       };
     });
     
@@ -573,32 +576,37 @@ function buildAssignmentPlan(input) {
     let assignedSum = distribution.reduce((sum, item) => sum + item.rawCentiHours, 0);
     
     // Étape 3: Distribuer les centièmes restants aux plus forts restes
-    let centiHoursToAssign = remainingToDistribute - assignedSum;
+    let centiHoursToAssign = toDistribute - assignedSum;
     
     if (centiHoursToAssign > 0) {
+      // Créer un tableau indexé pour trier sans perdre l'ordre original
+      const indexed = distribution.map((item, index) => ({ ...item, originalIndex: index }));
+      
       // Trier par reste décroissant, puis par date croissante pour déterminisme
-      distribution.sort((a, b) => {
+      indexed.sort((a, b) => {
         const remainderDiff = b.remainder - a.remainder;
         if (Math.abs(remainderDiff) > 0.0001) return remainderDiff;
         return a.date.localeCompare(b.date);
       });
       
-      // Distribuer un centième à la fois
-      for (let i = 0; i < distribution.length && centiHoursToAssign > 0; i++) {
-        const item = distribution[i];
-        const maxAssignable = Math.min(item.capacity - item.rawCentiHours, centiHoursToAssign);
+      // Distribuer un centième à la fois, sans dépasser la capacité
+      for (let i = 0; i < indexed.length && centiHoursToAssign > 0; i++) {
+        const item = indexed[i];
+        const currentAssigned = item.assigned;
+        const maxAssignable = Math.min(item.capacity - currentAssigned, centiHoursToAssign);
         
         if (maxAssignable > 0) {
-          item.assigned = item.rawCentiHours + 1;
+          item.assigned = currentAssigned + 1;
           centiHoursToAssign--;
-        } else {
-          item.assigned = item.rawCentiHours;
         }
       }
-    } else {
-      // Aucun centième à redistribuer
-      for (const item of distribution) {
-        item.assigned = item.rawCentiHours;
+      
+      // Remettre dans l'ordre original pour la construction du plan
+      indexed.sort((a, b) => a.originalIndex - b.originalIndex);
+      
+      // Copier les valeurs assignées dans le tableau original
+      for (let i = 0; i < indexed.length; i++) {
+        distribution[i].assigned = indexed[i].assigned;
       }
     }
     
@@ -606,12 +614,9 @@ function buildAssignmentPlan(input) {
     for (const item of distribution) {
       let plannedCentiHours = item.assigned;
       
-      // Plafonner à la capacité restante
+      // Plafonner à la capacité (policy "cap")
       if (capacityPolicy === "cap") {
-        const maxCapacity = Math.min(item.capacity, remainingToDistribute);
-        if (plannedCentiHours > maxCapacity) {
-          plannedCentiHours = maxCapacity;
-        }
+        plannedCentiHours = Math.min(plannedCentiHours, item.capacity);
       }
       
       if (plannedCentiHours > 0) {

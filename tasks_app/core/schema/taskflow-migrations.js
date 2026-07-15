@@ -128,26 +128,43 @@
                 { id: 'actif', type: 'Bool', isFormula: false },
                 { id: 'commentaire', type: 'Text', isFormula: false }
             ]]);
+            // Marquer les colonnes comme créées pour éviter de les recréer
+            existingTables['TaskAssignments'] = { id: null };
+            existingColumns['TaskAssignments.tache'] = { type: 'Ref:Tasks' };
+            existingColumns['TaskAssignments.membre'] = { type: 'Ref:Team' };
+            existingColumns['TaskAssignments.heuresAllouees'] = { type: 'Numeric' };
+            existingColumns['TaskAssignments.dateDebut'] = { type: 'Date' };
+            existingColumns['TaskAssignments.dateFin'] = { type: 'Date' };
+            existingColumns['TaskAssignments.modeRepartition'] = { type: 'Choice' };
+            existingColumns['TaskAssignments.actif'] = { type: 'Bool' };
+            existingColumns['TaskAssignments.commentaire'] = { type: 'Text' };
         } else {
             log('TaskAssignments existe déjà');
         }
         
         // 2. Vérifier et ajouter les colonnes manquantes de TaskAssignments
-        var taskAssignmentsCols = ['tache', 'membre', 'heuresAllouees', 'dateDebut', 'dateFin', 'modeRepartition', 'actif', 'commentaire'];
+        var taskAssignmentsCols = [
+            { id: 'tache', type: 'Ref:Tasks' },
+            { id: 'membre', type: 'Ref:Team' },
+            { id: 'heuresAllouees', type: 'Numeric' },
+            { id: 'dateDebut', type: 'Date' },
+            { id: 'dateFin', type: 'Date' },
+            { id: 'modeRepartition', type: 'Choice' },
+            { id: 'actif', type: 'Bool' },
+            { id: 'commentaire', type: 'Text' }
+        ];
         for (var i = 0; i < taskAssignmentsCols.length; i++) {
-            var colId = taskAssignmentsCols[i];
-            var key = 'TaskAssignments.' + colId;
+            var colDef = taskAssignmentsCols[i];
+            var key = 'TaskAssignments.' + colDef.id;
             if (!existingColumns[key]) {
-                log('Ajout de la colonne TaskAssignments.' + colId);
-                var colType = colId === 'tache' || colId === 'membre' ? 'Ref' : 
-                              colId === 'heuresAllouees' ? 'Numeric' :
-                              colId === 'dateDebut' || colId === 'dateFin' ? 'Date' :
-                              colId === 'modeRepartition' ? 'Choice' :
-                              colId === 'actif' ? 'Bool' : 'Text';
-                actions.push(['AddColumn', 'TaskAssignments', colId, {
-                    type: colType,
+                log('Ajout de la colonne TaskAssignments.' + colDef.id);
+                actions.push(['AddColumn', 'TaskAssignments', colDef.id, {
+                    type: colDef.type,
                     isFormula: false
                 }]);
+                existingColumns[key] = { type: colDef.type };
+            } else {
+                log('TaskAssignments.' + colDef.id + ' existe déjà');
             }
         }
         
@@ -170,6 +187,7 @@
                     type: colDef.type,
                     isFormula: false
                 }]);
+                existingColumns[key] = { type: colDef.type };
             } else {
                 log('TimeEntries.' + colDef.id + ' existe déjà');
             }
@@ -221,6 +239,18 @@
                 { id: 'sourceUpdatedAt', type: 'DateTime', isFormula: false },
                 { id: 'commentaire', type: 'Text', isFormula: false }
             ]]);
+            // Marquer les colonnes comme créées pour éviter de les recréer
+            existingTables['MemberDailyCapacities'] = { id: null };
+            existingColumns['MemberDailyCapacities.membre'] = { type: 'Ref:Team' };
+            existingColumns['MemberDailyCapacities.date'] = { type: 'Date' };
+            existingColumns['MemberDailyCapacities.capaciteTheorique'] = { type: 'Numeric' };
+            existingColumns['MemberDailyCapacities.disponibiliteRatio'] = { type: 'Numeric' };
+            existingColumns['MemberDailyCapacities.capaciteDisponible'] = { type: 'Numeric' };
+            existingColumns['MemberDailyCapacities.absenceHeures'] = { type: 'Numeric' };
+            existingColumns['MemberDailyCapacities.source'] = { type: 'Choice' };
+            existingColumns['MemberDailyCapacities.revision'] = { type: 'Int' };
+            existingColumns['MemberDailyCapacities.sourceUpdatedAt'] = { type: 'DateTime' };
+            existingColumns['MemberDailyCapacities.commentaire'] = { type: 'Text' };
         } else {
             log('MemberDailyCapacities existe déjà');
         }
@@ -248,6 +278,9 @@
                     type: colDef.type,
                     isFormula: false
                 }]);
+                existingColumns[key] = { type: colDef.type };
+            } else {
+                log('MemberDailyCapacities.' + colDef.id + ' existe déjà');
             }
         }
         
@@ -259,6 +292,7 @@
                 type: 'Ref:MemberDailyCapacities',
                 isFormula: false
             }]);
+            existingColumns[key] = { type: 'Ref:MemberDailyCapacities' };
         } else {
             log('TimeEntries.capaciteJour existe déjà');
         }

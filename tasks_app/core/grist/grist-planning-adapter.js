@@ -13,6 +13,7 @@
 const { buildAssignmentPlan, toCentiHours, toHours, parseDateUTC, formatDateUTC, addDaysUTC } = require('../planning/planning-engine.js');
 const { reconcileDailyEntries } = require('../planning/planning-reconciliation.js');
 const { getDocApi } = require('./grist-api-helper.js');
+const { ensureMemberDailyCapacities } = require('../capacity/member-daily-capacity-service.js');
 
 // ============================================================================
 // CONSTANTES
@@ -421,12 +422,50 @@ async function loadAssignmentContext(grist, assignmentId, options = {}) {
     };
   }
   
-  // Construire les capacités
+  // Assurer les capacités quotidiennes dans Grist avant de planifier
+  const startDate = gristDateToIso(assignment.dateDebut);
+  const endDate = gristDateToIso(assignment.dateFin);
+  
+  try {
+    await ensureMemberDailyCapacities(grist, member.id, startDate, endDate, {
+      weeklyCapacity: member.capaciteHebdo,
+      availabilities: availabilities.filter(a => a.membre === assignment.membre),
+      defaultWeeklyCapacity: DEFAULT_WEEKLY_CAPACITY,
+      source: 'calcul',
+      dryRun: false
+    });
+  } catch (e) {
+    diagnostics.push({
+      code: 'CAPACITY_ENSURE_FAILED',
+      message: `Échec de l'assurance des capacités: ${e.message || String(e)}`
+    });
+  }
+  
+  // Recharger les capacités quotidiennes depuis Grist
+  const memberDailyCapacitiesData = await docApi.fetchTable('MemberDailyCapacities');
+  const memberDailyCapacities = columnarToRows(memberDailyCapacitiesData)
+    .filter(cap => cap.membre === assignment.membre);
+  
+  // Construire un map des capacités par date
+  const capacityByDate = new Map();
+  for (const cap of memberDailyCapacities) {
+    const dateStr = typeof cap.date === 'number' 
+      ? formatDateUTC(new Date(cap.date * 1000))
+      : cap.date;
+    capacityByDate.set(dateStr, {
+      id: cap.id,
+      capaciteTheorique: cap.capaciteTheorique || 0,
+      capaciteDisponible: cap.capaciteDisponible || 0,
+      disponibiliteRatio: cap.disponibiliteRatio || 1
+    });
+  }
+  
+  // Construire les capacités pour le moteur de planification
   const capacityResult = buildMemberDailyCapacities({
     member,
     availabilities: availabilities.filter(a => a.membre === assignment.membre),
-    startDate: gristDateToIso(assignment.dateDebut),
-    endDate: gristDateToIso(assignment.dateFin),
+    startDate,
+    endDate,
     defaultWeeklyCapacityHours: DEFAULT_WEEKLY_CAPACITY
   });
   
@@ -457,20 +496,25 @@ async function loadAssignmentContext(grist, assignmentId, options = {}) {
       const sheet = e.feuille ? sheets.find(s => s.id === e.feuille) : null;
       const sheetStatus = sheet ? normalizeSheetStatus(sheet.statut) : null;
       
+      // Trouver la capacité quotidienne associée
+      const dateStr = gristDateToIso(e.date);
+      const dailyCap = capacityByDate.get(dateStr);
+      
       return {
         id: e.id,
         assignmentId: e.affectation,
         taskId: e.tache,
         memberId: e.membre,
-        date: gristDateToIso(e.date),
+        date: dateStr,
         plannedHours: e.heuresPrevues || 0,
         actualHours: e.heures || 0,
         sheetStatus,
         description: e.description || null,
         imputation: e.imputation || null,
         feuille: e.feuille || null,
-        baseCapacityHours: e.capaciteTheorique || 0,
-        availableCapacityHours: e.capaciteDisponible || 0
+        capaciteJour: dailyCap ? dailyCap.id : null,
+        baseCapacityHours: dailyCap ? dailyCap.capaciteTheorique : (e.capaciteTheorique || 0),
+        availableCapacityHours: dailyCap ? dailyCap.capaciteDisponible : (e.capaciteDisponible || 0)
       };
     });
   
@@ -485,6 +529,7 @@ async function loadAssignmentContext(grist, assignmentId, options = {}) {
     },
     capacities: capacityResult.capacities,
     existingEntries,
+    capacityByDate,
     diagnostics
   };
 }
@@ -608,6 +653,8 @@ async function reconcileAssignmentPlan(grist, assignmentId, options = {}) {
     capacityPolicy = 'cap'
   } = options;
   
+  const docApi = getDocApi(grist);
+  
   // Charger le contexte
   const context = await loadAssignmentContext(grist, assignmentId, options);
   
@@ -674,7 +721,7 @@ async function reconcileAssignmentPlan(grist, assignmentId, options = {}) {
   for (const entry of existingEntries) {
     existingEntriesMap.set(entry.id, entry);
   }
-  const actions = diffToGristActions(diff, assignment, capacities, existingEntriesMap);
+  const actions = diffToGristActions(diff, assignment, capacities, existingEntriesMap, context.capacityByDate);
   
   if (dryRun || actions.length === 0) {
     return {
@@ -723,7 +770,7 @@ async function reconcileAssignmentPlan(grist, assignmentId, options = {}) {
  * @param {Map} existingEntriesMap - Map id -> entrée existante pour revisionPlan
  * @returns {Array} Actions Grist
  */
-function diffToGristActions(diff, assignment, capacities, existingEntriesMap = new Map()) {
+function diffToGristActions(diff, assignment, capacities, existingEntriesMap = new Map(), capacityByDate = new Map()) {
   const actions = [];
   const capacityMap = new Map();
   
@@ -735,6 +782,7 @@ function diffToGristActions(diff, assignment, capacities, existingEntriesMap = n
   for (const create of diff.creates || []) {
     const date = create.date;
     const cap = capacityMap.get(date) || {};
+    const dailyCap = capacityByDate.get(date);
     
     actions.push([
       'AddRecord',
@@ -749,6 +797,7 @@ function diffToGristActions(diff, assignment, capacities, existingEntriesMap = n
         heures: 0,
         capaciteTheorique: create.baseCapacityHours || cap.baseCapacityHours || 0,
         capaciteDisponible: create.availableCapacityHours || cap.availableCapacityHours || 0,
+        capaciteJour: dailyCap ? dailyCap.id : null,
         revisionPlan: 1,
         description: null,
         imputation: null
@@ -806,13 +855,15 @@ function diffToGristActions(diff, assignment, capacities, existingEntriesMap = n
  * @returns {Promise<Object>} Résultats par affectation
  */
 async function reconcileTaskPlan(grist, taskId, options = {}) {
+  const docApi = getDocApi(grist);
+  
   const {
     dryRun = false,
     activeOnly = true
   } = options;
   
   // Charger les affectations de la tâche
-  const assignmentsData = await grist.fetchTable('TaskAssignments');
+  const assignmentsData = await docApi.fetchTable('TaskAssignments');
   const assignments = columnarToRows(assignmentsData);
   
   const taskAssignments = assignments.filter(a => {
@@ -821,10 +872,51 @@ async function reconcileTaskPlan(grist, taskId, options = {}) {
     return true;
   });
   
-  // Réconcilier chaque affectation
+  // Détecter les doublons d'affectations actives (même tâche + même membre)
+  const activeByTaskMember = new Map();
+  const duplicates = [];
+  const blockedAssignments = new Set();
+  
+  for (const assignment of taskAssignments) {
+    const key = `${assignment.tache}:${assignment.membre}`;
+    
+    if (activeByTaskMember.has(key)) {
+      // Doublon détecté
+      const first = activeByTaskMember.get(key);
+      duplicates.push({
+        key,
+        task: assignment.tache,
+        member: assignment.membre,
+        assignments: [first.id, assignment.id]
+      });
+      blockedAssignments.add(first.id);
+      blockedAssignments.add(assignment.id);
+    } else {
+      activeByTaskMember.set(key, assignment);
+    }
+  }
+  
+  // Réconcilier chaque affectation non bloquée
   const results = [];
   
   for (const assignment of taskAssignments) {
+    // Si cette affectation est un doublon actif, la bloquer
+    if (blockedAssignments.has(assignment.id)) {
+      results.push({
+        assignmentId: assignment.id,
+        memberId: assignment.membre,
+        success: false,
+        error: {
+          code: 'DUPLICATE_ACTIVE_ASSIGNMENT',
+          key: `${assignment.tache}:${assignment.membre}`,
+          message: `Doublon d'affectation active détecté pour la tâche ${assignment.tache} et le membre ${assignment.membre}`
+        },
+        actionsExecuted: 0,
+        actions: []
+      });
+      continue;
+    }
+    
     const result = await reconcileAssignmentPlan(grist, assignment.id, {
       ...options,
       dryRun
@@ -840,6 +932,7 @@ async function reconcileTaskPlan(grist, taskId, options = {}) {
   return {
     taskId,
     assignmentCount: results.length,
+    duplicates: duplicates.length > 0 ? duplicates : undefined,
     results
   };
 }

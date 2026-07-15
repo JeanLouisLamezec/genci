@@ -492,12 +492,12 @@ describe('Lot 2 Corrections - Affectations inactives', () => {
     });
   });
   
-  test('Une affectation inactive retourne ASSIGNMENT_INACTIVE', async () => {
+  test('Une affectation inactive retourne ASSIGNMENT_INACTIVE_CLEANUP', async () => {
     const result = await reconcileAssignmentPlan(mockGrist, 1, { dryRun: true });
     
-    // Devrait échouer avec ASSIGNMENT_INACTIVE
+    // Devrait échouer avec ASSIGNMENT_INACTIVE_CLEANUP
     expect(result.success).toBe(false);
-    expect(result.error.code).toBe('ASSIGNMENT_INACTIVE');
+    expect(result.error.code).toBe('ASSIGNMENT_INACTIVE_CLEANUP');
   });
 });
 
@@ -537,13 +537,141 @@ describe('Lot 2 Corrections - Unicité des affectations actives', () => {
     });
   });
   
-  test('Deux affectations actives pour la même personne sur la même tâche sont traitées séparément', async () => {
+  test('Deux affectations actives identiques sont bloquées avec DUPLICATE_ACTIVE_ASSIGNMENT', async () => {
     const result = await reconcileTaskPlan(mockGrist, 1, { dryRun: true });
     
-    // Actuellement, les deux affectations sont traitées séparément
     expect(result.assignmentCount).toBe(2);
-    // Chaque affectation devrait retourner un résultat (succès ou échec)
     expect(result.results.length).toBe(2);
+    expect(result.duplicates).toBeDefined();
+    expect(result.duplicates.length).toBe(1);
+    
+    // Les deux affectations devraient être bloquées
+    expect(result.results[0].success).toBe(false);
+    expect(result.results[0].error.code).toBe('DUPLICATE_ACTIVE_ASSIGNMENT');
+    expect(result.results[1].success).toBe(false);
+    expect(result.results[1].error.code).toBe('DUPLICATE_ACTIVE_ASSIGNMENT');
+  });
+  
+  test('1 active + 1 inactive → autorisé', async () => {
+    const mockGrist2 = createMockGrist({
+      initialData: {
+        TaskAssignments: [
+          {
+            id: 1,
+            tache: 1,
+            membre: 1,
+            heuresAllouees: 20,
+            dateDebut: 1719792000,
+            dateFin: 1720137600,
+            actif: true
+          },
+          {
+            id: 2,
+            tache: 1,
+            membre: 1,
+            heuresAllouees: 15,
+            dateDebut: 1719792000,
+            dateFin: 1720137600,
+            actif: false
+          }
+        ],
+        Tasks: [{ id: 1, titre: 'Tâche 1' }],
+        Team: [{ id: 1, nom: 'Alice', capaciteHebdo: 35 }],
+        TimeEntries: [],
+        Feuilles: [],
+        Disponibilites: []
+      }
+    });
+    
+    const result = await reconcileTaskPlan(mockGrist2, 1, { dryRun: true, activeOnly: true });
+    
+    // Seulement l'affectation active devrait être traitée
+    expect(result.results.length).toBe(1);
+    expect(result.duplicates).toBeUndefined();
+  });
+  
+  test('Membres différents → autorisé', async () => {
+    const mockGrist3 = createMockGrist({
+      initialData: {
+        TaskAssignments: [
+          {
+            id: 1,
+            tache: 1,
+            membre: 1,
+            heuresAllouees: 20,
+            dateDebut: 1719792000,
+            dateFin: 1720137600,
+            actif: true
+          },
+          {
+            id: 2,
+            tache: 1,
+            membre: 2,
+            heuresAllouees: 15,
+            dateDebut: 1719792000,
+            dateFin: 1720137600,
+            actif: true
+          }
+        ],
+        Tasks: [{ id: 1, titre: 'Tâche 1' }],
+        Team: [
+          { id: 1, nom: 'Alice', capaciteHebdo: 35 },
+          { id: 2, nom: 'Bob', capaciteHebdo: 35 }
+        ],
+        TimeEntries: [],
+        Feuilles: [],
+        Disponibilites: []
+      }
+    });
+    
+    const result = await reconcileTaskPlan(mockGrist3, 1, { dryRun: true });
+    
+    expect(result.results.length).toBe(2);
+    expect(result.duplicates).toBeUndefined();
+    expect(result.results[0].success).toBe(true);
+    expect(result.results[1].success).toBe(true);
+  });
+  
+  test('Tâches différentes → autorisé', async () => {
+    const mockGrist4 = createMockGrist({
+      initialData: {
+        TaskAssignments: [
+          {
+            id: 1,
+            tache: 1,
+            membre: 1,
+            heuresAllouees: 20,
+            dateDebut: 1719792000,
+            dateFin: 1720137600,
+            actif: true
+          },
+          {
+            id: 2,
+            tache: 2,
+            membre: 1,
+            heuresAllouees: 15,
+            dateDebut: 1719792000,
+            dateFin: 1720137600,
+            actif: true
+          }
+        ],
+        Tasks: [
+          { id: 1, titre: 'Tâche 1' },
+          { id: 2, titre: 'Tâche 2' }
+        ],
+        Team: [{ id: 1, nom: 'Alice', capaciteHebdo: 35 }],
+        TimeEntries: [],
+        Feuilles: [],
+        Disponibilites: []
+      }
+    });
+    
+    // Réconcilier la tâche 1 seulement
+    const result = await reconcileTaskPlan(mockGrist4, 1, { dryRun: true });
+    
+    expect(result.results.length).toBe(1);
+    expect(result.duplicates).toBeUndefined();
+    expect(result.results[0].success).toBe(true);
   });
 });
 
