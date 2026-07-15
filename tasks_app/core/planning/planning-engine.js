@@ -543,6 +543,8 @@ function buildAssignmentPlan(input) {
     };
   }
   
+  // Algorithme de distribution : plus forts restes sous contrainte de capacité
+  // Travailler en centièmes d'heure entiers pour éviter la dérive flottante
   const totalCapacityCentiHours = distributableDates.reduce((sum, date) => {
     return sum + capacityForDistribution.get(date);
   }, 0);
@@ -551,30 +553,60 @@ function buildAssignmentPlan(input) {
   let newlyPlannedCentiHours = 0;
   let remainingToDistribute = remainingCentiHours;
   
-  if (totalCapacityCentiHours > 0) {
-    const rawDistribution = distributableDates.map(date => {
+  if (totalCapacityCentiHours > 0 && remainingToDistribute > 0) {
+    // Étape 1: Calculer la part théorique de chaque date et prendre la partie entière
+    const distribution = distributableDates.map(date => {
       const cap = capacityForDistribution.get(date);
       const ratio = cap / totalCapacityCentiHours;
-      const rawHours = ratio * remainingToDistribute;
-      return { date, rawHours, capacity: cap };
+      const rawCentiHours = Math.floor(ratio * remainingToDistribute);
+      const remainder = (ratio * remainingToDistribute) - rawCentiHours;
+      return { 
+        date, 
+        rawCentiHours, 
+        remainder,
+        capacity: cap,
+        assigned: 0
+      };
     });
     
-    let roundedSum = 0;
-    const roundedValues = rawDistribution.map(item => {
-      const rounded = Math.round(item.rawHours);
-      roundedSum += rounded;
-      return { ...item, rounded };
-    });
+    // Étape 2: Sommer les parties entières
+    let assignedSum = distribution.reduce((sum, item) => sum + item.rawCentiHours, 0);
     
-    const adjustment = remainingToDistribute - roundedSum;
-    if (adjustment !== 0) {
-      roundedValues.sort((a, b) => (b.rawHours - b.rounded) - (a.rawHours - a.rounded));
-      roundedValues[0].rounded += adjustment;
+    // Étape 3: Distribuer les centièmes restants aux plus forts restes
+    let centiHoursToAssign = remainingToDistribute - assignedSum;
+    
+    if (centiHoursToAssign > 0) {
+      // Trier par reste décroissant, puis par date croissante pour déterminisme
+      distribution.sort((a, b) => {
+        const remainderDiff = b.remainder - a.remainder;
+        if (Math.abs(remainderDiff) > 0.0001) return remainderDiff;
+        return a.date.localeCompare(b.date);
+      });
+      
+      // Distribuer un centième à la fois
+      for (let i = 0; i < distribution.length && centiHoursToAssign > 0; i++) {
+        const item = distribution[i];
+        const maxAssignable = Math.min(item.capacity - item.rawCentiHours, centiHoursToAssign);
+        
+        if (maxAssignable > 0) {
+          item.assigned = item.rawCentiHours + 1;
+          centiHoursToAssign--;
+        } else {
+          item.assigned = item.rawCentiHours;
+        }
+      }
+    } else {
+      // Aucun centième à redistribuer
+      for (const item of distribution) {
+        item.assigned = item.rawCentiHours;
+      }
     }
     
-    for (const item of roundedValues) {
-      let plannedCentiHours = item.rounded;
+    // Étape 4: Construire le plan final en respectant les capacités
+    for (const item of distribution) {
+      let plannedCentiHours = item.assigned;
       
+      // Plafonner à la capacité restante
       if (capacityPolicy === "cap") {
         const maxCapacity = Math.min(item.capacity, remainingToDistribute);
         if (plannedCentiHours > maxCapacity) {

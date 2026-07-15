@@ -67,14 +67,16 @@ function findDuplicatesInArray(items, keyFn) {
 /**
  * Réconcilie les entrées existantes avec le plan désiré.
  * 
- * @param {Array} existingEntries - Entrées existantes avec id, assignmentId, date, plannedHours, actualHours, sheetStatus, description, imputation, feuille, baseCapacityHours, availableCapacityHours
+ * @param {Array} existingEntries - Entrées existantes avec id, assignmentId, date, plannedHours, actualHours, sheetStatus, description, imputation, feuille, baseCapacityHours, availableCapacityHours, revisionPlan
  * @param {Array} desiredPlan - Plan désiré avec assignmentId, taskId, memberId, date, plannedHours, baseCapacityHours, availableCapacityHours
  * @param {Object} [options] - Options de réconciliation
  * @param {number} [options.precisionHours=0.01] - Précision en heures
+ * @param {Map} [options.existingEntriesMap] - Map id -> entrée existante pour revisionPlan
  * @returns {Object} Résultat avec creates, updates, deletes, conflicts
  */
 function reconcileDailyEntries(existingEntries, desiredPlan, options = {}) {
   const precisionCentiHours = toCentiHours(options.precisionHours || 0.01);
+  const existingEntriesMap = options.existingEntriesMap || new Map();
   
   const creates = [];
   const updates = [];
@@ -166,6 +168,7 @@ function reconcileDailyEntries(existingEntries, desiredPlan, options = {}) {
     const desiredItems = desiredByKey.get(key);
     
     if (!desiredItems || desiredItems.length === 0) {
+      // Aucune entrée désirée pour cette clé
       const plannedCentiHours = toCentiHours(primaryEntry.plannedHours || 0);
       const actualCentiHours = toCentiHours(primaryEntry.actualHours || 0);
       const hasDescription = !!(primaryEntry.description && primaryEntry.description.trim());
@@ -180,32 +183,27 @@ function reconcileDailyEntries(existingEntries, desiredPlan, options = {}) {
         !hasFeuille
       );
       
-      if (isEmpty && !isLocked) {
+      // Une ligne verrouillée (soumise ou validée) absente de desiredPlan est simplement conservée
+      // sans action ni conflit
+      if (isLocked) {
+        // Ne rien faire - la ligne est préservée telle quelle
+        continue;
+      }
+      
+      if (isEmpty) {
         deletes.push({
           id: primaryEntry.id,
           reason: "ENTRY_EMPTY_AND_MUTABLE"
         });
       } else if (plannedCentiHours !== 0) {
-        if (!isLocked) {
-          updates.push({
-            id: primaryEntry.id,
-            fields: {
-              plannedHours: 0
-            },
-            reason: "PLANNED_HOURS_ZEROED"
-          });
-        } else {
-          conflicts.push({
-            code: "LOCKED_ENTRY_MISMATCH",
-            key,
-            date: primaryEntry.date,
-            entryId: primaryEntry.id,
-            sheetStatus: primaryEntry.sheetStatus,
-            existingPlannedHours: primaryEntry.plannedHours,
-            desiredPlannedHours: 0,
-            message: `Entrée ${primaryEntry.sheetStatus} : prévu existant (${primaryEntry.plannedHours}h) vs désiré (0h)`
-          });
-        }
+        // Ligne mutable avec du prévu mais absente de desiredPlan
+        updates.push({
+          id: primaryEntry.id,
+          fields: {
+            plannedHours: 0
+          },
+          reason: "PLANNED_HOURS_ZEROED"
+        });
       }
       
       continue;
@@ -235,6 +233,10 @@ function reconcileDailyEntries(existingEntries, desiredPlan, options = {}) {
     
     if (Object.keys(fieldsToUpdate).length > 0) {
       if (!isLocked) {
+        // Incrémenter revisionPlan si un champ de planification change
+        const existingRevision = Number(primaryEntry.revisionPlan || 0);
+        fieldsToUpdate.revisionPlan = existingRevision + 1;
+        
         updates.push({
           id: primaryEntry.id,
           fields: fieldsToUpdate,
@@ -273,6 +275,7 @@ function reconcileDailyEntries(existingEntries, desiredPlan, options = {}) {
         plannedHours: item.plannedHours,
         baseCapacityHours: item.baseCapacityHours,
         availableCapacityHours: item.availableCapacityHours,
+        revisionPlan: 1,
         reason: "NEW_PLAN_ENTRY"
       });
     }

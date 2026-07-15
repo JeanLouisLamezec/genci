@@ -37,7 +37,7 @@
     }
 
     // Version courante du schéma
-    var SCHEMA_VERSION = 1;
+    var SCHEMA_VERSION = 3;
 
     // Ordre de création des tables (important pour les dépendances)
     var TABLE_ORDER = [
@@ -47,11 +47,13 @@
         'Competences',
         'Projects',
         'Tasks',
+        'TaskAssignments',
         'Actions',
         'KanbanSteps',
         'Disponibilites',
-        'TimeEntries',
+        'MemberDailyCapacities',
         'Feuilles',
+        'TimeEntries',
         'TaskFlow_Meta'
     ];
 
@@ -173,6 +175,23 @@
         },
 
         // =========================================================================
+        // TaskAssignments — Affectations d'un membre à une tâche
+        // =========================================================================
+        TaskAssignments: {
+            label: 'Affectations',
+            columns: [
+                { id: 'tache',            opts: refColumn('Tasks') },
+                { id: 'membre',           opts: refColumn('Team') },
+                { id: 'heuresAllouees',   opts: dataColumn('Numeric') },
+                { id: 'dateDebut',        opts: dataColumn('Date') },
+                { id: 'dateFin',          opts: dataColumn('Date') },
+                { id: 'modeRepartition',  opts: dataColumn('Choice') },
+                { id: 'actif',            opts: dataColumn('Bool') },
+                { id: 'commentaire',      opts: dataColumn('Text') }
+            ]
+        },
+
+        // =========================================================================
         // Actions — Actions secondaires
         // =========================================================================
         Actions: {
@@ -224,17 +243,21 @@
         },
 
         // =========================================================================
-        // TimeEntries — Feuille de temps (réalisé)
+        // MemberDailyCapacities — Capacité quotidienne par membre (table unique)
         // =========================================================================
-        TimeEntries: {
-            label: 'Temps passé',
+        MemberDailyCapacities: {
+            label: 'Capacités quotidiennes',
             columns: [
-                { id: 'membre',           opts: refColumn('Team') },
-                { id: 'tache',            opts: refColumn('Tasks') },
-                { id: 'date',             opts: dataColumn('Date') },
-                { id: 'heures',           opts: dataColumn('Numeric') },
-                { id: 'imputation',       opts: dataColumn('Text') },
-                { id: 'description',      opts: dataColumn('Text') }
+                { id: 'membre',             opts: refColumn('Team') },
+                { id: 'date',               opts: dataColumn('Date') },
+                { id: 'capaciteTheorique',  opts: dataColumn('Numeric') },
+                { id: 'disponibiliteRatio', opts: dataColumn('Numeric') },
+                { id: 'capaciteDisponible', opts: dataColumn('Numeric') },
+                { id: 'absenceHeures',      opts: dataColumn('Numeric') },
+                { id: 'source',             opts: dataColumn('Choice') },
+                { id: 'revision',           opts: dataColumn('Int') },
+                { id: 'sourceUpdatedAt',    opts: dataColumn('DateTime') },
+                { id: 'commentaire',        opts: dataColumn('Text') }
             ]
         },
 
@@ -250,6 +273,30 @@
                 { id: 'validePar',        opts: refColumn('Team') },
                 { id: 'dateValidation',   opts: dataColumn('Date') },
                 { id: 'motifRejet',       opts: dataColumn('Text') }
+            ]
+        },
+
+        // =========================================================================
+        // TimeEntries — Feuille de temps (réalisé)
+        // =========================================================================
+        TimeEntries: {
+            label: 'Temps passé',
+            columns: [
+                { id: 'membre',           opts: refColumn('Team') },
+                { id: 'tache',            opts: refColumn('Tasks') },
+                { id: 'date',             opts: dataColumn('Date') },
+                { id: 'heures',           opts: dataColumn('Numeric') },
+                { id: 'imputation',       opts: dataColumn('Text') },
+                { id: 'description',      opts: dataColumn('Text') },
+                // Nouvelles colonnes v2 pour le plan de charge
+                { id: 'affectation',      opts: refColumn('TaskAssignments') },
+                { id: 'heuresPrevues',    opts: dataColumn('Numeric') },
+                { id: 'capaciteTheorique', opts: dataColumn('Numeric') },
+                { id: 'capaciteDisponible', opts: dataColumn('Numeric') },
+                { id: 'feuille',          opts: refColumn('Feuilles') },
+                { id: 'revisionPlan',     opts: dataColumn('Int') },
+                // Nouvelle colonne v3 : référence à la capacité quotidienne unique
+                { id: 'capaciteJour',     opts: refColumn('MemberDailyCapacities') }
             ]
         },
 
@@ -301,13 +348,23 @@
         // TimeEntries refs
         { table: 'TimeEntries', column: 'membre', targetTable: 'Team', visibleColumn: 'nom' },
         { table: 'TimeEntries', column: 'tache', targetTable: 'Tasks', visibleColumn: 'titre' },
+        { table: 'TimeEntries', column: 'affectation', targetTable: 'TaskAssignments', visibleColumn: 'tache' },
+        { table: 'TimeEntries', column: 'feuille', targetTable: 'Feuilles', visibleColumn: 'semaine' },
+        { table: 'TimeEntries', column: 'capaciteJour', targetTable: 'MemberDailyCapacities', visibleColumn: 'date' },
+        
+        // TaskAssignments refs
+        { table: 'TaskAssignments', column: 'tache', targetTable: 'Tasks', visibleColumn: 'titre' },
+        { table: 'TaskAssignments', column: 'membre', targetTable: 'Team', visibleColumn: 'nom' },
         
         // Feuilles refs
         { table: 'Feuilles', column: 'membre', targetTable: 'Team', visibleColumn: 'nom' },
         { table: 'Feuilles', column: 'validePar', targetTable: 'Team', visibleColumn: 'nom' },
         
         // Disponibilites refs
-        { table: 'Disponibilites', column: 'membre', targetTable: 'Team', visibleColumn: 'nom' }
+        { table: 'Disponibilites', column: 'membre', targetTable: 'Team', visibleColumn: 'nom' },
+        
+        // MemberDailyCapacities refs
+        { table: 'MemberDailyCapacities', column: 'membre', targetTable: 'Team', visibleColumn: 'nom' }
     ];
 
     // Statuts par défaut pour les colonnes Choice

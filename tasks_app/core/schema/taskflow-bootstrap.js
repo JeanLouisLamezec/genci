@@ -35,36 +35,24 @@
     var bootstrapComplete = false;
     var maxRetries = 3;
 
-    // Spécifications d'affichage des références (source unique)
-    var GENCI_REF_DISPLAY_SPECS = [
-        { table: 'Tasks', column: 'projet', visibleColId: 'nom' },
-        { table: 'Tasks', column: 'assignees', visibleColId: 'nom' },
-        { table: 'Tasks', column: 'dependDe', visibleColId: 'titre' },
-        { table: 'Tasks', column: 'parentTask', visibleColId: 'titre' },
-
-        { table: 'Projects', column: 'responsable', visibleColId: 'nom' },
-        { table: 'Projects', column: 'programme', visibleColId: 'nom' },
-
-        { table: 'Programmes', column: 'responsable', visibleColId: 'nom' },
-
-        { table: 'Entites', column: 'parent', visibleColId: 'nom' },
-        { table: 'Entites', column: 'chef', visibleColId: 'nom' },
-
-        { table: 'Team', column: 'entite', visibleColId: 'nom' },
-        { table: 'Team', column: 'responsable', visibleColId: 'nom' },
-        { table: 'Team', column: 'competences', visibleColId: 'nom' },
-
-        { table: 'Actions', column: 'task', visibleColId: 'titre' },
-        { table: 'Actions', column: 'assignee', visibleColId: 'nom' },
-
-        { table: 'TimeEntries', column: 'membre', visibleColId: 'nom' },
-        { table: 'TimeEntries', column: 'tache', visibleColId: 'titre' },
-
-        { table: 'Feuilles', column: 'membre', visibleColId: 'nom' },
-        { table: 'Feuilles', column: 'validePar', visibleColId: 'nom' },
-
-        { table: 'Disponibilites', column: 'membre', visibleColId: 'nom' }
-    ];
+    // Spécifications d'affichage des références (dérivé automatiquement de SCHEMA.referenceDisplays)
+    var GENCI_REF_DISPLAY_SPECS = [];
+    
+    // Initialiser GENCI_REF_DISPLAY_SPECS à partir du schéma
+    function initializeRefDisplaySpecs() {
+        if (SCHEMA && SCHEMA.referenceDisplays) {
+            GENCI_REF_DISPLAY_SPECS = SCHEMA.referenceDisplays.map(function(ref) {
+                return {
+                    table: ref.table,
+                    column: ref.column,
+                    visibleColId: ref.visibleColumn
+                };
+            });
+        }
+    }
+    
+    // Appeler l'initialisation
+    initializeRefDisplaySpecs();
 
     // Helper : convertit un tableau colonnaire Grist en tableau d'objets
     function columnarToRows(data) {
@@ -1004,10 +992,33 @@
             try {
                 log('Démarrage initialisation...');
                 
-                // Phase 0 : Migration et inspection
-                log('Phase 0: Migration...');
+                // Phase 0 : Exécuter les migrations puis inspection
+                log('Phase 0: Migrations...');
                 var migrationLog = await migrateLegacyTables(grist);
                 globalLog = globalLog.concat(migrationLog);
+                
+                // Exécuter les migrations versionnées si TaskFlowMigrations est disponible
+                if (global.TaskFlowMigrations) {
+                    try {
+                        var currentVersion = await global.TaskFlowMigrations.getCurrentVersion(grist);
+                        log('Version actuelle du schéma: v' + currentVersion);
+                        
+                        var migrationResult = await global.TaskFlowMigrations.runMigrations(grist, currentVersion);
+                        
+                        if (migrationResult.success) {
+                            log('Migrations appliquées: ' + migrationResult.applied + ' migrations, version finale: v' + migrationResult.finalVersion);
+                            globalLog.push('Migrations: v' + currentVersion + ' → v' + migrationResult.finalVersion);
+                            result.phases.migrations = migrationResult;
+                        } else {
+                            result.warnings.push({ phase: 'migrations', message: 'Certaines migrations ont échoué' });
+                        }
+                    } catch (migrationError) {
+                        log('Erreur lors des migrations: ' + (migrationError.message || migrationError));
+                        result.warnings.push({ phase: 'migrations', error: migrationError.message || String(migrationError) });
+                        // Continuer malgré tout, le schéma déclaratif réparera
+                    }
+                }
+                
                 result.phases.migration = migrationLog;
                 
                 // Phase 1 : Création des tables (sans Ref)
