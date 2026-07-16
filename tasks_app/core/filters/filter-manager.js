@@ -1,40 +1,81 @@
 // =============================================
-// FILTER MANAGER - Module mutualisé v2
-// Filtre les tâches (Tasks) pour Plan, Kanban, Gantt
+// FILTER MANAGER - Module mutualisé v3
+// Filtre les tâches (Tasks) pour Plan, Kanban, Gantt, CRA
 // Gestion des sections accordéon, CSS commun, état partagé
+// IDs normalisés en chaînes, origine des changements, suppression explicite
 // =============================================
+
+/**
+ * Normalise les filtres pour garantir un format canonique
+ * - Tous les IDs sont des chaînes
+ * - Élimine null, undefined, chaînes vides
+ * - Élimine les doublons
+ * - Conserve les 5 clés (assignee, team, project, programme, task)
+ * - Immutabilité : ne modifie pas l'objet d'entrée
+ * @param {Object} input - Filtres en entrée (peut être incomplet ou avec types variés)
+ * @returns {Object} Filtres normalisés { assignee: [], team: [], project: [], programme: [], task: [] }
+ */
+function normalizeFilters(input) {
+  const result = {
+    assignee: [],
+    team: [],
+    project: [],
+    programme: [],
+    task: []
+  };
+
+  if (!input || typeof input !== 'object') {
+    return result;
+  }
+
+  const keys = ['assignee', 'team', 'project', 'programme', 'task'];
+  
+  for (const key of keys) {
+    const value = input[key];
+    if (Array.isArray(value)) {
+      const seen = new Set();
+      for (const item of value) {
+        if (item === null || item === undefined || item === '') {
+          continue;
+        }
+        const str = String(item);
+        if (!seen.has(str)) {
+          seen.add(str);
+          result[key].push(str);
+        }
+      }
+    }
+  }
+
+  return result;
+}
 
 class FilterManager {
   /**
    * @param {Object} options
-   * @param {Object} options.data - { team: [], entites: [], projects: [], tasks: [], actions: [] }
-   * @param {Object} options.initialFilters - Filtres initiaux { assignee: [], team: [], project: [], task: [] }
-   * @param {Function} options.onChange - Callback quand les filtres changent
-   * @param {Function} options.onBroadcast - Callback pour diffuser les filtres (grist.setOptions)
+   * @param {Object} options.data - { team: [], entites: [], projects: [], tasks: [], actions: [], programmes: [] }
+   * @param {Object} options.initialFilters - Filtres initiaux (sera normalisé)
+   * @param {Function} options.onChange - Callback quand les filtres changent (local, external, init)
+   * @param {Function} options.onBroadcast - Callback pour diffuser les filtres (grist.setOptions) - UNIQUEMENT pour changements locaux
    * @param {Function} options.effCharges - Fonction pour obtenir les charges effectives d'une tâche
    * @param {Function} options.teamById - Fonction pour obtenir un membre par son ID
-   * @param {string} options.theme - 'light' ou 'dark' pour adapter les styles
-   * @param {Function} options.postFilter - Fonction de post-filtrage spécifique au widget (reçoit les données filtrées, retourne les données finales)
-   * @param {Object} options.widgetConfig - Configuration spécifique au widget (ex: { type: 'kanban', workLevel: 'all', showSubtasks: true, searchQuery: '' })
+   * @param {string} options.theme - Déprécié : le thème vient de Grist via CSS variables
+   * @param {Function} options.postFilter - Fonction de post-filtrage spécifique au widget
+   * @param {Object} options.widgetConfig - Configuration spécifique au widget
    */
   constructor(options = {}) {
     this.data = options.data || {};
-    this.filters = options.initialFilters || {
-      assignee: [],
-      team: [],
-      project: [],
-      task: [],
-      programme: []
-    };
+    this.filters = normalizeFilters(options.initialFilters || {});
     this.onChange = options.onChange || (() => {});
     this.onBroadcast = options.onBroadcast || (() => {});
     this.effCharges = options.effCharges || (() => []);
     this.teamById = options.teamById || (() => null);
-    this.theme = options.theme || 'dark';
+    this.theme = options.theme || 'light'; // Déprécié, gardé pour compatibilité
     this.ui = null;
     this.openSection = null;
     this.postFilter = options.postFilter || null;
     this.widgetConfig = options.widgetConfig || {};
+    this._isBroadcasting = false; // Indicateur interne pour éviter les boucles
   }
 
   // ========== INITIALISATION UI ==========
@@ -233,31 +274,29 @@ class FilterManager {
   // ========== GESTION DES CHECKBOXES ==========
 
   /**
-   * Gère le changement d'état d'une checkbox
+   * Gère le changement d'état d'une checkbox (changement local)
    * @private
    */
   _handleCheckboxChange(type, value, checked) {
-    // Initialiser le filtre s'il n'existe pas
     if (!this.filters[type]) {
       this.filters[type] = [];
     }
     const filterArray = this.filters[type];
+    const strValue = String(value);
     
     if (checked) {
-      // COMPARER MEMES TYPES : value est string, filterArray peut contenir nombres
-      if (!filterArray.some(f => String(f) === String(value))) {
-        filterArray.push(value);
+      if (!filterArray.includes(strValue)) {
+        filterArray.push(strValue);
       }
     } else {
-      // COMPARER MEMES TYPES pour remove aussi
-      const index = filterArray.findIndex(f => String(f) === String(value));
+      const index = filterArray.indexOf(strValue);
       if (index > -1) {
         filterArray.splice(index, 1);
       }
     }
     
     this._updateUIFromState();
-    this.onChange(this.filters);
+    this.onChange(this.filters, 'local');
     this.onBroadcast(this.filters);
   }
 
@@ -266,21 +305,18 @@ class FilterManager {
    * @private
    */
   _updateUIFromState() {
-    if (!this.ui) return; // Pas d'UI initialisée (ex: test ou utilisation sans UI)
+    if (!this.ui) return;
     
-    // Mettre à jour les checkboxes
     Object.keys(this.ui).forEach(type => {
       const section = this.ui[type];
-      if (!section || !section.checkboxContainer) return; // Section non initialisée (ex: team dans Gantt)
+      if (!section || !section.checkboxContainer) return;
       
       const checkboxes = section.checkboxContainer.querySelectorAll('.filter-checkbox');
       checkboxes.forEach(cb => {
         const filterArray = this.filters[type] || [];
-        // COMPARER MEMES TYPES : cb.value est string, filterArray peut contenir nombres ou strings
-        cb.checked = filterArray.some(f => String(f) === String(cb.value));
+        cb.checked = filterArray.includes(String(cb.value));
       });
       
-      // Mettre à jour le compteur
       const filterArray = this.filters[type] || [];
       const count = filterArray.length;
       const countElement = section.header.querySelector('.filter-section-count');
@@ -289,7 +325,6 @@ class FilterManager {
       }
     });
     
-    // Mettre à jour l'indicateur du bouton principal
     this._updateFilterButton();
   }
 
@@ -420,41 +455,29 @@ class FilterManager {
 
   /**
    * Applique les filtres externes (depuis grist.onOptions)
+   * Normalise les IDs en chaînes, met à jour l'UI, ne diffuse PAS
    * @param {Object} externalFilters - Filtres externes
    */
   applyExternalFilters(externalFilters) {
     if (!externalFilters) return;
 
+    const normalized = normalizeFilters(externalFilters);
+    
     let changed = false;
-
-    if (externalFilters.assignee && Array.isArray(externalFilters.assignee)) {
-      this.filters.assignee = externalFilters.assignee.map(Number);
-      changed = true;
-    }
-
-    if (externalFilters.team && Array.isArray(externalFilters.team)) {
-      this.filters.team = externalFilters.team.map(Number);
-      changed = true;
-    }
-
-    if (externalFilters.project != null) {
-      this.filters.project = [Number(externalFilters.project)].filter(Boolean);
-      changed = true;
-    }
-
-    if (externalFilters.task && Array.isArray(externalFilters.task)) {
-      this.filters.task = externalFilters.task.map(Number);
-      changed = true;
-    }
-
-    if (externalFilters.programme && Array.isArray(externalFilters.programme)) {
-      this.filters.programme = externalFilters.programme.map(Number);
-      changed = true;
+    const keys = ['assignee', 'team', 'project', 'programme', 'task'];
+    
+    for (const key of keys) {
+      if (normalized[key].length > 0 || this.filters[key].length > 0) {
+        if (JSON.stringify(normalized[key]) !== JSON.stringify(this.filters[key])) {
+          this.filters[key] = normalized[key];
+          changed = true;
+        }
+      }
     }
 
     if (changed) {
       this._updateUIFromState();
-      this.onChange(this.filters);
+      this.onChange(this.filters, 'external');
     }
   }
 
@@ -466,39 +489,82 @@ class FilterManager {
   clearAll() {
     this.filters = { assignee: [], team: [], project: [], task: [], programme: [] };
     this._updateUIFromState();
-    this.onChange(this.filters);
+    this.onChange(this.filters, 'local');
     this.onBroadcast(this.filters);
   }
 
   /**
-   * Retourne l'état actuel des filtres
+   * Retourne l'état actuel des filtres (copie)
    */
   getState() {
-    return { ...this.filters };
+    return JSON.parse(JSON.stringify(this.filters));
   }
 
   /**
-   * Définit l'état des filtres
-   * @param {Object} newFilters
+   * Définit l'état des filtres avec contrôle de l'origine
+   * @param {Object} newFilters - Nouveaux filtres
+   * @param {Object} options - { origin: 'local' | 'external' | 'init', broadcast: boolean, notify: boolean }
    */
-  setState(newFilters) {
-    this.filters = { ...this.filters, ...newFilters };
+  setState(newFilters, options = {}) {
+    const opts = {
+      origin: options.origin || 'local',
+      broadcast: options.broadcast !== false,
+      notify: options.notify !== false
+    };
+
+    const normalized = normalizeFilters(newFilters);
+    this.filters = normalized;
     this._updateUIFromState();
-    this.onChange(this.filters);
-    this.onBroadcast(this.filters);
+    
+    if (opts.notify) {
+      this.onChange(this.filters, opts.origin);
+    }
+    
+    if (opts.broadcast && opts.origin === 'local') {
+      this.onBroadcast(this.filters);
+    }
+  }
+
+  /**
+   * Retire une valeur spécifique d'un type de filtre
+   * Ne fait JAMAIS de toggle - uniquement suppression
+   * @param {string} type - Type de filtre ('assignee', 'team', 'project', 'programme', 'task')
+   * @param {string|number} value - Valeur à retirer (sera convertie en chaîne)
+   * @returns {boolean} true si la valeur a été retirée, false si elle n'était pas présente
+   */
+  removeValue(type, value) {
+    if (!this.filters[type] || !Array.isArray(this.filters[type])) {
+      return false;
+    }
+    
+    const strValue = String(value);
+    const index = this.filters[type].indexOf(strValue);
+    
+    if (index > -1) {
+      this.filters[type].splice(index, 1);
+      this._updateUIFromState();
+      this.onChange(this.filters, 'local');
+      this.onBroadcast(this.filters);
+      return true;
+    }
+    
+    return false;
   }
 
   /**
    * Définit les données (appelé après chargement des données Grist)
-   * @param {Object} data - { team: [], entites: [], projects: [], tasks: [], actions: [] }
+   * Conserve les filtres actifs après reconstruction
+   * @param {Object} data - { team: [], entites: [], projects: [], tasks: [], actions: [], programmes: [] }
    */
   setData(data) {
+    const previousFilters = this.getState();
+    
     this.data = data;
-    // Reconstruire l'UI si elle existe déjà
+    
     if (this.ui) {
       Object.keys(this.ui).forEach(type => {
         const section = this.ui[type];
-        if (!section || !section.checkboxContainer) return; // Section non initialisée (ex: team dans Gantt)
+        if (!section || !section.checkboxContainer) return;
         
         const items = data[type === 'assignee' ? 'team' : 
                       type === 'team' ? 'entites' : 
@@ -506,6 +572,7 @@ class FilterManager {
                       type === 'programme' ? 'programmes' : 'tasks'] || [];
         this._createCheckboxGroup(section.checkboxContainer, type, items);
       });
+      
       this._updateUIFromState();
     }
   }
@@ -631,5 +698,5 @@ function initFilterDropdown(button, panel) {
 
 // Exporter pour une utilisation dans les modules
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { FilterManager, createFilterButton, createFilterPanel, initFilterDropdown };
+  module.exports = { FilterManager, createFilterButton, createFilterPanel, initFilterDropdown, normalizeFilters };
 }
