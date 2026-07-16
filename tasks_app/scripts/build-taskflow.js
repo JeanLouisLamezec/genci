@@ -77,9 +77,26 @@ ${END_MARKER}`;
     return true;
 }
 
+// Build du bundle navigateur
+function buildPlanningBrowser() {
+    const buildScript = path.join(__dirname, 'build-planning-browser.js');
+    if (fs.existsSync(buildScript)) {
+        console.log('🔨 Build du bundle navigateur...\n');
+        try {
+            require(buildScript);
+            console.log('');
+        } catch (e) {
+            console.warn(`⚠️  Erreur build navigateur: ${e.message}`);
+        }
+    }
+}
+
 // Main
 function main() {
     console.log('🔨 Build TaskFlow...\n');
+    
+    // Build du bundle navigateur en premier
+    buildPlanningBrowser();
     
     // Lit les fichiers core
     console.log('📄 Lecture des fichiers core...');

@@ -6,6 +6,7 @@
 <title>Plan - TaskFlow</title>
 <script src="https://docs.getgrist.com/grist-plugin-api.js"></script>
 <script src="core/filters/filter-manager.js"></script>
+<script src="core/generated/taskflow-planning-browser.js"></script>
 <link rel="stylesheet" href="core/filters/filter-styles.css">
 <style>
 :root{
@@ -166,6 +167,7 @@ tfoot td.colres{background:var(--surface-2);z-index:2}
     <button class="btn" id="btnInit" title="Initialiser la charge des tâches sans charge depuis estimationH ÷ nb assignés">⚙ Init. charges</button>
     <button class="btn" id="btnExport" title="Exporter le plan en CSV (COPIL)">⬇ CSV</button>
     <button class="btn" id="btnTimeline" title="Timeline par personne : les tâches de chacun en barres sur la fenêtre">⊞ Timeline</button>
+    <button class="btn" id="btnPlanningPreview" title="Prévisualiser le planning avec le nouveau moteur">🔮 Prévisualiser</button>
   </div>
   <div class="alerts" id="alerts"></div>
   <div class="gridwrap" id="gridwrap"><div class="empty"><div class="ic">▦</div><div>Chargement…</div></div></div>
@@ -916,7 +918,7 @@ if (typeof globalThis !== 'undefined') {
     }
 
     // Version courante du schéma
-    var SCHEMA_VERSION = 1;
+    var SCHEMA_VERSION = 3;
 
     // Ordre de création des tables (important pour les dépendances)
     var TABLE_ORDER = [
@@ -926,11 +928,13 @@ if (typeof globalThis !== 'undefined') {
         'Competences',
         'Projects',
         'Tasks',
+        'TaskAssignments',
         'Actions',
         'KanbanSteps',
         'Disponibilites',
-        'TimeEntries',
+        'MemberDailyCapacities',
         'Feuilles',
+        'TimeEntries',
         'TaskFlow_Meta'
     ];
 
@@ -1052,6 +1056,23 @@ if (typeof globalThis !== 'undefined') {
         },
 
         // =========================================================================
+        // TaskAssignments — Affectations d'un membre à une tâche
+        // =========================================================================
+        TaskAssignments: {
+            label: 'Affectations',
+            columns: [
+                { id: 'tache',            opts: refColumn('Tasks') },
+                { id: 'membre',           opts: refColumn('Team') },
+                { id: 'heuresAllouees',   opts: dataColumn('Numeric') },
+                { id: 'dateDebut',        opts: dataColumn('Date') },
+                { id: 'dateFin',          opts: dataColumn('Date') },
+                { id: 'modeRepartition',  opts: dataColumn('Choice') },
+                { id: 'actif',            opts: dataColumn('Bool') },
+                { id: 'commentaire',      opts: dataColumn('Text') }
+            ]
+        },
+
+        // =========================================================================
         // Actions — Actions secondaires
         // =========================================================================
         Actions: {
@@ -1103,17 +1124,21 @@ if (typeof globalThis !== 'undefined') {
         },
 
         // =========================================================================
-        // TimeEntries — Feuille de temps (réalisé)
+        // MemberDailyCapacities — Capacité quotidienne par membre (table unique)
         // =========================================================================
-        TimeEntries: {
-            label: 'Temps passé',
+        MemberDailyCapacities: {
+            label: 'Capacités quotidiennes',
             columns: [
-                { id: 'membre',           opts: refColumn('Team') },
-                { id: 'tache',            opts: refColumn('Tasks') },
-                { id: 'date',             opts: dataColumn('Date') },
-                { id: 'heures',           opts: dataColumn('Numeric') },
-                { id: 'imputation',       opts: dataColumn('Text') },
-                { id: 'description',      opts: dataColumn('Text') }
+                { id: 'membre',             opts: refColumn('Team') },
+                { id: 'date',               opts: dataColumn('Date') },
+                { id: 'capaciteTheorique',  opts: dataColumn('Numeric') },
+                { id: 'disponibiliteRatio', opts: dataColumn('Numeric') },
+                { id: 'capaciteDisponible', opts: dataColumn('Numeric') },
+                { id: 'absenceHeures',      opts: dataColumn('Numeric') },
+                { id: 'source',             opts: dataColumn('Choice') },
+                { id: 'revision',           opts: dataColumn('Int') },
+                { id: 'sourceUpdatedAt',    opts: dataColumn('DateTime') },
+                { id: 'commentaire',        opts: dataColumn('Text') }
             ]
         },
 
@@ -1129,6 +1154,30 @@ if (typeof globalThis !== 'undefined') {
                 { id: 'validePar',        opts: refColumn('Team') },
                 { id: 'dateValidation',   opts: dataColumn('Date') },
                 { id: 'motifRejet',       opts: dataColumn('Text') }
+            ]
+        },
+
+        // =========================================================================
+        // TimeEntries — Feuille de temps (réalisé)
+        // =========================================================================
+        TimeEntries: {
+            label: 'Temps passé',
+            columns: [
+                { id: 'membre',           opts: refColumn('Team') },
+                { id: 'tache',            opts: refColumn('Tasks') },
+                { id: 'date',             opts: dataColumn('Date') },
+                { id: 'heures',           opts: dataColumn('Numeric') },
+                { id: 'imputation',       opts: dataColumn('Text') },
+                { id: 'description',      opts: dataColumn('Text') },
+                // Nouvelles colonnes v2 pour le plan de charge
+                { id: 'affectation',      opts: refColumn('TaskAssignments') },
+                { id: 'heuresPrevues',    opts: dataColumn('Numeric') },
+                { id: 'capaciteTheorique', opts: dataColumn('Numeric') },
+                { id: 'capaciteDisponible', opts: dataColumn('Numeric') },
+                { id: 'feuille',          opts: refColumn('Feuilles') },
+                { id: 'revisionPlan',     opts: dataColumn('Int') },
+                // Nouvelle colonne v3 : référence à la capacité quotidienne unique
+                { id: 'capaciteJour',     opts: refColumn('MemberDailyCapacities') }
             ]
         },
 
@@ -1180,13 +1229,23 @@ if (typeof globalThis !== 'undefined') {
         // TimeEntries refs
         { table: 'TimeEntries', column: 'membre', targetTable: 'Team', visibleColumn: 'nom' },
         { table: 'TimeEntries', column: 'tache', targetTable: 'Tasks', visibleColumn: 'titre' },
+        { table: 'TimeEntries', column: 'affectation', targetTable: 'TaskAssignments', visibleColumn: 'tache' },
+        { table: 'TimeEntries', column: 'feuille', targetTable: 'Feuilles', visibleColumn: 'semaine' },
+        { table: 'TimeEntries', column: 'capaciteJour', targetTable: 'MemberDailyCapacities', visibleColumn: 'date' },
+        
+        // TaskAssignments refs
+        { table: 'TaskAssignments', column: 'tache', targetTable: 'Tasks', visibleColumn: 'titre' },
+        { table: 'TaskAssignments', column: 'membre', targetTable: 'Team', visibleColumn: 'nom' },
         
         // Feuilles refs
         { table: 'Feuilles', column: 'membre', targetTable: 'Team', visibleColumn: 'nom' },
         { table: 'Feuilles', column: 'validePar', targetTable: 'Team', visibleColumn: 'nom' },
         
         // Disponibilites refs
-        { table: 'Disponibilites', column: 'membre', targetTable: 'Team', visibleColumn: 'nom' }
+        { table: 'Disponibilites', column: 'membre', targetTable: 'Team', visibleColumn: 'nom' },
+        
+        // MemberDailyCapacities refs
+        { table: 'MemberDailyCapacities', column: 'membre', targetTable: 'Team', visibleColumn: 'nom' }
     ];
 
     // Statuts par défaut pour les colonnes Choice
@@ -1267,36 +1326,24 @@ if (typeof globalThis !== 'undefined') {
     var bootstrapComplete = false;
     var maxRetries = 3;
 
-    // Spécifications d'affichage des références (source unique)
-    var GENCI_REF_DISPLAY_SPECS = [
-        { table: 'Tasks', column: 'projet', visibleColId: 'nom' },
-        { table: 'Tasks', column: 'assignees', visibleColId: 'nom' },
-        { table: 'Tasks', column: 'dependDe', visibleColId: 'titre' },
-        { table: 'Tasks', column: 'parentTask', visibleColId: 'titre' },
-
-        { table: 'Projects', column: 'responsable', visibleColId: 'nom' },
-        { table: 'Projects', column: 'programme', visibleColId: 'nom' },
-
-        { table: 'Programmes', column: 'responsable', visibleColId: 'nom' },
-
-        { table: 'Entites', column: 'parent', visibleColId: 'nom' },
-        { table: 'Entites', column: 'chef', visibleColId: 'nom' },
-
-        { table: 'Team', column: 'entite', visibleColId: 'nom' },
-        { table: 'Team', column: 'responsable', visibleColId: 'nom' },
-        { table: 'Team', column: 'competences', visibleColId: 'nom' },
-
-        { table: 'Actions', column: 'task', visibleColId: 'titre' },
-        { table: 'Actions', column: 'assignee', visibleColId: 'nom' },
-
-        { table: 'TimeEntries', column: 'membre', visibleColId: 'nom' },
-        { table: 'TimeEntries', column: 'tache', visibleColId: 'titre' },
-
-        { table: 'Feuilles', column: 'membre', visibleColId: 'nom' },
-        { table: 'Feuilles', column: 'validePar', visibleColId: 'nom' },
-
-        { table: 'Disponibilites', column: 'membre', visibleColId: 'nom' }
-    ];
+    // Spécifications d'affichage des références (dérivé automatiquement de SCHEMA.referenceDisplays)
+    var GENCI_REF_DISPLAY_SPECS = [];
+    
+    // Initialiser GENCI_REF_DISPLAY_SPECS à partir du schéma
+    function initializeRefDisplaySpecs() {
+        if (SCHEMA && SCHEMA.referenceDisplays) {
+            GENCI_REF_DISPLAY_SPECS = SCHEMA.referenceDisplays.map(function(ref) {
+                return {
+                    table: ref.table,
+                    column: ref.column,
+                    visibleColId: ref.visibleColumn
+                };
+            });
+        }
+    }
+    
+    // Appeler l'initialisation
+    initializeRefDisplaySpecs();
 
     // Helper : convertit un tableau colonnaire Grist en tableau d'objets
     function columnarToRows(data) {
@@ -2236,10 +2283,33 @@ if (typeof globalThis !== 'undefined') {
             try {
                 log('Démarrage initialisation...');
                 
-                // Phase 0 : Migration et inspection
-                log('Phase 0: Migration...');
+                // Phase 0 : Exécuter les migrations puis inspection
+                log('Phase 0: Migrations...');
                 var migrationLog = await migrateLegacyTables(grist);
                 globalLog = globalLog.concat(migrationLog);
+                
+                // Exécuter les migrations versionnées si TaskFlowMigrations est disponible
+                if (global.TaskFlowMigrations) {
+                    try {
+                        var currentVersion = await global.TaskFlowMigrations.getCurrentVersion(grist);
+                        log('Version actuelle du schéma: v' + currentVersion);
+                        
+                        var migrationResult = await global.TaskFlowMigrations.runMigrations(grist, currentVersion);
+                        
+                        if (migrationResult.success) {
+                            log('Migrations appliquées: ' + migrationResult.applied + ' migrations, version finale: v' + migrationResult.finalVersion);
+                            globalLog.push('Migrations: v' + currentVersion + ' → v' + migrationResult.finalVersion);
+                            result.phases.migrations = migrationResult;
+                        } else {
+                            result.warnings.push({ phase: 'migrations', message: 'Certaines migrations ont échoué' });
+                        }
+                    } catch (migrationError) {
+                        log('Erreur lors des migrations: ' + (migrationError.message || migrationError));
+                        result.warnings.push({ phase: 'migrations', error: migrationError.message || String(migrationError) });
+                        // Continuer malgré tout, le schéma déclaratif réparera
+                    }
+                }
+                
                 result.phases.migration = migrationLog;
                 
                 // Phase 1 : Création des tables (sans Ref)
@@ -2430,17 +2500,16 @@ if (typeof globalThis !== 'undefined') {
  * - Non destructive (ne supprime jamais de données)
  * - Testable indépendamment
  * 
- * Pour ajouter une migration :
- * 1. Incrémenter SCHEMA_VERSION dans taskflow-schema.js
- * 2. Ajouter une nouvelle entrée dans MIGRATIONS
- * 3. Implémenter la fonction de migration
- * 4. Tester sur un document de test
+ * Version 1: Schéma de base
+ * Version 2: TaskAssignments + extension quotidienne de TimeEntries
+ * Version 3: MemberDailyCapacities + TimeEntries.capaciteJour
  * ============================================================================ */
 
 (function (global) {
     'use strict';
 
     var SCHEMA = global.TASKFLOW_SCHEMA;
+    var DEFAULT_WEEKLY_CAPACITY = 35;
 
     // Helper : délai
     function delay(ms) {
@@ -2476,48 +2545,285 @@ if (typeof globalThis !== 'undefined') {
         return rows;
     }
 
-    // ========================================================================
-    // MIGRATION V1 → V2 (exemple placeholder)
-    // ========================================================================
-    // Cette migration est un exemple. À remplacer par la première vraie
-    // migration lors de l'évolution du schéma.
-    
-    async function migrateToV2(grist, metadata) {
-        log('Migration v1 → v2: Exemple (pas d\'action réelle)');
+    // Helper : obtenir docApi normalisé
+    function getDocApi(grist) {
+        var docApi = grist && (grist.docApi || grist);
+        if (!docApi || typeof docApi.fetchTable !== 'function' || typeof docApi.applyUserActions !== 'function') {
+            throw new Error('INVALID_GRIST_DOC_API: grist.docApi doit exposer fetchTable et applyUserActions');
+        }
+        return docApi;
+    }
+
+    // Helper : charger les métadonnées
+    async function loadMigrationMetadata(grist) {
+        var docApi = getDocApi(grist);
+        var tablesData = await docApi.fetchTable('_grist_Tables');
+        var columnsData = await docApi.fetchTable('_grist_Tables_column');
         
-        // Exemple : ajouter une colonne optionnelle
-        // await grist.docApi.applyUserActions([
-        //     ['AddColumn', 'Tasks', 'nouvelleColonne', { type: 'Text', isFormula: false }]
-        // ]);
+        var tables = columnarToRows(tablesData);
+        var columns = columnarToRows(columnsData);
         
-        return { success: true, message: 'Migration v2 appliquée' };
+        var tableById = {};
+        for (var i = 0; i < tables.length; i++) {
+            tableById[tables[i].id] = tables[i].tableId;
+        }
+        
+        var columnsByKey = {};
+        for (var j = 0; j < columns.length; j++) {
+            var col = columns[j];
+            var tableId = tableById[col.parentId];
+            if (tableId) {
+                var key = tableId + '.' + col.colId;
+                columnsByKey[key] = {
+                    tableId: tableId,
+                    colId: col.colId,
+                    type: col.type,
+                    isFormula: col.isFormula,
+                    parentId: col.parentId
+                };
+            }
+        }
+        
+        var tablesByName = {};
+        for (var k = 0; k < tables.length; k++) {
+            tablesByName[tables[k].tableId] = tables[k];
+        }
+        
+        return {
+            tablesById: tableById,
+            tablesByName: tablesByName,
+            columnsByKey: columnsByKey
+        };
     }
 
     // ========================================================================
-    // MIGRATION V2 → V3 (exemple placeholder)
+    // MIGRATION V1 → V2 — Planning daily assignments
+    // ========================================================================
+    
+    async function migrateToV2(grist, metadata) {
+        log('Migration v1 → v2: planning-daily-assignments-v2');
+        
+        var docApi = getDocApi(grist);
+        var actions = [];
+        var existingTables = metadata.tablesByName || {};
+        var existingColumns = metadata.columnsByKey || {};
+        
+        // 1. Créer TaskAssignments si elle n'existe pas
+        if (!existingTables['TaskAssignments']) {
+            log('Création de la table TaskAssignments');
+            actions.push(['AddTable', 'TaskAssignments', [
+                { id: 'tache', type: 'Ref:Tasks', isFormula: false },
+                { id: 'membre', type: 'Ref:Team', isFormula: false },
+                { id: 'heuresAllouees', type: 'Numeric', isFormula: false },
+                { id: 'dateDebut', type: 'Date', isFormula: false },
+                { id: 'dateFin', type: 'Date', isFormula: false },
+                { id: 'modeRepartition', type: 'Choice', isFormula: false },
+                { id: 'actif', type: 'Bool', isFormula: false },
+                { id: 'commentaire', type: 'Text', isFormula: false }
+            ]]);
+            // Marquer les colonnes comme créées pour éviter de les recréer
+            existingTables['TaskAssignments'] = { id: null };
+            existingColumns['TaskAssignments.tache'] = { type: 'Ref:Tasks' };
+            existingColumns['TaskAssignments.membre'] = { type: 'Ref:Team' };
+            existingColumns['TaskAssignments.heuresAllouees'] = { type: 'Numeric' };
+            existingColumns['TaskAssignments.dateDebut'] = { type: 'Date' };
+            existingColumns['TaskAssignments.dateFin'] = { type: 'Date' };
+            existingColumns['TaskAssignments.modeRepartition'] = { type: 'Choice' };
+            existingColumns['TaskAssignments.actif'] = { type: 'Bool' };
+            existingColumns['TaskAssignments.commentaire'] = { type: 'Text' };
+        } else {
+            log('TaskAssignments existe déjà');
+        }
+        
+        // 2. Vérifier et ajouter les colonnes manquantes de TaskAssignments
+        var taskAssignmentsCols = [
+            { id: 'tache', type: 'Ref:Tasks' },
+            { id: 'membre', type: 'Ref:Team' },
+            { id: 'heuresAllouees', type: 'Numeric' },
+            { id: 'dateDebut', type: 'Date' },
+            { id: 'dateFin', type: 'Date' },
+            { id: 'modeRepartition', type: 'Choice' },
+            { id: 'actif', type: 'Bool' },
+            { id: 'commentaire', type: 'Text' }
+        ];
+        for (var i = 0; i < taskAssignmentsCols.length; i++) {
+            var colDef = taskAssignmentsCols[i];
+            var key = 'TaskAssignments.' + colDef.id;
+            if (!existingColumns[key]) {
+                log('Ajout de la colonne TaskAssignments.' + colDef.id);
+                actions.push(['AddColumn', 'TaskAssignments', colDef.id, {
+                    type: colDef.type,
+                    isFormula: false
+                }]);
+                existingColumns[key] = { type: colDef.type };
+            } else {
+                log('TaskAssignments.' + colDef.id + ' existe déjà');
+            }
+        }
+        
+        // 3. Ajouter les colonnes v2 manquantes à TimeEntries
+        var timeEntriesCols = [
+            { id: 'affectation', type: 'Ref:TaskAssignments' },
+            { id: 'heuresPrevues', type: 'Numeric' },
+            { id: 'capaciteTheorique', type: 'Numeric' },
+            { id: 'capaciteDisponible', type: 'Numeric' },
+            { id: 'feuille', type: 'Ref:Feuilles' },
+            { id: 'revisionPlan', type: 'Int' }
+        ];
+        
+        for (var j = 0; j < timeEntriesCols.length; j++) {
+            var colDef = timeEntriesCols[j];
+            var key = 'TimeEntries.' + colDef.id;
+            if (!existingColumns[key]) {
+                log('Ajout de la colonne TimeEntries.' + colDef.id);
+                actions.push(['AddColumn', 'TimeEntries', colDef.id, {
+                    type: colDef.type,
+                    isFormula: false
+                }]);
+                existingColumns[key] = { type: colDef.type };
+            } else {
+                log('TimeEntries.' + colDef.id + ' existe déjà');
+            }
+        }
+        
+        // Appliquer les actions si nécessaire
+        if (actions.length > 0) {
+            await docApi.applyUserActions(actions);
+            log('Migration v2 appliquée avec succès: ' + actions.length + ' actions');
+            
+            // Relire les métadonnées après écriture
+            metadata = await loadMigrationMetadata(grist);
+        } else {
+            log('Aucune action nécessaire, migration déjà appliquée');
+        }
+        
+        return { 
+            success: true, 
+            message: 'Migration v2 appliquée',
+            actionsExecuted: actions.length,
+            metadata: metadata
+        };
+    }
+
+    // ========================================================================
+    // MIGRATION V2 → V3 — Member daily capacities
     // ========================================================================
     
     async function migrateToV3(grist, metadata) {
-        log('Migration v2 → v3: Exemple (pas d\'action réelle)');
-        return { success: true, message: 'Migration v3 appliquée' };
+        log('Migration v2 → v3: member-daily-capacities-v3');
+        
+        var docApi = getDocApi(grist);
+        var actions = [];
+        var existingTables = metadata.tablesByName || {};
+        var existingColumns = metadata.columnsByKey || {};
+        
+        // 1. Créer MemberDailyCapacities si elle n'existe pas
+        if (!existingTables['MemberDailyCapacities']) {
+            log('Création de la table MemberDailyCapacities');
+            actions.push(['AddTable', 'MemberDailyCapacities', [
+                { id: 'membre', type: 'Ref:Team', isFormula: false },
+                { id: 'date', type: 'Date', isFormula: false },
+                { id: 'capaciteTheorique', type: 'Numeric', isFormula: false },
+                { id: 'disponibiliteRatio', type: 'Numeric', isFormula: false },
+                { id: 'capaciteDisponible', type: 'Numeric', isFormula: false },
+                { id: 'absenceHeures', type: 'Numeric', isFormula: false },
+                { id: 'source', type: 'Choice', isFormula: false },
+                { id: 'revision', type: 'Int', isFormula: false },
+                { id: 'sourceUpdatedAt', type: 'DateTime', isFormula: false },
+                { id: 'commentaire', type: 'Text', isFormula: false }
+            ]]);
+            // Marquer les colonnes comme créées pour éviter de les recréer
+            existingTables['MemberDailyCapacities'] = { id: null };
+            existingColumns['MemberDailyCapacities.membre'] = { type: 'Ref:Team' };
+            existingColumns['MemberDailyCapacities.date'] = { type: 'Date' };
+            existingColumns['MemberDailyCapacities.capaciteTheorique'] = { type: 'Numeric' };
+            existingColumns['MemberDailyCapacities.disponibiliteRatio'] = { type: 'Numeric' };
+            existingColumns['MemberDailyCapacities.capaciteDisponible'] = { type: 'Numeric' };
+            existingColumns['MemberDailyCapacities.absenceHeures'] = { type: 'Numeric' };
+            existingColumns['MemberDailyCapacities.source'] = { type: 'Choice' };
+            existingColumns['MemberDailyCapacities.revision'] = { type: 'Int' };
+            existingColumns['MemberDailyCapacities.sourceUpdatedAt'] = { type: 'DateTime' };
+            existingColumns['MemberDailyCapacities.commentaire'] = { type: 'Text' };
+        } else {
+            log('MemberDailyCapacities existe déjà');
+        }
+        
+        // 2. Vérifier et ajouter les colonnes manquantes de MemberDailyCapacities
+        var memberDailyCapCols = [
+            { id: 'membre', type: 'Ref:Team' },
+            { id: 'date', type: 'Date' },
+            { id: 'capaciteTheorique', type: 'Numeric' },
+            { id: 'disponibiliteRatio', type: 'Numeric' },
+            { id: 'capaciteDisponible', type: 'Numeric' },
+            { id: 'absenceHeures', type: 'Numeric' },
+            { id: 'source', type: 'Choice' },
+            { id: 'revision', type: 'Int' },
+            { id: 'sourceUpdatedAt', type: 'DateTime' },
+            { id: 'commentaire', type: 'Text' }
+        ];
+        
+        for (var i = 0; i < memberDailyCapCols.length; i++) {
+            var colDef = memberDailyCapCols[i];
+            var key = 'MemberDailyCapacities.' + colDef.id;
+            if (!existingColumns[key]) {
+                log('Ajout de la colonne MemberDailyCapacities.' + colDef.id);
+                actions.push(['AddColumn', 'MemberDailyCapacities', colDef.id, {
+                    type: colDef.type,
+                    isFormula: false
+                }]);
+                existingColumns[key] = { type: colDef.type };
+            } else {
+                log('MemberDailyCapacities.' + colDef.id + ' existe déjà');
+            }
+        }
+        
+        // 3. Ajouter TimeEntries.capaciteJour
+        var key = 'TimeEntries.capaciteJour';
+        if (!existingColumns[key]) {
+            log('Ajout de la colonne TimeEntries.capaciteJour');
+            actions.push(['AddColumn', 'TimeEntries', 'capaciteJour', {
+                type: 'Ref:MemberDailyCapacities',
+                isFormula: false
+            }]);
+            existingColumns[key] = { type: 'Ref:MemberDailyCapacities' };
+        } else {
+            log('TimeEntries.capaciteJour existe déjà');
+        }
+        
+        // Appliquer les actions si nécessaire
+        if (actions.length > 0) {
+            await docApi.applyUserActions(actions);
+            log('Migration v3 appliquée avec succès: ' + actions.length + ' actions');
+            
+            // Relire les métadonnées après écriture
+            metadata = await loadMigrationMetadata(grist);
+        } else {
+            log('Aucune action nécessaire, migration déjà appliquée');
+        }
+        
+        return { 
+            success: true, 
+            message: 'Migration v3 appliquée',
+            actionsExecuted: actions.length,
+            metadata: metadata
+        };
     }
 
     // ========================================================================
     // LISTE DES MIGRATIONS
     // ========================================================================
-    // Ordre croissant de version. Chaque migration fait passer de N à N+1.
     
     var MIGRATIONS = [
         {
             version: 2,
-            name: 'example-migration-v2',
-            description: 'Exemple de migration (à remplacer)',
+            name: 'planning-daily-assignments-v2',
+            description: 'Création de TaskAssignments et extension de TimeEntries',
             run: migrateToV2
         },
         {
             version: 3,
-            name: 'example-migration-v3',
-            description: 'Exemple de migration (à remplacer)',
+            name: 'member-daily-capacities-v3',
+            description: 'Création de MemberDailyCapacities et TimeEntries.capaciteJour',
             run: migrateToV3
         }
     ];
@@ -2528,8 +2834,9 @@ if (typeof globalThis !== 'undefined') {
 
     // Lit la version actuelle installée
     async function getCurrentVersion(grist) {
+        var docApi = getDocApi(grist);
         try {
-            var meta = await grist.docApi.fetchTable('TaskFlow_Meta');
+            var meta = await docApi.fetchTable('TaskFlow_Meta');
             var rows = columnarToRows(meta);
             if (rows && rows.length > 0) {
                 return rows[0].schemaVersion || 1;
@@ -2543,16 +2850,22 @@ if (typeof globalThis !== 'undefined') {
     // Calcule les migrations à appliquer
     function getPendingMigrations(currentVersion) {
         var pending = [];
+        var targetVersion = SCHEMA ? SCHEMA.version : 3;
+        
         for (var i = 0; i < MIGRATIONS.length; i++) {
-            if (MIGRATIONS[i].version > currentVersion) {
-                pending.push(MIGRATIONS[i]);
+            var migration = MIGRATIONS[i];
+            if (migration.version > currentVersion && migration.version <= targetVersion) {
+                pending.push(migration);
             }
         }
         return pending;
     }
 
     // Exécute toutes les migrations en attente
-    async function runMigrations(grist, currentVersion) {
+    async function runMigrations(grist, currentVersion, options) {
+        options = options || {};
+        var nowUnixSeconds = options.nowUnixSeconds || Math.floor(Date.now() / 1000);
+        
         var pending = getPendingMigrations(currentVersion);
         
         if (pending.length === 0) {
@@ -2560,7 +2873,8 @@ if (typeof globalThis !== 'undefined') {
             return {
                 success: true,
                 applied: 0,
-                message: 'Schéma à jour'
+                message: 'Schéma à jour',
+                finalVersion: currentVersion
             };
         }
         
@@ -2568,6 +2882,8 @@ if (typeof globalThis !== 'undefined') {
         
         var results = [];
         var metadata = null;
+        var lastSuccessfulVersion = currentVersion;
+        var docApi = getDocApi(grist);
         
         for (var i = 0; i < pending.length; i++) {
             var migration = pending[i];
@@ -2577,10 +2893,9 @@ if (typeof globalThis !== 'undefined') {
                 
                 // Relit les métadonnées avant chaque migration
                 try {
-                    metadata = await grist.docApi.fetchTable('_grist_Tables_column');
-                    metadata = columnarToRows(metadata);
+                    metadata = await loadMigrationMetadata(grist);
                 } catch (e) {
-                    metadata = {};
+                    metadata = { tablesByName: {}, columnsByKey: {} };
                 }
                 
                 // Exécute la migration
@@ -2597,7 +2912,13 @@ if (typeof globalThis !== 'undefined') {
                     message: result.message
                 });
                 
-                log('Migration appliquée: ' + migration.name);
+                // Met à jour la version courante après succès
+                lastSuccessfulVersion = migration.version;
+                
+                // Mettre à jour TaskFlow_Meta
+                await updateSchemaVersion(grist, lastSuccessfulVersion, migration.name, nowUnixSeconds);
+                
+                log('Migration appliquée: ' + migration.name + ' - version mise à jour: ' + lastSuccessfulVersion);
                 
                 // Petit délai entre les migrations
                 await delay(100);
@@ -2612,6 +2933,13 @@ if (typeof globalThis !== 'undefined') {
                     error: e.message || String(e)
                 });
                 
+                // Met à jour les métadonnées avec l'erreur
+                try {
+                    await updateMigrationError(grist, migration.name, e.message || String(e), nowUnixSeconds);
+                } catch (updateError) {
+                    log('Erreur lors de la mise à jour de l\'erreur: ' + updateError);
+                }
+                
                 // Arrête au premier échec
                 throw new Error('Migration échouée à v' + migration.version + ': ' + (e.message || e));
             }
@@ -2620,8 +2948,70 @@ if (typeof globalThis !== 'undefined') {
         return {
             success: true,
             applied: pending.length,
-            results: results
+            results: results,
+            finalVersion: lastSuccessfulVersion
         };
+    }
+    
+    // Met à jour la version du schéma dans TaskFlow_Meta
+    async function updateSchemaVersion(grist, version, migrationName, nowUnixSeconds) {
+        var docApi = getDocApi(grist);
+        nowUnixSeconds = nowUnixSeconds || Math.floor(Date.now() / 1000);
+        
+        try {
+            var meta = await docApi.fetchTable('TaskFlow_Meta');
+            var rows = columnarToRows(meta);
+            
+            if (rows && rows.length > 0) {
+                // Mettre à jour l'enregistrement existant
+                var rowId = meta.id ? meta.id[0] : rows[0].id;
+                await docApi.applyUserActions([
+                    ['UpdateRecord', 'TaskFlow_Meta', rowId, {
+                        schemaVersion: version,
+                        lastMigration: migrationName,
+                        lastMigrationAt: nowUnixSeconds,
+                        lastError: null
+                    }]
+                ]);
+            } else {
+                // Créer un nouvel enregistrement
+                await docApi.applyUserActions([
+                    ['AddRecord', 'TaskFlow_Meta', null, {
+                        schemaVersion: version,
+                        lastMigration: migrationName,
+                        lastMigrationAt: nowUnixSeconds,
+                        installationStatus: 'migrated'
+                    }]
+                ]);
+            }
+        } catch (e) {
+            log('Erreur lors de la mise à jour de TaskFlow_Meta: ' + (e.message || e));
+            throw e; // Propager l'erreur pour que la migration échoue
+        }
+    }
+    
+    // Met à jour l'erreur de migration dans TaskFlow_Meta
+    async function updateMigrationError(grist, migrationName, errorMessage, nowUnixSeconds) {
+        var docApi = getDocApi(grist);
+        nowUnixSeconds = nowUnixSeconds || Math.floor(Date.now() / 1000);
+        
+        try {
+            var meta = await docApi.fetchTable('TaskFlow_Meta');
+            var rows = columnarToRows(meta);
+            
+            if (rows && rows.length > 0) {
+                var rowId = meta.id ? meta.id[0] : rows[0].id;
+                await docApi.applyUserActions([
+                    ['UpdateRecord', 'TaskFlow_Meta', rowId, {
+                        lastError: errorMessage,
+                        lastMigration: migrationName,
+                        lastMigrationAt: nowUnixSeconds
+                    }]
+                ]);
+            }
+        } catch (e) {
+            log('Erreur lors de la mise à jour de l\'erreur: ' + (e.message || e));
+        }
     }
 
     // Export public
@@ -2629,8 +3019,16 @@ if (typeof globalThis !== 'undefined') {
         getCurrentVersion: getCurrentVersion,
         getPendingMigrations: getPendingMigrations,
         runMigrations: runMigrations,
-        MIGRATIONS: MIGRATIONS
+        MIGRATIONS: MIGRATIONS,
+        updateSchemaVersion: updateSchemaVersion,
+        updateMigrationError: updateMigrationError,
+        loadMigrationMetadata: loadMigrationMetadata
     };
+    
+    // Export CommonJS pour Jest
+    if (typeof module !== 'undefined' && module.exports) {
+        module.exports = global.TaskFlowMigrations;
+    }
 
 })(typeof window !== 'undefined' ? window : (typeof global !== 'undefined' ? global : this));
 
@@ -2641,6 +3039,7 @@ if (typeof globalThis !== 'undefined') {
 // ============================================================================
 const S = {
   tasks: [], team: [], projects: [], programmes: [], hasProg: false, entries: [], hasEntries: false,
+  assignments: [],
   granularity: 'week', offset: 0, horizon: 12,
   groupBy: 'person', unit: 'pct', includeDone: false, derive: true, mode: 'prevu', workdays: false, allocUnit: 'h',
   demo: false, extFilters: null, timeline: false,
@@ -2648,6 +3047,25 @@ const S = {
   filterManager: null
 };
 let statusCfg = TF.buildStatusConfig(TF.DEFAULT_STATUSES, 'default'); // #1 : statuts dynamiques — alimenté par TF.loadStatusConfig en Grist (terminal/libellés depuis les vrais choix)
+
+// ============================================================================
+// Service de planification (nouveau moteur)
+// ============================================================================
+let planningService = null;
+
+function initPlanningService() {
+  if (
+    typeof window !== 'undefined' &&
+    window.TaskFlowPlanning &&
+    typeof window.TaskFlowPlanning.createWidgetPlanningService === 'function'
+  ) {
+    try {
+      planningService = window.TaskFlowPlanning.createWidgetPlanningService(grist);
+    } catch (e) {
+      console.warn('TaskFlow Planning Service: erreur d\'initialisation', e);
+    }
+  }
+}
 
 // Utils
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -3426,6 +3844,423 @@ function exportCSV() {
 }
 
 // ============================================================================
+// Prévisualisation du planning (nouveau moteur)
+// ============================================================================
+
+// État de l'interface de prévisualisation
+const PreviewState = {
+  idle: 'idle',
+  loading: 'loading',
+  success: 'success',
+  error: 'error'
+};
+
+let currentPreviewState = PreviewState.idle;
+let currentPreviewRequestId = 0;
+
+/**
+ * Échappe une chaîne pour injection HTML sécurisée
+ */
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+
+/**
+ * Ouvre le panel de prévisualisation
+ */
+function openPreviewPanel() {
+  if (!planningService) {
+    toast('Service de planification non disponible');
+    return;
+  }
+  
+  const overlay = document.getElementById('overlay');
+  const panel = document.getElementById('panel');
+  const pTitle = document.getElementById('pTitle');
+  const pSub = document.getElementById('pSub');
+  const pBody = document.getElementById('pBody');
+  
+  pTitle.textContent = 'Prévisualiser le planning';
+  pSub.textContent = 'Simuler la répartition des heures allouées';
+  
+  // Construire le contenu initial
+  const todayIso = new Date().toISOString().slice(0, 10);
+  
+  let html = `
+    <div class="phint">
+      <b>Mode prévisualisation</b> — Aucune modification ne sera appliquée à vos données.
+      Cette simulation utilise le nouveau moteur de planification.
+    </div>
+    
+    <div style="margin-bottom:16px">
+      <label style="display:block;font-size:0.8rem;font-weight:600;margin-bottom:6px;color:var(--text-muted)">Date de replanification</label>
+      <input type="date" id="previewReplanDate" value="${todayIso}" 
+        style="width:100%;background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:7px;padding:8px;font-size:0.85rem" />
+    </div>
+    
+    <div style="margin-bottom:12px">
+      <label style="display:block;font-size:0.8rem;font-weight:600;margin-bottom:6px;color:var(--text-muted)">
+        Affectations actives (${S.assignments.filter(a => a.actif !== false).length})
+      </label>
+    </div>
+    
+    <div id="previewAssignmentsList">
+      ${renderAssignmentsList()}
+    </div>
+  `;
+  
+  pBody.innerHTML = html;
+  
+  // Bind le changement de date
+  const dateInput = document.getElementById('previewReplanDate');
+  if (dateInput) {
+    dateInput.onchange = () => renderAssignmentsList();
+  }
+  
+  overlay.classList.add('show');
+  panel.classList.add('show');
+  document.body.classList.add('panel-open');
+  
+  // Bind la fermeture
+  document.getElementById('pClose').onclick = closePreviewPanel;
+  overlay.onclick = closePreviewPanel;
+}
+
+/**
+ * Ferme le panel de prévisualisation
+ */
+function closePreviewPanel() {
+  const overlay = document.getElementById('overlay');
+  const panel = document.getElementById('panel');
+  
+  overlay.classList.remove('show');
+  panel.classList.remove('show');
+  document.body.classList.remove('panel-open');
+}
+
+/**
+ * Rendu de la liste des affectations
+ */
+function renderAssignmentsList() {
+  const replanDate = document.getElementById('previewReplanDate');
+  const replanFromDate = replanDate ? replanDate.value : new Date().toISOString().slice(0, 10);
+  
+  const activeAssignments = S.assignments.filter(a => a.actif !== false);
+  
+  if (activeAssignments.length === 0) {
+    return '<div style="padding:20px;text-align:center;color:var(--text-muted);font-size:0.85rem">Aucune affectation active</div>';
+  }
+  
+  const taskById = new Map(S.tasks.map(t => [t.id, t]));
+  const memberById = new Map(S.team.map(m => [m.id, m]));
+  
+  let html = '';
+  
+  for (const assignment of activeAssignments) {
+    const task = taskById.get(assignment.tache);
+    const member = memberById.get(assignment.membre);
+    
+    const taskName = task ? task.titre : `Tâche ${assignment.tache}`;
+    const memberName = member ? member.nom : `Membre ${assignment.membre}`;
+    const allocatedHours = assignment.heuresAllouees || 0;
+    
+    const startDate = assignment.dateDebut ? new Date(assignment.dateDebut * 1000).toLocaleDateString('fr-FR') : '—';
+    const endDate = assignment.dateFin ? new Date(assignment.dateFin * 1000).toLocaleDateString('fr-FR') : '—';
+    
+    html += `
+      <div class="tk" data-assignment-id="${assignment.id}">
+        <div class="tkmain">
+          <div class="tinfo">
+            <div class="tt">${escapeHtml(taskName)}</div>
+            <div class="tm">${escapeHtml(memberName)} · <b>${allocatedHours}h</b> allouées</div>
+          </div>
+        </div>
+        <div class="tkdates">
+          <span class="dl">Période:</span>
+          <span>${startDate} → ${endDate}</span>
+          <button class="btn" id="btnPreview_${assignment.id}" 
+            style="margin-left:auto;background:var(--primary);border-color:var(--primary);color:#fff">
+            Simuler
+          </button>
+        </div>
+      </div>
+    `;
+  }
+  
+  // Attacher les listeners après rendu
+  setTimeout(() => {
+    for (const assignment of activeAssignments) {
+      const btn = document.getElementById(`btnPreview_${assignment.id}`);
+      if (btn) {
+        btn.onclick = () => launchPreview(assignment.id, replanFromDate);
+      }
+    }
+  }, 0);
+  
+  return html;
+}
+
+/**
+ * Lance une prévisualisation pour une affectation
+ */
+async function launchPreview(assignmentId, replanFromDate) {
+  if (!planningService) {
+    toast('Service de planification non disponible');
+    return;
+  }
+  
+  const btn = document.getElementById(`btnPreview_${assignmentId}`);
+  if (!btn || btn.disabled) return;
+  
+  // Incrémenter l'ID de requête pour éviter les race conditions
+  const requestId = ++currentPreviewRequestId;
+  
+  // État loading
+  currentPreviewState = PreviewState.loading;
+  btn.disabled = true;
+  btn.textContent = 'Calcul...';
+  
+  try {
+    const todayIso = new Date().toISOString().slice(0, 10);
+    
+    const result = await planningService.previewAssignment(assignmentId, {
+      replanFromDate,
+      todayIso
+    });
+    
+    // Vérifier que c'est toujours la requête courante
+    if (requestId !== currentPreviewRequestId) {
+      return; // Une nouvelle requête a pris le relais
+    }
+    
+    if (result.success) {
+      currentPreviewState = PreviewState.success;
+      showPreviewResult(assignmentId, result);
+    } else {
+      currentPreviewState = PreviewState.error;
+      showPreviewError(assignmentId, result);
+    }
+  } catch (e) {
+    if (requestId !== currentPreviewRequestId) return;
+    
+    currentPreviewState = PreviewState.error;
+    console.error('Preview error:', e);
+    showPreviewError(assignmentId, {
+      success: false,
+      error: { code: 'PREVIEW_ERROR', message: e.message || String(e) }
+    });
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Simuler';
+  }
+}
+
+/**
+ * Affiche le résultat d'une prévisualisation
+ */
+function showPreviewResult(assignmentId, result) {
+  const pBody = document.getElementById('pBody');
+  
+  const task = S.tasks.find(t => t.id === result.assignmentId);
+  const assignment = S.assignments.find(a => a.id === assignmentId);
+  const member = S.team.find(m => m.id === assignment?.membre);
+  
+  const summary = result.summary || {};
+  const changeSummary = result.changeSummary || {};
+  
+  let html = `
+    <div class="phint" style="border-left:3px solid var(--ok)">
+      <b>Prévisualisation valide</b> — ${result.canCommit ? 'Prête à être appliquée' : 'Non applicable'}
+    </div>
+    
+    <div style="margin-bottom:16px">
+      <h4 style="font-size:0.85rem;font-weight:700;margin-bottom:8px;color:var(--text)">Résumé métier</h4>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:0.78rem">
+        ${renderSummaryItem('Heures allouées', summary.allocatedHours)}
+        ${renderSummaryItem('Heures protégées', summary.protectedPlannedHours)}
+        ${renderSummaryItem('Heures planifiées', summary.newlyPlannedHours)}
+        ${renderSummaryItem('Heures non planifiées', summary.unplannedHours)}
+        ${renderSummaryItem('Surconsommation', summary.overconsumedHours)}
+      </div>
+    </div>
+    
+    <div style="margin-bottom:16px">
+      <h4 style="font-size:0.85rem;font-weight:700;margin-bottom:8px;color:var(--text)">Changements proposés</h4>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;font-size:0.78rem">
+        <div>
+          <div style="color:var(--text-muted);margin-bottom:4px">Capacités</div>
+          <div style="color:var(--ok)">+${changeSummary.capacities?.creates || 0} créations</div>
+          <div style="color:var(--warn)">~${changeSummary.capacities?.updates || 0} MAJ</div>
+          <div style="color:var(--over)">−${changeSummary.capacities?.deletes || 0} suppr.</div>
+        </div>
+        <div>
+          <div style="color:var(--text-muted);margin-bottom:4px">Planning quotidien</div>
+          <div style="color:var(--ok)">+${changeSummary.timeEntries?.creates || 0} créations</div>
+          <div style="color:var(--warn)">~${changeSummary.timeEntries?.updates || 0} MAJ</div>
+          <div style="color:var(--over)">−${changeSummary.timeEntries?.deletes || 0} suppr.</div>
+        </div>
+      </div>
+    </div>
+    
+    <div style="margin-bottom:16px">
+      <h4 style="font-size:0.85rem;font-weight:700;margin-bottom:8px;color:var(--text)">Plan proposé</h4>
+      ${renderPlanTable(result.desiredPlan)}
+    </div>
+    
+    ${result.diagnostics && result.diagnostics.length > 0 ? `
+      <div style="margin-bottom:16px">
+        <h4 style="font-size:0.85rem;font-weight:700;margin-bottom:8px;color:var(--text)">Diagnostics</h4>
+        ${renderDiagnostics(result.diagnostics)}
+      </div>
+    ` : ''}
+    
+    <div style="padding-top:12px;border-top:1px solid var(--border)">
+      <button class="btn" onclick="closePreviewPanel()" style="width:100%">Fermer</button>
+    </div>
+  `;
+  
+  pBody.innerHTML = html;
+}
+
+/**
+ * Affiche une erreur de prévisualisation
+ */
+function showPreviewError(assignmentId, result) {
+  const pBody = document.getElementById('pBody');
+  
+  const errorCode = result.error?.code || 'UNKNOWN_ERROR';
+  const errorMessage = result.error?.message || 'Erreur inconnue';
+  
+  let html = `
+    <div class="pbanner over" style="margin-bottom:16px">
+      <b>Échec de la prévisualisation</b><br/>
+      ${escapeHtml(errorMessage)}
+    </div>
+    
+    <div style="font-size:0.78rem;color:var(--text-muted)">
+      Code erreur: <code style="background:var(--surface-2);padding:2px 6px;border-radius:4px">${escapeHtml(errorCode)}</code>
+    </div>
+    
+    ${result.diagnostics && result.diagnostics.length > 0 ? `
+      <div style="margin-top:16px">
+        <h4 style="font-size:0.85rem;font-weight:700;margin-bottom:8px;color:var(--text)">Diagnostics</h4>
+        ${renderDiagnostics(result.diagnostics)}
+      </div>
+    ` : ''}
+    
+    <div style="padding-top:12px;border-top:1px solid var(--border)">
+      <button class="btn" onclick="closePreviewPanel()" style="width:100%">Fermer</button>
+    </div>
+  `;
+  
+  pBody.innerHTML = html;
+}
+
+/**
+ * Rendu d'un item du résumé
+ */
+function renderSummaryItem(label, value) {
+  const displayValue = value != null ? `${Number(value).toFixed(1)}h` : '—';
+  return `
+    <div style="background:var(--surface-2);padding:8px;border-radius:6px">
+      <div style="color:var(--text-muted);font-size:0.7rem;margin-bottom:2px">${escapeHtml(label)}</div>
+      <div style="font-weight:700;font-size:0.9rem">${displayValue}</div>
+    </div>
+  `;
+}
+
+/**
+ * Rendu du tableau du plan
+ */
+function renderPlanTable(desiredPlan) {
+  if (!desiredPlan || desiredPlan.length === 0) {
+    return '<div style="padding:16px;text-align:center;color:var(--text-muted);font-size:0.85rem">Aucun plan généré</div>';
+  }
+  
+  // Limiter à 10 entrées pour l'affichage
+  const displayPlan = desiredPlan.slice(0, 10);
+  const remaining = desiredPlan.length - 10;
+  
+  let html = `
+    <div style="max-height:300px;overflow:auto;border:1px solid var(--border);border-radius:6px">
+      <table style="width:100%;font-size:0.75rem;border-collapse:collapse">
+        <thead>
+          <tr style="background:var(--surface-2);position:sticky;top:0">
+            <th style="padding:6px;text-align:left;border-bottom:1px solid var(--border)">Date</th>
+            <th style="padding:6px;text-align:right;border-bottom:1px solid var(--border)">Heures prévues</th>
+            <th style="padding:6px;text-align:right;border-bottom:1px solid var(--border)">Capacité théo.</th>
+            <th style="padding:6px;text-align:right;border-bottom:1px solid var(--border)">Capacité disp.</th>
+          </tr>
+        </thead>
+        <tbody>
+  `;
+  
+  for (const item of displayPlan) {
+    const dateStr = item.date ? new Date(item.date + 'T00:00:00Z').toLocaleDateString('fr-FR') : '—';
+    html += `
+      <tr style="border-bottom:1px solid var(--border)">
+        <td style="padding:6px">${escapeHtml(dateStr)}</td>
+        <td style="padding:6px;text-align:right;font-weight:600">${(item.plannedHours || 0).toFixed(1)}h</td>
+        <td style="padding:6px;text-align:right;color:var(--text-muted)">${(item.baseCapacityHours || 0).toFixed(1)}h</td>
+        <td style="padding:6px;text-align:right;color:var(--text-muted)">${(item.availableCapacityHours || 0).toFixed(1)}h</td>
+      </tr>
+    `;
+  }
+  
+  html += '</tbody></table></div>';
+  
+  if (remaining > 0) {
+    html += `<div style="font-size:0.75rem;color:var(--text-muted);margin-top:6px;text-align:center">+${remaining} autres lignes…</div>`;
+  }
+  
+  return html;
+}
+
+/**
+ * Rendu des diagnostics
+ */
+function renderDiagnostics(diagnostics) {
+  if (!diagnostics || diagnostics.length === 0) return '';
+  
+  let html = '<div style="display:flex;flex-direction:column;gap:6px">';
+  
+  for (const diag of diagnostics) {
+    const level = getDiagnosticLevel(diag);
+    const icon = level === 'bloquant' ? '⛔' : level === 'avertissement' ? '⚠️' : 'ℹ️';
+    const color = level === 'bloquant' ? 'var(--over)' : level === 'avertissement' ? 'var(--warn)' : 'var(--text-muted)';
+    
+    html += `
+      <div style="padding:8px;border-radius:6px;font-size:0.78rem;display:flex;gap:8px;align-items:flex-start;background:rgba(255,255,255,0.02)">
+        <span style="flex-shrink:0">${icon}</span>
+        <div>
+          <div style="font-weight:600;color:${color};margin-bottom:2px">${escapeHtml(diag.code || 'DIAGNOSTIC')}</div>
+          <div style="color:var(--text-muted)">${escapeHtml(diag.message || '')}</div>
+        </div>
+      </div>
+    `;
+  }
+  
+  html += '</div>';
+  return html;
+}
+
+/**
+ * Détermine le niveau d'un diagnostic
+ */
+function getDiagnosticLevel(diag) {
+  const code = diag.code || '';
+  const blockingPrefixes = ['MISSING_', 'INVALID_', 'DUPLICATE_', 'BLOCKING_'];
+  
+  for (const prefix of blockingPrefixes) {
+    if (code.startsWith(prefix)) return 'bloquant';
+  }
+  
+  if (code.includes('WARN') || code.includes('OVER') || code.includes('EXCEED')) return 'avertissement';
+  
+  return 'information';
+}
+
+// ============================================================================
 // Données : Grist + démo
 // ============================================================================
 function bindToolbar() {
@@ -3455,17 +4290,33 @@ function bindToolbar() {
   document.getElementById('tlClose').onclick = toggleTimeline;
     document.getElementById('pClose').onclick = closePanel;
     document.getElementById('overlay').onclick = closePanel;
+  // Bouton de prévisualisation du planning
+  const btnPreview = document.getElementById('btnPlanningPreview');
+  if (btnPreview) {
+    btnPreview.onclick = () => {
+      if (S.demo) {
+        toast('Prévisualisation disponible uniquement dans Grist');
+        return;
+      }
+      if (!planningService) {
+        toast('Service de planification non disponible');
+        return;
+      }
+      openPreviewPanel();
+    };
+  }
 }
 
 async function loadGrist() {
-  let [tasks, team, projects, dispos, prog, entries, entites] = await Promise.all([
+  let [tasks, team, projects, dispos, prog, entries, entites, assignments] = await Promise.all([
     grist.docApi.fetchTable('Tasks').catch(() => null),
     grist.docApi.fetchTable('Team').catch(() => null),
     grist.docApi.fetchTable('Projects').catch(() => null),
     grist.docApi.fetchTable('Disponibilites').catch(() => null),
     grist.docApi.fetchTable('Programmes').catch(() => null),
     grist.docApi.fetchTable('TimeEntries').catch(() => null),
-    grist.docApi.fetchTable('Entites').catch(() => null)
+    grist.docApi.fetchTable('Entites').catch(() => null),
+    grist.docApi.fetchTable('TaskAssignments').catch(() => null)
   ]);
   const ensured = await ensurePlanColumns(team, tasks, dispos); team = ensured.team; tasks = ensured.tasks; dispos = ensured.dispos;
   S.tasks = tasks ? TF.columnarToRows(tasks) : [];
@@ -3477,10 +4328,11 @@ async function loadGrist() {
   // #5 : réalisé daté EXACT depuis la Feuille de temps (TimeEntries). Opt-in : actif seulement si la table existe.
   S.entries = entries ? TF.columnarToRows(entries) : [];
   S.hasEntries = !!(entries && S.entries.length);
+  // TaskAssignments : chargement pour la prévisualisation du planning
+  S.assignments = assignments ? TF.columnarToRows(assignments) : [];
   // Programme = opt-in : actif seulement si la colonne Projects.programme (ou portefeuille) existe. Sinon le groupement propose l'activation.
   S.hasProg = !!(projects && (('programme' in projects) || ('portefeuille' in projects)) && prog);
   buildDispoIndex();
-  try { statusCfg = await TF.loadStatusConfig(grist, 'Tasks', 'statut', S.tasks.map(t => t && t.statut)); } catch (e) {}
   initFilterManager();
   render();
 }
@@ -3617,6 +4469,8 @@ if (window.self === window.top) {
       if (S.filterManager) S.filterManager.applyExternalFilters(o); 
       render(); 
     }); } catch (e) {}
+    // Initialiser le service de planification
+    initPlanningService();
     loadGrist();
     setTimeout(() => { if (!S.team.length && !S.tasks.length) loadDemo(); }, 2500); // filet
   } catch (e) {
