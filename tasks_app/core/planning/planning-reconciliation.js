@@ -216,8 +216,8 @@ function reconcileDailyEntries(existingEntries, desiredPlan, options = {}) {
     const desiredBaseCapCentiHours = toCentiHours(desiredItem.baseCapacityHours || 0);
     const existingAvailCapCentiHours = toCentiHours(primaryEntry.availableCapacityHours || 0);
     const desiredAvailCapCentiHours = toCentiHours(desiredItem.availableCapacityHours || 0);
-    const existingCapacityRecordId = primaryEntry.capaciteJour || null;
-    const desiredCapacityRecordId = desiredItem.capacityRecordId !== undefined ? desiredItem.capacityRecordId : null;
+    const existingCapacityRecordId = primaryEntry.capacityRecordId ?? primaryEntry.capaciteJour ?? null;
+    const desiredCapacityRecordId = desiredItem.capacityRecordId ?? null;
     
     const fieldsToUpdate = {};
     

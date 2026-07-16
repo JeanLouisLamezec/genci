@@ -803,4 +803,82 @@ describe('Planning Reconciliation - capacityRecordId', () => {
     expect(result.conflicts.length).toBe(1);
     expect(result.conflicts[0].code).toBe('LOCKED_ENTRY_MISMATCH');
   });
+  
+  test('Correction 1 — capacityRecordId déjà aligné (idempotence)', () => {
+    const existingEntries = [
+      {
+        id: 1,
+        assignmentId: 1,
+        date: '2026-07-20',
+        plannedHours: 7,
+        actualHours: 0,
+        sheetStatus: null,
+        description: null,
+        imputation: null,
+        feuille: null,
+        baseCapacityHours: 7,
+        availableCapacityHours: 7,
+        capacityRecordId: 10,
+        revisionPlan: 2
+      }
+    ];
+    
+    const desiredPlan = [
+      {
+        assignmentId: 1,
+        taskId: 1,
+        memberId: 1,
+        date: '2026-07-20',
+        plannedHours: 7,
+        baseCapacityHours: 7,
+        availableCapacityHours: 7,
+        capacityRecordId: 10
+      }
+    ];
+    
+    const result = reconcileDailyEntries(existingEntries, desiredPlan);
+    
+    expect(result.creates.length).toBe(0);
+    expect(result.updates.length).toBe(0);
+    expect(result.deletes.length).toBe(0);
+  });
+  
+  test('Correction 1 — Compatibilité avec entrée legacy (capaciteJour seul)', () => {
+    const existingEntries = [
+      {
+        id: 1,
+        assignmentId: 1,
+        date: '2026-07-20',
+        plannedHours: 7,
+        actualHours: 0,
+        sheetStatus: null,
+        description: null,
+        imputation: null,
+        feuille: null,
+        baseCapacityHours: 7,
+        availableCapacityHours: 7,
+        capaciteJour: 10,
+        revisionPlan: 2
+      }
+    ];
+    
+    const desiredPlan = [
+      {
+        assignmentId: 1,
+        taskId: 1,
+        memberId: 1,
+        date: '2026-07-20',
+        plannedHours: 7,
+        baseCapacityHours: 7,
+        availableCapacityHours: 7,
+        capacityRecordId: 10
+      }
+    ];
+    
+    const result = reconcileDailyEntries(existingEntries, desiredPlan);
+    
+    expect(result.creates.length).toBe(0);
+    expect(result.updates.length).toBe(0);
+    expect(result.deletes.length).toBe(0);
+  });
 });

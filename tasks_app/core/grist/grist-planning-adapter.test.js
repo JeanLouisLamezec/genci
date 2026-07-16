@@ -2207,3 +2207,221 @@ describe('Grist Planning Adapter - Correction des snapshots de capacité', () =>
     }
   });
 });
+
+describe('Grist Planning Adapter - Correction 2 : Diagnostics bloquants dans planAssignment', () => {
+  
+  test('Doublon de TimeEntries → BLOCKING_DIAGNOSTICS', async () => {
+    const mockGrist = createMockGrist({
+      initialData: {
+        TaskAssignments: [
+          {
+            id: 1,
+            tache: 1,
+            membre: 1,
+            heuresAllouees: 10,
+            dateDebut: 1785369600,
+            dateFin: 1785369600,
+            actif: true
+          }
+        ],
+        Tasks: [{ id: 1, titre: 'Tâche 1' }],
+        Team: [{ id: 1, nom: 'Alice', capaciteHebdo: 35 }],
+        TimeEntries: [
+          {
+            id: 1,
+            affectation: 1,
+            tache: 1,
+            membre: 1,
+            date: 1785369600,
+            heuresPrevues: 3,
+            heures: 0,
+            revisionPlan: 1
+          },
+          {
+            id: 2,
+            affectation: 1,
+            tache: 1,
+            membre: 1,
+            date: 1785369600,
+            heuresPrevues: 4,
+            heures: 0,
+            revisionPlan: 1
+          }
+        ],
+        Feuilles: [],
+        Disponibilites: [],
+        MemberDailyCapacities: []
+      }
+    });
+    
+    const result = await planAssignment(mockGrist, 1);
+    
+    expect(result.success).toBe(false);
+    expect(result.error.code).toBe('BLOCKING_DIAGNOSTICS');
+    expect(result.desiredPlan).toEqual([]);
+    expect(result.summary).toBeNull();
+    expect(result.diff).toBeNull();
+    expect(result.diagnostics.some(d => d.code === 'DUPLICATE_EXISTING_ENTRY')).toBe(true);
+  });
+  
+  test('Réalisé négatif → BLOCKING_DIAGNOSTICS', async () => {
+    const mockGrist = createMockGrist({
+      initialData: {
+        TaskAssignments: [
+          {
+            id: 1,
+            tache: 1,
+            membre: 1,
+            heuresAllouees: 10,
+            dateDebut: 1785369600,
+            dateFin: 1785369600,
+            actif: true
+          }
+        ],
+        Tasks: [{ id: 1, titre: 'Tâche 1' }],
+        Team: [{ id: 1, nom: 'Alice', capaciteHebdo: 35 }],
+        TimeEntries: [
+          {
+            id: 1,
+            affectation: 1,
+            tache: 1,
+            membre: 1,
+            date: 1785369600,
+            heuresPrevues: 3,
+            heures: -2,
+            revisionPlan: 1
+          }
+        ],
+        Feuilles: [],
+        Disponibilites: [],
+        MemberDailyCapacities: []
+      }
+    });
+    
+    const result = await planAssignment(mockGrist, 1);
+    
+    expect(result.success).toBe(false);
+    expect(result.error.code).toBe('BLOCKING_DIAGNOSTICS');
+    expect(result.diagnostics.some(d => d.code === 'INVALID_ACTUAL_HOURS')).toBe(true);
+  });
+  
+  test('Allocation invalide → BLOCKING_DIAGNOSTICS', async () => {
+    const mockGrist = createMockGrist({
+      initialData: {
+        TaskAssignments: [
+          {
+            id: 1,
+            tache: 1,
+            membre: 1,
+            heuresAllouees: -5,
+            dateDebut: 1785369600,
+            dateFin: 1785369600,
+            actif: true
+          }
+        ],
+        Tasks: [{ id: 1, titre: 'Tâche 1' }],
+        Team: [{ id: 1, nom: 'Alice', capaciteHebdo: 35 }],
+        TimeEntries: [],
+        Feuilles: [],
+        Disponibilites: [],
+        MemberDailyCapacities: []
+      }
+    });
+    
+    const result = await planAssignment(mockGrist, 1);
+    
+    expect(result.success).toBe(false);
+    expect(result.error.code).toBe('BLOCKING_DIAGNOSTICS');
+    expect(result.diagnostics.some(d => d.code.startsWith('INVALID_'))).toBe(true);
+  });
+  
+  test('Surconsommation → OVERCONSUMPTION non bloquant', async () => {
+    const mockGrist = createMockGrist({
+      initialData: {
+        TaskAssignments: [
+          {
+            id: 1,
+            tache: 1,
+            membre: 1,
+            heuresAllouees: 10,
+            dateDebut: 1785369600,
+            dateFin: 1785369600,
+            actif: true
+          }
+        ],
+        Tasks: [{ id: 1, titre: 'Tâche 1' }],
+        Team: [{ id: 1, nom: 'Alice', capaciteHebdo: 35 }],
+        TimeEntries: [
+          {
+            id: 1,
+            affectation: 1,
+            tache: 1,
+            membre: 1,
+            date: 1785369600,
+            heuresPrevues: 5,
+            heures: 15,
+            feuille: 10,
+            revisionPlan: 1
+          }
+        ],
+        Feuilles: [
+          {
+            id: 10,
+            membre: 1,
+            semaine: 1785369600,
+            statut: 'valide'
+          }
+        ],
+        Disponibilites: [],
+        MemberDailyCapacities: []
+      }
+    });
+    
+    const result = await planAssignment(mockGrist, 1);
+    
+    expect(result.success).toBe(true);
+    expect(result.diagnostics.some(d => d.code === 'OVERCONSUMPTION')).toBe(true);
+    expect(result.summary.overconsumedHours).toBeGreaterThan(0);
+    expect(result.desiredPlan).toEqual([]);
+  });
+  
+  test('Ligne legacy sans affectation → UNASSIGNED_LEGACY_TIME_ENTRY non bloquant', async () => {
+    const mockGrist = createMockGrist({
+      initialData: {
+        TaskAssignments: [
+          {
+            id: 1,
+            tache: 1,
+            membre: 1,
+            heuresAllouees: 10,
+            dateDebut: 1785369600,
+            dateFin: 1785369600,
+            actif: true
+          }
+        ],
+        Tasks: [{ id: 1, titre: 'Tâche 1' }],
+        Team: [{ id: 1, nom: 'Alice', capaciteHebdo: 35 }],
+        TimeEntries: [
+          {
+            id: 1,
+            affectation: null,
+            tache: 1,
+            membre: 1,
+            date: 1785369600,
+            heuresPrevues: 3,
+            heures: 0,
+            revisionPlan: 0
+          }
+        ],
+        Feuilles: [],
+        Disponibilites: [],
+        MemberDailyCapacities: []
+      }
+    });
+    
+    const result = await planAssignment(mockGrist, 1);
+    
+    expect(result.success).toBe(true);
+    expect(result.diagnostics.some(d => d.code === 'UNASSIGNED_LEGACY_TIME_ENTRY')).toBe(true);
+  });
+});

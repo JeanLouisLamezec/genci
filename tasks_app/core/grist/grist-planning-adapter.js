@@ -748,7 +748,47 @@ async function planAssignment(grist, assignmentId, options = {}) {
     capacityPolicy = 'cap'
   } = options;
   
-  // Résoudre la date de replanification
+  // Utiliser le helper de prévalidation
+  const preview = await prepareAssignmentReconciliation(grist, assignmentId, {
+    ...options,
+    precisionHours,
+    capacityPolicy
+  });
+  
+  if (!preview.success) {
+    return {
+      success: false,
+      error: preview.error,
+      assignmentId,
+      desiredPlan: [],
+      summary: null,
+      diagnostics: preview.diagnostics || [],
+      diff: null
+    };
+  }
+  
+  return {
+    success: true,
+    assignmentId,
+    desiredPlan: preview.desiredPlan,
+    summary: preview.summary,
+    diagnostics: preview.diagnostics,
+    diff: preview.diff,
+    context: preview.context
+  };
+}
+
+/**
+ * Helper de prévalidation en lecture seule
+ * Construit un état simulé complet sans aucune écriture
+ * Utilisé par planAssignment, reconcileAssignmentPlan dryRun, et la prévalidation du mode réel
+ */
+async function prepareAssignmentReconciliation(grist, assignmentId, options = {}) {
+  const {
+    precisionHours = 0.01,
+    capacityPolicy = 'cap'
+  } = options;
+  
   const effectiveReplanFromDate = resolveReplanFromDate(options);
   
   // Charger le contexte en mode lecture seule (sans écrire les capacités)
@@ -761,14 +801,18 @@ async function planAssignment(grist, assignmentId, options = {}) {
     return {
       success: false,
       error: context.error,
+      context: null,
+      assignment: null,
       desiredPlan: [],
       summary: null,
       diagnostics: [],
-      diff: null
+      diff: null,
+      capacityActions: [],
+      timeEntryActions: []
     };
   }
   
-  const { assignment, capacities, existingEntries, diagnostics } = context;
+  const { assignment, capacities, existingEntries, diagnostics, capacityByDate } = context;
   
   // Appeler le moteur de planification
   const planResult = buildAssignmentPlan({
@@ -780,19 +824,87 @@ async function planAssignment(grist, assignmentId, options = {}) {
     capacityPolicy
   });
   
-  // Réconcilier (en mode simulation)
-  const diff = reconcileDailyEntries(existingEntries, planResult.desiredPlan, {
+  // Fusionner les diagnostics
+  const allDiagnostics = [...(diagnostics || []), ...planResult.diagnostics];
+  
+  // Vérifier les diagnostics bloquants
+  const blockingDiagnostics = allDiagnostics.filter(isBlockingDiagnostic);
+  
+  if (blockingDiagnostics.length > 0) {
+    return {
+      success: false,
+      error: {
+        code: 'BLOCKING_DIAGNOSTICS',
+        diagnostics: blockingDiagnostics
+      },
+      context,
+      assignment,
+      desiredPlan: [],
+      summary: null,
+      diagnostics: allDiagnostics,
+      diff: null,
+      capacityActions: [],
+      timeEntryActions: []
+    };
+  }
+  
+  // Enrichir le plan désiré avec la référence de capacité
+  const desiredPlanWithCapacityRefs = planResult.desiredPlan.map(item => {
+    const dailyCapacity = capacityByDate.get(item.date);
+    return {
+      ...item,
+      capacityRecordId: (dailyCapacity && dailyCapacity.id) ? dailyCapacity.id : null
+    };
+  });
+  
+  // Réconcilier
+  const diff = reconcileDailyEntries(existingEntries, desiredPlanWithCapacityRefs, {
     precisionHours
   });
   
+  // Vérifier les conflits
+  if (diff.conflicts && diff.conflicts.length > 0) {
+    return {
+      success: false,
+      error: {
+        code: 'CONFLICTS_DETECTED',
+        conflicts: diff.conflicts
+      },
+      context,
+      assignment,
+      desiredPlan: [],
+      summary: null,
+      diagnostics: allDiagnostics,
+      diff,
+      capacityActions: [],
+      timeEntryActions: []
+    };
+  }
+  
+  // Construire les actions simulées
+  const existingEntriesMap = new Map();
+  for (const entry of existingEntries) {
+    existingEntriesMap.set(entry.id, entry);
+  }
+  
+  const timeEntryActions = diffToGristActions(diff, assignment, capacities, existingEntriesMap, capacityByDate);
+  
+  // Construire les actions de capacité simulées (pour le dryRun)
+  const capacityActions = [];
+  // Les actions de capacité sont gérées par ensureMemberDailyCapacities en mode réel
+  // En mode simulation, on retourne un tableau vide car les capacités sont déjà dans context
+  
   return {
     success: true,
-    assignmentId,
-    desiredPlan: planResult.desiredPlan,
+    context,
+    assignment,
+    desiredPlan: desiredPlanWithCapacityRefs,
     summary: planResult.summary,
-    diagnostics: [...(diagnostics || []), ...planResult.diagnostics],
+    diagnostics: allDiagnostics,
     diff,
-    context
+    capacityActions,
+    timeEntryActions,
+    effectiveReplanFromDate
   };
 }
 
@@ -835,55 +947,37 @@ async function reconcileAssignmentPlan(grist, assignmentId, options = {}) {
   
   const docApi = getDocApi(grist);
   
-  // Résoudre la date de replanification
-  const effectiveReplanFromDate = resolveReplanFromDate(options);
+  // Phase 1 : Prévalidation complète sans écriture
+  const preview = await prepareAssignmentReconciliation(grist, assignmentId, {
+    ...options,
+    precisionHours,
+    capacityPolicy
+  });
   
-  // En mode dryRun, charger le contexte sans écrire les capacités
-  // et construire un état simulé pour le calcul
-  let context;
-  if (dryRun) {
-    // Mode dryRun : lecture seule + simulation
-    // loadAssignmentContext avec ensureCapacities:false utilise buildEffectiveMemberDailyCapacityState
-    // qui respecte les capacités existantes (manuel, Lucca) et les options de protection
-    context = await loadAssignmentContext(grist, assignmentId, {
-      ...options,
-      ensureCapacities: false
-    });
-    
-    if (context.error) {
-      return {
-        success: false,
-        error: context.error,
-        actionsExecuted: 0,
-        actions: [],
-        dryRun: true,
-        desiredPlan: [],
-        summary: null
-      };
-    }
-    
-    // Le contexte contient déjà les capacités effectives simulées
-    // Aucune opération supplémentaire n'est nécessaire
-  } else {
-    context = await loadAssignmentContext(grist, assignmentId, options);
-    
-    if (context.error) {
-      return {
-        success: false,
-        error: context.error,
-        actionsExecuted: 0,
-        actions: [],
-        desiredPlan: [],
-        summary: null
-      };
-    }
+  if (!preview.success) {
+    return {
+      success: false,
+      error: preview.error,
+      dryRun,
+      actionsExecuted: 0,
+      actions: [],
+      capacityActions: [],
+      timeEntryActions: [],
+      desiredPlan: [],
+      summary: null,
+      diagnostics: preview.diagnostics || [],
+      actionsArePreviewOnly: true,
+      canApplyActionsDirectly: false,
+      commitMethod: 'reconcileAssignmentPlan'
+    };
   }
   
-  const { assignment, capacities, existingEntries, diagnostics, isInactive } = context;
+  const { context, assignment, desiredPlan, summary, diagnostics, timeEntryActions, capacityActions, effectiveReplanFromDate } = preview;
   
-  // Si l'affectation est inactive, effectuer un nettoyage contrôé
-  if (isInactive) {
+  // Si l'affectation est inactive, effectuer un nettoyage contrôlé
+  if (context.isInactive) {
     const allDiagnostics = [...(diagnostics || [])];
+    const existingEntries = context.existingEntries;
     
     // Générer les actions de nettoyage pour les entrées futures
     const cleanupActions = [];
@@ -942,7 +1036,6 @@ async function reconcileAssignmentPlan(grist, assignmentId, options = {}) {
           }
         ]);
       }
-      // Si pas de heuresPrevues mais d'autres champs, ne rien faire
     }
     
     if (dryRun || cleanupActions.length === 0) {
@@ -951,8 +1044,15 @@ async function reconcileAssignmentPlan(grist, assignmentId, options = {}) {
         dryRun,
         actionsExecuted: 0,
         actions: cleanupActions,
+        capacityActions: [],
+        timeEntryActions: cleanupActions,
         diagnostics: allDiagnostics,
-        isInactive: true
+        isInactive: true,
+        desiredPlan,
+        summary,
+        actionsArePreviewOnly: dryRun,
+        canApplyActionsDirectly: false,
+        commitMethod: 'reconcileAssignmentPlan'
       };
     }
     
@@ -962,10 +1062,18 @@ async function reconcileAssignmentPlan(grist, assignmentId, options = {}) {
       
       return {
         success: true,
+        dryRun,
         actionsExecuted: cleanupActions.length,
         actions: cleanupActions,
+        capacityActions: [],
+        timeEntryActions: cleanupActions,
         diagnostics: allDiagnostics,
-        isInactive: true
+        isInactive: true,
+        desiredPlan,
+        summary,
+        actionsArePreviewOnly: false,
+        canApplyActionsDirectly: false,
+        commitMethod: 'reconcileAssignmentPlan'
       };
     } catch (e) {
       return {
@@ -976,104 +1084,208 @@ async function reconcileAssignmentPlan(grist, assignmentId, options = {}) {
         },
         actionsExecuted: 0,
         actions: cleanupActions,
+        capacityActions: [],
+        timeEntryActions: cleanupActions,
         diagnostics: allDiagnostics,
-        isInactive: true
+        isInactive: true,
+        desiredPlan,
+        summary,
+        actionsArePreviewOnly: false,
+        canApplyActionsDirectly: false,
+        commitMethod: 'reconcileAssignmentPlan'
       };
     }
   }
   
-  // Traitement normal pour les affectations actives
-  const planResult = buildAssignmentPlan({
-    assignment,
-    capacities,
-    existingEntries,
+  // Mode dryRun : retourner la prévisualisation
+  if (dryRun) {
+    return {
+      success: true,
+      dryRun: true,
+      desiredPlan,
+      summary,
+      diagnostics,
+      diff: preview.diff,
+      capacityActions,
+      timeEntryActions,
+      actions: timeEntryActions,
+      actionsExecuted: 0,
+      actionsArePreviewOnly: true,
+      canApplyActionsDirectly: false,
+      commitMethod: 'reconcileAssignmentPlan'
+    };
+  }
+  
+  // Phase 2 : Exécution réelle
+  // Assurer réellement les capacités
+  const capacityEnsureResult = await ensureMemberDailyCapacities(grist, assignment.memberId, assignment.startDate, assignment.endDate, {
+    weeklyCapacity: context.assignmentMemberCapacity?.weeklyCapacity,
+    availabilities: context.assignmentAvailabilities || [],
+    defaultWeeklyCapacity: 35,
+    source: 'calcul',
+    dryRun: false,
+    todayIso: options.todayIso,
+    forceHistoricalRebuild: options.forceHistoricalRebuild === true,
+    forceSourceOverride: options.forceSourceOverride === true
+  });
+  
+  if (!capacityEnsureResult.success) {
+    return {
+      success: false,
+      error: capacityEnsureResult.error,
+      dryRun: false,
+      actionsExecuted: 0,
+      actions: [],
+      capacityActions: [],
+      timeEntryActions: [],
+      desiredPlan: [],
+      summary: null,
+      diagnostics: diagnostics,
+      actionsArePreviewOnly: false,
+      canApplyActionsDirectly: false,
+      commitMethod: 'reconcileAssignmentPlan'
+    };
+  }
+  
+  // Recharger le contexte réel avec les vrais IDs de capacités
+  const realContext = await loadAssignmentContext(grist, assignmentId, {
+    ...options,
+    ensureCapacities: true
+  });
+  
+  if (realContext.error) {
+    return {
+      success: false,
+      error: realContext.error,
+      dryRun: false,
+      actionsExecuted: 0,
+      actions: [],
+      capacityActions: [],
+      timeEntryActions: [],
+      desiredPlan: [],
+      summary: null,
+      diagnostics: diagnostics,
+      actionsArePreviewOnly: false,
+      canApplyActionsDirectly: false,
+      commitMethod: 'reconcileAssignmentPlan'
+    };
+  }
+  
+  // Recalculer le plan avec l'état réel
+  const realPlanResult = buildAssignmentPlan({
+    assignment: realContext.assignment,
+    capacities: realContext.capacities,
+    existingEntries: realContext.existingEntries,
     replanFromDate: effectiveReplanFromDate,
     precisionHours,
     capacityPolicy
   });
   
-  // Enrichir le plan désiré avec la référence de capacité (ID de MemberDailyCapacity)
-  const desiredPlanWithCapacityRefs = planResult.desiredPlan.map(item => {
-    const dailyCapacity = context.capacityByDate.get(item.date);
+  // Vérifier à nouveau les diagnostics
+  const realAllDiagnostics = [...(realContext.diagnostics || []), ...realPlanResult.diagnostics];
+  const realBlockingDiagnostics = realAllDiagnostics.filter(isBlockingDiagnostic);
+  
+  if (realBlockingDiagnostics.length > 0) {
+    return {
+      success: false,
+      error: {
+        code: 'BLOCKING_DIAGNOSTICS',
+        diagnostics: realBlockingDiagnostics
+      },
+      dryRun: false,
+      actionsExecuted: 0,
+      actions: [],
+      capacityActions: [],
+      timeEntryActions: [],
+      desiredPlan: [],
+      summary: null,
+      diagnostics: realAllDiagnostics,
+      actionsArePreviewOnly: false,
+      canApplyActionsDirectly: false,
+      commitMethod: 'reconcileAssignmentPlan'
+    };
+  }
+  
+  // Enrichir le plan réel avec les références de capacité
+  const realDesiredPlan = realPlanResult.desiredPlan.map(item => {
+    const dailyCapacity = realContext.capacityByDate.get(item.date);
     return {
       ...item,
       capacityRecordId: (dailyCapacity && dailyCapacity.id) ? dailyCapacity.id : null
     };
   });
   
-  // Vérifier les diagnostics bloquants
-  const allDiagnostics = [...(diagnostics || []), ...planResult.diagnostics];
-  const blockingDiagnostics = allDiagnostics.filter(isBlockingDiagnostic);
-  
-  if (blockingDiagnostics.length > 0) {
-    return {
-      success: false,
-      error: {
-        code: 'BLOCKING_DIAGNOSTICS',
-        diagnostics: blockingDiagnostics
-      },
-      actionsExecuted: 0,
-      actions: [],
-      diagnostics: allDiagnostics,
-      desiredPlan: [],
-      summary: null
-    };
-  }
-  
-  // Réconcilier avec le plan enrichi
-  const diff = reconcileDailyEntries(existingEntries, desiredPlanWithCapacityRefs, {
+  // Réconcilier avec l'état réel
+  const realDiff = reconcileDailyEntries(realContext.existingEntries, realDesiredPlan, {
     precisionHours
   });
   
-  // S'il y a des conflits, bloquer
-  if (diff.conflicts && diff.conflicts.length > 0) {
+  // Vérifier les conflits
+  if (realDiff.conflicts && realDiff.conflicts.length > 0) {
     return {
       success: false,
       error: {
         code: 'CONFLICTS_DETECTED',
-        conflicts: diff.conflicts
+        conflicts: realDiff.conflicts
       },
+      dryRun: false,
       actionsExecuted: 0,
       actions: [],
-      diff,
-      diagnostics: allDiagnostics,
+      capacityActions: [],
+      timeEntryActions: [],
       desiredPlan: [],
-      summary: null
+      summary: null,
+      diagnostics: realAllDiagnostics,
+      actionsArePreviewOnly: false,
+      canApplyActionsDirectly: false,
+      commitMethod: 'reconcileAssignmentPlan'
     };
   }
   
-  // Transformer le diff en actions Grist
-  const existingEntriesMap = new Map();
-  for (const entry of existingEntries) {
-    existingEntriesMap.set(entry.id, entry);
+  // Construire les actions réelles
+  const realExistingEntriesMap = new Map();
+  for (const entry of realContext.existingEntries) {
+    realExistingEntriesMap.set(entry.id, entry);
   }
-  const actions = diffToGristActions(diff, assignment, capacities, existingEntriesMap, context.capacityByDate);
   
-  if (dryRun || actions.length === 0) {
+  const realTimeEntryActions = diffToGristActions(realDiff, realContext.assignment, realContext.capacities, realExistingEntriesMap, realContext.capacityByDate);
+  
+  if (realTimeEntryActions.length === 0) {
     return {
       success: true,
-      dryRun,
+      dryRun: false,
+      desiredPlan: realDesiredPlan,
+      summary: realPlanResult.summary,
+      diagnostics: realAllDiagnostics,
+      diff: realDiff,
+      capacityActions: capacityEnsureResult.capacityActions || [],
+      timeEntryActions: realTimeEntryActions,
+      actions: realTimeEntryActions,
       actionsExecuted: 0,
-      actions,
-      diff,
-      desiredPlan: planResult.desiredPlan,
-      summary: planResult.summary,
-      diagnostics: allDiagnostics
+      actionsArePreviewOnly: false,
+      canApplyActionsDirectly: false,
+      commitMethod: 'reconcileAssignmentPlan'
     };
   }
   
-  // Appliquer les actions
+  // Appliquer les actions TimeEntries
   try {
-    await docApi.applyUserActions(actions);
+    await docApi.applyUserActions(realTimeEntryActions);
     
     return {
       success: true,
-      actionsExecuted: actions.length,
-      actions,
-      diff,
-      desiredPlan: planResult.desiredPlan,
-      summary: planResult.summary,
-      diagnostics: allDiagnostics
+      dryRun: false,
+      desiredPlan: realDesiredPlan,
+      summary: realPlanResult.summary,
+      diagnostics: realAllDiagnostics,
+      diff: realDiff,
+      capacityActions: capacityEnsureResult.capacityActions || [],
+      timeEntryActions: realTimeEntryActions,
+      actions: realTimeEntryActions,
+      actionsExecuted: realTimeEntryActions.length,
+      actionsArePreviewOnly: false,
+      canApplyActionsDirectly: false,
+      commitMethod: 'reconcileAssignmentPlan'
     };
   } catch (e) {
     return {
@@ -1082,12 +1294,17 @@ async function reconcileAssignmentPlan(grist, assignmentId, options = {}) {
         code: 'GRIST_ACTION_FAILED',
         message: e.message || String(e)
       },
+      dryRun: false,
       actionsExecuted: 0,
-      actions,
-      diff,
-      desiredPlan: planResult.desiredPlan,
-      summary: planResult.summary,
-      diagnostics: allDiagnostics
+      actions: [],
+      capacityActions: capacityEnsureResult.capacityActions || [],
+      timeEntryActions: realTimeEntryActions,
+      desiredPlan: realDesiredPlan,
+      summary: realPlanResult.summary,
+      diagnostics: realAllDiagnostics,
+      actionsArePreviewOnly: false,
+      canApplyActionsDirectly: false,
+      commitMethod: 'reconcileAssignmentPlan'
     };
   }
 }
@@ -1101,11 +1318,11 @@ async function reconcileAssignmentPlan(grist, assignmentId, options = {}) {
  * @param {Map} capacityByDate - Map date -> capacité effective avec id
  * @returns {Array} Actions Grist
  */
-function diffToGristActions(diff, assignment, capacities, existingEntriesMap = new Map(), capacityByDate = new Map()) {
+function diffToGristActions(diff, assignment, capacities = [], existingEntriesMap = new Map(), capacityByDate = new Map()) {
   const actions = [];
   const capacityMap = new Map();
   
-  for (const cap of capacities) {
+  for (const cap of capacities || []) {
     capacityMap.set(cap.date, cap);
   }
   
