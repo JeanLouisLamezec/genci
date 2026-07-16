@@ -96,7 +96,6 @@ tfoot td.left { text-align: left; color: var(--text-muted); font-weight: 600; }
 .cbtn.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
 .cbtn.danger { color: var(--over); }
 .cbtn:disabled { opacity: .5; cursor: default; }
-<style>
 .planned-indicator { font-size: .7rem; color: var(--text-muted); margin-top: 3px; text-align: center; }
 .planned-indicator strong { color: var(--primary); }
 </style>
@@ -3265,173 +3264,6 @@ function dayCapacity(dayMs) {
   return dayCapacityForPerson(dayMs, S.me);
 }
 
-// ---- Pré-remplissage depuis Tasks.charges ---------------------------------
-// Calcule la charge prévue pour une tâche et une personne sur une semaine
-function plannedHoursForTaskWeek(taskId, teamId) {
-  const task = S.tasks.find(t => t.id === taskId);
-  if (!task || !task.charges) return 0;
-  
-  try {
-    const charges = JSON.parse(task.charges);
-    const chargeEntry = charges.find(c => c.teamId === teamId);
-    if (!chargeEntry) return 0;
-    
-    const totalHeures = chargeEntry.heures || 0;
-    
-    // Les dates Grist sont en secondes UTC. On les convertit en ms pour les calculs.
-    const start = task.dateDebut * 1000;
-    const end = task.dateEcheance * 1000;
-    
-    // Normaliser S.weekStart et weekEnd au début de journée (ignorer le décalage timezone)
-    // S.weekStart est en ms (depuis mondayOf), on le garde tel quel
-    const weekStartMs = S.weekStart;
-    const weekEndMs = weekStartMs + 6 * DAY;
-    
-    // Vérifier que la semaine courante chevauche la période de la tâche
-    // Comparaison large : on accepte si la semaine commence avant la fin de la tâche
-    // et se termine après le début de la tâche
-    if (weekEndMs < start || weekStartMs > end) {
-      return 0;
-    }
-    
-    // Calculer la durée de la tâche en semaines
-    const dureeMs = end - start;
-    const nbSemaines = Math.max(1, Math.ceil(dureeMs / (7 * DAY)));
-    
-    // Répartir sur la durée
-    const heuresParSemaine = totalHeures / nbSemaines;
-    
-    return heuresParSemaine;
-  } catch (e) {
-    console.error('[CRA] Erreur plannedHoursForTaskWeek:', e);
-    return 0;
-  }
-}
-
-// Répartir les heures prévues sur les jours de la semaine (en tenant compte des congés)
-function distributePlannedHours(taskId, teamId, weekDaysArr) {
-  const totalHeures = plannedHoursForTaskWeek(taskId, teamId);
-  if (totalHeures <= 0) return {};
-  
-  // Calculer la capacité totale de la semaine (jours dispos uniquement)
-  let capaciteTotale = 0;
-  const capacities = {};
-  for (const d of weekDaysArr) {
-    const cap = dayCapacity(d);
-    capacities[d] = cap;
-    capaciteTotale += cap;
-  }
-  
-  if (capaciteTotale === 0) return {};
-  
-  // Répartir proportionnellement à la capacité de chaque jour
-  const distribution = {};
-  for (const d of weekDaysArr) {
-    if (capacities[d] > 0) {
-      // Proportionnelle : (capacité_jour / capacité_totale) * total_heures
-      distribution[d] = (capacities[d] / capaciteTotale) * totalHeures;
-    } else {
-      distribution[d] = 0;
-    }
-  }
-  
-  return distribution;
-}
-
-// Pré-remplir la grille avec le prévu (Tasks.charges) pour TOUTES les personnes visibles
-// Retourne le nombre de cellules remplies
-async function applyPlannedFill() {
-  const weekDaysArr = weekDays();
-  const actions = [];
-  let totalCells = 0;
-  let alreadyFilled = 0;
-  
-  console.log('[CRA] applyPlannedFill - Personnes visibles:', S.visiblePersonIds.length);
-  
-  // Pour chaque personne visible
-  for (const personId of S.visiblePersonIds) {
-    const tasks = gridTasksForPerson(personId);
-    console.log('[CRA] applyPlannedFill -', S.team.find(t => t.id === personId).nom, ':', tasks.length, 'tâches');
-    
-    // Pour chaque tâche de cette personne
-    for (const t of tasks) {
-      const planned = distributePlannedHours(t.id, personId, weekDaysArr);
-      
-      // Pour chaque jour de la semaine
-      for (const d of weekDaysArr) {
-        const plannedQty = planned[d] || 0;
-        if (plannedQty > 0) {
-          // VÉRIFIER DOUBLON - Critique !
-          const existing = S.entries.find(e => 
-            e.membre === personId && 
-            e.tache === t.id && 
-            sameDay(gristToMs(e.date), d)
-          );
-          
-          if (!existing) {
-            // Créer une entrée avec le prévu
-            actions.push(['AddRecord', 'TimeEntries', null, { 
-              membre: personId, 
-              tache: t.id, 
-              date: msToGrist(d), 
-              heures: plannedQty 
-            }]);
-            totalCells++;
-          } else {
-            alreadyFilled++;
-          }
-        }
-      }
-    }
-  }
-  
-  if (actions.length === 0 && alreadyFilled === 0) {
-    console.log('[CRA] applyPlannedFill - Aucune donnée à pré-remplir');
-    return { newCells: 0, existingCells: 0 };
-  }
-  
-  console.log('[CRA] applyPlannedFill - Actions:', actions.length, 'cellules:', totalCells);
-  
-  if (!S.alone) {
-    try {
-      const result = await grist.docApi.applyUserActions(actions);
-      console.log('[CRA] applyPlannedFill - Succès');
-      
-      // Mettre à jour S.entries avec les nouvelles entrées créées
-      // Les IDs sont dans result.retValues
-      if (result && result.retValues) {
-        for (let i = 0; i < actions.length; i++) {
-          const action = actions[i];
-          const newId = result.retValues[i];
-          S.entries.push({
-            id: newId,
-            membre: action[3].membre,
-            tache: action[3].tache,
-            date: action[3].date,
-            heures: action[3].heures
-          });
-        }
-      }
-      
-      render();
-      return { newCells: totalCells, existingCells: alreadyFilled };
-    } catch (e) {
-      toast('Erreur pré-remplissage: ' + (e.message || e));
-      console.error('[CRA] Erreur:', e);
-      return { newCells: 0, existingCells: alreadyFilled, error: true };
-    }
-  } else {
-    // Mode démo
-    let nid = Math.max(0, ...S.entries.map(e => e.id)) + 1;
-    actions.forEach(a => {
-      S.entries.push({ id: nid++, membre: a[3].membre, tache: a[3].tache, date: a[3].date, heures: a[3].heures });
-    });
-    console.log('[CRA] applyPlannedFill - Demo: +' + totalCells + ' cellules');
-    render();
-    return { newCells: totalCells, existingCells: alreadyFilled };
-  }
-}
-
 // ---- Demo -----------------------------------------------------------------
 function loadDemo() {
   S.alone = true; S.gOk = false; S.hasTable = true;
@@ -3794,30 +3626,234 @@ async function setFeuille(membre, wkSec, patch) {
   const r = await grist.docApi.applyUserActions([['AddRecord', 'Feuilles', null, base]]);
   const f = Object.assign({ id: r.retValues[0] }, base); S.feuilles.push(f); return f;
 }
-async function submitWeekForPerson(personId) { 
-  try { 
-    await setFeuille(personId, msToGrist(S.weekStart), { statut: 'soumis' }); 
-    render(); 
-    toast('Semaine soumise pour validation (' + S.team.find(t => t.id === personId).nom + ')'); 
-  } catch (e) { 
-    toast('Refuse : ' + (e.message || e)); 
-  } 
+
+/**
+ * Extrait l'ID d'un enregistrement créé par applyUserActions
+ * @param {*} actionResult - Résultat de AddRecord
+ * @param {string} label - Label pour le message d'erreur
+ * @returns {number} ID de l'enregistrement
+ */
+function getAddedRecordId(actionResult, label) {
+  var value = Array.isArray(actionResult)
+    ? actionResult[0]
+    : actionResult;
+
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (
+    value &&
+    typeof value === 'object' &&
+    typeof value.id === 'number'
+  ) {
+    return value.id;
+  }
+
+  throw new Error(
+    'ID de ligne introuvable après AddRecord' +
+    (label ? ' (' + label + ')' : '') +
+    ': ' + JSON.stringify(actionResult)
+  );
 }
 
-async function withdrawWeekForPerson(personId) { 
-  try { 
-    await setFeuille(personId, msToGrist(S.weekStart), { statut: 'brouillon' }); 
-    render(); 
-    toast('Soumission retiree (' + S.team.find(t => t.id === personId).nom + ')'); 
-  } catch (e) { 
-    toast('Refuse : ' + (e.message || e)); 
-  } 
+/**
+ * Soumet une semaine pour une personne donnée
+ * 1. Obtient ou crée la feuille
+ * 2. Identifie les TimeEntries de la semaine
+ * 3. Contrôle les liens existants
+ * 4. Rattache puis soumet
+ */
+async function submitWeekForPerson(personId) {
+  const weekStartMs = S.weekStart;
+  const weekStartIso = new Date(weekStartMs).toISOString().split('T')[0];
+  
+  try {
+    // Étape 1 : Obtenir ou créer la feuille
+    let sheet = S.feuilles.find(f => {
+      const sheetDate = typeof f.semaine === 'number'
+        ? new Date(f.semaine * 1000).toISOString().split('T')[0]
+        : f.semaine;
+      return f.membre === personId && sheetDate === weekStartIso;
+    });
+    
+    let sheetId = sheet ? sheet.id : null;
+    
+    // Créer la feuille si elle n'existe pas
+    if (!sheet) {
+      const weekStartGrist = Math.floor(weekStartMs / 1000);
+      const result = await grist.docApi.applyUserActions([
+        ['AddRecord', 'Feuilles', null, { membre: personId, semaine: weekStartGrist, statut: 'brouillon' }]
+      ]);
+      sheetId = getAddedRecordId(result, 'Feuille ' + weekStartIso);
+      
+      // Recharger les feuilles pour avoir la nouvelle
+      const sheetsData = await grist.docApi.fetchTable('Feuilles');
+      const sheetsRows = colObjToRows(sheetsData);
+      sheet = sheetsRows.find(s => s.id === sheetId);
+      if (!sheet) {
+        throw new Error('Feuille créée mais introuvable : ' + sheetId);
+      }
+      S.feuilles.push({
+        id: sheet.id,
+        membre: sheet.membre,
+        semaine: sheet.semaine,
+        statut: sheet.statut,
+        validePar: sheet.validePar,
+        motifRejet: sheet.motifRejet
+      });
+    }
+    
+    // Étape 2 : Identifier les TimeEntries de la semaine (lundi 00:00 à dimanche 23:59)
+    const weekEndMs = weekStartMs + (7 * 24 * 60 * 60 * 1000);
+    const entriesToLink = S.entries.filter(e => {
+      if (e.membre !== personId) return false;
+      const entryDateMs = typeof e.date === 'number' ? e.date * 1000 : 0;
+      return entryDateMs >= weekStartMs && entryDateMs < weekEndMs;
+    });
+    
+    // Étape 3 : Contrôler les liens existants
+    for (const entry of entriesToLink) {
+      if (entry.feuille != null && entry.feuille !== 0 && entry.feuille !== sheetId) {
+        console.warn('TimeEntry ' + entry.id + ' liée à une autre feuille : ' + entry.feuille);
+        throw new Error(
+          'Ligne ' + entry.id + ' du ' + 
+          new Date(entry.date * 1000).toLocaleDateString('fr-FR') +
+          ' est liée à une autre feuille. Impossible de soumettre.'
+        );
+      }
+    }
+    
+    // Étape 4 : Rattacher puis soumettre
+    if (entriesToLink.length > 0) {
+      const attachActions = entriesToLink.map(e => [
+        'UpdateRecord',
+        'TimeEntries',
+        e.id,
+        { feuille: sheetId }
+      ]);
+      
+      // Ajouter la mise à jour du statut en DERNIER
+      attachActions.push(['UpdateRecord', 'Feuilles', sheetId, { statut: 'soumis' }]);
+      
+      await grist.docApi.applyUserActions(attachActions);
+      
+      // Mettre à jour le cache local
+      for (const entry of entriesToLink) {
+        entry.feuille = sheetId;
+      }
+      sheet.statut = 'soumis';
+    } else {
+      // Aucune entrée à rattacher, juste soumettre la feuille
+      await grist.docApi.applyUserActions([
+        ['UpdateRecord', 'Feuilles', sheetId, { statut: 'soumis' }]
+      ]);
+      sheet.statut = 'soumis';
+    }
+    
+    // Recharger les données depuis Grist
+    await loadGristData();
+    render();
+    toast('Semaine soumise pour validation (' + S.team.find(t => t.id === personId).nom + ')');
+  } catch (e) {
+    // En cas d'échec, recharger depuis Grist pour annuler l'optimiste
+    try {
+      await loadGristData();
+      render();
+    } catch (reloadError) {
+      // Ignorer les erreurs de rechargement
+    }
+    toast('Refuse : ' + (e.message || e));
+  }
+}
+
+async function withdrawWeekForPerson(personId) {
+  const weekStartMs = S.weekStart;
+  const weekStartIso = new Date(weekStartMs).toISOString().split('T')[0];
+  
+  try {
+    const sheet = S.feuilles.find(f => {
+      const sheetDate = typeof f.semaine === 'number'
+        ? new Date(f.semaine * 1000).toISOString().split('T')[0]
+        : f.semaine;
+      return f.membre === personId && sheetDate === weekStartIso;
+    });
+    
+    if (!sheet) {
+      throw new Error('Aucune feuille trouvée pour cette semaine');
+    }
+    
+    await grist.docApi.applyUserActions([
+      ['UpdateRecord', 'Feuilles', sheet.id, { statut: 'brouillon' }]
+    ]);
+    
+    // Recharger les données
+    await loadGristData();
+    render();
+    toast('Soumission retiree (' + S.team.find(t => t.id === personId).nom + ')');
+  } catch (e) {
+    // Recharger en cas d'erreur
+    try {
+      await loadGristData();
+      render();
+    } catch (reloadError) {
+      // Ignorer
+    }
+    toast('Refuse : ' + (e.message || e));
+  }
 }
 
 async function submitWeek() { await submitWeekForPerson(S.me); }
 async function withdrawWeek() { await withdrawWeekForPerson(S.me); }
-window.validerFeuille = async (id) => { const f = S.feuilles.find(x => x.id === id); if (!f) return; f.statut = 'valide'; render(); if (!S.alone) { try { await grist.docApi.applyUserActions([['UpdateRecord', 'Feuilles', id, { statut: 'valide', validePar: S.me, dateValidation: msToGrist(Date.now()) }]]); } catch (e) { toast('Refuse : ' + (e.message || e)); } } toast('Feuille validee'); };
-window.rejeterFeuille = async (id) => { const f = S.feuilles.find(x => x.id === id); if (!f) return; f.statut = 'rejete'; render(); if (!S.alone) { try { await grist.docApi.applyUserActions([['UpdateRecord', 'Feuilles', id, { statut: 'rejete' }]]); } catch (e) { toast('Refuse : ' + (e.message || e)); } } toast('Feuille rejetee'); };
+window.validerFeuille = async (id) => {
+  const f = S.feuilles.find(x => x.id === id);
+  if (!f) return;
+  
+  try {
+    await grist.docApi.applyUserActions([
+      ['UpdateRecord', 'Feuilles', id, { statut: 'valide', validePar: S.me, dateValidation: Math.floor(Date.now() / 1000) }]
+    ]);
+    
+    // Recharger après succès
+    await loadGristData();
+    render();
+    toast('Feuille validee');
+  } catch (e) {
+    // Recharger en cas d'erreur
+    try {
+      await loadGristData();
+      render();
+    } catch (reloadError) {
+      // Ignorer
+    }
+    toast('Refuse : ' + (e.message || e));
+  }
+};
+
+window.rejeterFeuille = async (id) => {
+  const f = S.feuilles.find(x => x.id === id);
+  if (!f) return;
+  
+  try {
+    await grist.docApi.applyUserActions([
+      ['UpdateRecord', 'Feuilles', id, { statut: 'rejete' }]
+    ]);
+    
+    // Recharger après succès
+    await loadGristData();
+    render();
+    toast('Feuille rejetee');
+  } catch (e) {
+    // Recharger en cas d'erreur
+    try {
+      await loadGristData();
+      render();
+    } catch (reloadError) {
+      // Ignorer
+    }
+    toast('Refuse : ' + (e.message || e));
+  }
+};
 
 // ---- Export Excel (CSV + BOM, comme le Plan) ------------------------------
 function exportCSV() {
