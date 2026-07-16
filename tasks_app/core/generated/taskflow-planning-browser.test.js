@@ -420,10 +420,12 @@ describe('TaskFlow Planning - Commit réel avec Mock Grist modifiable', () => {
       }
     }
     
+    // Vérifier strictement que les deux types d'actions existent
+    expect(firstCapacityIndex).toBeGreaterThanOrEqual(0);
+    expect(firstTimeEntryIndex).toBeGreaterThanOrEqual(0);
+    
     // Les capacités doivent être écrites en premier
-    if (firstCapacityIndex !== -1 && firstTimeEntryIndex !== -1) {
-      expect(firstCapacityIndex).toBeLessThan(firstTimeEntryIndex);
-    }
+    expect(firstCapacityIndex).toBeLessThan(firstTimeEntryIndex);
   });
   
   test('commitAssignment modifie MemberDailyCapacities et TimeEntries', async () => {

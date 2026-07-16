@@ -3896,6 +3896,7 @@ function resetPreviewState() {
   currentPreviewState = PreviewState.idle;
   previewDataRevision = null;
   currentPreviewContext = null;
+  window._currentPreviewResult = null;
 }
 
 /**
@@ -3905,6 +3906,7 @@ function markPreviewObsolete() {
   currentPreviewState = PreviewState.obsolete;
   previewDataRevision = null;
   currentPreviewContext = null;
+  window._currentPreviewResult = null;
   showPreviewObsolete();
 }
 
@@ -4179,7 +4181,7 @@ async function launchPreview(assignmentId, replanFromDate, button) {
 /**
  * Lance le commit d'une prévisualisation
  */
-async function launchCommit(assignmentId, replanFromDate, button) {
+async function launchCommit(assignmentId, button) {
   if (!planningService) {
     toast('Service de planification non disponible');
     return;
@@ -4200,6 +4202,9 @@ async function launchCommit(assignmentId, replanFromDate, button) {
     }
     return;
   }
+  
+  // Lire la date du contexte (pas du DOM qui a disparu)
+  const replanFromDate = currentPreviewContext.replanFromDate;
   
   // Verrouiller avant la modale
   commitConfirmationInProgress = true;
@@ -4228,10 +4233,9 @@ async function launchCommit(assignmentId, replanFromDate, button) {
     const result = window._currentPreviewResult;
     const changeSummary = result ? result.changeSummary : null;
     
-    const capacitiesCount = changeSummary ? 
-      (changeSummary.capacities?.creates || 0) + (changeSummary.capacities?.updates || 0) : 0;
-    const timeEntriesCount = changeSummary ? 
-      (changeSummary.timeEntries?.creates || 0) + (changeSummary.timeEntries?.updates || 0) : 0;
+    // Utiliser les totaux incluant les suppressions
+    const capacitiesCount = changeSummary?.capacities?.total || 0;
+    const timeEntriesCount = changeSummary?.timeEntries?.total || 0;
     
     // Demander confirmation explicite
     const confirmed = await confirmModal(
@@ -4263,14 +4267,11 @@ async function launchCommit(assignmentId, replanFromDate, button) {
     planningCommitInProgress = true;
     currentPreviewState = PreviewState.committing;
     
-    // Utiliser la date du contexte (pas celle du DOM qui a disparu)
-    const commitReplanFromDate = currentPreviewContext.replanFromDate;
-    
     const todayIso = new Date().toISOString().slice(0, 10);
     
     // Appeler exclusivement commitAssignment()
     const commitResult = await planningService.commitAssignment(assignmentId, {
-      replanFromDate: commitReplanFromDate,
+      replanFromDate,
       todayIso
     });
     
@@ -4282,7 +4283,7 @@ async function launchCommit(assignmentId, replanFromDate, button) {
       
       // Vérifier l'idempotence après succès
       const verification = await planningService.previewAssignment(assignmentId, {
-        replanFromDate: commitReplanFromDate,
+        replanFromDate,
         todayIso
       });
       
@@ -4447,9 +4448,7 @@ function showPreviewResult(assignmentId, result) {
     if (commitButton) {
       commitButton.addEventListener('click', () => {
         const commitAssignmentId = Number(commitButton.dataset.commitAssignmentId);
-        const replanDateInput = document.getElementById('previewReplanDate');
-        const replanFromDate = replanDateInput && replanDateInput.value ? replanDateInput.value : new Date().toISOString().slice(0, 10);
-        launchCommit(commitAssignmentId, replanFromDate, commitButton);
+        launchCommit(commitAssignmentId, commitButton);
       });
     }
   }
