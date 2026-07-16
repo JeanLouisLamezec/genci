@@ -79,16 +79,23 @@ ${END_MARKER}`;
 
 // Build du bundle navigateur
 function buildPlanningBrowser() {
-    const buildScript = path.join(__dirname, 'build-planning-browser.js');
-    if (fs.existsSync(buildScript)) {
-        console.log('🔨 Build du bundle navigateur...\n');
-        try {
-            require(buildScript);
-            console.log('');
-        } catch (e) {
-            console.warn(`⚠️  Erreur build navigateur: ${e.message}`);
-        }
-    }
+  const buildScript = path.join(__dirname, 'build-planning-browser.js');
+  if (!fs.existsSync(buildScript)) {
+    throw new Error(
+      'Script de build navigateur manquant : ' + buildScript
+    );
+  }
+  
+  const buildModule = require(buildScript);
+  if (buildModule && typeof buildModule.build === 'function') {
+    buildModule.build();
+  }
+  
+  // Vérifier que le bundle a été généré
+  const bundlePath = path.join(ROOT_DIR, 'core', 'generated', 'taskflow-planning-browser.js');
+  if (!fs.existsSync(bundlePath)) {
+    throw new Error('Bundle navigateur non généré : ' + bundlePath);
+  }
 }
 
 // Main

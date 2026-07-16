@@ -3667,11 +3667,13 @@ return {
 
   
   // Exposer l'API publique
+  var adapter = __require('grist/grist-planning-adapter');
   var widgetPlanningService = __require('widget-planning-service');
   
   global.TaskFlowPlanning = {
     createWidgetPlanningService: widgetPlanningService.createWidgetPlanningService,
-    summarizeGristActions: widgetPlanningService.summarizeGristActions
+    summarizeGristActions: widgetPlanningService.summarizeGristActions,
+    isBlockingDiagnostic: adapter.isBlockingDiagnostic
   };
   
 })(typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : this));

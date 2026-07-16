@@ -127,13 +127,19 @@ function compileModule(moduleId, filePath) {
 
 /**
  * Build le bundle complet
+ * @param {Object} options - Options
+ * @param {string} [options.outputFile] - Fichier de sortie (défaut: OUTPUT_FILE)
+ * @returns {Object} Résultat avec outputFile et content
  */
-function build() {
+function build(options = {}) {
+  const outputFile = options.outputFile || OUTPUT_FILE;
+  
   console.log('🔨 Build du bundle navigateur...\n');
   
   // Créer le dossier de sortie s'il n'existe pas
-  if (!fs.existsSync(OUTPUT_DIR)) {
-    fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+  const outputDir = path.dirname(outputFile);
+  if (!fs.existsSync(outputDir)) {
+    fs.mkdirSync(outputDir, { recursive: true });
   }
   
   // Compiler chaque module dans l'ordre
@@ -185,11 +191,13 @@ function build() {
   bundleParts.push(`
   
   // Exposer l'API publique
+  var adapter = __require('grist/grist-planning-adapter');
   var widgetPlanningService = __require('widget-planning-service');
   
   global.TaskFlowPlanning = {
     createWidgetPlanningService: widgetPlanningService.createWidgetPlanningService,
-    summarizeGristActions: widgetPlanningService.summarizeGristActions
+    summarizeGristActions: widgetPlanningService.summarizeGristActions,
+    isBlockingDiagnostic: adapter.isBlockingDiagnostic
   };
   
 })(typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : this));
@@ -201,15 +209,15 @@ function build() {
 
   // Écrire le fichier
   const bundleContent = bundleParts.join('\n');
-  fs.writeFileSync(OUTPUT_FILE, bundleContent, 'utf8');
+  fs.writeFileSync(outputFile, bundleContent, 'utf8');
   
-  console.log(`\n✅ Bundle généré: ${OUTPUT_FILE}`);
+  console.log(`\n✅ Bundle généré: ${outputFile}`);
   console.log(`   Taille: ${(bundleContent.length / 1024).toFixed(2)} KB`);
   
   // Vérification rapide
   try {
     // Vérifier que le fichier est syntaxiquement correct en le lisant
-    const check = fs.readFileSync(OUTPUT_FILE, 'utf8');
+    const check = fs.readFileSync(outputFile, 'utf8');
     if (!check.includes('window.TaskFlowPlanning') && !check.includes('globalThis.TaskFlowPlanning')) {
       console.warn('⚠️  Attention: le bundle ne semble pas exposer TaskFlowPlanning correctement');
     } else {
@@ -218,7 +226,19 @@ function build() {
   } catch (e) {
     console.error(`❌ Erreur de vérification: ${e.message}`);
   }
+  
+  return {
+    outputFile,
+    content: bundleContent
+  };
 }
 
 // Exécution
-build();
+if (require.main === module) {
+  build();
+}
+
+// Export pour les tests
+module.exports = {
+  build
+};

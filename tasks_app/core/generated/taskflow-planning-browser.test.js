@@ -7,8 +7,11 @@
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
+const crypto = require('crypto');
+const os = require('os');
 
 const BUNDLE_PATH = path.join(__dirname, 'taskflow-planning-browser.js');
+const BUILD_SCRIPT_PATH = path.join(__dirname, '..', '..', 'scripts', 'build-planning-browser.js');
 
 describe('TaskFlow Planning Browser Bundle', () => {
   
@@ -49,7 +52,6 @@ describe('TaskFlow Planning Browser Bundle', () => {
   });
   
   test('le bundle expose window.TaskFlowPlanning', () => {
-    // Exécuter le bundle dans le contexte
     vm.runInContext(bundleContent, context);
     
     expect(sandbox.window.TaskFlowPlanning).toBeDefined();
@@ -68,6 +70,13 @@ describe('TaskFlow Planning Browser Bundle', () => {
     
     expect(sandbox.window.TaskFlowPlanning.summarizeGristActions).toBeDefined();
     expect(typeof sandbox.window.TaskFlowPlanning.summarizeGristActions).toBe('function');
+  });
+  
+  test('TaskFlowPlanning expose isBlockingDiagnostic', () => {
+    vm.runInContext(bundleContent, context);
+    
+    expect(sandbox.window.TaskFlowPlanning.isBlockingDiagnostic).toBeDefined();
+    expect(typeof sandbox.window.TaskFlowPlanning.isBlockingDiagnostic).toBe('function');
   });
   
   test('summarizeGristActions fonctionne correctement', () => {
@@ -97,16 +106,40 @@ describe('TaskFlow Planning Browser Bundle', () => {
   });
   
   test('le bundle ne dépend pas de require global', () => {
-    // Le bundle ne doit pas appeler require() directement
     expect(bundleContent).not.toMatch(/[^a-zA-Z_]require\s*\(/);
   });
+});
+
+describe('TaskFlow Planning - Déterminisme du build', () => {
   
-  test('le bundle est déterministe (même contenu à chaque build)', () => {
-    const hash1 = bundleContent.length;
-    const bundleContent2 = fs.readFileSync(BUNDLE_PATH, 'utf8');
-    const hash2 = bundleContent2.length;
+  function sha256(content) {
+    return crypto
+      .createHash('sha256')
+      .update(content, 'utf8')
+      .digest('hex');
+  }
+  
+  test('le build est déterministe (deux builds réels produisent le même contenu)', () => {
+    const { build } = require(BUILD_SCRIPT_PATH);
     
-    expect(hash1).toBe(hash2);
+    // Générer deux fichiers temporaires
+    const outputFile1 = path.join(os.tmpdir(), `taskflow-test-${Date.now()}-1.js`);
+    const outputFile2 = path.join(os.tmpdir(), `taskflow-test-${Date.now()}-2.js`);
+    
+    try {
+      const result1 = build({ outputFile: outputFile1 });
+      const result2 = build({ outputFile: outputFile2 });
+      
+      // Vérifier que les contenus sont identiques
+      expect(result1.content).toBe(result2.content);
+      
+      // Vérifier les hashes SHA256
+      expect(sha256(result1.content)).toBe(sha256(result2.content));
+    } finally {
+      // Nettoyer les fichiers temporaires
+      if (fs.existsSync(outputFile1)) fs.unlinkSync(outputFile1);
+      if (fs.existsSync(outputFile2)) fs.unlinkSync(outputFile2);
+    }
   });
 });
 
@@ -116,11 +149,13 @@ describe('TaskFlow Planning - Intégration avec Mock Grist', () => {
   let sandbox;
   let context;
   let mockGrist;
+  let applyUserActionsCallCount;
   
   beforeEach(() => {
     bundleContent = fs.readFileSync(BUNDLE_PATH, 'utf8');
+    applyUserActionsCallCount = 0;
     
-    // Mock Grist simple
+    // Mock Grist avec applyUserActions qui jette une erreur
     mockGrist = {
       docApi: {
         fetchTable: async (tableId) => {
@@ -144,8 +179,8 @@ describe('TaskFlow Planning - Intégration avec Mock Grist', () => {
           return mockData[tableId] || { id: [] };
         },
         applyUserActions: async (actions) => {
-          // Ne rien faire en mode preview
-          return actions.length;
+          applyUserActionsCallCount++;
+          throw new Error('applyUserActions interdit en preview');
         }
       }
     };
@@ -171,7 +206,7 @@ describe('TaskFlow Planning - Intégration avec Mock Grist', () => {
     vm.runInContext(bundleContent, context);
   });
   
-  test('createWidgetPlanningService peut être appelé avec un mock Grist', async () => {
+  test('createWidgetPlanningService peut être appelé avec un mock Grist', () => {
     const { createWidgetPlanningService } = sandbox.window.TaskFlowPlanning;
     
     expect(() => {
@@ -182,24 +217,18 @@ describe('TaskFlow Planning - Intégration avec Mock Grist', () => {
     }).not.toThrow();
   });
   
-  test('previewAssignment ne modifie pas les données (dryRun)', async () => {
+  test('previewAssignment ne modifie pas les données (preuve zéro appel à applyUserActions)', async () => {
     const { createWidgetPlanningService } = sandbox.window.TaskFlowPlanning;
     const service = createWidgetPlanningService(mockGrist);
     
-    let fetchCalled = false;
-    const originalFetchTable = mockGrist.docApi.fetchTable;
-    mockGrist.docApi.fetchTable = async (tableId) => {
-      fetchCalled = true;
-      return originalFetchTable(tableId);
-    };
-    
+    // La prévisualisation doit réussir même si applyUserActions jette
     const result = await service.previewAssignment(1, {
       replanFromDate: '2024-07-01'
     });
     
-    expect(fetchCalled).toBe(true);
-    expect(result.mode).toBe('preview');
     expect(result.success).toBe(true);
+    expect(result.mode).toBe('preview');
+    expect(applyUserActionsCallCount).toBe(0);
   });
   
   test('previewAssignment retourne un résultat structuré', async () => {
@@ -223,8 +252,22 @@ describe('TaskFlow Planning - Intégration avec Mock Grist', () => {
     expect(result).toHaveProperty('error');
   });
   
+  test('isBlockingDiagnostic classe correctement les diagnostics', () => {
+    const { isBlockingDiagnostic } = sandbox.window.TaskFlowPlanning;
+    
+    // Diagnostics bloquants
+    expect(isBlockingDiagnostic({ code: 'MISSING_ASSIGNMENT' })).toBe(true);
+    expect(isBlockingDiagnostic({ code: 'INVALID_ACTUAL_HOURS' })).toBe(true);
+    expect(isBlockingDiagnostic({ code: 'DUPLICATE_ACTIVE_ASSIGNMENT' })).toBe(true);
+    expect(isBlockingDiagnostic({ code: 'PROTECTED_PLAN_EXCEEDS_ALLOCATION' })).toBe(true);
+    
+    // Diagnostics non bloquants
+    expect(isBlockingDiagnostic({ code: 'OVERCONSUMPTION' })).toBe(false);
+    expect(isBlockingDiagnostic({ code: 'UNPLANNED_HOURS' })).toBe(false);
+    expect(isBlockingDiagnostic({ code: 'NO_DISTRIBUTABLE_DATES' })).toBe(false);
+  });
+  
   test('commitAssignment n\'est PAS appelé dans plan.html', () => {
-    // Vérification statique : plan.html ne doit pas appeler commitAssignment
     const planHtmlPath = path.join(__dirname, '..', '..', 'plan.html');
     const planHtmlContent = fs.readFileSync(planHtmlPath, 'utf8');
     
@@ -239,43 +282,68 @@ describe('TaskFlow Planning - Intégration avec Mock Grist', () => {
 
 describe('Intégration HTML - plan.html', () => {
   
+  const planHtmlPath = path.join(__dirname, '..', '..', 'plan.html');
+  let planHtmlContent;
+  
+  beforeAll(() => {
+    planHtmlContent = fs.readFileSync(planHtmlPath, 'utf8');
+  });
+  
   test('plan.html référence le bundle généré', () => {
-    const planHtmlPath = path.join(__dirname, '..', '..', 'plan.html');
-    const planHtmlContent = fs.readFileSync(planHtmlPath, 'utf8');
-    
     expect(planHtmlContent).toMatch(/taskflow-planning-browser\.js/);
   });
   
   test('plan.html contient le bouton btnPlanningPreview', () => {
-    const planHtmlPath = path.join(__dirname, '..', '..', 'plan.html');
-    const planHtmlContent = fs.readFileSync(planHtmlPath, 'utf8');
-    
     expect(planHtmlContent).toMatch(/id=["']btnPlanningPreview["']/);
   });
   
   test('plan.html charge TaskAssignments dans loadGrist', () => {
-    const planHtmlPath = path.join(__dirname, '..', '..', 'plan.html');
-    const planHtmlContent = fs.readFileSync(planHtmlPath, 'utf8');
-    
     expect(planHtmlContent).toMatch(/TaskAssignments/);
     expect(planHtmlContent).toMatch(/S\.assignments/);
   });
   
   test('plan.html initialise le service de planification', () => {
-    const planHtmlPath = path.join(__dirname, '..', '..', 'plan.html');
-    const planHtmlContent = fs.readFileSync(planHtmlPath, 'utf8');
-    
     expect(planHtmlContent).toMatch(/initPlanningService/);
     expect(planHtmlContent).toMatch(/window\.TaskFlowPlanning/);
   });
   
   test('plan.html gère les états d\'interface de prévisualisation', () => {
-    const planHtmlPath = path.join(__dirname, '..', '..', 'plan.html');
-    const planHtmlContent = fs.readFileSync(planHtmlPath, 'utf8');
-    
     expect(planHtmlContent).toMatch(/PreviewState/);
     expect(planHtmlContent).toMatch(/loading/);
     expect(planHtmlContent).toMatch(/success/);
     expect(planHtmlContent).toMatch(/error/);
+  });
+  
+  test('plan.html utilise PanelMode pour la fermeture unifiée', () => {
+    expect(planHtmlContent).toMatch(/PanelMode/);
+    expect(planHtmlContent).toMatch(/closeActivePanel/);
+  });
+  
+  test('plan.html gère l\'obsolescence après rechargement Grist', () => {
+    expect(planHtmlContent).toMatch(/gristDataRevision/);
+    expect(planHtmlContent).toMatch(/previewDataRevision/);
+    expect(planHtmlContent).toMatch(/showPreviewObsolete/);
+  });
+  
+  test('plan.html lit la date au clic (pas au rendu)', () => {
+    expect(planHtmlContent).toMatch(/getSelectedReplanDate/);
+    // Le handler doit utiliser data-preview-assignment-id (délégation)
+    expect(planHtmlContent).toMatch(/data-preview-assignment-id/);
+    // Pas de setTimeout pour les listeners
+    expect(planHtmlContent).not.toMatch(/setTimeout\s*\(\s*\(\)\s*=>\s*{\s*for\s*\(const.*btnPreview/);
+  });
+  
+  test('plan.html n\'utilise plus onclick direct pour pClose et overlay', () => {
+    // On doit utiliser addEventListener, pas .onclick =
+    const pCloseMatches = planHtmlContent.match(/pClose.*\.onclick\s*=/g);
+    const overlayMatches = planHtmlContent.match(/overlay.*\.onclick\s*=/g);
+    
+    expect(pCloseMatches).toBeNull();
+    expect(overlayMatches).toBeNull();
+  });
+  
+  test('getDiagnosticLevel utilise isBlockingDiagnostic du bundle', () => {
+    expect(planHtmlContent).toMatch(/isBlockingDiagnostic/);
+    expect(planHtmlContent).toMatch(/TaskFlowPlanning/);
   });
 });

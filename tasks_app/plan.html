@@ -3855,14 +3855,36 @@ const PreviewState = {
   error: 'error'
 };
 
+// Modes du panel pour une fermeture unifiée
+const PanelMode = Object.freeze({
+  NONE: 'none',
+  CELL: 'cell',
+  RESOURCE: 'resource',
+  PREVIEW: 'preview'
+});
+
 let currentPreviewState = PreviewState.idle;
 let currentPreviewRequestId = 0;
+let activePanelMode = PanelMode.NONE;
+
+// Révisions pour détecter les obsolescences après rechargement Grist
+let gristDataRevision = 0;
+let previewDataRevision = null;
+let initialDataLoadComplete = false;
 
 /**
  * Échappe une chaîne pour injection HTML sécurisée
  */
 function escapeHtml(s) {
   return String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+
+/**
+ * Obtient la date de replanification sélectionnée (toujours la valeur actuelle)
+ */
+function getSelectedReplanDate() {
+  const input = document.getElementById('previewReplanDate');
+  return input && input.value ? input.value : new Date().toISOString().slice(0, 10);
 }
 
 /**
@@ -3873,6 +3895,8 @@ function openPreviewPanel() {
     toast('Service de planification non disponible');
     return;
   }
+  
+  activePanelMode = PanelMode.PREVIEW;
   
   const overlay = document.getElementById('overlay');
   const panel = document.getElementById('panel');
@@ -3911,40 +3935,52 @@ function openPreviewPanel() {
   
   pBody.innerHTML = html;
   
-  // Bind le changement de date
-  const dateInput = document.getElementById('previewReplanDate');
-  if (dateInput) {
-    dateInput.onchange = () => renderAssignmentsList();
+  // Délégation d'événements pour les boutons "Simuler"
+  const container = document.getElementById('previewAssignmentsList');
+  if (container) {
+    container.addEventListener('click', event => {
+      const button = event.target.closest('[data-preview-assignment-id]');
+      if (!button) return;
+      
+      const assignmentId = Number(button.dataset.previewAssignmentId);
+      const replanFromDate = getSelectedReplanDate();
+      
+      launchPreview(assignmentId, replanFromDate, button);
+    });
   }
   
   overlay.classList.add('show');
   panel.classList.add('show');
   document.body.classList.add('panel-open');
-  
-  // Bind la fermeture
-  document.getElementById('pClose').onclick = closePreviewPanel;
-  overlay.onclick = closePreviewPanel;
 }
 
 /**
- * Ferme le panel de prévisualisation
+ * Ferme le panel actif (unifié pour tous les modes)
  */
-function closePreviewPanel() {
-  const overlay = document.getElementById('overlay');
-  const panel = document.getElementById('panel');
+function closeActivePanel() {
+  // Invalider la prévisualisation si nécessaire
+  if (activePanelMode === PanelMode.PREVIEW) {
+    invalidateCurrentPreviewRequest();
+  }
   
-  overlay.classList.remove('show');
-  panel.classList.remove('show');
-  document.body.classList.remove('panel-open');
+  // Réinitialiser le mode
+  activePanelMode = PanelMode.NONE;
+  
+  // Appeler la fermeture historique
+  closePanel();
+}
+
+/**
+ * Invalide la requête de prévisualisation courante
+ */
+function invalidateCurrentPreviewRequest() {
+  currentPreviewRequestId++;
 }
 
 /**
  * Rendu de la liste des affectations
  */
 function renderAssignmentsList() {
-  const replanDate = document.getElementById('previewReplanDate');
-  const replanFromDate = replanDate ? replanDate.value : new Date().toISOString().slice(0, 10);
-  
   const activeAssignments = S.assignments.filter(a => a.actif !== false);
   
   if (activeAssignments.length === 0) {
@@ -3978,7 +4014,7 @@ function renderAssignmentsList() {
         <div class="tkdates">
           <span class="dl">Période:</span>
           <span>${startDate} → ${endDate}</span>
-          <button class="btn" id="btnPreview_${assignment.id}" 
+          <button class="btn" data-preview-assignment-id="${assignment.id}"
             style="margin-left:auto;background:var(--primary);border-color:var(--primary);color:#fff">
             Simuler
           </button>
@@ -3987,38 +4023,30 @@ function renderAssignmentsList() {
     `;
   }
   
-  // Attacher les listeners après rendu
-  setTimeout(() => {
-    for (const assignment of activeAssignments) {
-      const btn = document.getElementById(`btnPreview_${assignment.id}`);
-      if (btn) {
-        btn.onclick = () => launchPreview(assignment.id, replanFromDate);
-      }
-    }
-  }, 0);
-  
   return html;
 }
 
 /**
  * Lance une prévisualisation pour une affectation
  */
-async function launchPreview(assignmentId, replanFromDate) {
+async function launchPreview(assignmentId, replanFromDate, button) {
   if (!planningService) {
     toast('Service de planification non disponible');
     return;
   }
   
-  const btn = document.getElementById(`btnPreview_${assignmentId}`);
-  if (!btn || btn.disabled) return;
+  if (!button || button.disabled) return;
   
   // Incrémenter l'ID de requête pour éviter les race conditions
   const requestId = ++currentPreviewRequestId;
   
+  // Capturer la révision des données au moment de la requête
+  const requestDataRevision = gristDataRevision;
+  
   // État loading
   currentPreviewState = PreviewState.loading;
-  btn.disabled = true;
-  btn.textContent = 'Calcul...';
+  button.disabled = true;
+  button.textContent = 'Calcul...';
   
   try {
     const todayIso = new Date().toISOString().slice(0, 10);
@@ -4033,8 +4061,15 @@ async function launchPreview(assignmentId, replanFromDate) {
       return; // Une nouvelle requête a pris le relais
     }
     
+    // Vérifier que les données n'ont pas changé entre-temps
+    if (requestDataRevision !== gristDataRevision) {
+      showPreviewObsolete();
+      return;
+    }
+    
     if (result.success) {
       currentPreviewState = PreviewState.success;
+      previewDataRevision = requestDataRevision;
       showPreviewResult(assignmentId, result);
     } else {
       currentPreviewState = PreviewState.error;
@@ -4042,6 +4077,10 @@ async function launchPreview(assignmentId, replanFromDate) {
     }
   } catch (e) {
     if (requestId !== currentPreviewRequestId) return;
+    if (requestDataRevision !== gristDataRevision) {
+      showPreviewObsolete();
+      return;
+    }
     
     currentPreviewState = PreviewState.error;
     console.error('Preview error:', e);
@@ -4050,9 +4089,27 @@ async function launchPreview(assignmentId, replanFromDate) {
       error: { code: 'PREVIEW_ERROR', message: e.message || String(e) }
     });
   } finally {
-    btn.disabled = false;
-    btn.textContent = 'Simuler';
+    button.disabled = false;
+    button.textContent = 'Simuler';
   }
+}
+
+/**
+ * Affiche un message d'obsolescence
+ */
+function showPreviewObsolete() {
+  const pBody = document.getElementById('pBody');
+  
+  pBody.innerHTML = `
+    <div class="pbanner warn" style="margin-bottom:16px">
+      <b>Données modifiées</b><br/>
+      Les données Grist ont changé. Relancez la prévisualisation.
+    </div>
+    
+    <div style="padding-top:12px;border-top:1px solid var(--border)">
+      <button class="btn" onclick="closeActivePanel()" style="width:100%">Fermer</button>
+    </div>
+  `;
 }
 
 /**
@@ -4060,10 +4117,6 @@ async function launchPreview(assignmentId, replanFromDate) {
  */
 function showPreviewResult(assignmentId, result) {
   const pBody = document.getElementById('pBody');
-  
-  const task = S.tasks.find(t => t.id === result.assignmentId);
-  const assignment = S.assignments.find(a => a.id === assignmentId);
-  const member = S.team.find(m => m.id === assignment?.membre);
   
   const summary = result.summary || {};
   const changeSummary = result.changeSummary || {};
@@ -4115,7 +4168,7 @@ function showPreviewResult(assignmentId, result) {
     ` : ''}
     
     <div style="padding-top:12px;border-top:1px solid var(--border)">
-      <button class="btn" onclick="closePreviewPanel()" style="width:100%">Fermer</button>
+      <button class="btn" onclick="closeActivePanel()" style="width:100%">Fermer</button>
     </div>
   `;
   
@@ -4149,7 +4202,7 @@ function showPreviewError(assignmentId, result) {
     ` : ''}
     
     <div style="padding-top:12px;border-top:1px solid var(--border)">
-      <button class="btn" onclick="closePreviewPanel()" style="width:100%">Fermer</button>
+      <button class="btn" onclick="closeActivePanel()" style="width:100%">Fermer</button>
     </div>
   `;
   
@@ -4245,17 +4298,22 @@ function renderDiagnostics(diagnostics) {
 }
 
 /**
- * Détermine le niveau d'un diagnostic
+ * Détermine le niveau d'un diagnostic en utilisant la fonction du noyau
  */
 function getDiagnosticLevel(diag) {
-  const code = diag.code || '';
-  const blockingPrefixes = ['MISSING_', 'INVALID_', 'DUPLICATE_', 'BLOCKING_'];
-  
-  for (const prefix of blockingPrefixes) {
-    if (code.startsWith(prefix)) return 'bloquant';
+  // Utiliser la fonction officielle du bundle si disponible
+  const api = window.TaskFlowPlanning;
+  if (api && typeof api.isBlockingDiagnostic === 'function') {
+    if (api.isBlockingDiagnostic(diag)) {
+      return 'bloquant';
+    }
   }
   
-  if (code.includes('WARN') || code.includes('OVER') || code.includes('EXCEED')) return 'avertissement';
+  // Fallback pour les diagnostics réellement non bloquants
+  const code = diag.code || '';
+  if (code.includes('OVERCONSUMPTION') || code.includes('UNPLANNED')) {
+    return 'avertissement';
+  }
   
   return 'information';
 }
@@ -4288,8 +4346,9 @@ function bindToolbar() {
   document.getElementById('btnInit').onclick = initCharges;
   document.getElementById('btnTimeline').onclick = toggleTimeline;
   document.getElementById('tlClose').onclick = toggleTimeline;
-    document.getElementById('pClose').onclick = closePanel;
-    document.getElementById('overlay').onclick = closePanel;
+  // Fermeture unifiée du panel (historique + prévisualisation)
+  document.getElementById('pClose').addEventListener('click', closeActivePanel);
+  document.getElementById('overlay').addEventListener('click', closeActivePanel);
   // Bouton de prévisualisation du planning
   const btnPreview = document.getElementById('btnPlanningPreview');
   if (btnPreview) {
@@ -4332,6 +4391,14 @@ async function loadGrist() {
   S.assignments = assignments ? TF.columnarToRows(assignments) : [];
   // Programme = opt-in : actif seulement si la colonne Projects.programme (ou portefeuille) existe. Sinon le groupement propose l'activation.
   S.hasProg = !!(projects && (('programme' in projects) || ('portefeuille' in projects)) && prog);
+  
+  // Incrémenter la révision des données après chargement réussi
+  if (initialDataLoadComplete) {
+    gristDataRevision++;
+  } else {
+    initialDataLoadComplete = true;
+  }
+  
   buildDispoIndex();
   initFilterManager();
   render();
