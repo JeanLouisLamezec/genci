@@ -3673,6 +3673,8 @@ function memberAvail(period) {
   return out;
 }
 function openCell(key, period) {
+  invalidateCurrentPreviewRequest();
+  activePanelMode = PanelMode.CELL;
   S._cellKey = key; S._cellPeriod = period; S._resId = null;
   const rows = buildRows(); const row = rows.find(r => String(r.key) === String(key));
   const items = tasksInCell(key, period);
@@ -3770,6 +3772,8 @@ async function setDates(taskId, debut, echeance) {
 }
 // 2.1 — panneau ressource : capacité hebdo + indisponibilités (Team.capaciteHebdo / Team.indispos).
 function openResource(key) {
+  invalidateCurrentPreviewRequest();
+  activePanelMode = PanelMode.RESOURCE;
   const m = teamById(Number(key)); if (!m) return;
   S._cellKey = null; S._resId = m.id;
   const rows = (S.dispos || []).filter(r => Number(r.membre) === m.id).slice().sort((a, b) => (a.dateDebut || 0) - (b.dateDebut || 0));
@@ -3852,7 +3856,8 @@ const PreviewState = {
   idle: 'idle',
   loading: 'loading',
   success: 'success',
-  error: 'error'
+  error: 'error',
+  obsolete: 'obsolete'
 };
 
 // Modes du panel pour une fermeture unifiée
@@ -3871,6 +3876,24 @@ let activePanelMode = PanelMode.NONE;
 let gristDataRevision = 0;
 let previewDataRevision = null;
 let initialDataLoadComplete = false;
+
+/**
+ * Réinitialise l'état de la prévisualisation
+ */
+function resetPreviewState() {
+  invalidateCurrentPreviewRequest();
+  currentPreviewState = PreviewState.idle;
+  previewDataRevision = null;
+}
+
+/**
+ * Marque la prévisualisation comme obsolète
+ */
+function markPreviewObsolete() {
+  currentPreviewState = PreviewState.obsolete;
+  previewDataRevision = null;
+  showPreviewObsolete();
+}
 
 /**
  * Échappe une chaîne pour injection HTML sécurisée
@@ -3896,6 +3919,7 @@ function openPreviewPanel() {
     return;
   }
   
+  resetPreviewState();
   activePanelMode = PanelMode.PREVIEW;
   
   const overlay = document.getElementById('overlay');
@@ -3960,7 +3984,7 @@ function openPreviewPanel() {
 function closeActivePanel() {
   // Invalider la prévisualisation si nécessaire
   if (activePanelMode === PanelMode.PREVIEW) {
-    invalidateCurrentPreviewRequest();
+    resetPreviewState();
   }
   
   // Réinitialiser le mode
@@ -4063,7 +4087,7 @@ async function launchPreview(assignmentId, replanFromDate, button) {
     
     // Vérifier que les données n'ont pas changé entre-temps
     if (requestDataRevision !== gristDataRevision) {
-      showPreviewObsolete();
+      markPreviewObsolete();
       return;
     }
     
@@ -4078,7 +4102,7 @@ async function launchPreview(assignmentId, replanFromDate, button) {
   } catch (e) {
     if (requestId !== currentPreviewRequestId) return;
     if (requestDataRevision !== gristDataRevision) {
-      showPreviewObsolete();
+      markPreviewObsolete();
       return;
     }
     
@@ -4395,6 +4419,18 @@ async function loadGrist() {
   // Incrémenter la révision des données après chargement réussi
   if (initialDataLoadComplete) {
     gristDataRevision++;
+    
+    // Invalider une prévisualisation déjà affichée si les données ont changé
+    if (
+      activePanelMode === PanelMode.PREVIEW &&
+      previewDataRevision !== null &&
+      previewDataRevision !== gristDataRevision
+    ) {
+      invalidateCurrentPreviewRequest();
+      previewDataRevision = null;
+      currentPreviewState = PreviewState.obsolete;
+      showPreviewObsolete();
+    }
   } else {
     initialDataLoadComplete = true;
   }

@@ -346,4 +346,29 @@ describe('Intégration HTML - plan.html', () => {
     expect(planHtmlContent).toMatch(/isBlockingDiagnostic/);
     expect(planHtmlContent).toMatch(/TaskFlowPlanning/);
   });
+  
+  test('code d\'invalidation des previews après rechargement Grist présent', () => {
+    // Test statique : vérifie que le code d'invalidation est présent dans plan.html
+    // NOTE: Ce test ne simule pas le comportement DOM complet, il vérifie seulement
+    // que la logique est implémentée dans le code source.
+    
+    // Vérifie la logique d'invalidation dans loadGrist
+    expect(planHtmlContent).toMatch(/activePanelMode\s*===\s*PanelMode\.PREVIEW/);
+    expect(planHtmlContent).toMatch(/previewDataRevision\s*!==\s*gristDataRevision/);
+    expect(planHtmlContent).toMatch(/showPreviewObsolete/);
+    
+    // Vérifie que l'état obsolete existe
+    expect(planHtmlContent).toMatch(/obsolete:\s*['"]obsolete['"]/);
+    
+    // Vérifie que resetPreviewState existe et est utilisé
+    expect(planHtmlContent).toMatch(/function resetPreviewState/);
+    expect(planHtmlContent).toMatch(/resetPreviewState\(\)/);
+    
+    // Vérifie que markPreviewObsolete existe
+    expect(planHtmlContent).toMatch(/function markPreviewObsolete/);
+    
+    // Vérifie que openCell et openResource positionnent PanelMode
+    expect(planHtmlContent).toMatch(/activePanelMode\s*=\s*PanelMode\.CELL/);
+    expect(planHtmlContent).toMatch(/activePanelMode\s*=\s*PanelMode\.RESOURCE/);
+  });
 });
