@@ -593,3 +593,214 @@ describe('Planning Reconciliation - findDuplicatesInArray', () => {
     expect(result.duplicates[0].key).toBe('a');
   });
 });
+
+describe('Planning Reconciliation - capacityRecordId', () => {
+  
+  test('Test A — Référence seule obsolète', () => {
+    const existingEntries = [
+      {
+        id: 1,
+        assignmentId: 1,
+        date: '2026-07-20',
+        plannedHours: 5,
+        actualHours: 0,
+        sheetStatus: null,
+        description: null,
+        imputation: null,
+        feuille: null,
+        baseCapacityHours: 7,
+        availableCapacityHours: 7,
+        capacityRecordId: null,
+        revisionPlan: 3
+      }
+    ];
+    
+    const desiredPlan = [
+      {
+        assignmentId: 1,
+        taskId: 1,
+        memberId: 1,
+        date: '2026-07-20',
+        plannedHours: 5,
+        baseCapacityHours: 7,
+        availableCapacityHours: 7,
+        capacityRecordId: 10
+      }
+    ];
+    
+    const result = reconcileDailyEntries(existingEntries, desiredPlan);
+    
+    expect(result.creates.length).toBe(0);
+    expect(result.updates.length).toBe(1);
+    expect(result.deletes.length).toBe(0);
+    
+    expect(result.updates[0].fields.capacityRecordId).toBe(10);
+    expect(result.updates[0].fields.revisionPlan).toBe(4);
+    expect(result.updates[0].fields.plannedHours).toBeUndefined();
+    expect(result.updates[0].fields.baseCapacityHours).toBeUndefined();
+    expect(result.updates[0].fields.availableCapacityHours).toBeUndefined();
+  });
+  
+  test('Test B — Plusieurs snapshots changent ensemble', () => {
+    const existingEntries = [
+      {
+        id: 1,
+        assignmentId: 1,
+        date: '2026-07-20',
+        plannedHours: 5,
+        actualHours: 0,
+        sheetStatus: null,
+        description: null,
+        imputation: null,
+        feuille: null,
+        baseCapacityHours: 5,
+        availableCapacityHours: 5,
+        capacityRecordId: null,
+        revisionPlan: 1
+      }
+    ];
+    
+    const desiredPlan = [
+      {
+        assignmentId: 1,
+        taskId: 1,
+        memberId: 1,
+        date: '2026-07-20',
+        plannedHours: 5,
+        baseCapacityHours: 7,
+        availableCapacityHours: 7,
+        capacityRecordId: 10
+      }
+    ];
+    
+    const result = reconcileDailyEntries(existingEntries, desiredPlan);
+    
+    expect(result.updates.length).toBe(1);
+    expect(result.updates[0].fields.capacityRecordId).toBe(10);
+    expect(result.updates[0].fields.baseCapacityHours).toBe(7);
+    expect(result.updates[0].fields.availableCapacityHours).toBe(7);
+    expect(result.updates[0].fields.revisionPlan).toBe(2);
+  });
+  
+  test('Test C — Création avec référence', () => {
+    const existingEntries = [];
+    
+    const desiredPlan = [
+      {
+        assignmentId: 1,
+        taskId: 1,
+        memberId: 1,
+        date: '2026-07-20',
+        plannedHours: 7,
+        baseCapacityHours: 7,
+        availableCapacityHours: 7,
+        capacityRecordId: 10
+      }
+    ];
+    
+    const result = reconcileDailyEntries(existingEntries, desiredPlan);
+    
+    expect(result.creates.length).toBe(1);
+    expect(result.creates[0].capacityRecordId).toBe(10);
+  });
+  
+  test('Test D — Création sans référence simulée', () => {
+    const existingEntries = [];
+    
+    const desiredPlan = [
+      {
+        assignmentId: 1,
+        taskId: 1,
+        memberId: 1,
+        date: '2026-07-20',
+        plannedHours: 7,
+        baseCapacityHours: 7,
+        availableCapacityHours: 7,
+        capacityRecordId: null
+      }
+    ];
+    
+    const result = reconcileDailyEntries(existingEntries, desiredPlan);
+    
+    expect(result.creates.length).toBe(1);
+    expect(result.creates[0].capacityRecordId).toBeNull();
+  });
+  
+  test('Test E — Ne pas effacer une référence existante', () => {
+    const existingEntries = [
+      {
+        id: 1,
+        assignmentId: 1,
+        date: '2026-07-20',
+        plannedHours: 7,
+        actualHours: 0,
+        sheetStatus: null,
+        description: null,
+        imputation: null,
+        feuille: null,
+        baseCapacityHours: 7,
+        availableCapacityHours: 7,
+        capacityRecordId: 10,
+        revisionPlan: 2
+      }
+    ];
+    
+    const desiredPlan = [
+      {
+        assignmentId: 1,
+        taskId: 1,
+        memberId: 1,
+        date: '2026-07-20',
+        plannedHours: 7,
+        baseCapacityHours: 7,
+        availableCapacityHours: 7,
+        capacityRecordId: null
+      }
+    ];
+    
+    const result = reconcileDailyEntries(existingEntries, desiredPlan);
+    
+    expect(result.updates.length).toBe(0);
+    expect(result.creates.length).toBe(0);
+    expect(result.deletes.length).toBe(0);
+  });
+  
+  test('Test F — Ligne verrouillée avec référence obsolète', () => {
+    const existingEntries = [
+      {
+        id: 1,
+        assignmentId: 1,
+        date: '2026-07-20',
+        plannedHours: 5,
+        actualHours: 0,
+        sheetStatus: 'submitted',
+        description: null,
+        imputation: null,
+        feuille: null,
+        baseCapacityHours: 5,
+        availableCapacityHours: 5,
+        capacityRecordId: null,
+        revisionPlan: 3
+      }
+    ];
+    
+    const desiredPlan = [
+      {
+        assignmentId: 1,
+        taskId: 1,
+        memberId: 1,
+        date: '2026-07-20',
+        plannedHours: 7,
+        baseCapacityHours: 7,
+        availableCapacityHours: 7,
+        capacityRecordId: 10
+      }
+    ];
+    
+    const result = reconcileDailyEntries(existingEntries, desiredPlan);
+    
+    expect(result.updates.length).toBe(0);
+    expect(result.conflicts.length).toBe(1);
+    expect(result.conflicts[0].code).toBe('LOCKED_ENTRY_MISMATCH');
+  });
+});
