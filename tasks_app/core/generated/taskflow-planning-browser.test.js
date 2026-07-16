@@ -267,16 +267,28 @@ describe('TaskFlow Planning - Intégration avec Mock Grist', () => {
     expect(isBlockingDiagnostic({ code: 'NO_DISTRIBUTABLE_DATES' })).toBe(false);
   });
   
-  test('commitAssignment n\'est PAS appelé dans plan.html', () => {
+  test('commitAssignment retourne mode = commit', async () => {
+    const { createWidgetPlanningService } = sandbox.window.TaskFlowPlanning;
+    const service = createWidgetPlanningService(mockGrist);
+    
+    const result = await service.commitAssignment(1, {
+      replanFromDate: '2024-07-01'
+    });
+    
+    expect(result.mode).toBe('commit');
+  });
+  
+  test('commitAssignment n\'est PAS appelé directement dans plan.html avec les actions brutes', () => {
     const planHtmlPath = path.join(__dirname, '..', '..', 'plan.html');
     const planHtmlContent = fs.readFileSync(planHtmlPath, 'utf8');
     
-    // Le fichier HTML ne doit pas contenir d'appel direct à commitAssignment
-    expect(planHtmlContent).not.toMatch(/commitAssignment\s*\(/);
+    // Le fichier HTML ne doit pas appliquer directement les actions brutes
+    expect(planHtmlContent).not.toMatch(/applyUserActions\s*\(\s*result\.capacityActions/);
+    expect(planHtmlContent).not.toMatch(/applyUserActions\s*\(\s*result\.timeEntryActions/);
+    expect(planHtmlContent).not.toMatch(/applyUserActions\s*\(\s*result\.actions/);
     
-    // Il ne doit pas non plus appliquer directement les actions brutes
-    expect(planHtmlContent).not.toMatch(/applyUserActions\s*\(.*capacityActions/);
-    expect(planHtmlContent).not.toMatch(/applyUserActions\s*\(.*timeEntryActions/);
+    // commitAssignment doit être appelé via planningService
+    expect(planHtmlContent).toMatch(/planningService\.commitAssignment\s*\(/);
   });
 });
 
@@ -312,6 +324,8 @@ describe('Intégration HTML - plan.html', () => {
     expect(planHtmlContent).toMatch(/loading/);
     expect(planHtmlContent).toMatch(/success/);
     expect(planHtmlContent).toMatch(/error/);
+    expect(planHtmlContent).toMatch(/committing/);
+    expect(planHtmlContent).toMatch(/committed/);
   });
   
   test('plan.html utilise PanelMode pour la fermeture unifiée', () => {
@@ -370,5 +384,41 @@ describe('Intégration HTML - plan.html', () => {
     // Vérifie que openCell et openResource positionnent PanelMode
     expect(planHtmlContent).toMatch(/activePanelMode\s*=\s*PanelMode\.CELL/);
     expect(planHtmlContent).toMatch(/activePanelMode\s*=\s*PanelMode\.RESOURCE/);
+  });
+  
+  test('plan.html contient le bouton Appliquer la planification', () => {
+    expect(planHtmlContent).toMatch(/Appliquer la planification/);
+    expect(planHtmlContent).toMatch(/data-commit-assignment-id/);
+  });
+  
+  test('plan.html contient launchCommit', () => {
+    expect(planHtmlContent).toMatch(/function launchCommit/);
+    expect(planHtmlContent).toMatch(/planningService\.commitAssignment/);
+  });
+  
+  test('plan.html contient canCommitCurrentPreview', () => {
+    expect(planHtmlContent).toMatch(/function canCommitCurrentPreview/);
+  });
+  
+  test('plan.html contient planningCommitInProgress', () => {
+    expect(planHtmlContent).toMatch(/planningCommitInProgress/);
+  });
+  
+  test('plan.html contient showCommitSuccess et showCommitError', () => {
+    expect(planHtmlContent).toMatch(/function showCommitSuccess/);
+    expect(planHtmlContent).toMatch(/function showCommitError/);
+  });
+  
+  test('plan.html vérifie TF.isReadOnly pour le commit', () => {
+    expect(planHtmlContent).toMatch(/TF\.isReadOnly/);
+  });
+  
+  test('plan.html ne modifie pas applyUserActions avec les actions brutes', () => {
+    // Vérifier que applyUserActions n'est pas appelé avec capacityActions ou timeEntryActions
+    const applyWithCapacityActions = planHtmlContent.match(/applyUserActions\s*\(\s*[^)]*capacityActions[^)]*\)/g);
+    const applyWithTimeEntryActions = planHtmlContent.match(/applyUserActions\s*\(\s*[^)]*timeEntryActions[^)]*\)/g);
+    
+    expect(applyWithCapacityActions).toBeNull();
+    expect(applyWithTimeEntryActions).toBeNull();
   });
 });
