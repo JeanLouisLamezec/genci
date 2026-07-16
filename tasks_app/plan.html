@@ -3037,6 +3037,8 @@ if (typeof globalThis !== 'undefined') {
 // ============================================================================
 // État
 // ============================================================================
+let appMode = 'loading';
+
 const S = {
   tasks: [], team: [], projects: [], programmes: [], hasProg: false, entries: [], hasEntries: false,
   assignments: [],
@@ -4776,15 +4778,19 @@ async function loadGrist(options = {}) {
   const { preservePlanningPanel = false } = options;
   
   let [tasks, team, projects, dispos, prog, entries, entites, assignments] = await Promise.all([
-    grist.docApi.fetchTable('Tasks').catch(() => null),
-    grist.docApi.fetchTable('Team').catch(() => null),
-    grist.docApi.fetchTable('Projects').catch(() => null),
+    grist.docApi.fetchTable('Tasks'),
+    grist.docApi.fetchTable('Team'),
+    grist.docApi.fetchTable('Projects'),
     grist.docApi.fetchTable('Disponibilites').catch(() => null),
     grist.docApi.fetchTable('Programmes').catch(() => null),
     grist.docApi.fetchTable('TimeEntries').catch(() => null),
     grist.docApi.fetchTable('Entites').catch(() => null),
     grist.docApi.fetchTable('TaskAssignments').catch(() => null)
   ]);
+  
+  S.demo = false;
+  appMode = 'grist';
+  
   const ensured = await ensurePlanColumns(team, tasks, dispos); team = ensured.team; tasks = ensured.tasks; dispos = ensured.dispos;
   S.tasks = tasks ? TF.columnarToRows(tasks) : [];
   S.team = team ? TF.columnarToRows(team) : [];
@@ -4892,6 +4898,18 @@ async function ensureProgSchema() {
 }
 
 async function loadDemo() {
+  if (
+    window.self !== window.top &&
+    appMode === 'grist'
+  ) {
+    console.warn(
+      '[Plan demo] Activation ignorée : ' +
+      'le widget est connecté à Grist'
+    );
+    return;
+  }
+
+  appMode = 'demo';
   S.demo = true;
   const day = 86400000, today = new Date(); today.setHours(0, 0, 0, 0);
   const g = (n) => Math.floor((today.getTime() + n * day) / 1000); // n jours depuis aujourd'hui -> Unix s
@@ -4942,29 +4960,113 @@ window.addEventListener('DOMContentLoaded', () => {
   }, 200);
 });
 
+async function initGrist() {
+  try {
+    console.info('[Plan init] Connexion à Grist…');
+
+    await grist.ready({
+      requiredAccess: 'full'
+    });
+
+    appMode = 'grist';
+    S.demo = false;
+
+    console.info(
+      '[Plan init] Connexion Grist confirmée'
+    );
+
+    TF.readOnlyBanner();
+
+    TF.guardWrites(grist, {
+      onReadOnly: () => {
+        toast(
+          'Lecture seule : modification non autorisée'
+        );
+      },
+      onDenied: () => {
+        toast(
+          'Modification refusée par vos droits'
+        );
+
+        loadGrist().catch(error => {
+          console.error(
+            '[Plan] Rechargement après refus impossible',
+            error
+          );
+        });
+      }
+    });
+
+    initPlanningService();
+
+    await loadGrist();
+
+    grist.onRecords(() => {
+      if (appMode !== 'grist') {
+        return;
+      }
+
+      loadGrist().catch(error => {
+        console.error(
+          '[Plan] Rechargement Grist impossible',
+          error
+        );
+      });
+    });
+
+    try {
+      grist.onOptions(options => {
+        S.extFilters =
+          options && options.filters
+            ? options.filters
+            : null;
+
+        if (S.filterManager) {
+          S.filterManager.applyExternalFilters(
+            options
+          );
+        }
+
+        render();
+      });
+    } catch (error) {
+      console.warn(
+        '[Plan] onOptions indisponible',
+        error
+      );
+    }
+  } catch (error) {
+    appMode = 'error';
+    S.demo = false;
+
+    console.error(
+      '[Plan init] Initialisation Grist impossible',
+      error
+    );
+
+    const wrap =
+      document.getElementById('gridwrap');
+
+    if (wrap) {
+      wrap.innerHTML =
+        '<div class="empty">' +
+          '<div class="ic">⚠</div>' +
+          '<div>Connexion à Grist impossible</div>' +
+          '<div style="font-size:.78rem">' +
+            esc(error?.message || error) +
+          '</div>' +
+        '</div>';
+    }
+  }
+}
+
 bindToolbar();
-// Hors Grist (ouverture directe, frame top) -> mode démo. Dans Grist -> iframe.
+
 if (window.self === window.top) {
+  appMode = 'demo';
   loadDemo();
 } else {
-  try {
-    grist.ready({ requiredAccess: 'full' });
-    // #7 respect des droits : bandeau lecture seule + garde transverse sur toutes les ecritures.
-    TF.readOnlyBanner();
-    TF.guardWrites(grist, { onReadOnly: () => toast('Lecture seule : modification non autorisee'), onDenied: () => { toast('Modification refusee par vos droits'); loadGrist(); } });
-    grist.onRecords(() => loadGrist());
-    try { grist.onOptions((o) => { 
-      S.extFilters = (o && o.filters) || null; 
-      if (S.filterManager) S.filterManager.applyExternalFilters(o); 
-      render(); 
-    }); } catch (e) {}
-    // Initialiser le service de planification
-    initPlanningService();
-    loadGrist();
-    setTimeout(() => { if (!S.team.length && !S.tasks.length) loadDemo(); }, 2500); // filet
-  } catch (e) {
-    loadDemo();
-  }
+  initGrist();
 }
 </script>
 </body>
