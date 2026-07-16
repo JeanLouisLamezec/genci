@@ -969,7 +969,7 @@ describe('Planning Engine - Validation des nombres', () => {
     
     expect(result.desiredPlan.length).toBe(0);
     expect(result.diagnostics.some(d => d.code === 'DUPLICATE_EXISTING_ENTRY')).toBe(true);
-    expect(result.summary.allocatedHours).toBe(0);
+    expect(result.summary.allocatedHours).toBe(10);
   });
 });
 
@@ -1111,5 +1111,457 @@ describe('Planning Engine - Arrondi plus forts restes', () => {
     
     expect(totalCentiHours).toBe(3500); // 35h exactes
     expect(toHours(totalCentiHours)).toBe(35);
+  });
+});
+
+describe('Planning Engine - Réalisé validé hors période', () => {
+  
+  test('Test A - réalisé après la période consomme l allocation', () => {
+    const assignment = {
+      id: 1,
+      taskId: 1,
+      memberId: 1,
+      allocatedHours: 10,
+      startDate: '2026-07-01',
+      endDate: '2026-07-02'
+    };
+    
+    const capacities = [
+      { date: '2026-07-01', baseCapacityHours: 7, availableCapacityHours: 7 },
+      { date: '2026-07-02', baseCapacityHours: 7, availableCapacityHours: 7 },
+      { date: '2026-07-03', baseCapacityHours: 7, availableCapacityHours: 7 }
+    ];
+    
+    const existingEntries = [
+      {
+        id: 1,
+        assignmentId: 1,
+        date: '2026-07-03', // Hors période (après endDate)
+        plannedHours: 0,
+        actualHours: 5,
+        sheetStatus: 'validated',
+        description: null,
+        imputation: null
+      }
+    ];
+    
+    const result = buildAssignmentPlan({
+      assignment,
+      capacities,
+      existingEntries
+    });
+    
+    expect(result.summary.validatedActualHours).toBe(5);
+    expect(result.summary.remainingHours).toBe(5); // 10 - 5
+    expect(result.summary.overconsumedHours).toBe(0);
+    
+    // Le nouveau plan devrait totaliser 5h
+    const totalPlanned = result.desiredPlan.reduce((sum, item) => sum + item.plannedHours, 0);
+    expect(totalPlanned).toBeCloseTo(5, 2);
+    
+    // Les entrées dans la période (01 et 02/07)
+    expect(result.desiredPlan.length).toBe(2);
+  });
+  
+  test('Test B - réalisé avant la période consomme l allocation', () => {
+    const assignment = {
+      id: 1,
+      taskId: 1,
+      memberId: 1,
+      allocatedHours: 10,
+      startDate: '2026-07-02',
+      endDate: '2026-07-03'
+    };
+    
+    const capacities = [
+      { date: '2026-07-01', baseCapacityHours: 7, availableCapacityHours: 7 },
+      { date: '2026-07-02', baseCapacityHours: 7, availableCapacityHours: 7 },
+      { date: '2026-07-03', baseCapacityHours: 7, availableCapacityHours: 7 }
+    ];
+    
+    const existingEntries = [
+      {
+        id: 1,
+        assignmentId: 1,
+        date: '2026-07-01', // Hors période (avant startDate)
+        plannedHours: 0,
+        actualHours: 5,
+        sheetStatus: 'validated',
+        description: null,
+        imputation: null
+      }
+    ];
+    
+    const result = buildAssignmentPlan({
+      assignment,
+      capacities,
+      existingEntries
+    });
+    
+    expect(result.summary.validatedActualHours).toBe(5);
+    expect(result.summary.remainingHours).toBe(5);
+    expect(result.summary.overconsumedHours).toBe(0);
+    
+    const totalPlanned = result.desiredPlan.reduce((sum, item) => sum + item.plannedHours, 0);
+    expect(totalPlanned).toBeCloseTo(5, 2);
+    
+    // Les entrées dans la période (02 et 03/07)
+    expect(result.desiredPlan.length).toBe(2);
+  });
+  
+  test('Test C - surconsommation hors période', () => {
+    const assignment = {
+      id: 1,
+      taskId: 1,
+      memberId: 1,
+      allocatedHours: 10,
+      startDate: '2026-07-01',
+      endDate: '2026-07-02'
+    };
+    
+    const capacities = [
+      { date: '2026-07-01', baseCapacityHours: 7, availableCapacityHours: 7 },
+      { date: '2026-07-02', baseCapacityHours: 7, availableCapacityHours: 7 },
+      { date: '2026-07-03', baseCapacityHours: 7, availableCapacityHours: 7 }
+    ];
+    
+    const existingEntries = [
+      {
+        id: 1,
+        assignmentId: 1,
+        date: '2026-07-03', // Hors période
+        plannedHours: 0,
+        actualHours: 12,
+        sheetStatus: 'validated',
+        description: null,
+        imputation: null
+      }
+    ];
+    
+    const result = buildAssignmentPlan({
+      assignment,
+      capacities,
+      existingEntries
+    });
+    
+    expect(result.summary.validatedActualHours).toBe(12);
+    expect(result.summary.overconsumedHours).toBe(2); // 12 - 10
+    expect(result.summary.remainingHours).toBe(0);
+    expect(result.desiredPlan.length).toBe(0); // Aucun plan en cas de surconsommation
+    expect(result.diagnostics.some(d => d.code === 'OVERCONSUMPTION')).toBe(true);
+  });
+  
+  test('Test D - ligne sans affectation ne consomme pas l allocation', () => {
+    const assignment = {
+      id: 1,
+      taskId: 1,
+      memberId: 1,
+      allocatedHours: 10,
+      startDate: '2026-07-01',
+      endDate: '2026-07-02'
+    };
+    
+    const capacities = [
+      { date: '2026-07-01', baseCapacityHours: 7, availableCapacityHours: 7 },
+      { date: '2026-07-02', baseCapacityHours: 7, availableCapacityHours: 7 }
+    ];
+    
+    const existingEntries = [
+      {
+        id: 1,
+        assignmentId: null, // Pas d'affectation
+        taskId: 1,
+        memberId: 1,
+        date: '2026-07-01',
+        plannedHours: 0,
+        actualHours: 5,
+        sheetStatus: 'validated',
+        description: null,
+        imputation: null
+      }
+    ];
+    
+    const result = buildAssignmentPlan({
+      assignment,
+      capacities,
+      existingEntries
+    });
+    
+    // La ligne sans affectation ne doit pas consommer l'allocation
+    expect(result.summary.validatedActualHours).toBe(0);
+    expect(result.summary.remainingHours).toBe(10);
+    
+    // Tout le plan devrait être distribué
+    const totalPlanned = result.desiredPlan.reduce((sum, item) => sum + item.plannedHours, 0);
+    expect(totalPlanned).toBeCloseTo(10, 2);
+  });
+  
+  test('Test E - ligne validée hors période préservée (aucune action)', () => {
+    const assignment = {
+      id: 1,
+      taskId: 1,
+      memberId: 1,
+      allocatedHours: 10,
+      startDate: '2026-07-01',
+      endDate: '2026-07-02'
+    };
+    
+    const capacities = [
+      { date: '2026-07-01', baseCapacityHours: 7, availableCapacityHours: 7 },
+      { date: '2026-07-02', baseCapacityHours: 7, availableCapacityHours: 7 },
+      { date: '2026-07-03', baseCapacityHours: 7, availableCapacityHours: 7 }
+    ];
+    
+    const existingEntries = [
+      {
+        id: 1,
+        assignmentId: 1,
+        date: '2026-07-03', // Hors période
+        plannedHours: 0,
+        actualHours: 5,
+        sheetStatus: 'validated',
+        description: null,
+        imputation: null
+      }
+    ];
+    
+    const result = buildAssignmentPlan({
+      assignment,
+      capacities,
+      existingEntries
+    });
+    
+    // La ligne hors période est comptabilisée dans validatedActualHours
+    expect(result.summary.validatedActualHours).toBe(5);
+    
+    // Mais elle ne fait pas partie du plan dans la période
+    // Vérifier que la date hors période n'est pas dans le plan
+    const hasOutOfDate = result.desiredPlan.some(p => p.date === '2026-07-03');
+    expect(hasOutOfDate).toBe(false);
+    
+    // Seules les dates dans la période sont planifiées
+    for (const plan of result.desiredPlan) {
+      expect(plan.date).toMatch(/^2026-07-0[12]$/);
+    }
+  });
+});
+
+describe('Planning Engine - Heures réalisées négatives', () => {
+  
+  test('Heures réalisées négatives dans la période → INVALID_ACTUAL_HOURS', () => {
+    const assignment = {
+      id: 1,
+      taskId: 1,
+      memberId: 1,
+      allocatedHours: 10,
+      startDate: '2026-07-01',
+      endDate: '2026-07-02'
+    };
+    
+    const capacities = [
+      { date: '2026-07-01', baseCapacityHours: 7, availableCapacityHours: 7 },
+      { date: '2026-07-02', baseCapacityHours: 7, availableCapacityHours: 7 }
+    ];
+    
+    const existingEntries = [
+      {
+        id: 1,
+        assignmentId: 1,
+        date: '2026-07-01',
+        plannedHours: 3,
+        actualHours: -2, // Négatif
+        sheetStatus: 'validated',
+        description: null,
+        imputation: null
+      }
+    ];
+    
+    const result = buildAssignmentPlan({
+      assignment,
+      capacities,
+      existingEntries
+    });
+    
+    expect(result.diagnostics.some(d => d.code === 'INVALID_ACTUAL_HOURS')).toBe(true);
+    expect(result.desiredPlan).toEqual([]);
+  });
+  
+  test('Heures réalisées négatives avant la période → INVALID_ACTUAL_HOURS', () => {
+    const assignment = {
+      id: 1,
+      taskId: 1,
+      memberId: 1,
+      allocatedHours: 10,
+      startDate: '2026-07-02',
+      endDate: '2026-07-03'
+    };
+    
+    const capacities = [
+      { date: '2026-07-01', baseCapacityHours: 7, availableCapacityHours: 7 },
+      { date: '2026-07-02', baseCapacityHours: 7, availableCapacityHours: 7 },
+      { date: '2026-07-03', baseCapacityHours: 7, availableCapacityHours: 7 }
+    ];
+    
+    const existingEntries = [
+      {
+        id: 1,
+        assignmentId: 1,
+        date: '2026-07-01', // Avant la période
+        plannedHours: 3,
+        actualHours: -2, // Négatif
+        sheetStatus: 'validated',
+        description: null,
+        imputation: null
+      }
+    ];
+    
+    const result = buildAssignmentPlan({
+      assignment,
+      capacities,
+      existingEntries
+    });
+    
+    expect(result.diagnostics.some(d => d.code === 'INVALID_ACTUAL_HOURS')).toBe(true);
+    expect(result.desiredPlan).toEqual([]);
+  });
+  
+  test('Heures réalisées négatives après la période → INVALID_ACTUAL_HOURS', () => {
+    const assignment = {
+      id: 1,
+      taskId: 1,
+      memberId: 1,
+      allocatedHours: 10,
+      startDate: '2026-07-01',
+      endDate: '2026-07-02'
+    };
+    
+    const capacities = [
+      { date: '2026-07-01', baseCapacityHours: 7, availableCapacityHours: 7 },
+      { date: '2026-07-02', baseCapacityHours: 7, availableCapacityHours: 7 },
+      { date: '2026-07-03', baseCapacityHours: 7, availableCapacityHours: 7 }
+    ];
+    
+    const existingEntries = [
+      {
+        id: 1,
+        assignmentId: 1,
+        date: '2026-07-03', // Après la période
+        plannedHours: 3,
+        actualHours: -2, // Négatif
+        sheetStatus: 'validated',
+        description: null,
+        imputation: null
+      }
+    ];
+    
+    const result = buildAssignmentPlan({
+      assignment,
+      capacities,
+      existingEntries
+    });
+    
+    expect(result.diagnostics.some(d => d.code === 'INVALID_ACTUAL_HOURS')).toBe(true);
+    expect(result.desiredPlan).toEqual([]);
+  });
+});
+
+describe('Planning Engine - Doublons hors période', () => {
+  
+  test('Doublon après la période → DUPLICATE_EXISTING_ENTRY', () => {
+    const assignment = {
+      id: 1,
+      taskId: 1,
+      memberId: 1,
+      allocatedHours: 10,
+      startDate: '2026-07-01',
+      endDate: '2026-07-02'
+    };
+    
+    const capacities = [
+      { date: '2026-07-01', baseCapacityHours: 7, availableCapacityHours: 7 },
+      { date: '2026-07-02', baseCapacityHours: 7, availableCapacityHours: 7 },
+      { date: '2026-07-03', baseCapacityHours: 7, availableCapacityHours: 7 }
+    ];
+    
+    const existingEntries = [
+      {
+        id: 1,
+        assignmentId: 1,
+        date: '2026-07-03', // Hors période (après)
+        plannedHours: 3,
+        actualHours: 0,
+        sheetStatus: null,
+        description: null,
+        imputation: null
+      },
+      {
+        id: 2,
+        assignmentId: 1,
+        date: '2026-07-03', // Hors période (doublon)
+        plannedHours: 4,
+        actualHours: 0,
+        sheetStatus: null,
+        description: null,
+        imputation: null
+      }
+    ];
+    
+    const result = buildAssignmentPlan({
+      assignment,
+      capacities,
+      existingEntries
+    });
+    
+    expect(result.diagnostics.some(d => d.code === 'DUPLICATE_EXISTING_ENTRY')).toBe(true);
+    expect(result.desiredPlan).toEqual([]);
+  });
+  
+  test('Doublon avant la période → DUPLICATE_EXISTING_ENTRY', () => {
+    const assignment = {
+      id: 1,
+      taskId: 1,
+      memberId: 1,
+      allocatedHours: 10,
+      startDate: '2026-07-02',
+      endDate: '2026-07-03'
+    };
+    
+    const capacities = [
+      { date: '2026-07-01', baseCapacityHours: 7, availableCapacityHours: 7 },
+      { date: '2026-07-02', baseCapacityHours: 7, availableCapacityHours: 7 },
+      { date: '2026-07-03', baseCapacityHours: 7, availableCapacityHours: 7 }
+    ];
+    
+    const existingEntries = [
+      {
+        id: 1,
+        assignmentId: 1,
+        date: '2026-07-01', // Hors période (avant)
+        plannedHours: 3,
+        actualHours: 0,
+        sheetStatus: null,
+        description: null,
+        imputation: null
+      },
+      {
+        id: 2,
+        assignmentId: 1,
+        date: '2026-07-01', // Hors période (doublon)
+        plannedHours: 4,
+        actualHours: 0,
+        sheetStatus: null,
+        description: null,
+        imputation: null
+      }
+    ];
+    
+    const result = buildAssignmentPlan({
+      assignment,
+      capacities,
+      existingEntries
+    });
+    
+    expect(result.diagnostics.some(d => d.code === 'DUPLICATE_EXISTING_ENTRY')).toBe(true);
+    expect(result.desiredPlan).toEqual([]);
   });
 });

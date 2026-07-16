@@ -295,6 +295,84 @@ function buildAssignmentPlan(input) {
     });
   }
   
+  // Séparer explicitement :
+  // 1. entriesForAccounting : toutes les lignes de l'affectation (pour le calcul comptable)
+  // 2. entriesInAssignmentRange : lignes entre startDate et endDate (pour la réconciliation)
+  
+  // Calcul comptable : toutes les entrées de l'affectation, peu importe la date
+  let validatedActualCentiHours = 0;
+  let validatedActualEntries = [];
+  let hasInvalidActualHours = false;
+  
+  for (const entry of existingEntries || []) {
+    if (entry.assignmentId !== assignmentId) continue;
+    
+    // Refuser strictement les heures réalisées négatives
+    const actualValidation = validateNumber(entry.actualHours, 'actualHours', { allowNull: true, allowNegative: false });
+    if (!actualValidation.valid) {
+      diagnostics.push({
+        code: "INVALID_ACTUAL_HOURS",
+        entryId: entry.id,
+        date: entry.date,
+        actualHours: entry.actualHours,
+        message: `actualHours invalide : ${actualValidation.error}`
+      });
+      hasInvalidActualHours = true;
+      continue;
+    }
+    
+    if (entry.sheetStatus === 'validated') {
+      validatedActualCentiHours += toCentiHours(entry.actualHours || 0);
+      validatedActualEntries.push(entry);
+    }
+  }
+  
+  // Si des heures réalisées négatives ont été détectées, bloquer immédiatement
+  if (hasInvalidActualHours) {
+    return {
+      desiredPlan: [],
+      summary: {
+        allocatedHours: toHours(allocatedCentiHours),
+        validatedActualHours: 0,
+        protectedPlannedHours: 0,
+        remainingHours: 0,
+        newlyPlannedHours: 0,
+        unplannedHours: 0,
+        overconsumedHours: 0,
+        overprotectedHours: 0
+      },
+      diagnostics
+    };
+  }
+  
+  const validatedActualHours = toHours(validatedActualCentiHours);
+  const overconsumedCentiHours = Math.max(0, validatedActualCentiHours - allocatedCentiHours);
+  const overconsumedHours = toHours(overconsumedCentiHours);
+  
+  // Si surconsommation, retourner immédiatement sans plan
+  if (overconsumedCentiHours > 0) {
+    diagnostics.push({
+      code: "OVERCONSUMPTION",
+      message: `Le réalisé validé (${validatedActualHours}h) dépasse l'allocation (${toHours(allocatedCentiHours)}h) de ${overconsumedHours}h`
+    });
+    
+    return {
+      desiredPlan: [],
+      summary: {
+        allocatedHours: toHours(allocatedCentiHours),
+        validatedActualHours,
+        protectedPlannedHours: 0,
+        remainingHours: 0,
+        newlyPlannedHours: 0,
+        unplannedHours: 0,
+        overconsumedHours,
+        overprotectedHours: 0
+      },
+      diagnostics
+    };
+  }
+  
+  // Réconciliation quotidienne : uniquement les entrées dans la période
   const existingByDate = new Map();
   for (const entry of existingEntries || []) {
     if (entry.assignmentId !== assignmentId) continue;
@@ -311,26 +389,8 @@ function buildAssignmentPlan(input) {
       });
     }
     
-    const actualValidation = validateNumber(entry.actualHours, 'actualHours', { allowNull: true, allowNegative: true });
-    if (!actualValidation.valid) {
-      diagnostics.push({
-        code: "INVALID_ACTUAL_HOURS",
-        entryId: entry.id,
-        date: entry.date,
-        actualHours: entry.actualHours,
-        message: `actualHours invalide : ${actualValidation.error}`
-      });
-    }
-    
-    if (typeof entry.actualHours === 'number' && Number.isFinite(entry.actualHours) && entry.actualHours < 0) {
-      diagnostics.push({
-        code: "INVALID_ACTUAL_HOURS",
-        entryId: entry.id,
-        date: entry.date,
-        actualHours: entry.actualHours,
-        message: `actualHours ne peut pas être négatif : ${entry.actualHours}`
-      });
-    }
+    // Vérification actualHours déjà faite ci-dessus pour le calcul comptable
+    // mais on garde la vérification pour les entrées dans la période
     
     const existing = existingByDate.get(entry.date);
     if (existing) {
@@ -340,6 +400,8 @@ function buildAssignmentPlan(input) {
     }
   }
   
+  // Détecter les doublons sur TOUTES les entrées de l'affectation (y compris hors période)
+  // car les entrées hors période participent au calcul comptable du réalisé validé
   const duplicateCheck = findDuplicates(existingEntries || []);
   if (duplicateCheck.hasDuplicates) {
     for (const dup of duplicateCheck.duplicates) {
@@ -356,8 +418,8 @@ function buildAssignmentPlan(input) {
     return {
       desiredPlan: [],
       summary: {
-        allocatedHours: 0,
-        validatedActualHours: 0,
+        allocatedHours: toHours(allocatedCentiHours),
+        validatedActualHours,
         protectedPlannedHours: 0,
         remainingHours: 0,
         newlyPlannedHours: 0,
@@ -369,7 +431,6 @@ function buildAssignmentPlan(input) {
     };
   }
   
-  let validatedActualCentiHours = 0;
   let protectedPlannedCentiHours = 0;
   const entriesToRespect = new Map();
   const distributableEntries = new Map();
@@ -393,7 +454,8 @@ function buildAssignmentPlan(input) {
     
     if (validatedEntry) {
       entriesToRespect.set(date, validatedEntry);
-      validatedActualCentiHours += toCentiHours(validatedEntry.actualHours || 0);
+      // validatedActualCentiHours déjà calculé plus haut pour toutes les entrées
+      // Ne pas re-compter ici pour éviter le double comptage
     } else if (submittedEntry) {
       entriesToRespect.set(date, submittedEntry);
       protectedPlannedCentiHours += toCentiHours(submittedEntry.plannedHours || 0);
@@ -406,31 +468,9 @@ function buildAssignmentPlan(input) {
     }
   }
   
-  const validatedActualHours = toHours(validatedActualCentiHours);
-  const overconsumedCentiHours = Math.max(0, validatedActualCentiHours - allocatedCentiHours);
-  const overconsumedHours = toHours(overconsumedCentiHours);
-  
-  if (overconsumedCentiHours > 0) {
-    diagnostics.push({
-      code: "OVERCONSUMPTION",
-      message: `Le réalisé validé (${validatedActualHours}h) dépasse l'allocation (${toHours(allocatedCentiHours)}h) de ${overconsumedHours}h`
-    });
-    
-    return {
-      desiredPlan: [],
-      summary: {
-        allocatedHours: toHours(allocatedCentiHours),
-        validatedActualHours,
-        protectedPlannedHours: toHours(protectedPlannedCentiHours),
-        remainingHours: 0,
-        newlyPlannedHours: 0,
-        unplannedHours: 0,
-        overconsumedHours,
-        overprotectedHours: 0
-      },
-      diagnostics
-    };
-  }
+  // validatedActualHours et overconsumedCentiHours déjà calculés plus haut
+  // À ce stade, overconsumedCentiHours === 0 (sinon retour immédiat)
+  // Donc overconsumedHours === 0 également
   
   const remainingAfterValidated = allocatedCentiHours - validatedActualCentiHours;
   const overprotectedCentiHours = Math.max(0, protectedPlannedCentiHours - remainingAfterValidated);

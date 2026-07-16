@@ -275,16 +275,49 @@ function buildDesiredMemberDailyCapacities(input) {
 // RÉCONCILIATION DES CAPACITÉS
 // ============================================================================
 
+// Priorité des sources (ordre décroissant)
+const SOURCE_PRIORITY = {
+  'manuel': 3,
+  'Lucca': 2,
+  'calcul': 1
+};
+
+/**
+ * Vérifie si une source peut remplacer une autre source
+ * @param {string} existingSource - Source existante
+ * @param {string} desiredSource - Source désirée
+ * @param {boolean} forceSourceOverride - Si true, ignore la priorité
+ * @returns {boolean} true si la mise à jour est autorisée
+ */
+function canUpdateSource(existingSource, desiredSource, forceSourceOverride = false) {
+  if (forceSourceOverride) {
+    return true;
+  }
+  
+  const existingPriority = SOURCE_PRIORITY[existingSource] || 0;
+  const desiredPriority = SOURCE_PRIORITY[desiredSource] || 0;
+  
+  // La source désirée doit avoir une priorité supérieure ou égale
+  return desiredPriority >= existingPriority;
+}
+
 /**
  * Réconcilie les capacités existantes avec les capacités désirées
  * @param {Array} existingRows - Capacités existantes (lignes Grist)
  * @param {Array} desiredRows - Capacités désirées (format domaine)
  * @param {Object} options - Options de réconciliation
+ * @param {string} [options.todayIso] - Date de référence pour la protection historique
+ * @param {boolean} [options.forceHistoricalRebuild=false] - Si true, autorise la modification du passé
+ * @param {boolean} [options.forceSourceOverride=false] - Si true, ignore la priorité des sources
+ * @param {number} [options.nowUnixSeconds] - Timestamp pour sourceUpdatedAt
  * @returns {Object} Résultat avec creates, updates, deletes, conflicts
  */
 function reconcileMemberDailyCapacities(existingRows, desiredRows, options = {}) {
   const {
-    nowUnixSeconds = Math.floor(Date.now() / 1000)
+    nowUnixSeconds = Math.floor(Date.now() / 1000),
+    todayIso,
+    forceHistoricalRebuild = false,
+    forceSourceOverride = false
   } = options;
   
   const creates = [];
@@ -294,6 +327,8 @@ function reconcileMemberDailyCapacities(existingRows, desiredRows, options = {})
   
   // Indexer les capacités existantes par memberId + date
   const existingByKey = new Map();
+  const duplicateExistingKeys = new Set();
+  
   for (const row of existingRows || []) {
     // Convertir la date en string YYYY-MM-DD pour la clé
     let dateStr;
@@ -305,23 +340,44 @@ function reconcileMemberDailyCapacities(existingRows, desiredRows, options = {})
       continue;
     }
     const key = `${row.membre}:${dateStr}`;
-    existingByKey.set(key, row);
+    
+    // Détecter les doublons
+    if (existingByKey.has(key)) {
+      // Doublon détecté - ajouter un conflit
+      const existingRow = existingByKey.get(key);
+      conflicts.push({
+        code: 'DUPLICATE_MEMBER_DAILY_CAPACITY',
+        key,
+        memberId: row.membre,
+        date: dateStr,
+        entryIds: [existingRow.id, row.id],
+        message: `Doublon de capacité existante pour ${key} (IDs: ${existingRow.id}, ${row.id})`
+      });
+      duplicateExistingKeys.add(key);
+    } else {
+      existingByKey.set(key, row);
+    }
   }
   
   // Indexer les capacités désirées par memberId + date
   const desiredByKey = new Map();
+  const duplicateDesiredKeys = new Set();
+  
   for (const desired of desiredRows || []) {
     const key = `${desired.memberId}:${desired.date}`;
     
     // Vérifier les doublons dans desiredRows
     if (desiredByKey.has(key)) {
+      // Doublon détecté
+      const existingDesired = desiredByKey.get(key);
       conflicts.push({
         code: 'DUPLICATE_MEMBER_DAILY_CAPACITY',
         key,
         memberId: desired.memberId,
         date: desired.date,
-        message: `Doublon de capacité pour ${key}`
+        message: `Doublon de capacité désirée pour ${key}`
       });
+      duplicateDesiredKeys.add(key);
       continue;
     }
     
@@ -330,6 +386,16 @@ function reconcileMemberDailyCapacities(existingRows, desiredRows, options = {})
   
   // Traiter les créations et mises à jour
   for (const [key, desired] of desiredByKey) {
+    // Ignorer les clés avec des doublons désirés
+    if (duplicateDesiredKeys.has(key)) {
+      continue;
+    }
+    
+    // Ignorer les clés avec des doublons existants
+    if (duplicateExistingKeys.has(key)) {
+      continue;
+    }
+    
     const existing = existingByKey.get(key);
     
     if (!existing) {
@@ -347,13 +413,29 @@ function reconcileMemberDailyCapacities(existingRows, desiredRows, options = {})
         commentaire: desired.commentaire
       });
     } else {
+      // Vérifier la protection historique
+      const isHistorical = todayIso && desired.date < todayIso;
+      if (isHistorical && !forceHistoricalRebuild) {
+        // Protéger l'historique : aucune mise à jour automatique
+        continue;
+      }
+      
+      // Vérifier la priorité des sources
+      const existingSource = existing.source || 'calcul';
+      const desiredSource = desired.source || 'calcul';
+      
+      if (!canUpdateSource(existingSource, desiredSource, forceSourceOverride)) {
+        // La source désirée ne peut pas remplacer la source existante
+        continue;
+      }
+      
       // Vérifier si mise à jour nécessaire
       const needsUpdate = (
         Math.abs((existing.capaciteTheorique || 0) - desired.capaciteTheorique) > 0.005 ||
         Math.abs((existing.disponibiliteRatio || 1) - desired.disponibiliteRatio) > 0.005 ||
         Math.abs((existing.capaciteDisponible || 0) - desired.capaciteDisponible) > 0.005 ||
         Math.abs((existing.absenceHeures || 0) - desired.absenceHeures) > 0.005 ||
-        (existing.source !== desired.source && desired.source !== null)
+        (existingSource !== desiredSource && desiredSource !== null)
       );
       
       if (needsUpdate) {
@@ -407,7 +489,10 @@ async function ensureMemberDailyCapacities(grist, memberId, startDate, endDate, 
     defaultWeeklyCapacity = DEFAULT_WEEKLY_CAPACITY,
     source = 'calcul',
     dryRun = false,
-    nowUnixSeconds = Math.floor(Date.now() / 1000)
+    nowUnixSeconds = Math.floor(Date.now() / 1000),
+    todayIso,
+    forceHistoricalRebuild = false,
+    forceSourceOverride = false
   } = options;
   
   // Charger les capacités existantes
@@ -451,11 +536,11 @@ async function ensureMemberDailyCapacities(grist, memberId, startDate, endDate, 
     };
   }
   
-  // Réconcilier
+  // Réconcilier avec les options de protection
   const reconciliation = reconcileMemberDailyCapacities(
     existingInRange,
     desiredResult.capacities,
-    { nowUnixSeconds }
+    { nowUnixSeconds, todayIso, forceHistoricalRebuild, forceSourceOverride }
   );
   
   if (reconciliation.conflicts && reconciliation.conflicts.length > 0) {
@@ -553,6 +638,10 @@ module.exports = {
   
   // Validation
   validateCapacityInput,
+  
+  // Utilitaires
+  canUpdateSource,
+  SOURCE_PRIORITY,
   
   // Constantes
   DEFAULT_WEEKLY_CAPACITY

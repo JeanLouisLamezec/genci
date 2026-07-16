@@ -67,8 +67,8 @@ function findDuplicatesInArray(items, keyFn) {
 /**
  * Réconcilie les entrées existantes avec le plan désiré.
  * 
- * @param {Array} existingEntries - Entrées existantes avec id, assignmentId, date, plannedHours, actualHours, sheetStatus, description, imputation, feuille, baseCapacityHours, availableCapacityHours, revisionPlan
- * @param {Array} desiredPlan - Plan désiré avec assignmentId, taskId, memberId, date, plannedHours, baseCapacityHours, availableCapacityHours
+ * @param {Array} existingEntries - Entrées existantes avec id, assignmentId, date, plannedHours, actualHours, sheetStatus, description, imputation, feuille, baseCapacityHours, availableCapacityHours, capaciteJour, revisionPlan
+ * @param {Array} desiredPlan - Plan désiré avec assignmentId, taskId, memberId, date, plannedHours, baseCapacityHours, availableCapacityHours, capacityRecordId
  * @param {Object} [options] - Options de réconciliation
  * @param {number} [options.precisionHours=0.01] - Précision en heures
  * @param {Map} [options.existingEntriesMap] - Map id -> entrée existante pour revisionPlan
@@ -216,6 +216,8 @@ function reconcileDailyEntries(existingEntries, desiredPlan, options = {}) {
     const desiredBaseCapCentiHours = toCentiHours(desiredItem.baseCapacityHours || 0);
     const existingAvailCapCentiHours = toCentiHours(primaryEntry.availableCapacityHours || 0);
     const desiredAvailCapCentiHours = toCentiHours(desiredItem.availableCapacityHours || 0);
+    const existingCapacityRecordId = primaryEntry.capaciteJour || null;
+    const desiredCapacityRecordId = desiredItem.capacityRecordId !== undefined ? desiredItem.capacityRecordId : null;
     
     const fieldsToUpdate = {};
     
@@ -229,6 +231,14 @@ function reconcileDailyEntries(existingEntries, desiredPlan, options = {}) {
     
     if (areDifferent(existingAvailCapCentiHours, desiredAvailCapCentiHours)) {
       fieldsToUpdate.availableCapacityHours = desiredItem.availableCapacityHours;
+    }
+    
+    // Correction 3 : Ne jamais effacer automatiquement une référence existante
+    // lorsque le desired capacityRecordId est nul (capacité simulée sans ID)
+    if (desiredCapacityRecordId !== null && desiredCapacityRecordId !== undefined) {
+      if (areDifferent(existingCapacityRecordId, desiredCapacityRecordId)) {
+        fieldsToUpdate.capacityRecordId = desiredCapacityRecordId;
+      }
     }
     
     if (Object.keys(fieldsToUpdate).length > 0) {
@@ -275,6 +285,7 @@ function reconcileDailyEntries(existingEntries, desiredPlan, options = {}) {
         plannedHours: item.plannedHours,
         baseCapacityHours: item.baseCapacityHours,
         availableCapacityHours: item.availableCapacityHours,
+        capacityRecordId: item.capacityRecordId !== undefined ? item.capacityRecordId : null,
         revisionPlan: 1,
         reason: "NEW_PLAN_ENTRY"
       });

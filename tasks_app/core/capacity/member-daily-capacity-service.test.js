@@ -280,4 +280,338 @@ describe('Member Daily Capacity Service', () => {
       expect(result.errors.length).toBeGreaterThan(0);
     });
   });
+  
+  describe('Doublons de capacités', () => {
+    test('2 lignes existantes pour même membre + date → conflit avec les 2 IDs', () => {
+      const existing = [
+        { id: 1, membre: 1, date: '2026-07-15', capaciteTheorique: 7, disponibiliteRatio: 1, capaciteDisponible: 7, absenceHeures: 0, revision: 1 },
+        { id: 2, membre: 1, date: '2026-07-15', capaciteTheorique: 8, disponibiliteRatio: 1, capaciteDisponible: 8, absenceHeures: 0, revision: 1 }
+      ];
+      const desired = [
+        { memberId: 1, date: '2026-07-15', capaciteTheorique: 7, disponibiliteRatio: 1, capaciteDisponible: 7, absenceHeures: 0, source: 'calcul', revision: 1 }
+      ];
+      
+      const result = reconcileMemberDailyCapacities(existing, desired);
+      
+      expect(result.conflicts.length).toBe(1);
+      expect(result.conflicts[0].code).toBe('DUPLICATE_MEMBER_DAILY_CAPACITY');
+      expect(result.conflicts[0].entryIds).toEqual([1, 2]);
+      expect(result.conflicts[0].memberId).toBe(1);
+      expect(result.conflicts[0].date).toBe('2026-07-15');
+      
+      // Aucune mise à jour ne doit être produite
+      expect(result.updates.length).toBe(0);
+    });
+    
+    test('2 lignes désirées identiques → conflit, aucune création', () => {
+      const existing = [];
+      const desired = [
+        { memberId: 1, date: '2026-07-15', capaciteTheorique: 7, disponibiliteRatio: 1, capaciteDisponible: 7, absenceHeures: 0, source: 'calcul', revision: 1 },
+        { memberId: 1, date: '2026-07-15', capaciteTheorique: 8, disponibiliteRatio: 1, capaciteDisponible: 8, absenceHeures: 0, source: 'calcul', revision: 1 }
+      ];
+      
+      const result = reconcileMemberDailyCapacities(existing, desired);
+      
+      expect(result.conflicts.length).toBe(1);
+      expect(result.conflicts[0].code).toBe('DUPLICATE_MEMBER_DAILY_CAPACITY');
+      
+      // Aucune création ne doit être produite
+      expect(result.creates.length).toBe(0);
+    });
+  });
+  
+  describe('Priorité des sources', () => {
+    test('manuel existant + calcul désiré → aucune mise à jour', () => {
+      const existing = [
+        { id: 1, membre: 1, date: '2026-07-15', capaciteTheorique: 7, disponibiliteRatio: 1, capaciteDisponible: 7, absenceHeures: 0, source: 'manuel', revision: 1 }
+      ];
+      const desired = [
+        { memberId: 1, date: '2026-07-15', capaciteTheorique: 8, disponibiliteRatio: 1, capaciteDisponible: 8, absenceHeures: 0, source: 'calcul', revision: 1 }
+      ];
+      
+      const result = reconcileMemberDailyCapacities(existing, desired);
+      
+      expect(result.updates.length).toBe(0);
+    });
+    
+    test('calcul existant + Lucca désiré → mise à jour', () => {
+      const existing = [
+        { id: 1, membre: 1, date: '2026-07-15', capaciteTheorique: 7, disponibiliteRatio: 1, capaciteDisponible: 7, absenceHeures: 0, source: 'calcul', revision: 1 }
+      ];
+      const desired = [
+        { memberId: 1, date: '2026-07-15', capaciteTheorique: 8, disponibiliteRatio: 1, capaciteDisponible: 8, absenceHeures: 0, source: 'Lucca', revision: 1 }
+      ];
+      
+      const result = reconcileMemberDailyCapacities(existing, desired);
+      
+      expect(result.updates.length).toBe(1);
+      expect(result.updates[0].fields.source).toBe('Lucca');
+    });
+    
+    test('Lucca existant + calcul désiré → aucune mise à jour', () => {
+      const existing = [
+        { id: 1, membre: 1, date: '2026-07-15', capaciteTheorique: 7, disponibiliteRatio: 1, capaciteDisponible: 7, absenceHeures: 0, source: 'Lucca', revision: 1 }
+      ];
+      const desired = [
+        { memberId: 1, date: '2026-07-15', capaciteTheorique: 8, disponibiliteRatio: 1, capaciteDisponible: 8, absenceHeures: 0, source: 'calcul', revision: 1 }
+      ];
+      
+      const result = reconcileMemberDailyCapacities(existing, desired);
+      
+      expect(result.updates.length).toBe(0);
+    });
+  });
+  
+  describe('Protection historique', () => {
+    test('capacité passée différente → aucune mise à jour', () => {
+      const existing = [
+        { id: 1, membre: 1, date: '2026-07-10', capaciteTheorique: 7, disponibiliteRatio: 1, capaciteDisponible: 7, absenceHeures: 0, source: 'calcul', revision: 1 }
+      ];
+      const desired = [
+        { memberId: 1, date: '2026-07-10', capaciteTheorique: 8, disponibiliteRatio: 1, capaciteDisponible: 8, absenceHeures: 0, source: 'calcul', revision: 1 }
+      ];
+      
+      const result = reconcileMemberDailyCapacities(existing, desired, {
+        todayIso: '2026-07-15'
+      });
+      
+      expect(result.updates.length).toBe(0);
+    });
+    
+    test('forceHistoricalRebuild = true → mise à jour autorisée', () => {
+      const existing = [
+        { id: 1, membre: 1, date: '2026-07-10', capaciteTheorique: 7, disponibiliteRatio: 1, capaciteDisponible: 7, absenceHeures: 0, source: 'calcul', revision: 1 }
+      ];
+      const desired = [
+        { memberId: 1, date: '2026-07-10', capaciteTheorique: 8, disponibiliteRatio: 1, capaciteDisponible: 8, absenceHeures: 0, source: 'calcul', revision: 1 }
+      ];
+      
+      const result = reconcileMemberDailyCapacities(existing, desired, {
+        todayIso: '2026-07-15',
+        forceHistoricalRebuild: true
+      });
+      
+      expect(result.updates.length).toBe(1);
+    });
+    
+    test('capacité future différente → mise à jour autorisée', () => {
+      const existing = [
+        { id: 1, membre: 1, date: '2026-07-20', capaciteTheorique: 7, disponibiliteRatio: 1, capaciteDisponible: 7, absenceHeures: 0, source: 'calcul', revision: 1 }
+      ];
+      const desired = [
+        { memberId: 1, date: '2026-07-20', capaciteTheorique: 8, disponibiliteRatio: 1, capaciteDisponible: 8, absenceHeures: 0, source: 'calcul', revision: 1 }
+      ];
+      
+      const result = reconcileMemberDailyCapacities(existing, desired, {
+        todayIso: '2026-07-15'
+      });
+      
+    expect(result.updates.length).toBe(1);
+  });
+});
+
+describe('Member Daily Capacity Service - Options de protection', () => {
+  
+  const { ensureMemberDailyCapacities } = require('./member-daily-capacity-service.js');
+  const { createMockGrist } = require('../grist/mock-grist.js');
+  
+  test('Test A - passé protégé (todayIso = 2026-07-16)', async () => {
+    const mockGrist = createMockGrist({
+      initialData: {
+        TaskAssignments: [],
+        Tasks: [],
+        Team: [{ id: 1, nom: 'Alice', capaciteHebdo: 35 }],
+        TimeEntries: [],
+        Feuilles: [],
+        Disponibilites: [],
+        MemberDailyCapacities: [
+          {
+            id: 1,
+            membre: 1,
+            date: 1783814400, // 2026-07-15
+            capaciteTheorique: 7,
+            disponibiliteRatio: 1,
+            capaciteDisponible: 7,
+            absenceHeures: 0,
+            source: 'calcul',
+            revision: 1
+          }
+        ]
+      }
+    });
+    
+    // todayIso = 2026-07-16, donc 2026-07-15 est dans le passé protégé
+    const result = await ensureMemberDailyCapacities(mockGrist, 1, '2026-07-15', '2026-07-15', {
+      weeklyCapacity: 35,
+      defaultWeeklyCapacity: 35,
+      todayIso: '2026-07-16',
+      forceHistoricalRebuild: false
+    });
+    
+    expect(result.success).toBe(true);
+    // Le passé est protégé : soit aucune action, soit seulement des créations si la capacité n'existait pas
+    // Vérifions que la capacité existante n'a pas été modifiée
+    const caps = await mockGrist.fetchTable('MemberDailyCapacities');
+    const cap15 = caps.id.length > 0 && caps.date.includes(1783814400) ? 
+      { capaciteTheorique: caps.capaciteTheorique[caps.date.indexOf(1783814400)] } : null;
+    // La capacité du 2026-07-15 devrait être préservée (7h)
+    expect(cap15).not.toBeNull();
+    expect(cap15.capaciteTheorique).toBe(7);
+  });
+  
+  test('Test B - futur recalculable', async () => {
+    const mockGrist = createMockGrist({
+      initialData: {
+        TaskAssignments: [],
+        Tasks: [],
+        Team: [{ id: 1, nom: 'Alice', capaciteHebdo: 35 }],
+        TimeEntries: [],
+        Feuilles: [],
+        Disponibilites: [],
+        MemberDailyCapacities: [] //vide au départ
+      }
+    });
+    
+    // todayIso = 2026-07-16, donc 2026-07-17 est dans le futur
+    const result = await ensureMemberDailyCapacities(mockGrist, 1, '2026-07-17', '2026-07-17', {
+      weeklyCapacity: 35,
+      defaultWeeklyCapacity: 35,
+      todayIso: '2026-07-16'
+    });
+    
+    expect(result.success).toBe(true);
+    // La capacité devrait être créée avec 7h (35/5)
+    const caps = await mockGrist.fetchTable('MemberDailyCapacities');
+    expect(caps.id.length).toBe(1);
+    expect(caps.capaciteTheorique[0]).toBe(7);
+  });
+  
+  test('Test C - reconstruction historique forcée', async () => {
+    const mockGrist = createMockGrist({
+      initialData: {
+        TaskAssignments: [],
+        Tasks: [],
+        Team: [{ id: 1, nom: 'Alice', capaciteHebdo: 35 }],
+        TimeEntries: [],
+        Feuilles: [],
+        Disponibilites: [],
+        MemberDailyCapacities: [] //vide au départ
+      }
+    });
+    
+    // todayIso = 2026-07-16, donc 2026-07-15 est dans le passé
+    // Mais avec forceHistoricalRebuild=true, on peut créer dans le passé
+    const result = await ensureMemberDailyCapacities(mockGrist, 1, '2026-07-15', '2026-07-15', {
+      weeklyCapacity: 35,
+      defaultWeeklyCapacity: 35,
+      todayIso: '2026-07-16',
+      forceHistoricalRebuild: true
+    });
+    
+    expect(result.success).toBe(true);
+    // La capacité devrait être créée même dans le passé
+    const caps = await mockGrist.fetchTable('MemberDailyCapacities');
+    expect(caps.id.length).toBe(1);
+    expect(caps.capaciteTheorique[0]).toBe(7);
+  });
+  
+  test('Test D - source manuelle protégée', () => {
+    const { reconcileMemberDailyCapacities } = require('./member-daily-capacity-service.js');
+    
+    // Capacité existante avec source manuelle
+    const existing = [
+      { id: 1, membre: 1, date: '2026-07-17', capaciteTheorique: 5, disponibiliteRatio: 1, capaciteDisponible: 5, absenceHeures: 2, source: 'manuel', revision: 1 }
+    ];
+    // Capacité désirée avec source calcul
+    const desired = [
+      { memberId: 1, date: '2026-07-17', capaciteTheorique: 7, disponibiliteRatio: 1, capaciteDisponible: 7, absenceHeures: 0, source: 'calcul', revision: 1 }
+    ];
+    
+    const result = reconcileMemberDailyCapacities(existing, desired, {
+      todayIso: '2026-07-16' // 2026-07-17 est dans le futur
+    });
+    
+    // Aucune mise à jour car la source manuelle a priorité
+    expect(result.updates.length).toBe(0);
+  });
+  
+  test('Test E - override explicite', () => {
+    const { reconcileMemberDailyCapacities } = require('./member-daily-capacity-service.js');
+    
+    // Capacité existante avec source manuelle
+    const existing = [
+      { id: 1, membre: 1, date: '2026-07-17', capaciteTheorique: 5, disponibiliteRatio: 1, capaciteDisponible: 5, absenceHeures: 2, source: 'manuel', revision: 1 }
+    ];
+    // Capacité désirée avec source calcul
+    const desired = [
+      { memberId: 1, date: '2026-07-17', capaciteTheorique: 7, disponibiliteRatio: 1, capaciteDisponible: 7, absenceHeures: 0, source: 'calcul', revision: 1 }
+    ];
+    
+    const result = reconcileMemberDailyCapacities(existing, desired, {
+      todayIso: '2026-07-16',
+      forceSourceOverride: true // Ignore la priorité des sources
+    });
+    
+    // Mise à jour autorisée car forceSourceOverride = true
+    expect(result.updates.length).toBe(1);
+    expect(result.updates[0].fields.source).toBe('calcul');
+  });
+  
+  test('Test F - propagation via l adaptateur', async () => {
+    const { reconcileAssignmentPlan } = require('../grist/grist-planning-adapter.js');
+    
+    const mockGrist = createMockGrist({
+      initialData: {
+        TaskAssignments: [
+          {
+            id: 1,
+            tache: 1,
+            membre: 1,
+            heuresAllouees: 35,
+            dateDebut: 1783900800, // 2026-07-16
+            dateFin: 1783987200,   // 2026-07-17 (1 jour seulement)
+            actif: true
+          }
+        ],
+        Tasks: [{ id: 1, titre: 'Tâche 1' }],
+        Team: [{ id: 1, nom: 'Alice', capaciteHebdo: 35 }],
+        TimeEntries: [],
+        Feuilles: [],
+        Disponibilites: [],
+        MemberDailyCapacities: [
+          {
+            id: 1,
+            membre: 1,
+            date: 1783987200, // 2026-07-17
+            capaciteTheorique: 5,
+            disponibiliteRatio: 1,
+            capaciteDisponible: 5,
+            absenceHeures: 2,
+            source: 'manuel',
+            revision: 1
+          }
+        ]
+      }
+    });
+    
+    // todayIso = 2026-07-16, donc 2026-07-17 est dans le futur
+    // Mais la source est 'manuel', donc protégée sauf override
+    const result = await reconcileAssignmentPlan(mockGrist, 1, {
+      dryRun: false,
+      replanFromDate: '2026-07-16',
+      todayIso: '2026-07-16'
+      // forceSourceOverride n'est pas passé, donc la source manuelle est protégée
+    });
+    
+    expect(result.success).toBe(true);
+    
+    // Vérifier que la capacité manuelle existe toujours
+    const caps = await mockGrist.fetchTable('MemberDailyCapacities');
+    expect(caps.id.length).toBeGreaterThan(0);
+    
+    // Trouver la capacité avec source manuelle
+    const hasManuelSource = caps.source && caps.source.includes('manuel');
+    expect(hasManuelSource).toBe(true);
+  });
+});
 });
