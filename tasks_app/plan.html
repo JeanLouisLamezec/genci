@@ -3880,6 +3880,9 @@ let currentPreviewContext = null;
 // Indicateur de commit en cours pour ignorer les onRecords pendant l'écriture
 let planningCommitInProgress = false;
 
+// Verrou pour éviter les doubles confirmations
+let commitConfirmationInProgress = false;
+
 // Révisions pour détecter les obsolescences après rechargement Grist
 let gristDataRevision = 0;
 let previewDataRevision = null;
@@ -4182,6 +4185,11 @@ async function launchCommit(assignmentId, replanFromDate, button) {
     return;
   }
   
+  // Protection contre les doubles clics : verrou avant la modale
+  if (commitConfirmationInProgress || planningCommitInProgress) {
+    return;
+  }
+  
   // Vérifier les préconditions avant confirmation
   if (!canCommitCurrentPreview(assignmentId)) {
     if (previewDataRevision !== gristDataRevision) {
@@ -4193,68 +4201,76 @@ async function launchCommit(assignmentId, replanFromDate, button) {
     return;
   }
   
-  // Récupérer les informations pour la confirmation
-  const taskById = new Map(S.tasks.map(t => [t.id, t]));
-  const memberById = new Map(S.team.map(m => [m.id, m]));
-  const assignment = S.assignments.find(a => a.id === assignmentId);
-  
-  if (!assignment) {
-    toast('Affectation introuvable');
-    return;
+  // Verrouiller avant la modale
+  commitConfirmationInProgress = true;
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'Confirmation...';
   }
   
-  const task = taskById.get(assignment.tache);
-  const member = memberById.get(assignment.membre);
-  const taskName = task ? task.titre : `Tâche ${assignment.tache}`;
-  const memberName = member ? member.nom : `Membre ${assignment.membre}`;
-  
-  // Obtenir le résultat actuel pour afficher le résumé
-  const result = window._currentPreviewResult;
-  const changeSummary = result ? result.changeSummary : null;
-  
-  const capacitiesCount = changeSummary ? 
-    (changeSummary.capacities?.creates || 0) + (changeSummary.capacities?.updates || 0) : 0;
-  const timeEntriesCount = changeSummary ? 
-    (changeSummary.timeEntries?.creates || 0) + (changeSummary.timeEntries?.updates || 0) : 0;
-  
-  // Demander confirmation explicite
-  const confirmed = await confirmModal(
-    'Appliquer cette planification ?',
-    `Tâche : ${escapeHtml(taskName)}\n` +
-    `Membre : ${escapeHtml(memberName)}\n` +
-    `Replanification à partir du : ${replanFromDate}\n\n` +
-    `${capacitiesCount} modifications de capacités\n` +
-    `${timeEntriesCount} modifications de planning quotidien\n\n` +
-    `Le moteur recalculera le plan avant l'écriture.`
-  );
-  
-  if (!confirmed) {
-    // Vérifier à nouveau après la fermeture de la modale
+  try {
+    // Récupérer les informations pour la confirmation
+    const taskById = new Map(S.tasks.map(t => [t.id, t]));
+    const memberById = new Map(S.team.map(m => [m.id, m]));
+    const assignment = S.assignments.find(a => a.id === assignmentId);
+    
+    if (!assignment) {
+      toast('Affectation introuvable');
+      return;
+    }
+    
+    const task = taskById.get(assignment.tache);
+    const member = memberById.get(assignment.membre);
+    const taskName = task ? task.titre : `Tâche ${assignment.tache}`;
+    const memberName = member ? member.nom : `Membre ${assignment.membre}`;
+    
+    // Obtenir le résultat actuel pour afficher le résumé
+    const result = window._currentPreviewResult;
+    const changeSummary = result ? result.changeSummary : null;
+    
+    const capacitiesCount = changeSummary ? 
+      (changeSummary.capacities?.creates || 0) + (changeSummary.capacities?.updates || 0) : 0;
+    const timeEntriesCount = changeSummary ? 
+      (changeSummary.timeEntries?.creates || 0) + (changeSummary.timeEntries?.updates || 0) : 0;
+    
+    // Demander confirmation explicite
+    const confirmed = await confirmModal(
+      'Appliquer cette planification ?',
+      `Tâche : ${escapeHtml(taskName)}\n` +
+      `Membre : ${escapeHtml(memberName)}\n` +
+      `Replanification à partir du : ${replanFromDate}\n\n` +
+      `${capacitiesCount} modifications de capacités\n` +
+      `${timeEntriesCount} modifications de planning quotidien\n\n` +
+      `Le moteur recalculera le plan avant l'écriture.`
+    );
+    
+    if (!confirmed) {
+      return;
+    }
+    
+    // Vérifier à nouveau APRÈS la confirmation (les données ont pu changer)
     if (!canCommitCurrentPreview(assignmentId)) {
       if (previewDataRevision !== gristDataRevision) {
         markPreviewObsolete();
+        toast('Données modifiées pendant la confirmation');
+      } else {
+        toast('Prévisualisation non applicable');
       }
       return;
     }
-    return;
-  }
-  
-  // Désactiver le bouton immédiatement
-  if (button) {
-    button.disabled = true;
-    button.textContent = 'Application en cours...';
-  }
-  
-  // État committing
-  planningCommitInProgress = true;
-  currentPreviewState = PreviewState.committing;
-  
-  try {
+    
+    // État committing
+    planningCommitInProgress = true;
+    currentPreviewState = PreviewState.committing;
+    
+    // Utiliser la date du contexte (pas celle du DOM qui a disparu)
+    const commitReplanFromDate = currentPreviewContext.replanFromDate;
+    
     const todayIso = new Date().toISOString().slice(0, 10);
     
     // Appeler exclusivement commitAssignment()
     const commitResult = await planningService.commitAssignment(assignmentId, {
-      replanFromDate,
+      replanFromDate: commitReplanFromDate,
       todayIso
     });
     
@@ -4266,9 +4282,15 @@ async function launchCommit(assignmentId, replanFromDate, button) {
       
       // Vérifier l'idempotence après succès
       const verification = await planningService.previewAssignment(assignmentId, {
-        replanFromDate,
+        replanFromDate: commitReplanFromDate,
         todayIso
       });
+      
+      // Finaliser le contexte avant d'afficher le résultat
+      invalidateCurrentPreviewRequest();
+      previewDataRevision = null;
+      currentPreviewContext = null;
+      window._currentPreviewResult = null;
       
       if (verification.success && 
           verification.changeSummary &&
@@ -4281,12 +4303,23 @@ async function launchCommit(assignmentId, replanFromDate, button) {
         showCommitSuccess(assignmentId, commitResult, false);
       }
     } else {
-      // Échec du commit
+      // Échec du commit : recharger les données
+      await loadGrist({ preservePlanningPanel: true });
+      
+      currentPreviewContext = null;
+      previewDataRevision = null;
       currentPreviewState = PreviewState.error;
+      
       showCommitError(assignmentId, commitResult);
     }
   } catch (e) {
+    // Échec du commit : recharger les données
+    await loadGrist({ preservePlanningPanel: true });
+    
+    currentPreviewContext = null;
+    previewDataRevision = null;
     currentPreviewState = PreviewState.error;
+    
     console.error('Commit error:', e);
     showCommitError(assignmentId, {
       success: false,
@@ -4294,6 +4327,7 @@ async function launchCommit(assignmentId, replanFromDate, button) {
     });
   } finally {
     planningCommitInProgress = false;
+    commitConfirmationInProgress = false;
     if (button) {
       button.disabled = false;
       button.textContent = 'Appliquer la planification';

@@ -292,6 +292,159 @@ describe('TaskFlow Planning - Intégration avec Mock Grist', () => {
   });
 });
 
+describe('TaskFlow Planning - Commit réel avec Mock Grist modifiable', () => {
+  
+  let bundleContent;
+  let sandbox;
+  let context;
+  let mockGrist;
+  let applyUserActionsCalls;
+  
+  beforeEach(() => {
+    bundleContent = fs.readFileSync(BUNDLE_PATH, 'utf8');
+    applyUserActionsCalls = [];
+    
+    // Mock Grist modifiable avec données persistantes
+    const persistentData = {
+      TaskAssignments: [
+        { id: 1, tache: 1, membre: 1, heuresAllouees: 35, dateDebut: 1719792000, dateFin: 1720137600, actif: true }
+      ],
+      Tasks: [{ id: 1, titre: 'Tâche 1' }],
+      Team: [{ id: 1, nom: 'Alice', capaciteHebdo: 35 }],
+      TimeEntries: [],
+      Feuilles: [],
+      Disponibilites: [],
+      MemberDailyCapacities: []
+    };
+    
+    mockGrist = {
+      docApi: {
+        fetchTable: async (tableId) => {
+          const data = persistentData[tableId] || [];
+          // Convertir en format colonnaire
+          const columns = {};
+          if (data.length > 0) {
+            Object.keys(data[0]).forEach(key => {
+              columns[key] = data.map(row => row[key]);
+            });
+          }
+          columns.id = data.map((row, i) => row.id || i + 1);
+          return columns;
+        },
+        applyUserActions: async (actions) => {
+          applyUserActionsCalls.push(...actions);
+          
+          // Traiter les actions pour modifier persistentData
+          for (const action of actions) {
+            const [type, table, id, fields] = action;
+            
+            if (type === 'AddRecord' && persistentData[table]) {
+              const newId = persistentData[table].length > 0 
+                ? Math.max(...persistentData[table].map(r => r.id)) + 1 
+                : 1;
+              persistentData[table].push({ id: newId, ...fields });
+            } else if (type === 'UpdateRecord' && persistentData[table]) {
+              const record = persistentData[table].find(r => r.id === id);
+              if (record) {
+                Object.assign(record, fields);
+              }
+            } else if (type === 'RemoveRecord' && persistentData[table]) {
+              const index = persistentData[table].findIndex(r => r.id === id);
+              if (index >= 0) {
+                persistentData[table].splice(index, 1);
+              }
+            }
+          }
+          
+          return actions.map((_, i) => ({ id: i + 1 }));
+        }
+      }
+    };
+    
+    sandbox = {
+      window: {},
+      globalThis: {},
+      console: console,
+      Map: Map,
+      Set: Set,
+      Date: Date,
+      Array: Array,
+      Object: Object,
+      String: String,
+      Number: Number,
+      Math: Math,
+      JSON: JSON,
+      Promise: Promise,
+      Error: Error
+    };
+    
+    context = vm.createContext(sandbox);
+    vm.runInContext(bundleContent, context);
+  });
+  
+  test('commitAssignment réussit et écrit les données', async () => {
+    const { createWidgetPlanningService } = sandbox.window.TaskFlowPlanning;
+    const service = createWidgetPlanningService(mockGrist);
+    
+    const result = await service.commitAssignment(1, {
+      replanFromDate: '2024-07-01'
+    });
+    
+    expect(result.success).toBe(true);
+    expect(result.mode).toBe('commit');
+    expect(result.actionsExecuted).toBeGreaterThan(0);
+    expect(applyUserActionsCalls.length).toBeGreaterThan(0);
+  });
+  
+  test('commitAssignment écrit les capacités avant les TimeEntries', async () => {
+    const { createWidgetPlanningService } = sandbox.window.TaskFlowPlanning;
+    const service = createWidgetPlanningService(mockGrist);
+    
+    const result = await service.commitAssignment(1, {
+      replanFromDate: '2024-07-01'
+    });
+    
+    expect(result.success).toBe(true);
+    
+    // Trouver les index des premières actions de chaque type
+    let firstCapacityIndex = -1;
+    let firstTimeEntryIndex = -1;
+    
+    for (let i = 0; i < applyUserActionsCalls.length; i++) {
+      const action = applyUserActionsCalls[i];
+      if (action[0] === 'AddRecord' && action[1] === 'MemberDailyCapacities' && firstCapacityIndex === -1) {
+        firstCapacityIndex = i;
+      }
+      if (action[0] === 'AddRecord' && action[1] === 'TimeEntries' && firstTimeEntryIndex === -1) {
+        firstTimeEntryIndex = i;
+      }
+    }
+    
+    // Les capacités doivent être écrites en premier
+    if (firstCapacityIndex !== -1 && firstTimeEntryIndex !== -1) {
+      expect(firstCapacityIndex).toBeLessThan(firstTimeEntryIndex);
+    }
+  });
+  
+  test('commitAssignment modifie MemberDailyCapacities et TimeEntries', async () => {
+    const { createWidgetPlanningService } = sandbox.window.TaskFlowPlanning;
+    const service = createWidgetPlanningService(mockGrist);
+    
+    const result = await service.commitAssignment(1, {
+      replanFromDate: '2024-07-01'
+    });
+    
+    expect(result.success).toBe(true);
+    
+    // Vérifier que des actions ont été appelées pour les deux tables
+    const hasCapacityActions = applyUserActionsCalls.some(a => a[1] === 'MemberDailyCapacities');
+    const hasTimeEntryActions = applyUserActionsCalls.some(a => a[1] === 'TimeEntries');
+    
+    expect(hasCapacityActions).toBe(true);
+    expect(hasTimeEntryActions).toBe(true);
+  });
+});
+
 describe('Intégration HTML - plan.html', () => {
   
   const planHtmlPath = path.join(__dirname, '..', '..', 'plan.html');
