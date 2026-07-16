@@ -2425,3 +2425,559 @@ describe('Grist Planning Adapter - Correction 2 : Diagnostics bloquants dans pla
     expect(result.diagnostics.some(d => d.code === 'UNASSIGNED_LEGACY_TIME_ENTRY')).toBe(true);
   });
 });
+
+describe('Grist Planning Adapter - capacityActions en dryRun', () => {
+  
+  test('dryRun avec capacités absentes retourne capacityActions > 0', async () => {
+    const mockGrist = createMockGrist({
+      initialData: {
+        TaskAssignments: [
+          {
+            id: 1,
+            tache: 1,
+            membre: 1,
+            heuresAllouees: 35,
+            dateDebut: 1719792000,
+            dateFin: 1720137600,
+            actif: true
+          }
+        ],
+        Tasks: [{ id: 1, titre: 'Tâche 1' }],
+        Team: [{ id: 1, nom: 'Alice', capaciteHebdo: 35 }],
+        TimeEntries: [],
+        Feuilles: [],
+        Disponibilites: [],
+        MemberDailyCapacities: []
+      }
+    });
+    
+    const result = await reconcileAssignmentPlan(mockGrist, 1, {
+      dryRun: true,
+      replanFromDate: '2024-07-01'
+    });
+    
+    expect(result.success).toBe(true);
+    expect(result.dryRun).toBe(true);
+    expect(result.capacityActions.length).toBeGreaterThan(0);
+    expect(result.timeEntryActions.length).toBeGreaterThan(0);
+    expect(result.actions).toBe(result.timeEntryActions);
+    expect(result.actionsExecuted).toBe(0);
+    expect(result.actionsArePreviewOnly).toBe(true);
+    expect(result.canApplyActionsDirectly).toBe(false);
+    
+    // Vérifier qu'au moins une action est une création de capacité
+    const capacityCreateAction = result.capacityActions.find(a => 
+      a[0] === 'AddRecord' && a[1] === 'MemberDailyCapacities'
+    );
+    expect(capacityCreateAction).toBeDefined();
+    
+    // Vérifier qu'aucune table n'a été modifiée
+    const caps = await mockGrist.fetchTable('MemberDailyCapacities');
+    expect(caps.id.length).toBe(0);
+    
+    const entries = await mockGrist.fetchTable('TimeEntries');
+    expect(entries.id.length).toBe(0);
+  });
+  
+  test('capacité hebdomadaire de 20 h → 5 capacités à 4 h au premier commit', async () => {
+    const mockGrist = createMockGrist({
+      initialData: {
+        TaskAssignments: [
+          {
+            id: 1,
+            tache: 1,
+            membre: 1,
+            heuresAllouees: 20,
+            dateDebut: 1719792000, // 2024-07-01 (lundi)
+            dateFin: 1720137600,   // 2024-07-05 (vendredi)
+            actif: true
+          }
+        ],
+        Tasks: [{ id: 1, titre: 'Tâche 1' }],
+        Team: [{ id: 1, nom: 'Alice', capaciteHebdo: 20 }],
+        TimeEntries: [],
+        Feuilles: [],
+        Disponibilites: [],
+        MemberDailyCapacities: []
+      }
+    });
+    
+    let applyUserActionsCallCount = 0;
+    const originalApplyUserActions = mockGrist.applyUserActions.bind(mockGrist);
+    mockGrist.applyUserActions = async function(...args) {
+      applyUserActionsCallCount++;
+      return await originalApplyUserActions(...args);
+    };
+    
+    const result = await reconcileAssignmentPlan(mockGrist, 1, {
+      dryRun: false,
+      replanFromDate: '2024-07-01'
+    });
+    
+    expect(result.success).toBe(true);
+    
+    // Vérifier le nombre d'appels à applyUserActions (2 batches max)
+    expect(applyUserActionsCallCount).toBeLessThanOrEqual(2);
+    
+    // Vérifier les capacités créées
+    const caps = await mockGrist.fetchTable('MemberDailyCapacities');
+    const capRows = caps.id.length > 0 ? 
+      caps.membre.map((m, i) => ({
+        id: caps.id[i],
+        membre: m,
+        date: caps.date[i],
+        capaciteTheorique: caps.capaciteTheorique[i],
+        capaciteDisponible: caps.capaciteDisponible[i],
+        revision: caps.revision[i]
+      })) : [];
+    
+    // 5 jours ouvrés (01-05/07/2024)
+    expect(capRows.length).toBe(5);
+    
+    // Toutes les capacités doivent être à 4 h (20h / 5 jours)
+    for (const cap of capRows) {
+      expect(cap.capaciteTheorique).toBe(4);
+      expect(cap.capaciteDisponible).toBe(4);
+      expect(cap.revision).toBe(1);
+    }
+    
+    // Vérifier les TimeEntries créées
+    const entries = await mockGrist.fetchTable('TimeEntries');
+    const entryRows = entries.id.length > 0 ?
+      entries.id.map((id, i) => ({
+        id,
+        affectation: entries.affectation[i],
+        heuresPrevues: entries.heuresPrevues[i],
+        revisionPlan: entries.revisionPlan[i]
+      })) : [];
+    
+    expect(entryRows.length).toBe(5);
+    
+    // Toutes les TimeEntries doivent être à 4 h
+    for (const entry of entryRows) {
+      expect(entry.heuresPrevues).toBe(4);
+      expect(entry.revisionPlan).toBe(1);
+    }
+  });
+  
+  test('disponibilité à 50 % → capacité créée directement avec le bon ratio', async () => {
+    const mockGrist = createMockGrist({
+      initialData: {
+        TaskAssignments: [
+          {
+            id: 1,
+            tache: 1,
+            membre: 1,
+            heuresAllouees: 4,
+            dateDebut: 1719792000, // 2024-07-01
+            dateFin: 1719792000,
+            actif: true
+          }
+        ],
+        Tasks: [{ id: 1, titre: 'Tâche 1' }],
+        Team: [{ id: 1, nom: 'Alice', capaciteHebdo: 20 }],
+        TimeEntries: [],
+        Feuilles: [],
+        Disponibilites: [
+          {
+            membre: 1,
+            type: 'temps_partiel',
+            dateDebut: 1719792000,
+            dateFin: 1719792000,
+            dispo: 0.5
+          }
+        ],
+        MemberDailyCapacities: []
+      }
+    });
+    
+    const result = await reconcileAssignmentPlan(mockGrist, 1, {
+      dryRun: false,
+      replanFromDate: '2024-07-01'
+    });
+    
+    expect(result.success).toBe(true);
+    
+    // Vérifier la capacité créée
+    const caps = await mockGrist.fetchTable('MemberDailyCapacities');
+    const capRows = caps.id.length > 0 ?
+      caps.membre.map((m, i) => ({
+        id: caps.id[i],
+        membre: m,
+        date: caps.date[i],
+        capaciteTheorique: caps.capaciteTheorique[i],
+        disponibiliteRatio: caps.disponibiliteRatio[i],
+        capaciteDisponible: caps.capaciteDisponible[i],
+        absenceHeures: caps.absenceHeures[i],
+        revision: caps.revision[i]
+      })) : [];
+    
+    expect(capRows.length).toBe(1);
+    expect(capRows[0].capaciteTheorique).toBe(4);
+    expect(capRows[0].disponibiliteRatio).toBe(0.5);
+    expect(capRows[0].capaciteDisponible).toBe(2);
+    expect(capRows[0].absenceHeures).toBe(2);
+    expect(capRows[0].revision).toBe(1);
+  });
+  
+  test('résultat réel expose capacityActions et timeEntryActions', async () => {
+    const mockGrist = createMockGrist({
+      initialData: {
+        TaskAssignments: [
+          {
+            id: 1,
+            tache: 1,
+            membre: 1,
+            heuresAllouees: 35,
+            dateDebut: 1719792000,
+            dateFin: 1720137600,
+            actif: true
+          }
+        ],
+        Tasks: [{ id: 1, titre: 'Tâche 1' }],
+        Team: [{ id: 1, nom: 'Alice', capaciteHebdo: 35 }],
+        TimeEntries: [],
+        Feuilles: [],
+        Disponibilites: [],
+        MemberDailyCapacities: []
+      }
+    });
+    
+    const result = await reconcileAssignmentPlan(mockGrist, 1, {
+      dryRun: false,
+      replanFromDate: '2024-07-01'
+    });
+    
+    expect(result.success).toBe(true);
+    expect(result.dryRun).toBe(false);
+    expect(result.capacityActions.length).toBeGreaterThan(0);
+    expect(result.timeEntryActions.length).toBeGreaterThan(0);
+    expect(result.actions).toBe(result.timeEntryActions);
+    expect(result.actionsArePreviewOnly).toBe(false);
+    expect(result.canApplyActionsDirectly).toBe(false);
+  });
+  
+  test('idempotence — seconde exécution réelle ne produit aucune action', async () => {
+    const mockGrist = createMockGrist({
+      initialData: {
+        TaskAssignments: [
+          {
+            id: 1,
+            tache: 1,
+            membre: 1,
+            heuresAllouees: 35,
+            dateDebut: 1719792000,
+            dateFin: 1720137600,
+            actif: true
+          }
+        ],
+        Tasks: [{ id: 1, titre: 'Tâche 1' }],
+        Team: [{ id: 1, nom: 'Alice', capaciteHebdo: 35 }],
+        TimeEntries: [],
+        Feuilles: [],
+        Disponibilites: [],
+        MemberDailyCapacities: []
+      }
+    });
+    
+    let applyUserActionsCallCount = 0;
+    const originalApplyUserActions = mockGrist.applyUserActions.bind(mockGrist);
+    mockGrist.applyUserActions = async function(...args) {
+      applyUserActionsCallCount++;
+      return await originalApplyUserActions(...args);
+    };
+    
+    // Première exécution réelle
+    const result1 = await reconcileAssignmentPlan(mockGrist, 1, {
+      dryRun: false,
+      replanFromDate: '2024-07-01'
+    });
+    
+    expect(result1.success).toBe(true);
+    expect(result1.actionsExecuted).toBeGreaterThan(0);
+    
+    const firstCallCount = applyUserActionsCallCount;
+    
+    // Seconde exécution réelle
+    const result2 = await reconcileAssignmentPlan(mockGrist, 1, {
+      dryRun: false,
+      replanFromDate: '2024-07-01'
+    });
+    
+    expect(result2.success).toBe(true);
+    expect(result2.actions.length).toBe(0);
+    expect(result2.actionsExecuted).toBe(0);
+    
+    // Aucune nouvelle écriture
+    expect(applyUserActionsCallCount).toBe(firstCallCount);
+    
+    // Vérifier que les revisions n'ont pas augmenté
+    const caps = await mockGrist.fetchTable('MemberDailyCapacities');
+    const capRows = caps.id.length > 0 ?
+      caps.membre.map((m, i) => ({
+        id: caps.id[i],
+        revision: caps.revision[i]
+      })) : [];
+    
+    for (const cap of capRows) {
+      expect(cap.revision).toBe(1);
+    }
+  });
+  
+  test('non-régression — actualHours = -2 échoue sans écriture', async () => {
+    const mockGrist = createMockGrist({
+      initialData: {
+        TaskAssignments: [
+          {
+            id: 1,
+            tache: 1,
+            membre: 1,
+            heuresAllouees: 10,
+            dateDebut: 1719792000,
+            dateFin: 1719792000,
+            actif: true
+          }
+        ],
+        Tasks: [{ id: 1, titre: 'Tâche 1' }],
+        Team: [{ id: 1, nom: 'Alice', capaciteHebdo: 35 }],
+        TimeEntries: [
+          {
+            id: 1,
+            affectation: 1,
+            tache: 1,
+            membre: 1,
+            date: 1719792000,
+            heuresPrevues: 3,
+            heures: -2,
+            revisionPlan: 1
+          }
+        ],
+        Feuilles: [],
+        Disponibilites: [],
+        MemberDailyCapacities: []
+      }
+    });
+    
+    let applyUserActionsCalled = false;
+    const originalApplyUserActions = mockGrist.applyUserActions.bind(mockGrist);
+    mockGrist.applyUserActions = async function(...args) {
+      applyUserActionsCalled = true;
+      return await originalApplyUserActions(...args);
+    };
+    
+    const result = await reconcileAssignmentPlan(mockGrist, 1, {
+      dryRun: false,
+      replanFromDate: '2024-07-01'
+    });
+    
+    expect(result.success).toBe(false);
+    expect(applyUserActionsCalled).toBe(false);
+    
+    const caps = await mockGrist.fetchTable('MemberDailyCapacities');
+    expect(caps.id.length).toBe(0);
+  });
+  
+  test('non-régression — doublon TimeEntries échoue sans écriture', async () => {
+    const mockGrist = createMockGrist({
+      initialData: {
+        TaskAssignments: [
+          {
+            id: 1,
+            tache: 1,
+            membre: 1,
+            heuresAllouees: 10,
+            dateDebut: 1719792000,
+            dateFin: 1719792000,
+            actif: true
+          }
+        ],
+        Tasks: [{ id: 1, titre: 'Tâche 1' }],
+        Team: [{ id: 1, nom: 'Alice', capaciteHebdo: 35 }],
+        TimeEntries: [
+          {
+            id: 1,
+            affectation: 1,
+            tache: 1,
+            membre: 1,
+            date: 1719792000,
+            heuresPrevues: 3,
+            heures: 0,
+            revisionPlan: 1
+          },
+          {
+            id: 2,
+            affectation: 1,
+            tache: 1,
+            membre: 1,
+            date: 1719792000,
+            heuresPrevues: 4,
+            heures: 0,
+            revisionPlan: 1
+          }
+        ],
+        Feuilles: [],
+        Disponibilites: [],
+        MemberDailyCapacities: []
+      }
+    });
+    
+    let applyUserActionsCalled = false;
+    const originalApplyUserActions = mockGrist.applyUserActions.bind(mockGrist);
+    mockGrist.applyUserActions = async function(...args) {
+      applyUserActionsCalled = true;
+      return await originalApplyUserActions(...args);
+    };
+    
+    const result = await reconcileAssignmentPlan(mockGrist, 1, {
+      dryRun: false,
+      replanFromDate: '2024-07-01'
+    });
+    
+    expect(result.success).toBe(false);
+    expect(applyUserActionsCalled).toBe(false);
+  });
+  
+  test('non-régression — disponibilité invalide échoue sans écriture', async () => {
+    const mockGrist = createMockGrist({
+      initialData: {
+        TaskAssignments: [
+          {
+            id: 1,
+            tache: 1,
+            membre: 1,
+            heuresAllouees: 10,
+            dateDebut: 1719792000,
+            dateFin: 1719792000,
+            actif: true
+          }
+        ],
+        Tasks: [{ id: 1, titre: 'Tâche 1' }],
+        Team: [{ id: 1, nom: 'Alice', capaciteHebdo: 35 }],
+        TimeEntries: [],
+        Feuilles: [],
+        Disponibilites: [
+          {
+            membre: 1,
+            type: 'conges',
+            dateDebut: 1719792000,
+            dateFin: 1719792000,
+            dispo: 2 // Invalid: > 1
+          }
+        ],
+        MemberDailyCapacities: []
+      }
+    });
+    
+    let applyUserActionsCalled = false;
+    const originalApplyUserActions = mockGrist.applyUserActions.bind(mockGrist);
+    mockGrist.applyUserActions = async function(...args) {
+      applyUserActionsCalled = true;
+      return await originalApplyUserActions(...args);
+    };
+    
+    const result = await reconcileAssignmentPlan(mockGrist, 1, {
+      dryRun: false,
+      replanFromDate: '2024-07-01'
+    });
+    
+    expect(result.success).toBe(false);
+    expect(result.error.code).toBe('INVALID_CAPACITY_INPUT');
+    expect(applyUserActionsCalled).toBe(false);
+    
+    const caps = await mockGrist.fetchTable('MemberDailyCapacities');
+    expect(caps.id.length).toBe(0);
+  });
+});
+
+describe('Grist Planning Adapter - actionsArePreviewOnly contrat', () => {
+  
+  test('échec en dryRun → actionsArePreviewOnly = true', async () => {
+    const mockGrist = createMockGrist({
+      initialData: {
+        TaskAssignments: [
+          {
+            id: 1,
+            tache: 1,
+            membre: 1,
+            heuresAllouees: 10,
+            dateDebut: 1719792000,
+            dateFin: 1719792000,
+            actif: true
+          }
+        ],
+        Tasks: [{ id: 1, titre: 'Tâche 1' }],
+        Team: [{ id: 1, nom: 'Alice', capaciteHebdo: 35 }],
+        TimeEntries: [
+          {
+            id: 1,
+            affectation: 1,
+            tache: 1,
+            membre: 1,
+            date: 1719792000,
+            heuresPrevues: 3,
+            heures: -2,
+            revisionPlan: 1
+          }
+        ],
+        Feuilles: [],
+        Disponibilites: [],
+        MemberDailyCapacities: []
+      }
+    });
+    
+    const result = await reconcileAssignmentPlan(mockGrist, 1, {
+      dryRun: true,
+      replanFromDate: '2024-07-01'
+    });
+    
+    expect(result.success).toBe(false);
+    expect(result.dryRun).toBe(true);
+    expect(result.actionsArePreviewOnly).toBe(true);
+    expect(result.canApplyActionsDirectly).toBe(false);
+  });
+  
+  test('échec en réel → actionsArePreviewOnly = false', async () => {
+    const mockGrist = createMockGrist({
+      initialData: {
+        TaskAssignments: [
+          {
+            id: 1,
+            tache: 1,
+            membre: 1,
+            heuresAllouees: 10,
+            dateDebut: 1719792000,
+            dateFin: 1719792000,
+            actif: true
+          }
+        ],
+        Tasks: [{ id: 1, titre: 'Tâche 1' }],
+        Team: [{ id: 1, nom: 'Alice', capaciteHebdo: 35 }],
+        TimeEntries: [
+          {
+            id: 1,
+            affectation: 1,
+            tache: 1,
+            membre: 1,
+            date: 1719792000,
+            heuresPrevues: 3,
+            heures: -2,
+            revisionPlan: 1
+          }
+        ],
+        Feuilles: [],
+        Disponibilites: [],
+        MemberDailyCapacities: []
+      }
+    });
+    
+    const result = await reconcileAssignmentPlan(mockGrist, 1, {
+      dryRun: false,
+      replanFromDate: '2024-07-01'
+    });
+    
+    expect(result.success).toBe(false);
+    expect(result.dryRun).toBe(false);
+    expect(result.actionsArePreviewOnly).toBe(false);
+    expect(result.canApplyActionsDirectly).toBe(false);
+  });
+});

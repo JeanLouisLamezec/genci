@@ -584,6 +584,7 @@ async function ensureMemberDailyCapacities(grist, memberId, startDate, endDate, 
     return {
       success: true,
       actionsExecuted: actions.length,
+      actions,
       creates: reconciliation.creates.length,
       updates: reconciliation.updates.length,
       diagnostics: desiredResult.diagnostics

@@ -536,6 +536,7 @@ async function loadAssignmentContext(grist, assignmentId, options = {}) {
   let capacityEnsureResult = { success: true, diagnostics: [] };
   let memberDailyCapacitiesInRange = [];
   let capacityByDate = new Map();
+  let capacityActions = [];
   
   if (ensureCapacities) {
     // Mode écriture : assurer les capacités dans Grist
@@ -625,6 +626,9 @@ async function loadAssignmentContext(grist, assignmentId, options = {}) {
     }
     
     capacityEnsureResult.diagnostics = effectiveCapacityResult.diagnostics;
+    
+    // Conserver les actions de capacité simulées pour le dryRun
+    capacityActions = effectiveCapacityResult.capacityActions || [];
   }
   
   // Construire un map des capacités par date
@@ -706,7 +710,11 @@ async function loadAssignmentContext(grist, assignmentId, options = {}) {
     capacities,
     existingEntries,
     capacityByDate,
-    diagnostics
+    diagnostics,
+    capacityActions,
+    memberWeeklyCapacity: member.capaciteHebdo,
+    memberAvailabilities:
+      availabilities.filter(a => a.membre === assignment.membre)
   };
 }
 
@@ -812,7 +820,7 @@ async function prepareAssignmentReconciliation(grist, assignmentId, options = {}
     };
   }
   
-  const { assignment, capacities, existingEntries, diagnostics, capacityByDate } = context;
+  const { assignment, capacities, existingEntries, diagnostics, capacityByDate, capacityActions } = context;
   
   // Appeler le moteur de planification
   const planResult = buildAssignmentPlan({
@@ -889,10 +897,8 @@ async function prepareAssignmentReconciliation(grist, assignmentId, options = {}
   
   const timeEntryActions = diffToGristActions(diff, assignment, capacities, existingEntriesMap, capacityByDate);
   
-  // Construire les actions de capacité simulées (pour le dryRun)
-  const capacityActions = [];
-  // Les actions de capacité sont gérées par ensureMemberDailyCapacities en mode réel
-  // En mode simulation, on retourne un tableau vide car les capacités sont déjà dans context
+  // Utiliser les actions de capacité simulées du contexte (pour le dryRun)
+  const effectiveCapacityActions = capacityActions || [];
   
   return {
     success: true,
@@ -902,7 +908,7 @@ async function prepareAssignmentReconciliation(grist, assignmentId, options = {}
     summary: planResult.summary,
     diagnostics: allDiagnostics,
     diff,
-    capacityActions,
+    capacityActions: effectiveCapacityActions,
     timeEntryActions,
     effectiveReplanFromDate
   };
@@ -966,7 +972,7 @@ async function reconcileAssignmentPlan(grist, assignmentId, options = {}) {
       desiredPlan: [],
       summary: null,
       diagnostics: preview.diagnostics || [],
-      actionsArePreviewOnly: true,
+      actionsArePreviewOnly: dryRun,
       canApplyActionsDirectly: false,
       commitMethod: 'reconcileAssignmentPlan'
     };
@@ -1117,11 +1123,11 @@ async function reconcileAssignmentPlan(grist, assignmentId, options = {}) {
   }
   
   // Phase 2 : Exécution réelle
-  // Assurer réellement les capacités
+  // Assurer réellement les capacités une seule fois avec les vraies données
   const capacityEnsureResult = await ensureMemberDailyCapacities(grist, assignment.memberId, assignment.startDate, assignment.endDate, {
-    weeklyCapacity: context.assignmentMemberCapacity?.weeklyCapacity,
-    availabilities: context.assignmentAvailabilities || [],
-    defaultWeeklyCapacity: 35,
+    weeklyCapacity: context.memberWeeklyCapacity,
+    availabilities: context.memberAvailabilities,
+    defaultWeeklyCapacity: DEFAULT_WEEKLY_CAPACITY,
     source: 'calcul',
     dryRun: false,
     todayIso: options.todayIso,
@@ -1147,10 +1153,10 @@ async function reconcileAssignmentPlan(grist, assignmentId, options = {}) {
     };
   }
   
-  // Recharger le contexte réel avec les vrais IDs de capacités
+  // Recharger le contexte réel avec les vrais IDs de capacités (sans réécrire les capacités)
   const realContext = await loadAssignmentContext(grist, assignmentId, {
     ...options,
-    ensureCapacities: true
+    ensureCapacities: false
   });
   
   if (realContext.error) {
@@ -1258,10 +1264,10 @@ async function reconcileAssignmentPlan(grist, assignmentId, options = {}) {
       summary: realPlanResult.summary,
       diagnostics: realAllDiagnostics,
       diff: realDiff,
-      capacityActions: capacityEnsureResult.capacityActions || [],
+      capacityActions: capacityEnsureResult.actions || [],
       timeEntryActions: realTimeEntryActions,
       actions: realTimeEntryActions,
-      actionsExecuted: 0,
+      actionsExecuted: capacityEnsureResult.actionsExecuted || 0,
       actionsArePreviewOnly: false,
       canApplyActionsDirectly: false,
       commitMethod: 'reconcileAssignmentPlan'
@@ -1279,10 +1285,10 @@ async function reconcileAssignmentPlan(grist, assignmentId, options = {}) {
       summary: realPlanResult.summary,
       diagnostics: realAllDiagnostics,
       diff: realDiff,
-      capacityActions: capacityEnsureResult.capacityActions || [],
+      capacityActions: capacityEnsureResult.actions || [],
       timeEntryActions: realTimeEntryActions,
       actions: realTimeEntryActions,
-      actionsExecuted: realTimeEntryActions.length,
+      actionsExecuted: (capacityEnsureResult.actionsExecuted || 0) + realTimeEntryActions.length,
       actionsArePreviewOnly: false,
       canApplyActionsDirectly: false,
       commitMethod: 'reconcileAssignmentPlan'
@@ -1297,7 +1303,7 @@ async function reconcileAssignmentPlan(grist, assignmentId, options = {}) {
       dryRun: false,
       actionsExecuted: 0,
       actions: [],
-      capacityActions: capacityEnsureResult.capacityActions || [],
+      capacityActions: capacityEnsureResult.actions || [],
       timeEntryActions: realTimeEntryActions,
       desiredPlan: realDesiredPlan,
       summary: realPlanResult.summary,
