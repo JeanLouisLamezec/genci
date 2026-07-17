@@ -5418,29 +5418,48 @@ if (typeof globalThis !== 'undefined') {
             // WBS-05: si la tâche a des descendants, demander cascade ou détachement
             const descendants = getAllDescendants(panelState.taskId);
             let ids = [panelState.taskId];
+            let includeDescendants = false;
+            let detachChildren = false;
+            
             if (descendants.length) {
                 const choice = confirm('Cette tâche contient ' + descendants.length + ' sous-tâche(s).\n\nOK = supprimer tout (cascade)\nAnnuler = détacher les enfants (ils deviennent racines)');
-                if (choice) ids = [panelState.taskId, ...descendants.map(d => d.id)];
-                else {
-                    // Détacher : mettre parentTask=null sur les enfants directs, puis delete le parent
-                    const directKids = getChildren(panelState.taskId);
-                    if (gristReady) {
-                        try {
-                            const detachActions = directKids.map(k => ['UpdateRecord', 'Tasks', k.id, { parentTask: null }]);
-                            await grist.docApi.applyUserActions([...detachActions, ['RemoveRecord', 'Tasks', panelState.taskId]]);
-                            showToast('Supprimée (enfants détachés)', 'success');
-                            closePanel(); await loadAllData();
-                        } catch (e) { showToast('Erreur suppression', 'error'); }
-                    }
-                    return;
+                if (choice) {
+                    ids = [panelState.taskId, ...descendants.map(d => d.id)];
+                    includeDescendants = true;
+                } else {
+                    detachChildren = true;
                 }
             }
 
             if (gristReady) {
                 try {
-                    const actions = ids.map(id => ['RemoveRecord', 'Tasks', id]);
-                    await grist.docApi.applyUserActions(actions);
-                    showToast(ids.length > 1 ? `${ids.length} tâches supprimées` : 'Supprimée', 'success');
+                    // Utiliser l'intégration réelle pour supprimer avec les données liées
+                    if (assignmentIntegration && assignmentIntegration.deleteTasksWithAssignments) {
+                        const result = await assignmentIntegration.deleteTasksWithAssignments([panelState.taskId], {
+                            detachChildren: detachChildren,
+                            includeDescendants: includeDescendants
+                        });
+                        
+                        console.log('[Gantt] Suppression TaskAssignments', result);
+                        
+                        if (!result.ok) {
+                            if (result.code === 'TASK_DELETE_BLOCKED_BY_TIME_ENTRIES') {
+                                showToast('Suppression impossible : cette tâche contient des temps saisis ou validés', 'error');
+                            } else {
+                                showToast('La tâche n\'a pas été supprimée : ' + (result.message || 'erreur inconnue'), 'error');
+                            }
+                            await loadAllData();
+                            return;
+                        }
+                        
+                        showToast(ids.length > 1 ? `${result.deletedTasks} tâches et données liées supprimées` : 'Tâche et données liées supprimées', 'success');
+                    } else {
+                        // Fallback vers l'ancienne méthode (sans nettoyage TaskAssignments)
+                        const actions = ids.map(id => ['RemoveRecord', 'Tasks', id]);
+                        await grist.docApi.applyUserActions(actions);
+                        showToast(ids.length > 1 ? `${ids.length} tâches supprimées` : 'Supprimée', 'success');
+                    }
+                    
                     closePanel();
                     await loadAllData();
                 } catch (e) {

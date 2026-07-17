@@ -65,41 +65,84 @@
             return taskQueues[taskId];
         }
 
+        // =========================================================================
+        // Helpers de normalisation
+        // =========================================================================
+        
+        /**
+         * Normalise les assignees Grist en tableau d'IDs numériques
+         * Grist peut retourner ['L', 1, 2] ou [1, 2]
+         * @param {*} value - Valeur brute depuis Grist
+         * @returns {number[]} Tableau d'IDs numériques triés
+         */
+        function normalizeAssigneeIds(value) {
+            if (!Array.isArray(value)) return [];
+            
+            return value
+                .filter(function(v) { return v !== 'L'; })
+                .map(function(v) { return Number(v); })
+                .filter(function(v) { return Number.isInteger(v) && v > 0; })
+                .sort(function(a, b) { return a - b; });
+        }
+        
+        /**
+         * Normalise les charges en tableau d'objets {teamId, heures}
+         * Peut être un tableau ou une chaîne JSON
+         * @param {*} value - Valeur brute depuis Grist
+         * @returns {Array} Tableau normalisé
+         */
+        function normalizeCharges(value) {
+            if (!value) return [];
+            
+            // Si c'est une chaîne JSON, la parser
+            var charges = value;
+            if (typeof value === 'string') {
+                try {
+                    charges = JSON.parse(value);
+                } catch (e) {
+                    log('Erreur parsing charges JSON: ' + e.message);
+                    return [];
+                }
+            }
+            
+            if (!Array.isArray(charges)) return [];
+            
+            return charges
+                .map(function(c) {
+                    return {
+                        teamId: Number(c.teamId || 0),
+                        heures: Number(c.heures || 0)
+                    };
+                })
+                .filter(function(c) { return c.teamId > 0; })
+                .sort(function(a, b) { return a.teamId - b.teamId; });
+        }
+
+        // =========================================================================
+        // Fonction pure de mapping
+        // =========================================================================
+
         /**
          * Construit les affectations désirées depuis les données du formulaire Gantt
+         * Fonction PURE de mapping - ne décide PAS si une synchronisation est nécessaire
          * @param {Object} task - La tâche (avec id, dateDebut, dateEcheance)
          * @param {Object} editData - Données du formulaire (assignees, charges)
-         * @param {Object} options - Options pour contrôler le comportement
          * @returns {Array} Tableau d'affectations normalisées
          */
-        function buildDesiredAssignments(task, editData, options) {
-            options = options || {};
+        function buildDesiredAssignments(task, editData) {
             if (!task || !editData) return [];
 
-            // CRITIQUE: Distinguer champ absent et suppression explicite
-            // Si editData.assignmentsEdited === true, on respecte assignees/charges
-            // Si editData.assignmentsEdited === false ou absent, on préserve les affectations existantes
-            var assignmentsEdited = editData.assignmentsEdited === true;
+            // Normaliser les données d'entrée
+            var assigneeIds = normalizeAssigneeIds(editData.assignees);
+            var charges = normalizeCharges(editData.charges);
             
-            // Pour une modification de dates uniquement (drag-and-drop), assignmentsEdited n'est pas positionné
-            // Dans ce cas, on ne doit PAS reconstruire les affectations depuis assignees/charges
-            // C'est syncTaskDates() qui doit être utilisé à la place
-            if (!assignmentsEdited) {
-                // Ce cas ne devrait plus arriver si syncTaskDates() est utilisé correctement
-                // Mais on garde une sécurité : retourner tableau vide pour ne rien casser
-                log('buildDesiredAssignments appelé sans assignmentsEdited, retourne []');
-                return [];
-            }
-
-            var assignees = editData.assignees || [];
-            var charges = editData.charges || [];
             var assignments = [];
 
             // Pour chaque assigné, créer une affectation si une charge est définie
-            assignees.forEach(function(memberId) {
+            assigneeIds.forEach(function(memberId) {
                 // Trouver la charge pour ce membre
                 var chargeEntry = charges.find(function(c) { return c.teamId === memberId; });
-                var allocatedHours = chargeEntry ? Number(chargeEntry.heures) : 0;
+                var allocatedHours = chargeEntry ? chargeEntry.heures : 0;
 
                 // Règle : ne créer une affectation que si la charge est strictement positive
                 if (allocatedHours > 0) {
@@ -138,26 +181,52 @@
             // Utiliser la file d'attente
             return enqueueTaskOperation(taskId, async function() {
                 try {
-                    // Construire les affectations désirées
+                    // 1. Construire les affectations désirées (TOUJOURS à la création)
                     var taskData = {
                         id: taskId,
                         dateDebut: editData.dateDebut,
                         dateEcheance: editData.dateEcheance
                     };
 
-                    var desiredAssignments = buildDesiredAssignments(taskData, editData, { assignmentsEdited: true });
+                    var desiredAssignments = buildDesiredAssignments(taskData, editData);
+                    
+                    console.info('[TaskAssignment lifecycle]', {
+                        phase: 'create',
+                        taskId: taskId,
+                        rawAssignees: editData.assignees,
+                        normalizedAssigneeIds: normalizeAssigneeIds(editData.assignees),
+                        rawCharges: editData.charges,
+                        normalizedCharges: normalizeCharges(editData.charges),
+                        desiredAssignments: desiredAssignments
+                    });
 
                     if (desiredAssignments.length === 0) {
-                        log('Aucune affectation à créer');
-                        return { ok: true, createdIds: [], updatedIds: [], actionsExecuted: 0 };
+                        log('Aucune affectation à créer (aucun assigné avec charge positive)');
+                        return { ok: true, expectedAssignments: 0, createdIds: [], actionsExecuted: 0 };
                     }
 
-                    // Synchroniser
+                    // 2. Synchroniser
                     var result = await assignmentService.syncTaskAssignments(taskId, desiredAssignments, {
                         updateLegacy: true
                     });
 
                     log('Synchronisation après création : ' + JSON.stringify(result));
+                    
+                    // 3. Vérification POST-CONDITION : relire et vérifier que les affectations existent
+                    var actualAssignments = await assignmentService.loadAssignmentsForTask(taskId);
+                    var activeAssignments = actualAssignments.filter(function(a) { return a.actif !== false; });
+                    
+                    if (activeAssignments.length < desiredAssignments.length) {
+                        log('Post-condition échouée : attendu ' + desiredAssignments.length + ' affectations, trouvé ' + activeAssignments.length);
+                        return {
+                            ok: false,
+                            code: 'ASSIGNMENT_CREATION_POSTCONDITION_FAILED',
+                            taskId: taskId,
+                            expected: desiredAssignments.length,
+                            actual: activeAssignments.length,
+                            details: result
+                        };
+                    }
                     
                     // En cas d'échec partiel, marquer comme échec
                     if (!result.ok || result.code === 'LEGACY_SYNC_PARTIAL') {
@@ -169,14 +238,28 @@
                         };
                     }
                     
-                    return result;
+                    log('Création réussie : ' + JSON.stringify({
+                        expectedAssignments: desiredAssignments.length,
+                        createdIds: result.createdIds,
+                        verifiedIds: activeAssignments.map(function(a) { return a.id; })
+                    }));
+                    
+                    return {
+                        ok: true,
+                        taskId: taskId,
+                        expectedAssignments: desiredAssignments.length,
+                        createdIds: result.createdIds,
+                        verifiedIds: activeAssignments.map(function(a) { return a.id; }),
+                        actionsExecuted: result.actionsExecuted
+                    };
 
                 } catch (e) {
                     log('Erreur : ' + e.message);
                     return {
                         ok: false,
                         code: 'SYNC_ERROR',
-                        message: e.message
+                        message: e.message,
+                        details: e.stack
                     };
                 }
             });
@@ -259,6 +342,364 @@
                     };
                 }
             });
+        }
+
+        /**
+         * Répare les affectations manquantes pour une tâche endommagée
+         * Utilise les projections legacy (assignees, charges) pour reconstruire les affectations
+         * @param {number} taskId - ID de la tâche
+         * @param {Object} options - Options
+         * @returns {Promise<Object>} Résultat de la réparation
+         */
+        async function repairMissingAssignmentsForTask(taskId, options) {
+            options = options || {};
+            
+            if (!assignmentService) {
+                return { ok: false, code: 'SERVICE_NOT_AVAILABLE' };
+            }
+            
+            try {
+                // 1. Charger la tâche et les affectations existantes
+                var existing = await assignmentService.loadAssignmentsForTask(taskId);
+                
+                if (existing.length > 0) {
+                    log('Tâche ' + taskId + ' a déjà des affectations, pas de réparation nécessaire');
+                    return { ok: true, repaired: false, reason: 'ASSIGNMENTS_ALREADY_EXIST' };
+                }
+                
+                // 2. Charger les données de la tâche (projections legacy)
+                var tasksTable = await grist.docApi.fetchTable('Tasks');
+                var taskIndex = -1;
+                
+                if (tasksTable.id) {
+                    for (var i = 0; i < tasksTable.id.length; i++) {
+                        if (tasksTable.id[i] === taskId) {
+                            taskIndex = i;
+                            break;
+                        }
+                    }
+                }
+                
+                if (taskIndex < 0) {
+                    return { ok: false, code: 'TASK_NOT_FOUND', taskId: taskId };
+                }
+                
+                // 3. Lire les projections legacy
+                var assignees = tasksTable.assignees ? tasksTable.assignees[taskIndex] : [];
+                var chargesJson = tasksTable.charges ? tasksTable.charges[taskIndex] : null;
+                var dateDebut = tasksTable.dateDebut ? tasksTable.dateDebut[taskIndex] : null;
+                var dateEcheance = tasksTable.dateEcheance ? tasksTable.dateEcheance[taskIndex] : null;
+                
+                if (!assignees || assignees.length === 0) {
+                    log('Tâche ' + taskId + ' sans assignees, pas de réparation');
+                    return { ok: true, repaired: false, reason: 'NO_ASSIGNEES' };
+                }
+                
+                // 4. Reconstruire les affectations
+                var editData = {
+                    assignees: assignees,
+                    charges: chargesJson
+                };
+                
+                var taskData = {
+                    id: taskId,
+                    dateDebut: dateDebut,
+                    dateEcheance: dateEcheance
+                };
+                
+                var desiredAssignments = buildDesiredAssignments(taskData, editData);
+                
+                console.info('[TaskAssignment lifecycle]', {
+                    phase: 'repair',
+                    taskId: taskId,
+                    legacyAssignees: assignees,
+                    legacyCharges: chargesJson,
+                    desiredAssignments: desiredAssignments
+                });
+                
+                if (desiredAssignments.length === 0) {
+                    log('Aucune affectation à réparer pour tâche ' + taskId);
+                    return { ok: true, repaired: false, reason: 'NO_VALID_ASSIGNMENTS' };
+                }
+                
+                // 5. Créer les affectations manquantes
+                var result = await assignmentService.syncTaskAssignments(taskId, desiredAssignments, {
+                    updateLegacy: false // Ne pas mettre à jour legacy, on lit déjà depuis legacy
+                });
+                
+                // 6. Vérification post-condition
+                var actualAssignments = await assignmentService.loadAssignmentsForTask(taskId);
+                var activeAssignments = actualAssignments.filter(function(a) { return a.actif !== false; });
+                
+                if (activeAssignments.length < desiredAssignments.length) {
+                    return {
+                        ok: false,
+                        code: 'ASSIGNMENT_REPAIR_POSTCONDITION_FAILED',
+                        taskId: taskId,
+                        expected: desiredAssignments.length,
+                        actual: activeAssignments.length
+                    };
+                }
+                
+                log('Réparation réussie pour tâche ' + taskId + ' : ' + activeAssignments.length + ' affectations créées');
+                
+                return {
+                    ok: true,
+                    repaired: true,
+                    code: 'ASSIGNMENTS_REPAIRED_FROM_LEGACY',
+                    taskId: taskId,
+                    createdIds: result.createdIds,
+                    count: activeAssignments.length
+                };
+                
+            } catch (e) {
+                log('Erreur réparation: ' + e.message);
+                return {
+                    ok: false,
+                    code: 'REPAIR_ERROR',
+                    message: e.message
+                };
+            }
+        }
+        
+        /**
+         * Supprime des tâches avec leurs affectations et TimeEntries associés
+         * @param {Array} taskIds - IDs des tâches à supprimer
+         * @param {Object} options - Options (detachChildren, includeDescendants)
+         * @returns {Promise<Object>} Résultat de la suppression
+         */
+        async function deleteTasksWithAssignments(taskIds, options) {
+            options = options || {};
+            var detachChildren = options.detachChildren === true;
+            var includeDescendants = options.includeDescendants === true;
+            
+            if (!assignmentService || !grist || !grist.docApi) {
+                return { ok: false, code: 'SERVICE_NOT_AVAILABLE' };
+            }
+            
+            if (!Array.isArray(taskIds) || taskIds.length === 0) {
+                return { ok: false, code: 'INVALID_TASK_IDS' };
+            }
+            
+            try {
+                console.info('[TaskAssignment lifecycle]', {
+                    phase: 'delete',
+                    taskIds: taskIds,
+                    detachChildren: detachChildren,
+                    includeDescendants: includeDescendants
+                });
+                
+                // 1. Collecter tous les IDs (avec descendants si nécessaire)
+                var allTaskIds = taskIds.slice();
+                
+                if (includeDescendants) {
+                    // Charger toutes les tâches pour trouver les descendants
+                    var allTasksTable = await grist.docApi.fetchTable('Tasks');
+                    var allTasks = [];
+                    
+                    if (allTasksTable.id) {
+                        for (var i = 0; i < allTasksTable.id.length; i++) {
+                            allTasks.push({
+                                id: allTasksTable.id[i],
+                                parentTask: allTasksTable.parentTask ? allTasksTable.parentTask[i] : null
+                            });
+                        }
+                    }
+                    
+                    // Trouver tous les descendants récursivement
+                    function findDescendants(parentId) {
+                        var descendants = [];
+                        for (var j = 0; j < allTasks.length; j++) {
+                            if (allTasks[j].parentTask === parentId) {
+                                descendants.push(allTasks[j].id);
+                                descendants = descendants.concat(findDescendants(allTasks[j].id));
+                            }
+                        }
+                        return descendants;
+                    }
+                    
+                    for (var k = 0; k < taskIds.length; k++) {
+                        var desc = findDescendants(taskIds[k]);
+                        allTaskIds = allTaskIds.concat(desc);
+                    }
+                }
+                
+                // 2. Charger les TaskAssignments pour toutes les tâches
+                var allAssignments = [];
+                var assignmentsTable = await grist.docApi.fetchTable('TaskAssignments');
+                
+                if (assignmentsTable.id) {
+                    for (var l = 0; l < assignmentsTable.id.length; l++) {
+                        if (allTaskIds.indexOf(assignmentsTable.tache[l]) >= 0) {
+                            allAssignments.push({
+                                id: assignmentsTable.id[l],
+                                tache: assignmentsTable.tache[l],
+                                membre: assignmentsTable.membre[l],
+                                actif: assignmentsTable.actif[l] !== false
+                            });
+                        }
+                    }
+                }
+                
+                var assignmentIds = allAssignments.map(function(a) { return a.id; });
+                
+                // 3. Charger les TimeEntries liés à ces affectations
+                var timeEntriesTable = await grist.docApi.fetchTable('TimeEntries');
+                var mutableTimeEntryIds = [];
+                var lockedTimeEntryIds = [];
+                
+                if (timeEntriesTable.id) {
+                    for (var m = 0; m < timeEntriesTable.id.length; m++) {
+                        var tacheId = timeEntriesTable.tache ? timeEntriesTable.tache[m] : null;
+                        var membreId = timeEntriesTable.membre ? timeEntriesTable.membre[m] : null;
+                        
+                        // Vérifier si ce TimeEntry est lié à une affectation qu'on va supprimer
+                        var linkedAssignment = allAssignments.find(function(a) {
+                            return a.tache === tacheId && a.membre === membreId;
+                        });
+                        
+                        if (linkedAssignment) {
+                            var heures = timeEntriesTable.heures ? timeEntriesTable.heures[m] : 0;
+                            var feuille = timeEntriesTable.feuille ? timeEntriesTable.feuille[m] : null;
+                            var sheetStatus = timeEntriesTable.sheetStatus ? timeEntriesTable.sheetStatus[m] : null;
+                            
+                            // Vérifier si verrouillé
+                            var isLocked = (
+                                heures > 0 ||
+                                (feuille && feuille !== null) ||
+                                sheetStatus === 'submitted' ||
+                                sheetStatus === 'validated'
+                            );
+                            
+                            if (isLocked) {
+                                lockedTimeEntryIds.push(timeEntriesTable.id[m]);
+                            } else {
+                                mutableTimeEntryIds.push(timeEntriesTable.id[m]);
+                            }
+                        }
+                    }
+                }
+                
+                // 4. Si des TimeEntries verrouillés existent, bloquer la suppression
+                if (lockedTimeEntryIds.length > 0) {
+                    console.warn('[TaskAssignment lifecycle]', {
+                        phase: 'delete-blocked',
+                        taskIds: taskIds,
+                        lockedTimeEntryIds: lockedTimeEntryIds
+                    });
+                    
+                    return {
+                        ok: false,
+                        code: 'TASK_DELETE_BLOCKED_BY_TIME_ENTRIES',
+                        taskIds: taskIds,
+                        assignmentIds: assignmentIds,
+                        timeEntryIds: lockedTimeEntryIds
+                    };
+                }
+                
+                // 5. Construire les actions de suppression
+                var actions = [];
+                
+                // Supprimer les TimeEntries mutables
+                mutableTimeEntryIds.forEach(function(id) {
+                    actions.push(['RemoveRecord', 'TimeEntries', id]);
+                });
+                
+                // Supprimer les TaskAssignments
+                assignmentIds.forEach(function(id) {
+                    actions.push(['RemoveRecord', 'TaskAssignments', id]);
+                });
+                
+                // Détacher les enfants si nécessaire
+                if (detachChildren) {
+                    // Mettre parentTask = null sur les enfants directs des tâches supprimées
+                    var allTasksTable2 = await grist.docApi.fetchTable('Tasks');
+                    var childrenToDetach = [];
+                    
+                    if (allTasksTable2.id) {
+                        for (var n = 0; n < allTasksTable2.id.length; n++) {
+                            var parentTask = allTasksTable2.parentTask ? allTasksTable2.parentTask[n] : null;
+                            if (taskIds.indexOf(parentTask) >= 0) {
+                                // C'est un enfant direct d'une tâche à supprimer
+                                childrenToDetach.push(allTasksTable2.id[n]);
+                            }
+                        }
+                    }
+                    
+                    childrenToDetach.forEach(function(childId) {
+                        actions.push(['UpdateRecord', 'Tasks', childId, { parentTask: null }]);
+                    });
+                }
+                
+                // Supprimer les tâches
+                allTaskIds.forEach(function(id) {
+                    actions.push(['RemoveRecord', 'Tasks', id]);
+                });
+                
+                console.info('[TaskAssignment lifecycle]', {
+                    phase: 'delete-actions',
+                    mutableTimeEntries: mutableTimeEntryIds.length,
+                    assignments: assignmentIds.length,
+                    tasks: allTaskIds.length,
+                    actions: actions.length
+                });
+                
+                // 6. Exécuter les actions
+                if (actions.length > 0) {
+                    await grist.docApi.applyUserActions(actions);
+                }
+                
+                // 7. Vérification post-condition
+                var remainingTasks = 0;
+                var remainingAssignments = 0;
+                
+                var checkTasksTable = await grist.docApi.fetchTable('Tasks');
+                if (checkTasksTable.id) {
+                    for (var p = 0; p < checkTasksTable.id.length; p++) {
+                        if (allTaskIds.indexOf(checkTasksTable.id[p]) >= 0) {
+                            remainingTasks++;
+                        }
+                    }
+                }
+                
+                var checkAssignmentsTable = await grist.docApi.fetchTable('TaskAssignments');
+                if (checkAssignmentsTable.id) {
+                    for (var q = 0; q < checkAssignmentsTable.id.length; q++) {
+                        if (assignmentIds.indexOf(checkAssignmentsTable.id[q]) >= 0) {
+                            remainingAssignments++;
+                        }
+                    }
+                }
+                
+                if (remainingTasks > 0 || remainingAssignments > 0) {
+                    return {
+                        ok: false,
+                        code: 'DELETE_POSTCONDITION_FAILED',
+                        expectedTasks: 0,
+                        actualTasks: remainingTasks,
+                        expectedAssignments: 0,
+                        actualAssignments: remainingAssignments
+                    };
+                }
+                
+                log('Suppression réussie : ' + allTaskIds.length + ' tâches, ' + assignmentIds.length + ' affectations');
+                
+                return {
+                    ok: true,
+                    deletedTasks: allTaskIds.length,
+                    deletedAssignments: assignmentIds.length,
+                    deletedTimeEntries: mutableTimeEntryIds.length
+                };
+                
+            } catch (e) {
+                log('Erreur suppression: ' + e.message);
+                return {
+                    ok: false,
+                    code: 'DELETE_ERROR',
+                    message: e.message,
+                    details: e.stack
+                };
+            }
         }
 
         /**
@@ -376,13 +817,84 @@
             });
         }
 
+        /**
+         * Répare les affectations manquantes pour une tâche endommagée
+
+                // 5. VÉRIFICATION POST-CONDITION : relire et vérifier que les dates sont correctes
+                var updated = await assignmentService.loadAssignmentsForTask(taskId);
+                var mismatches = [];
+                
+                for (var i = 0; i < updated.length; i++) {
+                    var a = updated[i];
+                    if (a.actif !== false) {
+                        if (a.dateDebut !== newStartDate || a.dateFin !== newEndDate) {
+                            mismatches.push({
+                                assignmentId: a.id,
+                                expected: { dateDebut: newStartDate, dateFin: newEndDate },
+                                actual: { dateDebut: a.dateDebut, dateFin: a.dateFin }
+                            });
+                        }
+                    }
+                }
+                
+                if (mismatches.length > 0) {
+                    log('Post-condition échouée : ' + JSON.stringify(mismatches));
+                    return {
+                        ok: false,
+                        code: 'ASSIGNMENT_DATE_POSTCONDITION_FAILED',
+                        taskId: taskId,
+                        expected: { dateDebut: newStartDate, dateFin: newEndDate },
+                        mismatches: mismatches
+                    };
+                }
+
+                log('syncTaskDatesInternal réussi: ' + JSON.stringify({
+                    updatedIds: result.updatedIds,
+                    actionsExecuted: result.actionsExecuted
+                }));
+
+                return result;
+
+            } catch (e) {
+                log('Erreur syncTaskDatesInternal: ' + e.message);
+                return {
+                    ok: false,
+                    code: 'SYNC_ERROR',
+                    message: e.message,
+                    details: e.stack
+                };
+            }
+        }
+
+        /**
+         * Synchronise uniquement les dates des affectations (pour le drag-and-drop)
+         * Version publique - met en file d'attente
+         * @param {number} taskId - ID de la tâche
+         * @param {number} newStartDate - Nouvelle date de début
+         * @param {number} newEndDate - Nouvelle date de fin
+         * @returns {Promise<Object>} Résultat
+         */
+        async function syncTaskDates(taskId, newStartDate, newEndDate) {
+            return enqueueTaskOperation(taskId, function() {
+                return syncTaskDatesInternal(taskId, newStartDate, newEndDate);
+            });
+        }
+
         // API publique
         return {
             buildDesiredAssignments: buildDesiredAssignments,
             onTaskCreated: onTaskCreated,
             onTaskUpdated: onTaskUpdated,
             syncTaskDates: syncTaskDates,
-            isAvailable: function() { return assignmentService !== null; }
+            syncTaskDatesInternal: syncTaskDatesInternal,
+            repairMissingAssignmentsForTask: repairMissingAssignmentsForTask,
+            deleteTasksWithAssignments: deleteTasksWithAssignments,
+            isAvailable: function() { return assignmentService !== null; },
+            // Helpers exportés pour tests
+            _helpers: {
+                normalizeAssigneeIds: normalizeAssigneeIds,
+                normalizeCharges: normalizeCharges
+            }
         };
     }
 
