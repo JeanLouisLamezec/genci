@@ -3618,6 +3618,7 @@ if (typeof globalThis !== 'undefined') {
         let filters = { assignee: [], team: [], project: [], programme: [], task: [] };  // Filtres unifiés avec Kanban/Plan
         let dragState = { active: false, type: null, taskId: null, startX: 0, originalLeft: 0, originalWidth: 0, originalStart: null, originalEnd: null };
         let panelState = { open: false, isNew: false, taskId: null, taskIndex: -1, taskList: [], editData: null };
+        let assignmentIntegration = null;  // Global pour les fonctions de sauvegarde
         let overlayPointerStart = { x: 0, y: 0 };
         let effectiveStart = new Date();    // Plage effective calculée à chaque render()
         let effectiveDays = 30;             // = période vue + extension pour tâches qui chevauchent
@@ -5278,10 +5279,13 @@ if (typeof globalThis !== 'undefined') {
                 await grist.docApi.applyUserActions([['UpdateRecord', 'Tasks', panelState.taskId, pruneTaskRecord(record)]]);
                 
                 // 2. Synchroniser les affectations si le service est disponible
-                if (typeof assignmentIntegration !== 'undefined' && assignmentIntegration) {
+                if (assignmentIntegration) {
                     var syncResult = await assignmentIntegration.onTaskUpdated(panelState.taskId, data);
                     if (!syncResult.ok) {
                         console.warn('[Gantt] Échec synchronisation affectations:', syncResult);
+                        showToast('Affectations non synchronisées', 'error');
+                        await loadAllData();
+                        return;
                     }
                 }
                 
@@ -5290,7 +5294,6 @@ if (typeof globalThis !== 'undefined') {
                 if (idx !== -1) tasks[idx] = { ...tasks[idx], ...record };
             } catch (e) {
                 console.error(e);
-                showToast('Erreur sauvegarde', 'error');
                 showToast('Erreur sauvegarde', 'error');
             }
         }
@@ -5317,22 +5320,42 @@ if (typeof globalThis !== 'undefined') {
                 charges: TF.chargesToJson((data.charges || []).filter(c => data.assignees.includes(c.teamId))), dateCloture: data.dateCloture || null
             };
 
+            if (gristReady) {
+                try {
                     // 1. Créer la tâche
                     var createResults = await grist.docApi.applyUserActions([['AddRecord', 'Tasks', null, pruneTaskRecord(record)]]);
-                    var taskId = createResults && createResults[0] ? createResults[0] : null;
+                    var taskId = getCreatedRecordId(createResults);
                     
-                    // 2. Synchroniser les affectations si le service est disponible
-                    if (taskId && typeof assignmentIntegration !== 'undefined' && assignmentIntegration) {
-                        var syncResult = await assignmentIntegration.onTaskCreated(taskId, data);
-                        if (!syncResult.ok) {
-                            console.warn('[Gantt] Échec synchronisation affectations:', syncResult);
-                            showToast('Tâche créée mais affectations non synchronisées', 'error');
-                        }
+                    console.log('[Gantt] Task créée', {
+                        taskId: taskId,
+                        createResults: createResults,
+                        integrationAvailable: Boolean(assignmentIntegration)
+                    });
+                    
+                    // 2. Vérifier que l'intégration est disponible
+                    if (!assignmentIntegration) {
+                        throw new Error(
+                            'TaskAssignment integration non disponible après création de la tâche ' +
+                            taskId
+                        );
+                    }
+                    
+                    // 3. Synchroniser les affectations
+                    var syncResult = await assignmentIntegration.onTaskCreated(taskId, data);
+                    console.log('[Gantt] Synchronisation TaskAssignments', syncResult);
+                    
+                    if (!syncResult.ok) {
+                        console.warn('[Gantt] Échec synchronisation affectations:', syncResult);
+                        showToast('Tâche créée mais affectations non synchronisées', 'error');
+                        await loadAllData();
+                        return;
                     }
                     
                     showToast('Tâche créée', 'success');
                     closePanel();
                     await loadAllData();
+                } catch (e) {
+                    console.error(e);
                     showToast('Erreur création', 'error');
                 }
             } else {
@@ -5494,15 +5517,26 @@ if (typeof globalThis !== 'undefined') {
                     cascadeUpdates.forEach(u => actions.push(['UpdateRecord', 'Tasks', u.id, { dateDebut: u.dateDebut, dateEcheance: u.dateEcheance }]));
                     await grist.docApi.applyUserActions(actions);
 
-                    
-                    // Synchroniser les affectations pour la tâche principale si le service est disponible
-                    if (typeof assignmentIntegration !== 'undefined' && assignmentIntegration) {
+                    // Synchroniser les affectations pour TOUTES les tâches modifiées
+                    if (assignmentIntegration) {
                         try {
+                            // Tâche principale
                             await assignmentIntegration.syncTaskDates(task.id, task.dateDebut, task.dateEcheance);
+                            
+                            // Tâches enfants déplacées
+                            for (const child of childUpdates) {
+                                await assignmentIntegration.syncTaskDates(child.id, child.dateDebut, child.dateEcheance);
+                            }
+                            
+                            // Tâches dépendantes
+                            for (const dep of cascadeUpdates) {
+                                await assignmentIntegration.syncTaskDates(dep.id, dep.dateDebut, dep.dateEcheance);
+                            }
                         } catch (syncErr) {
                             console.warn('[Gantt] Échec synchronisation dates affectations:', syncErr);
                         }
                     }
+                    
                     const extras = childUpdates.length + cascadeUpdates.length;
                     showToast(extras > 0 ? `Dates mises à jour (+${extras} tâches liées)` : 'Dates mises à jour', 'success');
                 } catch (err) { showToast('Erreur de mise à jour', 'error'); }
@@ -5515,6 +5549,41 @@ if (typeof globalThis !== 'undefined') {
         // ═══════════════════════════════════════════════════════════════════════
         // GRIST INTEGRATION
         // ═══════════════════════════════════════════════════════════════════════
+        
+        // Helper robuste pour extraire l'ID d'un enregistrement créé
+        function getCreatedRecordId(result, actionIndex = 0) {
+            // Format Grist standard : { retValues: [ID] }
+            if (result && Array.isArray(result.retValues)) {
+                const value = result.retValues[actionIndex];
+                if (Number.isInteger(value) && value > 0) {
+                    return value;
+                }
+            }
+            
+            // Compatibilité avec certains mocks ou wrappers
+            if (Array.isArray(result)) {
+                const value = result[actionIndex];
+                if (Number.isInteger(value) && value > 0) {
+                    return value;
+                }
+            }
+            
+            // Résultat direct (rare)
+            if (Number.isInteger(result) && result > 0) {
+                return result;
+            }
+            
+            // Objet avec .id
+            if (result && Number.isInteger(result.id) && result.id > 0) {
+                return result.id;
+            }
+            
+            throw new Error(
+                'Impossible de récupérer l\'ID créé : ' +
+                JSON.stringify(result)
+            );
+        }
+        
         function convert(data) {
             if (!data || Array.isArray(data)) return data || [];
             const cols = Object.keys(data);
@@ -5763,7 +5832,6 @@ if (typeof globalThis !== 'undefined') {
             document.querySelectorAll('.demo-badge').forEach(el => el.remove());
             
             // Initialiser l'intégration TaskAssignments
-            var assignmentIntegration = null;
             if (typeof createGanttAssignmentIntegration === 'function') {
                 assignmentIntegration = createGanttAssignmentIntegration(grist, { logEnabled: false });
                 console.log('[Gantt] TaskAssignment integration initialized');
@@ -5777,16 +5845,12 @@ if (typeof globalThis !== 'undefined') {
                 onReadOnly: () => showToast('Lecture seule : modification non autorisee', 'error'),
                 onDenied: () => { showToast('Modification refusee par vos droits', 'error'); loadAllData(); }
             });
-            // Phase 2 : ici on est dans Grist. Toute erreur est logguée mais ne bascule PAS en démo.
-            // En lecture seule, on ne tente pas de creer le schema (ecritures bloquees).
-            if (!TF.isReadOnly()) {
-                try {
-                    await ensureSchema();
-                } catch (e) {
-                    console.error('ensureSchema error (continuing):', e);
-                    showToast('Schéma: ' + (e?.message || e), 'error');
-                }
-            }
+            // Phase 2 : ici on est dans Grist.
+            // NOTE : La gestion du schéma est déléguée au Kanban (étape 1)
+            // Le Gantt ne modifie jamais le schéma directement.
+            // if (!TF.isReadOnly()) {
+            //     try { await ensureSchema(); } catch (e) { ... }
+            // }
             try { CRA_ACTIVE = (await grist.docApi.listTables()).includes('TimeEntries'); } catch (e) {}
             
             // Afficher le squelette pendant le chargement

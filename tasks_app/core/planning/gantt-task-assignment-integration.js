@@ -111,6 +111,17 @@
                 });
 
                 log('Synchronisation après création : ' + JSON.stringify(result));
+                
+                // En cas d'échec partiel, marquer comme échec
+                if (!result.ok || result.code === 'LEGACY_SYNC_PARTIAL') {
+                    return {
+                        ok: false,
+                        code: result.code || 'SYNC_ERROR',
+                        message: result.message,
+                        details: result.details
+                    };
+                }
+                
                 return result;
 
             } catch (e) {
@@ -156,6 +167,17 @@
                 });
 
                 log('Synchronisation après modification : ' + JSON.stringify(result));
+                
+                // En cas d'échec partiel, le signaler
+                if (!result.ok || result.code === 'LEGACY_SYNC_PARTIAL') {
+                    return {
+                        ok: false,
+                        code: result.code || 'SYNC_ERROR',
+                        message: result.message,
+                        details: result.details
+                    };
+                }
+                
                 return result;
 
             } catch (e) {

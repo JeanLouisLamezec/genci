@@ -448,16 +448,50 @@
             }
 
             try {
-                // 1. Charger les affectations existantes
+                // 1. Charger les affectations existantes et les métadonnées
                 var existingAssignments = await loadAssignmentsForTask(taskId);
                 log('Affectations existantes pour la tâche ' + taskId + ' : ' + existingAssignments.length);
 
-                // 2. Normaliser les affectations désirées
+                // Charger les métadonnées pour validation
+                var tasksTable = await grist.docApi.fetchTable('Tasks');
+                var teamTable = await grist.docApi.fetchTable('Team');
+                
+                var gristContext = {
+                    existingAssignments: existingAssignments,
+                    tasks: tasksTable.id ? tasksTable.id.map(function(id, i) { 
+                        return { id: id, titre: tasksTable.titre ? tasksTable.titre[i] : '' }; 
+                    }) : [],
+                    members: teamTable.id ? teamTable.id.map(function(id, i) {
+                        return { id: id, nom: teamTable.nom ? teamTable.nom[i] : '' };
+                    }) : []
+                };
+
+                // 2. Valider les affectations désirées AVANT toute normalisation
+                var validation = validateDesiredAssignments(taskId, desiredAssignments, gristContext);
+                if (!validation.valid) {
+                    return {
+                        ok: false,
+                        code: 'VALIDATION_ERROR',
+                        message: 'Validation échouée',
+                        details: validation.errors,
+                        errors: validation.errors,
+                        warnings: validation.warnings
+                    };
+                }
+
+                // 3. Normaliser les affectations désirées (seulement si validation OK)
                 var normalized = (desiredAssignments || []).map(function(a) {
+                    var allocatedHours = typeof a.allocatedHours === 'number' ? a.allocatedHours : 
+                                        (typeof a.heuresAllouees === 'number' ? a.heuresAllouees : null);
+                    
+                    // Interdire les conversions silencieuses en zéro
+                    if (allocatedHours === null || !isFinite(allocatedHours) || allocatedHours < 0) {
+                        throw new Error('heuresAllouees invalide : ' + JSON.stringify(a.allocatedHours || a.heuresAllouees));
+                    }
+                    
                     return {
                         memberId: a.memberId,
-                        allocatedHours: typeof a.allocatedHours === 'number' ? a.allocatedHours : 
-                                      (typeof a.heuresAllouees === 'number' ? a.heuresAllouees : 0),
+                        allocatedHours: allocatedHours,
                         startDate: normalizeDate(a.startDate || a.dateDebut),
                         endDate: normalizeDate(a.endDate || a.dateFin),
                         distributionMode: a.distributionMode || a.modeRepartition || DEFAULT_DISTRIBUTION_MODE,
@@ -466,7 +500,7 @@
                     };
                 });
 
-                // 3. Calculer le diff
+                // 4. Calculer le diff
                 var diff = calculateDiff(existingAssignments, normalized);
                 log('Diff calculé : ' + JSON.stringify({
                     creates: diff.creates.length,
@@ -476,7 +510,7 @@
                     conflicts: diff.conflicts.length
                 }));
 
-                // 4. Vérifier les conflits bloquants
+                // 5. Vérifier les conflits bloquants
                 if (diff.conflicts.length > 0 && !syncOptions.ignoreConflicts) {
                     return {
                         ok: false,
@@ -487,7 +521,7 @@
                     };
                 }
 
-                // 5. Construire les actions Grist
+                // 6. Construire les actions Grist
                 var actions = [];
                 var createdIds = [];
                 var updatedIds = [];
@@ -530,28 +564,54 @@
                     deactivatedIds.push(a.id);
                 });
 
-                // 6. Exécuter les actions et capturer les IDs créés
+                // 7. Exécuter les actions et capturer les IDs créés
                 if (actions.length > 0) {
                     var actionResults = await grist.docApi.applyUserActions(actions);
                     log('Actions exécutées : ' + actions.length);
                     
                     // Capturer les IDs créés (les AddRecord retournent les nouveaux IDs)
+                    // Format Grist : { retValues: [ID1, ID2, ...] }
+                    var retValues = actionResults && actionResults.retValues ? actionResults.retValues : actionResults;
+                    if (!Array.isArray(retValues)) {
+                        retValues = [];
+                    }
+                    
                     var createdIndex = 0;
                     actions.forEach(function(action, index) {
                         if (action[0] === 'AddRecord' && action[1] === 'TaskAssignments') {
-                            if (actionResults && actionResults[index] != null) {
-                                createdIds.push(actionResults[index]);
+                            if (retValues[index] != null && Number.isInteger(retValues[index]) && retValues[index] > 0) {
+                                createdIds.push(retValues[index]);
                             }
                         }
                     });
                 }
 
-                // 7. Mettre à jour les champs legacy
+                // 8. Mettre à jour les champs legacy (seulement si changement)
+                var legacyActionsCount = 0;
                 if (syncOptions.updateLegacy !== false) {
-                    await deriveLegacyTaskFields(taskId);
+                    var legacyResult = await deriveLegacyTaskFields(taskId);
+                    if (!legacyResult.ok) {
+                        log('Erreur mise à jour legacy : ' + legacyResult.message);
+                        // Continuer mais signaler l'erreur
+                        return {
+                            ok: false,
+                            code: 'LEGACY_SYNC_PARTIAL',
+                            message: 'TaskAssignments synchronisés mais échec mise à jour Tasks',
+                            details: legacyResult.message,
+                            taskId: taskId,
+                            createdIds: createdIds,
+                            updatedIds: updatedIds,
+                            deactivatedIds: deactivatedIds,
+                            unchangedIds: diff.unchanged,
+                            warnings: diff.warnings,
+                            conflicts: diff.conflicts,
+                            actionsExecuted: actions.length
+                        };
+                    }
+                    legacyActionsCount = legacyResult.actionsExecuted || 0;
                 }
 
-                // 8. Retourner le résultat
+                // 9. Retourner le résultat avec le compteur total
                 return {
                     ok: true,
                     taskId: taskId,
@@ -561,7 +621,7 @@
                     unchangedIds: diff.unchanged,
                     warnings: diff.warnings,
                     conflicts: diff.conflicts,
-                    actionsExecuted: actions.length
+                    actionsExecuted: actions.length + legacyActionsCount
                 };
 
             } catch (e) {
@@ -579,11 +639,11 @@
          * Met à jour les champs legacy Tasks.assignees et Tasks.charges
          * à partir des TaskAssignments
          * @param {number} taskId - ID de la tâche
-         * @returns {Promise<Object>} Résultat
+         * @returns {Promise<Object>} Résultat avec actionsExecuted
          */
         async function deriveLegacyTaskFields(taskId) {
             if (!grist || !grist.docApi) {
-                return { ok: false, code: 'GRIST_NOT_AVAILABLE' };
+                return { ok: false, code: 'GRIST_NOT_AVAILABLE', actionsExecuted: 0 };
             }
 
             try {
@@ -591,6 +651,35 @@
                 var assignees = assignmentsToLegacyAssignees(assignments);
                 var charges = assignmentsToLegacyCharges(assignments);
 
+                // Charger l'état actuel de la tâche pour éviter les écritures inutiles
+                var tasksTable = await grist.docApi.fetchTable('Tasks');
+                var currentTask = null;
+                var taskIndex = -1;
+                
+                if (tasksTable.id) {
+                    for (var i = 0; i < tasksTable.id.length; i++) {
+                        if (tasksTable.id[i] === taskId) {
+                            taskIndex = i;
+                            break;
+                        }
+                    }
+                }
+                
+                if (taskIndex >= 0) {
+                    var currentAssignees = tasksTable.assignees ? tasksTable.assignees[taskIndex] : [];
+                    var currentCharges = tasksTable.charges ? tasksTable.charges[taskIndex] : null;
+                    
+                    // Comparer pour éviter les écritures inutiles
+                    var assigneesEqual = JSON.stringify(currentAssignees || []) === JSON.stringify(assignees);
+                    var chargesEqual = (currentCharges || '') === charges;
+                    
+                    if (assigneesEqual && chargesEqual) {
+                        log('Champs legacy inchangés pour la tâche ' + taskId);
+                        return { ok: true, assignees: assignees, charges: charges, actionsExecuted: 0 };
+                    }
+                }
+
+                // Écrire uniquement si changement
                 await grist.docApi.applyUserActions([
                     ['UpdateRecord', 'Tasks', taskId, {
                         assignees: assignees,
@@ -599,14 +688,15 @@
                 ]);
 
                 log('Champs legacy mis à jour pour la tâche ' + taskId);
-                return { ok: true, assignees: assignees, charges: charges };
+                return { ok: true, assignees: assignees, charges: charges, actionsExecuted: 1 };
 
             } catch (e) {
                 log('Erreur lors de la mise à jour des champs legacy : ' + e.message);
                 return {
                     ok: false,
                     code: 'LEGACY_UPDATE_ERROR',
-                    message: e.message
+                    message: e.message,
+                    actionsExecuted: 0
                 };
             }
         }
