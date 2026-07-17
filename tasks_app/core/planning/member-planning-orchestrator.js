@@ -6,20 +6,19 @@
  * cet orchestrateur maintient un registre de capacité quotidien partagé.
  */
 
-(function (global) {
-  'use strict';
-  
-  // Import des dépendances
-  var PlanningEngine = global.PlanningEngine || require('./planning-engine.js');
-  var PlanningReconciliation = global.PlanningReconciliation || require('./planning-reconciliation.js');
-  
-  var toCentiHours = PlanningEngine.toCentiHours;
-  var toHours = PlanningEngine.toHours;
-  var formatDateUTC = PlanningEngine.formatDateUTC;
-  var parseDateUTC = PlanningEngine.parseDateUTC;
-  var addDaysUTC = PlanningEngine.addDaysUTC;
-  var generateDateRange = PlanningEngine.generateDateRange;
-  var reconcileDailyEntries = PlanningReconciliation.reconcileDailyEntries;
+'use strict';
+
+// Import des dépendances
+var PlanningEngine = require('./planning-engine.js');
+var PlanningReconciliation = require('./planning-reconciliation.js');
+
+var toCentiHours = PlanningEngine.toCentiHours;
+var toHours = PlanningEngine.toHours;
+var formatDateUTC = PlanningEngine.formatDateUTC;
+var parseDateUTC = PlanningEngine.parseDateUTC;
+var addDaysUTC = PlanningEngine.addDaysUTC;
+var generateDateRange = PlanningEngine.generateDateRange;
+var reconcileDailyEntries = PlanningReconciliation.reconcileDailyEntries;
   
   // ===========================================================================
   // Helpers de date
@@ -452,6 +451,8 @@
         // 1. Charger les données
         var data = await loadMemberData(memberId);
         
+        log('Données chargées: ' + data.assignments.length + ' affectations, ' + data.tasks.length + ' tâches');
+        
         if (data.assignments.length === 0) {
           log('Aucune affectation pour le membre ' + memberId);
           return {
@@ -482,6 +483,7 @@
         var period = calculateGlobalPeriod(data.assignments, data.timeEntries);
         
         if (!period) {
+          log('Période invalide');
           return {
             success: false,
             code: 'INVALID_PERIOD'
@@ -511,8 +513,12 @@
         var allDiagnostics = [];
         var totalUnplanned = 0;
         
+        log('Début traitement de ' + data.assignments.length + ' affectations...');
+        
         for (var i = 0; i < data.assignments.length; i++) {
           var assignment = data.assignments[i];
+          
+          // Trouver la tâche par ID (data.tasks est un objet, pas un tableau)
           var task = data.tasks[assignment.tache];
           
           if (!task) {
@@ -522,36 +528,45 @@
           
           log('Traitement affectation ' + assignment.id + ' (tâche ' + assignment.tache + ')');
           
-          // Obtenir la capacité restante du registre
-          var remainingCapacities = {};
-          registry.dates.forEach(function(date) {
-            remainingCapacities[date] = registry.getRemainingCapacity(date);
+          // Construire le tableau de capacités restantes pour le moteur
+          var capacitiesArray = registry.dates.map(function(date) {
+            var regEntry = registry.getRegistry()[date];
+            return {
+              date: date,
+              baseCapacityHours: regEntry.baseCapacityHours,
+              availableCapacityHours: regEntry.remainingCapacityHours
+            };
           });
           
-          // Appeler le moteur de planification avec la capacité restante
-          // Note: ceci est un appel simplifié - dans une implémentation complète,
-          // il faudrait adapter le planning-engine pour accepter un objet de capacités
-          var planningResult = await PlanningEngine.planAssignment({
+          // Appeler le moteur de planification avec le bon contrat
+          var planningResult = PlanningEngine.buildAssignmentPlan({
             assignment: assignment,
-            task: task,
-            capacities: remainingCapacities,
+            capacities: capacitiesArray,
             existingEntries: data.timeEntries.filter(function(e) {
               return e.tache === assignment.tache && e.membre === memberId;
             }),
-            options: options
+            replanFromDate: null,
+            precisionHours: 0.01,
+            capacityPolicy: 'cap'
           });
           
-          if (!planningResult.success) {
+          // Vérifier les diagnostics bloquants
+          var hasBlockingDiagnostic = planningResult.diagnostics.some(function(d) {
+            return d.severity === 'error' || d.code === 'MISSING_ASSIGNMENT';
+          });
+          
+          if (hasBlockingDiagnostic) {
             assignmentResults.push({
               assignmentId: assignment.id,
               success: false,
-              error: planningResult.error
+              error: 'Diagnostic bloquant',
+              diagnostics: planningResult.diagnostics
             });
             continue;
           }
           
           // Réserver les heures dans le registre
-          var plannedEntries = planningResult.plannedEntries || [];
+          var plannedEntries = planningResult.desiredPlan || [];
           plannedEntries.forEach(function(entry) {
             registry.reserveHours(entry.date, entry.plannedHours);
           });
@@ -560,11 +575,12 @@
             assignmentId: assignment.id,
             success: true,
             plannedEntries: plannedEntries,
-            diagnostics: planningResult.diagnostics || []
+            diagnostics: planningResult.diagnostics || [],
+            summary: planningResult.summary
           });
           
           allDiagnostics = allDiagnostics.concat(planningResult.diagnostics || []);
-          totalUnplanned += (planningResult.unplannedHours || 0);
+          totalUnplanned += (planningResult.summary.unplannedHours || 0);
         }
         
         // 6. Vérifier la postcondition
@@ -838,7 +854,9 @@
     };
   }
   
-  // Export
-  global.createMemberPlanningOrchestrator = createMemberPlanningOrchestrator;
-  
-})(typeof window !== 'undefined' ? window : (typeof global !== 'undefined' ? global : this));
+  // Export CommonJS
+  module.exports = {
+    createMemberPlanningOrchestrator: createMemberPlanningOrchestrator,
+    createCapacityRegistry: createCapacityRegistry,
+    sortAssignments: sortAssignments
+  };

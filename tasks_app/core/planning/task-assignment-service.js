@@ -371,6 +371,15 @@
         return unique;
     }
 
+    /**
+     * Convertit un tableau d'IDs en format RefList Grist
+     * @param {Array} ids - IDs numériques
+     * @returns {Array} Format Grist ['L', id1, id2, ...]
+     */
+    function toGristRefList(ids) {
+        return ['L'].concat(ids || []);
+    }
+
     // =========================================================================
     // Service principal
     // =========================================================================
@@ -670,8 +679,25 @@
                     var currentAssignees = tasksTable.assignees ? tasksTable.assignees[taskIndex] : [];
                     var currentCharges = tasksTable.charges ? tasksTable.charges[taskIndex] : null;
                     
+                    // Normaliser currentAssignees pour la comparaison (enlever le 'L' de Grist)
+                    var normalizedCurrentAssignees = [];
+                    if (Array.isArray(currentAssignees)) {
+                        normalizedCurrentAssignees = currentAssignees
+                            .filter(function(v) { return v !== 'L'; })
+                            .map(function(v) { return Number(v); })
+                            .filter(function(v) { return Number.isInteger(v) && v > 0; })
+                            .sort(function(a, b) { return a - b; });
+                    }
+                    
+                    // Vérifier si la valeur actuelle est invalide (#KeyError ou autre erreur)
+                    var isCurrentAssigneesInvalid = false;
+                    if (currentAssignees && typeof currentAssignees === 'string' && currentAssignees.indexOf('#KeyError') >= 0) {
+                        isCurrentAssigneesInvalid = true;
+                    }
+                    
                     // Comparer pour éviter les écritures inutiles
-                    var assigneesEqual = JSON.stringify(currentAssignees || []) === JSON.stringify(assignees);
+                    var assigneesEqual = !isCurrentAssigneesInvalid && 
+                                         JSON.stringify(normalizedCurrentAssignees) === JSON.stringify(assignees);
                     var chargesEqual = (currentCharges || '') === charges;
                     
                     if (assigneesEqual && chargesEqual) {
@@ -683,7 +709,7 @@
                 // Écrire uniquement si changement
                 await grist.docApi.applyUserActions([
                     ['UpdateRecord', 'Tasks', taskId, {
-                        assignees: assignees,
+                        assignees: toGristRefList(assignees),
                         charges: charges
                     }]
                 ]);
@@ -935,7 +961,9 @@
                 normalizeDate: normalizeDate,
                 isValidGristId: isValidGristId,
                 validateAssignment: validateAssignment,
-                calculateDiff: calculateDiff
+                calculateDiff: calculateDiff,
+                assignmentsToLegacyAssignees: assignmentsToLegacyAssignees,
+                toGristRefList: toGristRefList
             }
         };
     }
