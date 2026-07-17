@@ -143,15 +143,16 @@
                                ', utilisation de la valeur par défaut : ' + DEFAULT_DISTRIBUTION_MODE);
         }
 
-        // Unicité : vérifier les doublons actifs dans le contexte
+        // Unicité : vérifier les véritables doublons (plusieurs lignes actives pour même membre)
+        // Une ligne existante pour le même membre n'est PAS un doublon bloquant, c'est la ligne à mettre à jour
         if (context && context.existingAssignments) {
-            var duplicates = context.existingAssignments.filter(function(a) {
+            var activeForSameMember = context.existingAssignments.filter(function(a) {
                 return a.membre === assignment.memberId && 
-                       a.actif !== false && 
-                       a.id !== assignment.id; // exclure l'affectation elle-même si mise à jour
+                       a.actif !== false;
             });
-            if (duplicates.length > 0) {
-                result.errors.push('Doublon actif détecté pour le membre ' + assignment.memberId);
+            // Conflit uniquement s'il y a PLUSIEURS lignes actives pour le même membre
+            if (activeForSameMember.length > 1) {
+                result.errors.push('Plusieurs affectations actives pour le membre ' + assignment.memberId + ' (conflit de doublons)');
                 result.valid = false;
             }
         }

@@ -334,7 +334,7 @@ describe('Planning Generator Service - Régénération', () => {
     service = createPlanningGeneratorService(mockGrist);
   });
 
-  test('régénération d'une tâche', async () => {
+  test('régénération d\'une tâche', async () => {
     const result = await service.regenerateTaskPlanning(1);
 
     expect(result.ok).toBe(true);

@@ -5264,6 +5264,27 @@ if (typeof globalThis !== 'undefined') {
                 return;
             }
 
+            const originalTask = panelState.originalTask || {};
+            
+            // Déterminer si les affectations ont été modifiées explicitement
+            const assigneesChanged = JSON.stringify(data.assignees || []) !== JSON.stringify(originalTask.assignees || []);
+            
+            // Comparaison correcte des charges (normalisée)
+            function normalizeCharges(charges) {
+                return (charges || [])
+                    .map(c => ({
+                        teamId: Number(c.teamId || 0),
+                        heures: Number(c.heures || 0)
+                    }))
+                    .sort((a, b) => a.teamId - b.teamId);
+            }
+            const chargesChanged = JSON.stringify(normalizeCharges(data.charges)) !== JSON.stringify(normalizeCharges(originalTask.charges));
+            
+            // Déterminer si les dates ont été modifiées
+            const datesChanged = 
+                Number(data.dateDebut || 0) !== Number(originalTask.dateDebut || 0) ||
+                Number(data.dateEcheance || 0) !== Number(originalTask.dateEcheance || 0);
+            
             const record = {
                 titre: data.titre, description: data.description, type: data.type, priorite: data.priorite,
                 statut: data.statut, progression: data.progression, dateDebut: data.dateDebut, dateEcheance: data.dateEcheance,
@@ -5279,14 +5300,37 @@ if (typeof globalThis !== 'undefined') {
                 await grist.docApi.applyUserActions([['UpdateRecord', 'Tasks', panelState.taskId, pruneTaskRecord(record)]]);
                 
                 // 2. Synchroniser les affectations si le service est disponible
+                var assignmentSyncSuccess = true;
+                var syncErrorMessage = null;
+                
                 if (assignmentIntegration) {
-                    var syncResult = await assignmentIntegration.onTaskUpdated(panelState.taskId, data);
+                    // Préparer les données avec les flags explicites
+                    var syncData = Object.assign({}, data, {
+                        assignmentsEdited: (assigneesChanged || chargesChanged),
+                        datesEdited: datesChanged
+                    });
+                    
+                    var syncResult = await assignmentIntegration.onTaskUpdated(panelState.taskId, syncData);
                     if (!syncResult.ok) {
                         console.warn('[Gantt] Échec synchronisation affectations:', syncResult);
-                        showToast('Affectations non synchronisées', 'error');
-                        await loadAllData();
-                        return;
+                        assignmentSyncSuccess = false;
+                        syncErrorMessage = syncResult.message || syncResult.code;
                     }
+                }
+                
+                // 3. Afficher le bon message selon le résultat
+                if (assignmentSyncSuccess) {
+                    if (datesChanged && (assigneesChanged || chargesChanged)) {
+                        showToast('Dates et affectations enregistrées', 'success');
+                    } else if (datesChanged) {
+                        showToast('Dates enregistrées', 'success');
+                    } else if (assigneesChanged || chargesChanged) {
+                        showToast('Affectations enregistrées', 'success');
+                    } else {
+                        showToast('Tâche enregistrée', 'success');
+                    }
+                } else {
+                    showToast('Tâche enregistrée, mais échec synchronisation : ' + syncErrorMessage, 'warning');
                 }
                 
                 showSaveIndicator();
@@ -5346,12 +5390,12 @@ if (typeof globalThis !== 'undefined') {
                     
                     if (!syncResult.ok) {
                         console.warn('[Gantt] Échec synchronisation affectations:', syncResult);
-                        showToast('Tâche créée mais affectations non synchronisées', 'error');
+                        showToast('Tâche créée mais affectations non synchronisées', 'warning');
                         await loadAllData();
                         return;
                     }
                     
-                    showToast('Tâche créée', 'success');
+                    showToast('Tâche et affectations créées', 'success');
                     closePanel();
                     await loadAllData();
                 } catch (e) {
@@ -5518,27 +5562,49 @@ if (typeof globalThis !== 'undefined') {
                     await grist.docApi.applyUserActions(actions);
 
                     // Synchroniser les affectations pour TOUTES les tâches modifiées
+                    var allSuccess = true;
+                    var syncErrors = [];
+                    
                     if (assignmentIntegration) {
                         try {
                             // Tâche principale
-                            await assignmentIntegration.syncTaskDates(task.id, task.dateDebut, task.dateEcheance);
+                            var mainResult = await assignmentIntegration.syncTaskDates(task.id, task.dateDebut, task.dateEcheance);
+                            if (!mainResult.ok) {
+                                allSuccess = false;
+                                syncErrors.push('Tâche principale: ' + (mainResult.message || 'échec'));
+                            }
                             
                             // Tâches enfants déplacées
                             for (const child of childUpdates) {
-                                await assignmentIntegration.syncTaskDates(child.id, child.dateDebut, child.dateEcheance);
+                                var childResult = await assignmentIntegration.syncTaskDates(child.id, child.dateDebut, child.dateEcheance);
+                                if (!childResult.ok) {
+                                    allSuccess = false;
+                                    syncErrors.push('Enfant ' + child.id + ': ' + (childResult.message || 'échec'));
+                                }
                             }
                             
                             // Tâches dépendantes
                             for (const dep of cascadeUpdates) {
-                                await assignmentIntegration.syncTaskDates(dep.id, dep.dateDebut, dep.dateEcheance);
+                                var depResult = await assignmentIntegration.syncTaskDates(dep.id, dep.dateDebut, dep.dateEcheance);
+                                if (!depResult.ok) {
+                                    allSuccess = false;
+                                    syncErrors.push('Dépendante ' + dep.id + ': ' + (depResult.message || 'échec'));
+                                }
                             }
                         } catch (syncErr) {
-                            console.warn('[Gantt] Échec synchronisation dates affectations:', syncErr);
+                            allSuccess = false;
+                            syncErrors.push('Erreur synchronisation: ' + syncErr.message);
                         }
                     }
                     
+                    // Afficher le bon message selon le résultat
                     const extras = childUpdates.length + cascadeUpdates.length;
-                    showToast(extras > 0 ? `Dates mises à jour (+${extras} tâches liées)` : 'Dates mises à jour', 'success');
+                    if (allSuccess) {
+                        showToast(extras > 0 ? `Dates et affectations mises à jour (+${extras} tâches liées)` : 'Dates et affectations mises à jour', 'success');
+                    } else {
+                        console.warn('[Gantt] Échec partiel synchronisation:', syncErrors);
+                        showToast('Dates mises à jour, mais échec synchronisation affectations', 'warning');
+                    }
                 } catch (err) { showToast('Erreur de mise à jour', 'error'); }
             }
 

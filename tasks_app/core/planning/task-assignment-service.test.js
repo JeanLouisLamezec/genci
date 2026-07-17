@@ -671,19 +671,15 @@ describe('Scénarios d\'intégration métier', () => {
     });
 
     test('échec de synchronisation visible', async () => {
-        // Tâche inexistante - le service devrait détecter cela
-        // Note: actuellement le service ne valide pas l'existence de la tâche
-        // lors de la synchronisation, seulement lors de la validation
+        // Tâche inexistante - le service DOIT détecter cela
         const result = await service.syncTaskAssignments(999, [
             { memberId: 1, allocatedHours: 35, startDate: 1000, endDate: 2000 }
         ]);
 
-        // Le service crée l'affectation même si la tâche n'existe pas
-        // C'est une limitation actuelle - à améliorer dans une future passe
-        expect(result.ok).toBe(true);
-        // expect(result.ok).toBe(false);
-        // expect(result.code).toBeDefined();
-        // expect(result.message).toBeDefined();
+        // Le service doit rejeter la synchronisation car la tâche n'existe pas
+        expect(result.ok).toBe(false);
+        expect(result.code).toBeDefined();
+        expect(result.message).toBeDefined();
     });
 
     test('récupération correcte du row ID créé', async () => {
