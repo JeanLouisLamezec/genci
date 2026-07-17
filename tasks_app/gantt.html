@@ -4699,10 +4699,13 @@ if (typeof globalThis !== 'undefined') {
             selectedTaskId = taskId;
             const idx = panelState.taskList.findIndex(t => t.id === taskId);
 
+            const initialData = cloneTaskData(task);
+
             panelState.isNew = false;
             panelState.taskId = taskId;
             panelState.taskIndex = idx >= 0 ? idx : 0;
-            panelState.editData = cloneTaskData(task);
+            panelState.originalTask = cloneEditableTaskData(initialData);
+            panelState.editData = cloneEditableTaskData(initialData);
 
             renderPanel();
             openPanel();
@@ -4768,6 +4771,30 @@ if (typeof globalThis !== 'undefined') {
                 assignees: getAssigneesArray(task), dependDe: getDependsOnArray(task), tags: getTagsArray(task),
                 estimationH: task.estimationH || null, tempsPasse: task.tempsPasse || null, subtasks: getSubtasks(task),
                 couleur: task.couleur || null, parentTask: task.parentTask || null, charges: TF.parseCharges(task.charges), dateCloture: task.dateCloture || null
+            };
+        }
+
+        function cloneEditableTaskData(data) {
+            return {
+                titre: data.titre || '',
+                description: data.description || '',
+                type: data.type || 'tache',
+                priorite: String(data.priorite || '3'),
+                statut: data.statut || 'todo',
+                progression: data.progression || 0,
+                dateDebut: data.dateDebut,
+                dateEcheance: data.dateEcheance,
+                projet: data.projet || null,
+                assignees: [...(data.assignees || [])],
+                dependDe: [...(data.dependDe || [])],
+                tags: [...(data.tags || [])],
+                estimationH: data.estimationH || null,
+                tempsPasse: data.tempsPasse || null,
+                subtasks: (data.subtasks || []).map(s => ({ ...s })),
+                couleur: data.couleur || null,
+                parentTask: data.parentTask || null,
+                charges: (data.charges || []).map(c => ({ ...c })),
+                dateCloture: data.dateCloture || null
             };
         }
 
@@ -5266,69 +5293,139 @@ if (typeof globalThis !== 'undefined') {
                 return;
             }
 
-            const originalTask = panelState.originalTask || {};
-            
-            // Déterminer si les affectations ont été modifiées explicitement
-            const assigneesChanged = JSON.stringify(data.assignees || []) !== JSON.stringify(originalTask.assignees || []);
-            
-            // Comparaison correcte des charges (normalisée)
-            function normalizeCharges(charges) {
-                return (charges || [])
-                    .map(c => ({
-                        teamId: Number(c.teamId || 0),
-                        heures: Number(c.heures || 0)
-                    }))
-                    .sort((a, b) => a.teamId - b.teamId);
+            const taskId = panelState.taskId;
+            const saveData = cloneEditableTaskData(data);
+            const originalData = cloneEditableTaskData(panelState.originalTask || {});
+
+            function normalizeDate(dateInput) {
+                if (dateInput == null) return null;
+                if (typeof dateInput === 'number') {
+                    return Math.floor(dateInput);
+                }
+                if (dateInput instanceof Date) {
+                    return Math.floor(dateInput.getTime() / 1000);
+                }
+                if (typeof dateInput === 'string') {
+                    var d = new Date(dateInput);
+                    if (!isNaN(d.getTime())) {
+                        return Math.floor(d.getTime() / 1000);
+                    }
+                }
+                return null;
             }
-            const chargesChanged = JSON.stringify(normalizeCharges(data.charges)) !== JSON.stringify(normalizeCharges(originalTask.charges));
-            
-            // Déterminer si les dates ont été modifiées
-            const datesChanged = 
-                Number(data.dateDebut || 0) !== Number(originalTask.dateDebut || 0) ||
-                Number(data.dateEcheance || 0) !== Number(originalTask.dateEcheance || 0);
-            
+
+            function normalizeAssigneeIds(value) {
+                if (!Array.isArray(value)) return [];
+                return value
+                    .filter(function(v) { return v !== 'L'; })
+                    .map(function(v) { return Number(v); })
+                    .filter(function(v) { return Number.isInteger(v) && v > 0; })
+                    .sort(function(a, b) { return a - b; });
+            }
+
+            function normalizeChargesValue(charges) {
+                if (!charges) return [];
+                var chargesArray = charges;
+                if (typeof charges === 'string') {
+                    try {
+                        chargesArray = JSON.parse(charges);
+                    } catch (e) {
+                        return [];
+                    }
+                }
+                if (!Array.isArray(chargesArray)) return [];
+                return chargesArray
+                    .map(function(c) {
+                        return {
+                            teamId: Number(c.teamId || 0),
+                            heures: Number(c.heures || 0)
+                        };
+                    })
+                    .filter(function(c) { return c.teamId > 0; })
+                    .sort(function(a, b) { return a.teamId - b.teamId; });
+            }
+
+            function arraysEqual(a, b) {
+                if (a.length !== b.length) return false;
+                for (var i = 0; i < a.length; i++) {
+                    if (a[i] !== b[i]) return false;
+                }
+                return true;
+            }
+
+            const datesChanged =
+                normalizeDate(saveData.dateDebut) !== normalizeDate(originalData.dateDebut) ||
+                normalizeDate(saveData.dateEcheance) !== normalizeDate(originalData.dateEcheance);
+
+            const assigneesChanged = !arraysEqual(
+                normalizeAssigneeIds(saveData.assignees),
+                normalizeAssigneeIds(originalData.assignees)
+            );
+
+            const chargesChanged = JSON.stringify(normalizeChargesValue(saveData.charges)) !== JSON.stringify(normalizeChargesValue(originalData.charges));
+
+            console.info('[Gantt date sync decision]', {
+                taskId: taskId,
+                originalDates: {
+                    dateDebut: originalData.dateDebut,
+                    dateEcheance: originalData.dateEcheance
+                },
+                newDates: {
+                    dateDebut: saveData.dateDebut,
+                    dateEcheance: saveData.dateEcheance
+                },
+                datesChanged: datesChanged,
+                assigneesChanged: assigneesChanged,
+                chargesChanged: chargesChanged
+            });
+
             const record = {
-                titre: data.titre, description: data.description, type: data.type, priorite: data.priorite,
-                statut: data.statut, progression: data.progression, dateDebut: data.dateDebut, dateEcheance: data.dateEcheance,
-                projet: data.projet, assignees: toGristRefList(data.assignees), dependDe: toGristRefList(data.dependDe),
-                tags: toGristChoiceList(data.tags), estimationH: data.estimationH, tempsPasse: data.tempsPasse,
-                subtasks: subtasksToJson(data.subtasks), couleur: data.couleur || null,
-                parentTask: data.parentTask || null,
-                charges: TF.chargesToJson((data.charges || []).filter(c => data.assignees.includes(c.teamId))), dateCloture: data.dateCloture || null
+                titre: saveData.titre, description: saveData.description, type: saveData.type, priorite: saveData.priorite,
+                statut: saveData.statut, progression: saveData.progression, dateDebut: saveData.dateDebut, dateEcheance: saveData.dateEcheance,
+                projet: saveData.projet, assignees: toGristRefList(saveData.assignees), dependDe: toGristRefList(saveData.dependDe),
+                tags: toGristChoiceList(saveData.tags), estimationH: saveData.estimationH, tempsPasse: saveData.tempsPasse,
+                subtasks: subtasksToJson(saveData.subtasks), couleur: saveData.couleur || null,
+                parentTask: saveData.parentTask || null,
+                charges: TF.chargesToJson((saveData.charges || []).filter(c => saveData.assignees.includes(c.teamId))), dateCloture: saveData.dateCloture || null
             };
 
             try {
-                // 1. Mettre à jour la tâche
-                await grist.docApi.applyUserActions([['UpdateRecord', 'Tasks', panelState.taskId, pruneTaskRecord(record)]]);
+                await grist.docApi.applyUserActions([['UpdateRecord', 'Tasks', taskId, pruneTaskRecord(record)]]);
                 
-                // 2. Synchroniser les affectations si le service est disponible
                 var assignmentSyncSuccess = true;
                 var syncErrorMessage = null;
+                var syncResult = null;
                 
                 if (assignmentIntegration) {
-                    // Préparer les données avec les flags explicites
-                    var syncData = Object.assign({}, data, {
-                        assignmentsEdited: (assigneesChanged || chargesChanged),
-                        datesEdited: datesChanged
-                    });
-                    
-                    var syncResult = await assignmentIntegration.onTaskUpdated(panelState.taskId, syncData);
+                    if (datesChanged && !assigneesChanged && !chargesChanged) {
+                        console.info('[Gantt] Sync dates uniquement pour tâche ' + taskId);
+                        syncResult = await assignmentIntegration.syncTaskDates(taskId, saveData.dateDebut, saveData.dateEcheance);
+                    } else if (assigneesChanged || chargesChanged) {
+                        console.info('[Gantt] Sync affectations pour tâche ' + taskId);
+                        var syncData = Object.assign({}, saveData, {
+                            assignmentsEdited: true,
+                            datesEdited: datesChanged
+                        });
+                        syncResult = await assignmentIntegration.onTaskUpdated(taskId, syncData);
+                    } else {
+                        console.info('[Gantt] Aucun changement affectation/date pour tâche ' + taskId);
+                        syncResult = { ok: true, code: 'NO_ASSIGNMENT_CHANGE' };
+                    }
+
                     if (!syncResult.ok) {
                         console.warn('[Gantt] Échec synchronisation affectations:', syncResult);
                         assignmentSyncSuccess = false;
                         syncErrorMessage = syncResult.message || syncResult.code;
                     } else {
-                        // Replanifier si les affectations ou dates ont changé
                         if (planningService && (datesChanged || assigneesChanged || chargesChanged)) {
                             try {
                                 console.log('[Gantt] Replanification après modification');
-                                // Charger les affectations de la tâche pour identifier les membres
                                 var assignmentsTable = await grist.docApi.fetchTable('TaskAssignments');
                                 var memberIds = [];
                                 
                                 if (assignmentsTable.id) {
                                     for (var i = 0; i < assignmentsTable.id.length; i++) {
-                                        if (assignmentsTable.tache[i] === panelState.taskId && assignmentsTable.actif[i] !== false) {
+                                        if (assignmentsTable.tache[i] === taskId && assignmentsTable.actif[i] !== false) {
                                             var memberId = assignmentsTable.membre[i];
                                             if (memberId && memberIds.indexOf(memberId) < 0) {
                                                 memberIds.push(memberId);
@@ -5351,7 +5448,6 @@ if (typeof globalThis !== 'undefined') {
                     }
                 }
                 
-                // 3. Afficher le bon message selon le résultat
                 if (assignmentSyncSuccess) {
                     if (datesChanged && (assigneesChanged || chargesChanged)) {
                         showToast('Dates et affectations enregistrées', 'success');
@@ -5367,8 +5463,12 @@ if (typeof globalThis !== 'undefined') {
                 }
                 
                 showSaveIndicator();
-                const idx = tasks.findIndex(t => t.id === panelState.taskId);
+                const idx = tasks.findIndex(t => t.id === taskId);
                 if (idx !== -1) tasks[idx] = { ...tasks[idx], ...record };
+
+                if (assignmentSyncSuccess && syncResult && syncResult.ok) {
+                    panelState.originalTask = cloneEditableTaskData(saveData);
+                }
             } catch (e) {
                 console.error(e);
                 showToast('Erreur sauvegarde', 'error');
