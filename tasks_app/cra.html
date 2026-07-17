@@ -4151,11 +4151,7 @@ async function activate() {
 // ============================================================================
 
 // État du scheduler de rechargement
-let craReloadInProgress = false;
-let craReloadRequested = false;
-let craReloadGeneration = 0;
-let craAppliedGeneration = 0;
-let craReloadTimer = null;
+// Le scheduler et le chargement sont maintenant gérés par CraDataLoader
 let craFilterManagerInitialized = false;
 
 /**
@@ -4341,222 +4337,106 @@ function buildCraIndexes() {
   }
 }
 
-/**
- * Applique un snapshot de données de manière atomique (TODO 9)
- */
-function applyCraSnapshot(snapshot, generation) {
-  // Vérifier que ce snapshot n'est pas obsolète
-  if (generation < craAppliedGeneration) {
-    craPerfLog('snapshot.discarded', { generation, applied: craAppliedGeneration });
-    return;
-  }
-  
-  // Appliquer le snapshot
-  Object.assign(S, snapshot);
-  
-  // Construire les index
-  buildCraIndexes();
-  
-  // Mettre à jour le FilterManager
-  updateFilterManagerData();
-  
-  // Marquer comme appliqué
-  craAppliedGeneration = generation;
-  
-  // Rendu unique
-  render();
-  
-  craPerfLog('snapshot.applied', { generation, duration: snapshot.loadDuration });
-}
+// Les fonctions applyCraSnapshot, requestCraReload, runReloadLoop, loadCraSnapshotForReason,
+// ensureCraReadyAndLoad sont maintenant dans CraDataLoader et configurées via CraDataLoader.configure()
 
 /**
- * Demande un rechargement des données CRA (TODO 6)
+ * Helper : affiche l'état de chargement (TODO 10)
  */
-function requestCraReload(options) {
-  const opts = options || {};
-  const reason = opts.reason || 'unknown';
-  
-  if (craReloadInProgress) {
-    craReloadRequested = true;
-    craPerfLog('reload.deferred', { reason });
-    return;
-  }
-  
-  if (opts.immediate) {
-    runCraReloadLoop(reason);
-    return;
-  }
-  
-  clearTimeout(craReloadTimer);
-  craReloadTimer = setTimeout(() => {
-    runCraReloadLoop(reason);
-  }, 120);
-}
-
-/**
- * Boucle de rechargement - sérialise les appels (TODO 6)
- */
-async function runCraReloadLoop(reason) {
-  if (craReloadInProgress) {
-    craReloadRequested = true;
-    return;
-  }
-  
-  craReloadInProgress = true;
-  
-  try {
-    do {
-      craReloadRequested = false;
-      const generation = ++craReloadGeneration;
-      
-      craPerfLog('reload.start', { generation, reason });
-      
-      try {
-        const snapshot = await loadCraSnapshotForReason(reason);
-        
-        if (generation < craReloadGeneration) {
-          craPerfLog('reload.discarded', { generation, current: craReloadGeneration });
-          continue;
-        }
-        
-        applyCraSnapshot(snapshot, generation);
-      } catch (error) {
-        console.error('[CRA] Erreur de rechargement:', error);
-        if (generation < craReloadGeneration) {
-          continue;
-        }
-      }
-    } while (craReloadRequested);
-  } finally {
-    craReloadInProgress = false;
-  }
-}
-
-/**
- * Charge un snapshot CRA pour une raison donnée
- */
-async function loadCraSnapshotForReason(reason) {
-  const loadId = CraDataLoader.createLoadId();
-  const startedAt = performance.now();
-  
-  craPerfLog('fetch.start', { loadId, reason });
-  
-  // Charger les données en parallèle
-  const { raw, fetchDuration } = await CraDataLoader.fetchCraSnapshot(grist);
-  
-  // Normaliser
-  const normalized = CraDataLoader.normalizeCraSnapshot(raw, raw.currentUser);
-  normalized.loadDuration = fetchDuration;
-  
-  craPerfLog('fetch.complete', { loadId, duration: fetchDuration });
-  
-  return normalized;
-}
-
-/**
- * Valide et récupère le schéma CRA avec fast path (TODO 4, 16)
- */
-async function ensureCraReadyAndLoad() {
-  const startedAt = performance.now();
-  const isReadOnly = TF.isReadOnly();
-  
-  try {
-    // Tenter de charger directement
-    const { raw } = await CraDataLoader.fetchCraSnapshot(grist);
-    
-    // Inspecter le snapshot
-    const inspection = CraDataLoader.inspectCraSnapshot(raw);
-    
-    if (inspection.ready) {
-      // Fast path : schéma valide, pas de bootstrap nécessaire
-      craPerfLog('schema.fast-path', { duration: performance.now() - startedAt, readOnly: isReadOnly });
-      return CraDataLoader.normalizeCraSnapshot(raw, raw.currentUser);
-    }
-    
-    // Slow path : schéma incomplet
-    if (isReadOnly) {
-      // TODO 16 : En lecture seule, ne pas tenter de réparation
-      throw new Error(
-        'Le schéma CRA est incomplet et le document est en lecture seule. ' +
-        'Impossible de procéder à la mise à niveau. ' +
-        'Tables manquantes : ' + inspection.missingTables.join(', ') +
-        '. Colonnes manquantes : ' + inspection.missingColumns.join(', ')
-      );
-    }
-    
-    // Afficher l'état de mise à niveau
-    showSchemaUpgradeState(inspection);
-    
-    // Appeler le bootstrap une seule fois
-    await TaskFlowBootstrap.ensureGenciSchema(grist, {
-      reason: 'cra-schema-recovery'
-    });
-    
-    // Recharger après réparation
-    const { raw: rawAfter } = await CraDataLoader.fetchCraSnapshot(grist);
-    const inspectionAfter = CraDataLoader.inspectCraSnapshot(rawAfter);
-    
-    if (!inspectionAfter.ready) {
-      throw new Error(
-        'Le schéma CRA reste incomplet après réparation. ' +
-        'Tables manquantes : ' + inspectionAfter.missingTables.join(', ') +
-        '. Colonnes manquantes : ' + inspectionAfter.missingColumns.join(', ')
-      );
-    }
-    
-    craPerfLog('schema.repaired', { duration: performance.now() - startedAt });
-    return CraDataLoader.normalizeCraSnapshot(rawAfter, rawAfter.currentUser);
-    
-  } catch (error) {
-    if (!isConfirmedSchemaError(error)) {
-      // Erreur non liée au schéma (réseau, etc.)
-      throw error;
-    }
-    
-    // Erreur de schéma confirmée
-    if (isReadOnly) {
-      // TODO 16 : En lecture seule, afficher un diagnostic clair
-      throw new Error(
-        'Le schéma CRA est incomplet et le document est en lecture seule. ' +
-        'Veuillez demander à un administrateur de procéder à la mise à niveau. ' +
-        'Détails : ' + (error.message || error)
-      );
-    }
-    
-    // Tenter la réparation
-    showSchemaUpgradeState({ missingTables: [], missingColumns: [], ready: false });
-    
-    await TaskFlowBootstrap.ensureGenciSchema(grist, {
-      reason: 'cra-schema-recovery'
-    });
-    
-    const { raw } = await CraDataLoader.fetchCraSnapshot(grist);
-    return CraDataLoader.normalizeCraSnapshot(raw, raw.currentUser);
-  }
-}
-
-/**
- * Vérifie si une erreur est liée au schéma
- */
-function isConfirmedSchemaError(error) {
-  const msg = error.message || String(error);
-  return /table|column|schema/i.test(msg);
-}
-
-/**
- * Affiche l'état de mise à niveau du schéma
- */
-function showSchemaUpgradeState(inspection) {
+function showCraLoading(message) {
   const main = document.getElementById('main');
   if (main) {
-    main.innerHTML = '<div class="empty-cta">Mise à niveau du document en cours...<br><small>' +
-      'Tables : ' + (inspection.missingTables || []).join(', ') + '<br>' +
-      'Colonnes : ' + (inspection.missingColumns || []).join(', ') + '</small></div>';
+    main.innerHTML = '<div class="empty-cta">' + (message || 'Chargement…') + '</div>';
   }
 }
 
 /**
- * Enregistre les listeners Grist une seule fois (TODO 7)
+ * Helper : affiche une erreur (TODO 10)
+ */
+function showCraError(error) {
+  const main = document.getElementById('main');
+  if (main) {
+    main.innerHTML = '<div class="empty-cta error-state">' +
+      '<strong>Impossible de charger le CRA</strong><br>' +
+      '<p>Les données Grist n\'ont pas pu être chargées.</p>' +
+      '<p style="font-size:0.8em;color:#64748b">' + esc(error.message || error) + '</p>' +
+      '<button class="btn" id="retry-cra-load" style="margin-top:12px">Réessayer</button>' +
+      '</div>';
+    
+    const retryBtn = document.getElementById('retry-cra-load');
+    if (retryBtn) {
+      retryBtn.addEventListener('click', () => {
+        CraDataLoader.requestCraReload({
+          reason: 'manual-retry',
+          immediate: true,
+          allowSchemaRecovery: true
+        }).catch(console.error);
+      });
+    }
+  }
+}
+
+/**
+ * Helper : assure qu'une seule instance de FilterManager existe (TODO 13)
+ */
+function ensureFilterManager() {
+  if (S.filterManager) {
+    return S.filterManager;
+  }
+  
+  S.filterManager = new FilterManager({
+    data: {
+      team: S.team || [],
+      entites: S.entites || [],
+      projects: S.projects || [],
+      tasks: S.tasks || [],
+      programmes: S.programmes || []
+    },
+    onChange: function(filters) {
+      // Callback quand les filtres changent
+    },
+    onBroadcast: function(filters) {
+      // Broadcast via grist.setOptions si nécessaire
+    },
+    effCharges: function(task) {
+      return TF.parseCharges(task && task.charges);
+    },
+    teamById: function(id) {
+      return S.indexes.teamById.get(Number(id)) || null;
+    }
+  });
+  
+  const filterContainers = {
+    assignee: document.getElementById('filterPersonContainer'),
+    team: document.getElementById('filterTeamContainer'),
+    project: document.getElementById('filterProjectContainer'),
+    programme: document.getElementById('filterProgramContainer')
+  };
+  
+  const filterPanel = document.getElementById('filterPanel');
+  
+  S.filterManager.initUI(filterContainers, filterPanel);
+  
+  return S.filterManager;
+}
+
+/**
+ * Helper : met à jour les données du FilterManager (TODO 13)
+ */
+function updateFilterManagerData() {
+  const manager = ensureFilterManager();
+  
+  manager.setData({
+    team: S.team,
+    entites: S.entites,
+    projects: S.projects,
+    tasks: S.tasks,
+    programmes: S.programmes
+  });
+}
+
+/**
+ * Enregistre les listeners Grist une seule fois (TODO 7, 12)
  */
 let craGristListenersRegistered = false;
 
@@ -4568,18 +4448,32 @@ function registerGristListenersOnce() {
   craGristListenersRegistered = true;
   
   grist.onRecords(() => {
-    requestCraReload({ reason: 'grist.onRecords' });
+    CraDataLoader.requestCraReload({
+      reason: 'grist.onRecords',
+      immediate: false,
+      allowSchemaRecovery: false
+    }).catch(error => {
+      console.error('[CRA] Reload onRecords', error);
+    });
+  });
+  
+  grist.onOptions(options => {
+    applyExternalOptions(options);
   });
 }
 
 /**
- * Initialisation optimisée de Grist (TODO 5)
+ * Initialisation optimisée de Grist (TODO 1, 2, 11, 12)
  */
 async function initGrist() {
   try {
+    showCraLoading('Connexion à Grist…');
+    
     await grist.ready({
       requiredAccess: 'full'
     });
+    
+    craPerfLog('grist.ready');
     
     S.alone = false;
     
@@ -4589,33 +4483,67 @@ async function initGrist() {
       onReadOnly: () => {
         toast('Lecture seule : modification non autorisée');
       },
-      onDenied: () => {
+      onDenied: (error) => {
         toast('Modification refusée par vos droits');
-        requestCraReload({ reason: 'onDenied', immediate: false });
+        CraDataLoader.requestCraReload({
+          reason: 'acl-denied',
+          immediate: false,
+          allowSchemaRecovery: false
+        }).catch(console.error);
       }
     });
     
-    // Enregistrer les listeners une seule fois
+    // Vérification défensive (TODO 1)
+    if (!globalThis.CraDataLoader) {
+      throw new Error('CraDataLoader indisponible : vérifiez le chargement du script');
+    }
+    
+    // Configuration du loader (TODO 2)
+    CraDataLoader.configure({
+      grist: grist,
+      bootstrap: typeof TaskFlowBootstrap !== 'undefined' ? TaskFlowBootstrap : null,
+      isReadOnly: TF.isReadOnly,
+      applySnapshot: function(normalized, metadata) {
+        // Application atomique (TODO 7)
+        Object.assign(S, normalized);
+        
+        rebuildCraIndexes();
+        ensureFilterManager();
+        updateFilterManagerData();
+        render();
+      },
+      showLoading: function(message) {
+        showCraLoading(message);
+      },
+      showError: function(error) {
+        showCraError(error);
+      },
+      onSchemaUpgrade: function(inspection) {
+        showCraLoading('Mise à niveau du document…');
+        console.info('[CRA] Réparation du schéma', inspection);
+      }
+    });
+    
+    // Enregistrer les listeners une seule fois (TODO 12)
     registerGristListenersOnce();
     
-    // Charger avec fast path
-    await ensureCraReadyAndLoad();
+    // Charger avec fast path (TODO 5, 6)
+    await CraDataLoader.requestCraReload({
+      reason: 'initial',
+      immediate: true,
+      allowSchemaRecovery: true
+    });
     
-    // Demander un premier rechargement
-    requestCraReload({ reason: 'initial', immediate: true });
+    craPerfLog('init.complete');
     
   } catch (error) {
     console.error('[CRA] Initialisation Grist impossible', error);
     
+    showCraError(error);
+    
     // Mode démo uniquement si hors iframe Grist
     if (window.self === window.top) {
       loadDemo();
-    } else {
-      const main = document.getElementById('main');
-      if (main) {
-        main.innerHTML = '<div class="empty-cta">Erreur d\'initialisation : ' +
-          esc(error.message || error) + '</div>';
-      }
     }
   }
 }

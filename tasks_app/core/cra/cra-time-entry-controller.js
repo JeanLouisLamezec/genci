@@ -246,7 +246,7 @@ function determineEntryAction(existingEntry, actualHours, activeAssignment, curr
 }
 
 /**
- * Vérifie si une semaine est verrouillée pour une personne donnée
+ * Vérifie si une semaine est verrouillée pour une personne donnée (TODO 15)
  * @param {number} personId - ID de la personne
  * @param {string} weekStart - Date de début de semaine (YYYY-MM-DD)
  * @param {Array} sheets - Toutes les feuilles (Feuilles)
@@ -262,9 +262,7 @@ function isPersonWeekLocked(personId, weekStart, sheets) {
   }
   
   const sheet = (sheets || []).find(s => {
-    const sheetDate = typeof s.semaine === 'number'
-      ? new Date(s.semaine * 1000).toISOString().split('T')[0]
-      : s.semaine;
+    const sheetDate = gristDateKey(s.semaine);
     return s.membre === personId && sheetDate === weekStart;
   });
   
@@ -342,9 +340,21 @@ function gristDateKey(value) {
 }
 
 /**
- * Obtient la capacité quotidienne pour une personne et une date
+ * Helper : vérifie si une valeur est numérique valide (TODO 14)
+ */
+function hasNumericValue(value) {
+  return (
+    value !== null &&
+    value !== undefined &&
+    value !== '' &&
+    Number.isFinite(Number(value))
+  );
+}
+
+/**
+ * Obtient la capacité quotidienne pour une personne et une date (TODO 14)
  * Priorité :
- * 1. MemberDailyCapacities.capaciteDisponible
+ * 1. MemberDailyCapacities.capaciteDisponible (même si = 0)
  * 2. MemberDailyCapacities.capaciteTheorique
  * 3. Calcul legacy (capaciteHebdo / 5 + indisponibilités)
  * @param {number} personId - ID de la personne
@@ -357,14 +367,12 @@ function gristDateKey(value) {
 function dailyCapacityForPersonAndDate(personId, dayMs, dailyCapacities, team, availabilities) {
   const dayKey = localDayKeyFromMs(dayMs);
   
-  // Filtrer les capacités pour cette personne et ce jour
   const personCapacities = (dailyCapacities || []).filter(cap => {
     if (cap.membre !== personId) return false;
     const capDate = gristDateKey(cap.date);
     return capDate === dayKey;
   });
   
-  // Cas 1 : Aucune capacité quotidienne → repli legacy
   if (personCapacities.length === 0) {
     const member = (team || []).find(m => m.id === personId);
     if (!member) {
@@ -375,11 +383,9 @@ function dailyCapacityForPersonAndDate(personId, dayMs, dailyCapacities, team, a
       };
     }
     
-    // Calcul legacy : capaciteHebdo / 5
     const weeklyCapacity = Number(member.capaciteHebdo) || 35;
     let dailyCapacity = weeklyCapacity / 5;
     
-    // Appliquer les indisponibilités legacy si pas de capacité quotidienne
     const dayDate = new Date(dayMs);
     const indispos = (availabilities || []).filter(a => {
       if (a.membre !== personId) return false;
@@ -400,14 +406,12 @@ function dailyCapacityForPersonAndDate(personId, dayMs, dailyCapacities, team, a
     };
   }
   
-  // Cas 2 : Plusieurs capacités pour le même jour → warning et stratégie
   if (personCapacities.length > 1) {
     console.warn(
       '[CRA] Doublon de capacité quotidienne pour personne ' + personId + ' le ' + dayKey +
       ' (' + personCapacities.length + ' lignes). Utilisation de la révision la plus élevée.'
     );
     
-    // Trier par revision décroissante, puis par ID décroissant
     personCapacities.sort((a, b) => {
       const revDiff = (Number(b.revision) || 0) - (Number(a.revision) || 0);
       if (revDiff !== 0) return revDiff;
@@ -415,30 +419,24 @@ function dailyCapacityForPersonAndDate(personId, dayMs, dailyCapacities, team, a
     });
   }
   
-  // Utiliser la première (plus haute révision)
   const cap = personCapacities[0];
   
-  // Priorité : capaciteDisponible > capaciteTheorique
-  const available = Number(cap.capaciteDisponible);
-  const theoretical = Number(cap.capaciteTheorique);
-  
-  if (!isNaN(available) && available > 0) {
+  if (hasNumericValue(cap.capaciteDisponible)) {
     return {
-      capacity: available,
+      capacity: Number(cap.capaciteDisponible),
       source: 'daily_available',
       warning: personCapacities.length > 1 ? 'Doublon de capacité détecté' : null
     };
   }
   
-  if (!isNaN(theoretical) && theoretical > 0) {
+  if (hasNumericValue(cap.capaciteTheorique)) {
     return {
-      capacity: theoretical,
+      capacity: Number(cap.capaciteTheorique),
       source: 'daily_theoretical',
       warning: personCapacities.length > 1 ? 'Doublon de capacité détecté' : null
     };
   }
   
-  // Repli sur legacy si les valeurs sont nulles
   const member = (team || []).find(m => m.id === personId);
   if (member) {
     return {

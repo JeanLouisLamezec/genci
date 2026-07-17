@@ -601,7 +601,7 @@ describe('CRA Time Entry Controller', () => {
     });
   });
   
-  describe('dailyCapacityForPersonAndDate (TODO 7)', () => {
+  describe('dailyCapacityForPersonAndDate (TODO 7, 14)', () => {
     const team = [
       { id: 1, nom: 'Alice', capaciteHebdo: 35 },
       { id: 2, nom: 'Bob', capaciteHebdo: 28 }
@@ -620,8 +620,19 @@ describe('CRA Time Entry Controller', () => {
       expect(result.source).toBe('daily_available');
     });
     
-    test('replie sur capaciteTheorique si capaciteDisponible = 0', () => {
+    test('utilise capaciteDisponible = 0 (TODO 14)', () => {
       const result = dailyCapacityForPersonAndDate(1, 1705363200 * 1000, dailyCapacities, team, []);
+      
+      expect(result.capacity).toBe(0);
+      expect(result.source).toBe('daily_available');
+    });
+    
+    test('replie sur capaciteTheorique si capaciteDisponible manquant', () => {
+      const capacitiesWithoutAvailable = [
+        { id: 1, membre: 1, date: 1705276800, capaciteTheorique: 7, capaciteDisponible: null }
+      ];
+      
+      const result = dailyCapacityForPersonAndDate(1, 1705276800 * 1000, capacitiesWithoutAvailable, team, []);
       
       expect(result.capacity).toBe(7);
       expect(result.source).toBe('daily_theoretical');

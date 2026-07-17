@@ -10,7 +10,7 @@
 'use strict';
 
 // ============================================================================
-// INSTRUMENTATION (TODO 1)
+// INSTRUMENTATION
 // ============================================================================
 
 const CRA_PERF_DEBUG = (function() {
@@ -38,58 +38,237 @@ function createLoadId() {
 }
 
 // ============================================================================
-// CHARGEMENT PARALLÈLE (TODO 2)
+// CONFIGURATION (TODO 2)
+// ============================================================================
+
+const loaderConfig = {
+  grist: null,
+  bootstrap: null,
+  isReadOnly: () => false,
+  applySnapshot: null,
+  showLoading: null,
+  showError: null,
+  onSchemaUpgrade: null
+};
+
+/**
+ * Configure le loader avec les dépendances injectées
+ * @param {Object} options
+ */
+function configure(options) {
+  if (!options) {
+    throw new Error('CraDataLoader.configure: options requises');
+  }
+  
+  Object.assign(loaderConfig, options || {});
+  
+  if (!loaderConfig.grist || !loaderConfig.grist.docApi) {
+    throw new Error('CraDataLoader.configure: grist.docApi requis');
+  }
+  
+  if (!loaderConfig.applySnapshot || typeof loaderConfig.applySnapshot !== 'function') {
+    throw new Error('CraDataLoader.configure: applySnapshot requis');
+  }
+  
+  if (typeof loaderConfig.isReadOnly !== 'function') {
+    loaderConfig.isReadOnly = () => false;
+  }
+}
+
+// ============================================================================
+// CHARGEMENT PARALLÈLE (TODO 2, 4, 16)
 // ============================================================================
 
 /**
- * Charge une table optionnelle, retourne null si elle n'existe pas
- * @param {Object} grist - API Grist
- * @param {string} tableName - Nom de la table
- * @returns {Promise<Object|null>} Données colonnaires ou null
+ * Helper : décoder base64 URL-safe (TODO 16)
  */
-async function fetchOptionalTable(grist, tableName) {
+function decodeBase64Url(value) {
+  if (typeof atob === 'function') {
+    return atob(
+      value
+        .replace(/-/g, '+')
+        .replace(/_/g, '/')
+    );
+  }
+  
+  if (typeof Buffer !== 'undefined') {
+    return Buffer
+      .from(value, 'base64url')
+      .toString('utf8');
+  }
+  
+  throw new Error('Décodage base64 indisponible');
+}
+
+/**
+ * Obtient l'utilisateur Grist actuel (TODO 16)
+ */
+async function getCurrentGristUser(grist) {
   try {
-    return await grist.docApi.fetchTable(tableName);
-  } catch (error) {
-    // Table n'existe pas ou erreur temporaire
+    const tok = await grist.docApi.getAccessToken({ readOnly: true });
+    const p = JSON.parse(decodeBase64Url(tok.token.split('.')[1]));
+    return { userId: p.userId || null };
+  } catch (e) {
+    if (CRA_PERF_DEBUG) {
+      console.debug('[CRA] User identification unavailable:', e.message);
+    }
     return null;
   }
 }
 
 /**
- * Charge une table obligatoire, propage l'erreur si elle n'existe pas
- * @param {Object} grist - API Grist
- * @param {string} tableName - Nom de la table
- * @returns {Promise<Object>} Données colonnaires
+ * Classification des erreurs (TODO 4)
+ */
+function classifyFetchError(error, tableName) {
+  const message = String(
+    error?.message ||
+    error ||
+    ''
+  );
+  
+  if (
+    /table.*not found|no such table|unknown table/i
+      .test(message)
+  ) {
+    return {
+      type: 'TABLE_MISSING',
+      tableName,
+      error
+    };
+  }
+  
+  if (
+    /column.*not found|unknown column/i
+      .test(message)
+  ) {
+    return {
+      type: 'COLUMN_MISSING',
+      tableName,
+      error
+    };
+  }
+  
+  if (
+    /access denied|permission|forbidden|read.only/i
+      .test(message)
+  ) {
+    return {
+      type: 'ACCESS_DENIED',
+      tableName,
+      error
+    };
+  }
+  
+  return {
+    type: 'RPC_OR_NETWORK',
+    tableName,
+    error
+  };
+}
+
+/**
+ * Charge une table optionnelle, retourne null si elle n'existe pas
+ */
+async function fetchOptionalTable(grist, tableName) {
+  try {
+    return await grist.docApi.fetchTable(tableName);
+  } catch (error) {
+    const classified = classifyFetchError(error, tableName);
+    
+    if (
+      classified.type === 'TABLE_MISSING' ||
+      classified.type === 'COLUMN_MISSING'
+    ) {
+      return null;
+    }
+    
+    throw error;
+  }
+}
+
+/**
+ * Charge une table obligatoire, propage l'erreur
  */
 async function fetchRequiredTable(grist, tableName) {
   return await grist.docApi.fetchTable(tableName);
 }
 
 /**
- * Obtient l'utilisateur Grist actuel
- * @param {Object} grist - API Grist
- * @returns {Promise<Object|null>}
+ * Définition des tables CRA (TODO 3)
  */
-async function getCurrentGristUser(grist) {
-  try {
-    const tok = await grist.docApi.getAccessToken({ readOnly: true });
-    const p = JSON.parse(atob(tok.token.split('.')[1]));
-    return { userId: p.userId || null };
-  } catch (e) {
-    return null;
+const CRA_TABLES = {
+  team: {
+    tableId: 'Team',
+    required: true,
+    columns: ['id', 'nom', 'email', 'gristUserId', 'capaciteHebdo', 'indispos', 'entite']
+  },
+  
+  entites: {
+    tableId: 'Entites',
+    required: false,
+    columns: ['id', 'nom', 'parent', 'chef']
+  },
+  
+  tasks: {
+    tableId: 'Tasks',
+    required: true,
+    columns: ['id', 'titre', 'projet', 'assignees', 'charges', 'dateDebut', 'dateEcheance']
+  },
+  
+  projects: {
+    tableId: 'Projects',
+    required: true,
+    columns: ['id', 'nom', 'programme']
+  },
+  
+  programmes: {
+    tableId: 'Programmes',
+    required: false,
+    columns: ['id', 'nom', 'couleur', 'responsable']
+  },
+  
+  timeEntries: {
+    tableId: 'TimeEntries',
+    required: true,
+    columns: [
+      'id', 'membre', 'tache', 'date', 'heures',
+      'heuresPrevues', 'affectation', 'capaciteTheorique',
+      'capaciteDisponible', 'capaciteJour', 'feuille',
+      'revisionPlan', 'imputation', 'description'
+    ]
+  },
+  
+  feuilles: {
+    tableId: 'Feuilles',
+    required: true,
+    columns: ['id', 'membre', 'semaine', 'statut', 'validePar', 'dateValidation', 'motifRejet']
+  },
+  
+  disponibilites: {
+    tableId: 'Disponibilites',
+    required: false,
+    columns: ['id', 'membre', 'type', 'dateDebut', 'dateFin', 'dispo', 'commentaire']
+  },
+  
+  assignments: {
+    tableId: 'TaskAssignments',
+    required: true,
+    columns: ['id', 'tache', 'membre', 'heuresAllouees', 'dateDebut', 'dateFin', 'modeRepartition', 'actif', 'commentaire']
+  },
+  
+  dailyCapacities: {
+    tableId: 'MemberDailyCapacities',
+    required: true,
+    columns: ['id', 'membre', 'date', 'capaciteTheorique', 'capaciteDisponible', 'revision']
   }
-}
+};
 
 /**
- * Charge un snapshot complet des données CRA en parallèle
- * @param {Object} grist - API Grist
- * @returns {Promise<{raw: Object, fetchDuration: number}>}
+ * Charge un snapshot complet des données CRA en parallèle (TODO 3)
  */
 async function fetchCraSnapshot(grist) {
   const startedAt = performance.now();
   
-  // Charger toutes les tables en parallèle
   const [
     team,
     entites,
@@ -153,13 +332,11 @@ async function fetchCraSnapshot(grist) {
 }
 
 // ============================================================================
-// VALIDATION DU SCHÉMA (TODO 3)
+// VALIDATION DU SCHÉMA (TODO 3, 4)
 // ============================================================================
 
 /**
  * Helper : convertit un tableau colonnaire Grist en tableau d'objets
- * @param {Object} data - Données colonnaires
- * @returns {Array}
  */
 function columnarToRows(data) {
   if (!data || Array.isArray(data)) return data || [];
@@ -179,9 +356,6 @@ function columnarToRows(data) {
 
 /**
  * Vérifie la présence d'une colonne dans des données colonnaires
- * @param {Object} colData - Données colonnaires
- * @param {string} colName - Nom de la colonne
- * @returns {boolean}
  */
 function hasColumn(colData, colName) {
   if (!colData) return false;
@@ -189,14 +363,7 @@ function hasColumn(colData, colName) {
 }
 
 /**
- * Inspecte un snapshot CRA et valide les tables et colonnes indispensables
- * @param {Object} rawSnapshot - Données brutes du snapshot
- * @returns {{
- *   ready: boolean,
- *   missingTables: Array<string>,
- *   missingColumns: Array<string>,
- *   optionalMissing: Array<string>
- * }}
+ * Inspecte un snapshot CRA et valide les tables et colonnes indispensables (TODO 3)
  */
 function inspectCraSnapshot(rawSnapshot) {
   const result = {
@@ -206,47 +373,43 @@ function inspectCraSnapshot(rawSnapshot) {
     optionalMissing: []
   };
   
-  // Tables obligatoires
   const requiredTables = [
-    'Team',
-    'Tasks',
-    'Projects',
-    'TimeEntries',
-    'Feuilles',
-    'TaskAssignments',
-    'MemberDailyCapacities'
+    'team',
+    'tasks',
+    'projects',
+    'timeEntries',
+    'feuilles',
+    'assignments',
+    'dailyCapacities'
   ];
   
-  // Tables optionnelles
   const optionalTables = [
-    'Entites',
-    'Programmes',
-    'Disponibilites'
+    'entites',
+    'programmes',
+    'disponibilites'
   ];
   
-  // Colonnes indispensables par table
   const requiredColumns = {
-    Team: ['id', 'nom'],
-    Tasks: ['id', 'titre', 'projet'],
-    Projects: ['id', 'nom'],
-    TimeEntries: [
+    team: ['id', 'nom'],
+    tasks: ['id', 'titre', 'projet'],
+    projects: ['id', 'nom'],
+    timeEntries: [
       'id', 'membre', 'tache', 'date', 'heures',
       'heuresPrevues', 'affectation', 'capaciteTheorique',
       'capaciteDisponible', 'capaciteJour', 'feuille',
       'revisionPlan', 'imputation', 'description'
     ],
-    Feuilles: [
+    feuilles: [
       'id', 'membre', 'semaine', 'statut',
       'validePar', 'dateValidation', 'motifRejet'
     ],
-    TaskAssignments: ['id', 'tache', 'membre', 'actif'],
-    MemberDailyCapacities: [
+    assignments: ['id', 'tache', 'membre', 'actif'],
+    dailyCapacities: [
       'id', 'membre', 'date',
       'capaciteTheorique', 'capaciteDisponible', 'revision'
     ]
   };
   
-  // Vérifier les tables obligatoires
   for (const tableName of requiredTables) {
     if (!rawSnapshot[tableName]) {
       result.missingTables.push(tableName);
@@ -254,14 +417,12 @@ function inspectCraSnapshot(rawSnapshot) {
     }
   }
   
-  // Vérifier les tables optionnelles
   for (const tableName of optionalTables) {
     if (!rawSnapshot[tableName]) {
       result.optionalMissing.push(tableName);
     }
   }
   
-  // Vérifier les colonnes des tables obligatoires
   for (const tableName of requiredTables) {
     const tableData = rawSnapshot[tableName];
     if (!tableData) continue;
@@ -279,14 +440,11 @@ function inspectCraSnapshot(rawSnapshot) {
 }
 
 // ============================================================================
-// NORMALISATION DES DONNÉES (TODO 9)
+// NORMALISATION DES DONNÉES (TODO 3)
 // ============================================================================
 
 /**
  * Normalise un snapshot brut en état CRA utilisable
- * @param {Object} raw - Données brutes
- * @param {Object} currentUser - Utilisateur actuel
- * @returns {Object} État normalisé
  */
 function normalizeCraSnapshot(raw, currentUser) {
   const team = columnarToRows(raw.team).map(r => ({
@@ -295,7 +453,7 @@ function normalizeCraSnapshot(raw, currentUser) {
     email: r.email,
     gristUserId: r.gristUserId,
     entite: Number(r.entite) || 0,
-    agentsGeres: [], // Sera calculé plus tard
+    agentsGeres: [],
     capaciteHebdo: r.capaciteHebdo || 35,
     indispos: r.indispos || ''
   }));
@@ -366,7 +524,6 @@ function normalizeCraSnapshot(raw, currentUser) {
   
   const dailyCapacities = columnarToRows(raw.dailyCapacities);
   
-  // Résolution "moi"
   const meUserId = currentUser ? currentUser.userId : null;
   let me = team.find(t => t.gristUserId && t.gristUserId === meUserId);
   const meId = me ? me.id : (team[0] ? team[0].id : null);
@@ -387,107 +544,314 @@ function normalizeCraSnapshot(raw, currentUser) {
     meUserId,
     me: meId,
     meName,
-    mesGeres: [], // Sera calculé plus tard
+    mesGeres: [],
     visiblePersonIds: team.map(m => m.id),
     gOk: true
   };
 }
 
 // ============================================================================
-// SCHEDULER DE RECHARGEMENT (TODO 6)
+// Récupération de schéma (TODO 5)
+// ============================================================================
+
+let schemaRecoveryInProgress = null;
+
+/**
+ * Crée une erreur de schéma structurée
+ */
+function createSchemaError(inspection) {
+  const err = new Error(
+    'Schéma CRA incomplet : ' +
+    'Tables manquantes: ' + inspection.missingTables.join(', ') +
+    '. Colonnes manquantes: ' + inspection.missingColumns.join(', ')
+  );
+  err.inspection = inspection;
+  err.code = 'SCHEMA_INCOMPLETE';
+  return err;
+}
+
+/**
+ * Crée une erreur de schéma en lecture seule
+ */
+function createReadOnlySchemaError(inspection) {
+  const err = new Error(
+    'Schéma CRA incomplet et document en lecture seule. Impossible de réparer.'
+  );
+  err.inspection = inspection;
+  err.code = 'SCHEMA_READ_ONLY';
+  return err;
+}
+
+/**
+ * Assure que le schéma est prêt et charge les données (TODO 5)
+ */
+async function ensureCraReadyAndLoad(options) {
+  const opts = options || {};
+  const allowSchemaRecovery = opts.allowSchemaRecovery !== false;
+  
+  loaderConfig.showLoading?.('Chargement des données…');
+  
+  let fetched;
+  let fetchError = null;
+  
+  try {
+    fetched = await fetchCraSnapshot(loaderConfig.grist);
+  } catch (error) {
+    fetchError = error;
+    const classified = classifyFetchError(error, 'unknown');
+    
+    if (
+      classified.type !== 'TABLE_MISSING' &&
+      classified.type !== 'COLUMN_MISSING'
+    ) {
+      throw error;
+    }
+    
+    fetched = null;
+  }
+  
+  let inspection = fetched
+    ? inspectCraSnapshot(fetched.raw)
+    : {
+        ready: false,
+        missingTables: [],
+        missingColumns: [],
+        optionalMissing: []
+      };
+  
+  if (fetched && inspection.ready) {
+    return normalizeCraSnapshot(fetched.raw, fetched.raw.currentUser);
+  }
+  
+  if (!allowSchemaRecovery) {
+    throw createSchemaError(inspection);
+  }
+  
+  if (loaderConfig.isReadOnly()) {
+    throw createReadOnlySchemaError(inspection);
+  }
+  
+  if (
+    typeof loaderConfig.bootstrap?.ensureGenciSchema !== 'function'
+  ) {
+    throw new Error('Bootstrap indisponible pour réparer le schéma CRA');
+  }
+  
+  loaderConfig.onSchemaUpgrade?.(inspection);
+  
+  if (!schemaRecoveryInProgress) {
+    schemaRecoveryInProgress = loaderConfig.bootstrap
+      .ensureGenciSchema(loaderConfig.grist, {
+        reason: 'cra-schema-recovery'
+      })
+      .finally(() => {
+        schemaRecoveryInProgress = null;
+      });
+  }
+  
+  await schemaRecoveryInProgress;
+  
+  const repaired = await fetchCraSnapshot(loaderConfig.grist);
+  const repairedInspection = inspectCraSnapshot(repaired.raw);
+  
+  if (!repairedInspection.ready) {
+    throw createSchemaError(repairedInspection);
+  }
+  
+  return normalizeCraSnapshot(repaired.raw, repaired.raw.currentUser);
+}
+
+// ============================================================================
+// SCHEDULER DE RECHARGEMENT (TODO 6, 8, 9)
 // ============================================================================
 
 let reloadInProgress = false;
-let reloadRequested = false;
-let pendingReloadReason = null;
-let reloadGeneration = 0;
+let pendingRequest = null;
+let requestedGeneration = 0;
 let appliedGeneration = 0;
 let reloadTimer = null;
+let reloadWaiters = [];
 
 /**
- * Demande un rechargement des données CRA
- * @param {Object} options
- * @param {string} options.reason - Raison du rechargement
- * @param {boolean} options.immediate - Exécuter immédiatement
- * @param {boolean} options.allowSchemaRecovery - Autoriser la récupération de schéma
+ * Crée une promesse d'attente pour le rechargement
+ */
+function createReloadWaiter() {
+  return new Promise((resolve, reject) => {
+    reloadWaiters.push({ resolve, reject });
+  });
+}
+
+/**
+ * Résout tous les waiters en cours
+ */
+function resolveReloadWaiters(result) {
+  const waiters = reloadWaiters;
+  reloadWaiters = [];
+  waiters.forEach(w => w.resolve(result));
+}
+
+/**
+ * Rejette tous les waiters en cours
+ */
+function rejectReloadWaiters(error) {
+  const waiters = reloadWaiters;
+  reloadWaiters = [];
+  waiters.forEach(w => w.reject(error));
+}
+
+/**
+ * Demande un rechargement des données CRA (TODO 8, 9)
  */
 function requestCraReload(options) {
   const opts = options || {};
   const reason = opts.reason || 'unknown';
   
-  pendingReloadReason = reason;
+  const generation = ++requestedGeneration;
+  
+  pendingRequest = {
+    generation,
+    reason,
+    allowSchemaRecovery: opts.allowSchemaRecovery === true
+  };
+  
+  const waiter = createReloadWaiter();
   
   if (opts.immediate) {
-    return runReloadLoop();
+    runReloadLoop();
+  } else {
+    clearTimeout(reloadTimer);
+    reloadTimer = setTimeout(runReloadLoop, 120);
   }
   
-  clearTimeout(reloadTimer);
-  
-  // Délai de fusion : 120ms
-  reloadTimer = setTimeout(runReloadLoop, 120);
-  
-  return Promise.resolve();
+  return waiter;
 }
 
 /**
- * Boucle de rechargement - sérialise les appels
- * @returns {Promise<void>}
+ * Boucle de rechargement - sérialise les appels (TODO 8)
  */
 async function runReloadLoop() {
   if (reloadInProgress) {
-    reloadRequested = true;
     return;
   }
   
   reloadInProgress = true;
   
   try {
-    do {
-      reloadRequested = false;
+    while (pendingRequest) {
+      const request = pendingRequest;
+      pendingRequest = null;
       
-      const generation = ++reloadGeneration;
-      const reason = pendingReloadReason;
+      perfLog('reload.start', {
+        generation: request.generation,
+        reason: request.reason
+      });
       
-      perfLog('reload.start', { generation, reason });
-      
-      // Le chargement sera géré par ensureCraReadyAndLoad
-      const snapshot = await loadCraSnapshotForReason(reason);
-      
-      // Vérifier si une nouvelle génération a commencé
-      if (generation < reloadGeneration) {
-        perfLog('reload.discarded', { generation, current: reloadGeneration });
-        continue;
+      try {
+        const loaded = await loadCraSnapshotForReason(
+          request.reason,
+          {
+            allowSchemaRecovery: request.allowSchemaRecovery
+          }
+        );
+        
+        if (request.generation !== requestedGeneration) {
+          perfLog('reload.discarded', {
+            generation: request.generation,
+            requestedGeneration
+          });
+          continue;
+        }
+        
+        applyCraSnapshot(loaded, request.generation);
+        appliedGeneration = request.generation;
+        
+        resolveReloadWaiters(loaded);
+        
+        perfLog('reload.complete', {
+          generation: request.generation,
+          reason: request.reason
+        });
+      } catch (error) {
+        loaderConfig.showError?.(error);
+        
+        console.error(
+          '[CRA] Chargement impossible',
+          error
+        );
+        
+        rejectReloadWaiters(error);
+        
+        perfLog('reload.error', {
+          generation: request.generation,
+          reason: request.reason,
+          error: error.message || String(error)
+        });
       }
-      
-      // Appliquer le snapshot
-      applyCraSnapshot(snapshot, generation);
-      appliedGeneration = generation;
-      
-      perfLog('reload.complete', { generation, reason });
-    } while (reloadRequested);
+    }
   } finally {
     reloadInProgress = false;
   }
 }
 
 /**
- * Charge un snapshot pour une raison donnée
- * @param {string} reason
- * @returns {Promise<Object>}
+ * Charge un snapshot pour une raison donnée (TODO 6)
  */
-async function loadCraSnapshotForReason(reason) {
-  // Sera implémenté avec ensureCraReadyAndLoad
-  throw new Error('loadCraSnapshotForReason not implemented yet');
+async function loadCraSnapshotForReason(reason, options) {
+  const loadId = createLoadId();
+  const startedAt = performance.now();
+  
+  perfLog('load.start', {
+    loadId,
+    reason
+  });
+  
+  try {
+    const snapshot = await ensureCraReadyAndLoad({
+      reason,
+      allowSchemaRecovery: options?.allowSchemaRecovery
+    });
+    
+    perfLog('load.ready', {
+      loadId,
+      reason,
+      durationMs: Math.round(performance.now() - startedAt)
+    });
+    
+    return {
+      loadId,
+      reason,
+      data: snapshot
+    };
+  } catch (error) {
+    perfLog('load.error', {
+      loadId,
+      reason,
+      message: error.message || String(error)
+    });
+    
+    throw error;
+  }
 }
 
 /**
- * Applique un snapshot à la génération donnée
- * @param {Object} snapshot
- * @param {number} generation
+ * Applique un snapshot à la génération donnée (TODO 7)
  */
-function applyCraSnapshot(snapshot, generation) {
-  // Sera implémenté avec le state management
-  perfLog('snapshot.applied', { generation });
+function applyCraSnapshot(loaded, generation) {
+  if (!loaded || !loaded.data) {
+    throw new Error('Snapshot CRA invalide');
+  }
+  
+  loaderConfig.applySnapshot(loaded.data, {
+    generation,
+    loadId: loaded.loadId,
+    reason: loaded.reason
+  });
+  
+  perfLog('snapshot.applied', {
+    generation,
+    loadId: loaded.loadId,
+    reason: loaded.reason
+  });
 }
 
 // ============================================================================
@@ -495,51 +859,63 @@ function applyCraSnapshot(snapshot, generation) {
 // ============================================================================
 
 const CraDataLoader = {
-  // Instrumentation
+  configure,
+  
   CRA_PERF_DEBUG,
   perfLog,
   createLoadId,
   
-  // Chargement
+  classifyFetchError,
+  
   fetchOptionalTable,
   fetchRequiredTable,
   getCurrentGristUser,
   fetchCraSnapshot,
   
-  // Validation
   inspectCraSnapshot,
   hasColumn,
   columnarToRows,
   
-  // Normalisation
   normalizeCraSnapshot,
   
-  // Scheduler
+  ensureCraReadyAndLoad,
+  
   requestCraReload,
   runReloadLoop,
   loadCraSnapshotForReason,
   applyCraSnapshot,
   
-  // État du scheduler (pour les tests)
+  createReloadWaiter,
+  resolveReloadWaiters,
+  rejectReloadWaiters,
+  
   getSchedulerState: () => ({
     reloadInProgress,
-    reloadRequested,
-    pendingReloadReason,
-    reloadGeneration,
+    pendingRequest,
+    requestedGeneration,
     appliedGeneration
   }),
   
   resetScheduler: () => {
     reloadInProgress = false;
-    reloadRequested = false;
-    pendingReloadReason = null;
-    reloadGeneration = 0;
+    pendingRequest = null;
+    requestedGeneration = 0;
     appliedGeneration = 0;
+    reloadTimer = null;
+    reloadWaiters = [];
+    schemaRecoveryInProgress = null;
     clearTimeout(reloadTimer);
+    
+    loaderConfig.grist = null;
+    loaderConfig.bootstrap = null;
+    loaderConfig.isReadOnly = () => false;
+    loaderConfig.applySnapshot = null;
+    loaderConfig.showLoading = null;
+    loaderConfig.showError = null;
+    loaderConfig.onSchemaUpgrade = null;
   }
 };
 
-// Export pour navigateur et Node
 if (typeof globalThis !== 'undefined') {
   globalThis.CraDataLoader = CraDataLoader;
 }
