@@ -381,9 +381,62 @@
         } catch (e) {
             var msg = e.message || String(e);
             
-            // Erreurs transitoires : retry avec délai progressif
-            var isTransientError = 
+            // ==========================================================================
+            // GESTION DES ERREURS "already exists" — INTERDICTION DE RELANCER AVEUGLEMENT
+            // ==========================================================================
+            // Après une erreur indiquant que la colonne existe déjà :
+            // 1. Relire les métadonnées
+            // 2. Vérifier si la colonne canonique existe
+            // 3. Vérifier son type
+            // 4. Si elle existe avec le bon type → succès concurrent
+            // 5. Si elle existe avec un mauvais type → conflit structuré
+            // 6. JAMAIS relancer immédiatement AddColumn avec le même identifiant
+            // ==========================================================================
+            var isAlreadyExistsError = 
                 msg.indexOf('already exists') !== -1 ||
+                msg.indexOf('duplicate') !== -1 ||
+                msg.indexOf('column exists') !== -1;
+            
+            if (isAlreadyExistsError) {
+                log('[GENCI refs] Erreur "already exists" détectée, relecture des métadonnées...');
+                
+                try {
+                    // Recharger les métadonnées pour vérifier l'état réel
+                    var freshMetadata = await loadSchemaMetadata(grist);
+                    var key = tableId + '.' + normalized.id;
+                    var existingCol = freshMetadata.columnByKey[key];
+                    
+                    if (existingCol) {
+                        // La colonne existe, vérifier son type
+                        var expectedType = normalized.type;
+                        var actualType = existingCol.type;
+                        
+                        if (actualType === expectedType) {
+                            // Succès concurrent : un autre acteur a créé la colonne
+                            log('[GENCI refs] Colonne déjà créée par un autre acteur (type correct)');
+                            return true; // Considérer comme succès
+                        } else {
+                            // Conflit de type : la colonne existe avec un type incorrect
+                            log('[GENCI refs] Conflit de type : attendu=' + expectedType + ', actuel=' + actualType);
+                            throw new Error(
+                                'COLUMN_TYPE_CONFLICT: ' + key + 
+                                ' (expected: ' + expectedType + ', actual: ' + actualType + ')'
+                            );
+                        }
+                    } else {
+                        // Colonne toujours absente après erreur "already exists"
+                        // C'est incohérent, ne pas réessayer immédiatement
+                        log('[GENCI refs] Erreur incohérente : colonne absente après erreur "already exists"');
+                        throw e; // Propager l'erreur originale
+                    }
+                } catch (metadataError) {
+                    log('[GENCI refs] Erreur lors de la relecture des métadonnées:', metadataError);
+                    throw e; // Propager l'erreur originale
+                }
+            }
+            
+            // Erreurs transitoires autres que "already exists" : retry avec délai progressif
+            var isTransientError = 
                 msg.indexOf('NoneType') !== -1 ||
                 msg.indexOf('table_id') !== -1 ||
                 msg.indexOf('table not found') !== -1 ||
@@ -758,7 +811,9 @@
             invalidColumnTypes: [],
             invalidRefTargets: [],
             invalidVisibleColumns: [],
-            missingFormulaColumns: []
+            missingFormulaColumns: [],
+            duplicateColumns: [],
+            corrupted: false
         };
         
         try {
@@ -858,6 +913,58 @@
                         }
                     }
                 }
+            }
+            
+            // ====================================================================
+            // DETECTION DES COLONNES DUPLIQUEES (CORRUPTION)
+            // ====================================================================
+            // Pour chaque table du schéma, vérifier les colonnes qui correspondent
+            // au pattern ^<canonical>[0-9]+$ pour détecter les duplications
+            for (var tableIdx = 0; tableIdx < SCHEMA.tableOrder.length; tableIdx++) {
+                var tableId = SCHEMA.tableOrder[tableIdx];
+                var tableDef = SCHEMA.tables[tableId];
+                
+                if (!tableDef || !metadata.tableById[tableId]) {
+                    continue;
+                }
+                
+                // Obtenir toutes les colonnes de cette table depuis les métadonnées
+                var tableColumns = metadata.columns.filter(function(col) {
+                    var parentTable = metadata.tables.find(function(t) { 
+                        return t.id === col.parentId; 
+                    });
+                    return parentTable && parentTable.tableId === tableId;
+                });
+                
+                // Pour chaque colonne canonique du schéma
+                for (var colIdx = 0; colIdx < tableDef.columns.length; colIdx++) {
+                    var canonicalCol = tableDef.columns[colIdx];
+                    var canonicalId = canonicalCol.id;
+                    
+                    // Échapper l'identifiant canonique pour la RegExp
+                    var escapedCanonical = canonicalId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                    var duplicatePattern = new RegExp('^' + escapedCanonical + '[0-9]+$');
+                    
+                    // Trouver les duplications
+                    var duplicates = tableColumns.filter(function(col) {
+                        return duplicatePattern.test(col.colId);
+                    }).map(function(col) {
+                        return col.colId;
+                    });
+                    
+                    if (duplicates.length > 0) {
+                        result.duplicateColumns.push({
+                            table: tableId,
+                            canonicalColumn: canonicalId,
+                            duplicates: duplicates
+                        });
+                    }
+                }
+            }
+            
+            // Marquer comme corrompu si des duplications sont trouvées
+            if (result.duplicateColumns.length > 0) {
+                result.corrupted = true;
             }
             
         } catch (e) {

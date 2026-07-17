@@ -587,7 +587,10 @@ function createReadOnlySchemaError(inspection) {
  */
 async function ensureCraReadyAndLoad(options) {
   const opts = options || {};
-  const allowSchemaRecovery = opts.allowSchemaRecovery !== false;
+  // IMPORTANT : allowSchemaRecovery = false par défaut
+  // Le CRA ne doit jamais réparer le schéma automatiquement.
+  // Seul le Kanban peut initialiser/mettre à niveau le schéma via une action explicite.
+  const allowSchemaRecovery = false;
   
   loaderConfig.showLoading?.('Chargement des données…');
   

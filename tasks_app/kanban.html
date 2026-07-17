@@ -1768,6 +1768,27 @@ if (typeof globalThis !== 'undefined') {
         return new Promise(function (resolve) { setTimeout(resolve, ms); });
     }
 
+    // Helper : attente conditionnelle avec backoff borné (TODO 13)
+    async function waitUntil(predicate, options) {
+        var opts = options || {};
+        var attempts = opts.attempts || 6;
+        var initialDelay = opts.initialDelay || 50;
+        var maxDelay = opts.maxDelay || 300;
+        
+        for (var i = 0; i < attempts; i++) {
+            var result = await predicate();
+            if (result) {
+                return { success: true, attempts: i + 1 };
+            }
+            if (i < attempts - 1) {
+                var delayMs = Math.min(initialDelay * Math.pow(2, i), maxDelay);
+                await delay(delayMs);
+            }
+        }
+        
+        return { success: false, attempts: attempts };
+    }
+
     // Helper : vérifie si un type est Ref ou RefList
     function isRefType(type) {
         return /^(Ref|RefList):/.test(String(type || ''));
@@ -1804,8 +1825,14 @@ if (typeof globalThis !== 'undefined') {
     }
 
     async function loadSchemaMetadata(grist) {
-        var tablesData = await grist.docApi.fetchTable('_grist_Tables');
-        var columnsData = await grist.docApi.fetchTable('_grist_Tables_column');
+        // TODO 14 : Paralléliser les lectures indépendantes
+        var results = await Promise.all([
+            grist.docApi.fetchTable('_grist_Tables'),
+            grist.docApi.fetchTable('_grist_Tables_column')
+        ]);
+        
+        var tablesData = results[0];
+        var columnsData = results[1];
         
         var tables = columnarToRows(tablesData);
         var columns = columnarToRows(columnsData);
@@ -1979,32 +2006,34 @@ if (typeof globalThis !== 'undefined') {
     // ========================================================================
     
     async function syncMetadata(grist, expectedTables) {
-        log('[GENCI sync] Attente stabilisation métadonnées (3 tentatives)...');
+        log('[GENCI sync] Attente stabilisation métadonnées...');
         
         var lastMetadata = null;
         
-        for (var attempt = 0; attempt < 3; attempt++) {
-            lastMetadata = await loadSchemaMetadata(grist);
-            
-            var missing = expectedTables.filter(function(tableId) {
-                return !lastMetadata.tableById[tableId];
+        // Utiliser waitUntil pour une attente conditionnelle (TODO 13)
+        var result = await waitUntil(function() {
+            return loadSchemaMetadata(grist).then(function(metadata) {
+                lastMetadata = metadata;
+                var missing = expectedTables.filter(function(tableId) {
+                    return !metadata.tableById[tableId];
+                });
+                return missing.length === 0;
             });
-            
-            if (missing.length === 0) {
-                log('[GENCI sync] Métadonnées stabilisées');
-                return lastMetadata;
-            }
-            
-            if (attempt < 2) {
-                await delay(150);
-            }
+        }, { attempts: 6, initialDelay: 50, maxDelay: 200 });
+        
+        if (result.success) {
+            log('[GENCI sync] Métadonnées stabilisées (' + result.attempts + ' tentatives)');
+            return lastMetadata;
         }
         
+        // Échec après 6 tentatives
+        var missing = expectedTables.filter(function(tableId) {
+            return !lastMetadata.tableById[tableId];
+        });
+        
         throw new Error(
-            'Tables absentes après création: ' +
-            expectedTables.filter(function(tableId) {
-                return !lastMetadata.tableById[tableId];
-            }).join(', ')
+            'Tables absentes après ' + result.attempts + ' tentatives: ' +
+            missing.join(', ')
         );
     }
 
@@ -2032,9 +2061,62 @@ if (typeof globalThis !== 'undefined') {
         } catch (e) {
             var msg = e.message || String(e);
             
-            // Erreurs transitoires : retry avec délai progressif
-            var isTransientError = 
+            // ==========================================================================
+            // GESTION DES ERREURS "already exists" — INTERDICTION DE RELANCER AVEUGLEMENT
+            // ==========================================================================
+            // Après une erreur indiquant que la colonne existe déjà :
+            // 1. Relire les métadonnées
+            // 2. Vérifier si la colonne canonique existe
+            // 3. Vérifier son type
+            // 4. Si elle existe avec le bon type → succès concurrent
+            // 5. Si elle existe avec un mauvais type → conflit structuré
+            // 6. JAMAIS relancer immédiatement AddColumn avec le même identifiant
+            // ==========================================================================
+            var isAlreadyExistsError = 
                 msg.indexOf('already exists') !== -1 ||
+                msg.indexOf('duplicate') !== -1 ||
+                msg.indexOf('column exists') !== -1;
+            
+            if (isAlreadyExistsError) {
+                log('[GENCI refs] Erreur "already exists" détectée, relecture des métadonnées...');
+                
+                try {
+                    // Recharger les métadonnées pour vérifier l'état réel
+                    var freshMetadata = await loadSchemaMetadata(grist);
+                    var key = tableId + '.' + normalized.id;
+                    var existingCol = freshMetadata.columnByKey[key];
+                    
+                    if (existingCol) {
+                        // La colonne existe, vérifier son type
+                        var expectedType = normalized.type;
+                        var actualType = existingCol.type;
+                        
+                        if (actualType === expectedType) {
+                            // Succès concurrent : un autre acteur a créé la colonne
+                            log('[GENCI refs] Colonne déjà créée par un autre acteur (type correct)');
+                            return true; // Considérer comme succès
+                        } else {
+                            // Conflit de type : la colonne existe avec un type incorrect
+                            log('[GENCI refs] Conflit de type : attendu=' + expectedType + ', actuel=' + actualType);
+                            throw new Error(
+                                'COLUMN_TYPE_CONFLICT: ' + key + 
+                                ' (expected: ' + expectedType + ', actual: ' + actualType + ')'
+                            );
+                        }
+                    } else {
+                        // Colonne toujours absente après erreur "already exists"
+                        // C'est incohérent, ne pas réessayer immédiatement
+                        log('[GENCI refs] Erreur incohérente : colonne absente après erreur "already exists"');
+                        throw e; // Propager l'erreur originale
+                    }
+                } catch (metadataError) {
+                    log('[GENCI refs] Erreur lors de la relecture des métadonnées:', metadataError);
+                    throw e; // Propager l'erreur originale
+                }
+            }
+            
+            // Erreurs transitoires autres que "already exists" : retry avec délai progressif
+            var isTransientError = 
                 msg.indexOf('NoneType') !== -1 ||
                 msg.indexOf('table_id') !== -1 ||
                 msg.indexOf('table not found') !== -1 ||
@@ -2409,7 +2491,9 @@ if (typeof globalThis !== 'undefined') {
             invalidColumnTypes: [],
             invalidRefTargets: [],
             invalidVisibleColumns: [],
-            missingFormulaColumns: []
+            missingFormulaColumns: [],
+            duplicateColumns: [],
+            corrupted: false
         };
         
         try {
@@ -2509,6 +2593,58 @@ if (typeof globalThis !== 'undefined') {
                         }
                     }
                 }
+            }
+            
+            // ====================================================================
+            // DETECTION DES COLONNES DUPLIQUEES (CORRUPTION)
+            // ====================================================================
+            // Pour chaque table du schéma, vérifier les colonnes qui correspondent
+            // au pattern ^<canonical>[0-9]+$ pour détecter les duplications
+            for (var tableIdx = 0; tableIdx < SCHEMA.tableOrder.length; tableIdx++) {
+                var tableId = SCHEMA.tableOrder[tableIdx];
+                var tableDef = SCHEMA.tables[tableId];
+                
+                if (!tableDef || !metadata.tableById[tableId]) {
+                    continue;
+                }
+                
+                // Obtenir toutes les colonnes de cette table depuis les métadonnées
+                var tableColumns = metadata.columns.filter(function(col) {
+                    var parentTable = metadata.tables.find(function(t) { 
+                        return t.id === col.parentId; 
+                    });
+                    return parentTable && parentTable.tableId === tableId;
+                });
+                
+                // Pour chaque colonne canonique du schéma
+                for (var colIdx = 0; colIdx < tableDef.columns.length; colIdx++) {
+                    var canonicalCol = tableDef.columns[colIdx];
+                    var canonicalId = canonicalCol.id;
+                    
+                    // Échapper l'identifiant canonique pour la RegExp
+                    var escapedCanonical = canonicalId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                    var duplicatePattern = new RegExp('^' + escapedCanonical + '[0-9]+$');
+                    
+                    // Trouver les duplications
+                    var duplicates = tableColumns.filter(function(col) {
+                        return duplicatePattern.test(col.colId);
+                    }).map(function(col) {
+                        return col.colId;
+                    });
+                    
+                    if (duplicates.length > 0) {
+                        result.duplicateColumns.push({
+                            table: tableId,
+                            canonicalColumn: canonicalId,
+                            duplicates: duplicates
+                        });
+                    }
+                }
+            }
+            
+            // Marquer comme corrompu si des duplications sont trouvées
+            if (result.duplicateColumns.length > 0) {
+                result.corrupted = true;
             }
             
         } catch (e) {
@@ -3865,70 +4001,127 @@ if $projet and $projet.responsable:
         // ═══════════════════════════════════════════════════════════════════════
         // SCHEMA GENCI ETENDU — Wrapper vers TaskFlowBootstrap.ensureGenciSchema
         // Utilise le module bootstrap pour une initialisation multipasse robuste.
+        // ATTENTION : Cette fonction ne doit être appelée que par action explicite
+        // via le bouton administratif du Kanban, JAMAIS automatiquement.
         // ═══════════════════════════════════════════════════════════════════════
         
+        // Single-flight guard pour éviter les installations concurrentes
+        var schemaInstallPromise = null;
+        
         async function initGenciSchema(btn) {
-            if (TF.isReadOnly()) { showToast('Lecture seule : action impossible', 'error'); return; }
-            if (!gristReady) { showToast('Grist pas prêt, réessayez', 'error'); return; }
+            if (TF.isReadOnly()) { 
+                showToast('Lecture seule : action impossible', 'error'); 
+                return Promise.reject(new Error('READ_ONLY'));
+            }
+            if (!gristReady) { 
+                showToast('Grist pas prêt, réessayez', 'error'); 
+                return Promise.reject(new Error('GRIST_NOT_READY'));
+            }
+            
+            // Single-flight : réutiliser la même Promise si une installation est en cours
+            if (schemaInstallPromise) {
+                console.log('[Kanban] Schema installation already in progress, reusing promise');
+                return schemaInstallPromise;
+            }
+            
+            // Désactiver le bouton pendant l'opération
+            var originalBtnState = null;
             if (btn) {
+                originalBtnState = {
+                    opacity: btn.style.opacity,
+                    pointerEvents: btn.style.pointerEvents,
+                    disabled: btn.disabled
+                };
                 btn.style.opacity = '0.5';
                 btn.style.pointerEvents = 'none';
+                btn.disabled = true;
             }
             
             showToast('Initialisation du schéma GENCI…', 'info');
             
-            try {
-                // Utiliser le nouveau bootstrap multipasse
-                var result = await TaskFlowBootstrap.ensureGenciSchema(grist, {
-                    formulasMap: GENCI_DERIVED_FORMULAS,
-                    defaultChoices: {
-                        'Entites.niveau': ['direction', 'service', 'equipe'],
-                        'Team.role': ['membre', 'chef', 'chef_de_projet'],
-                        'Feuilles.statut': ['brouillon', 'soumis', 'valide', 'rejete'],
-                        'Disponibilites.type': ['conge', 'maladie', 'ferie', 'formation', 'temps_partiel', 'autre'],
-                        'Competences.categorie': ['technique', 'fonctionnel', 'transverse']
-                    },
-                    seedDemo: false  // Seed de démo désactivé par défaut
-                });
-                
-                if (result.success) {
-                    var msg = 'Schéma GENCI prêt';
-                    if (result.duration) msg += ' (' + Math.round(result.duration) + 'ms)';
-                    if (result.phases && result.phases.tables && result.phases.tables.created.length > 0) {
-                        msg += ' — ' + result.phases.tables.created.length + ' tables';
-                    }
-                    showToast(msg, 'success');
+            // Démarrer l'installation avec single-flight guard
+            schemaInstallPromise = (async function() {
+                try {
+                    // Utiliser le nouveau bootstrap multipasse
+                    var result = await TaskFlowBootstrap.ensureGenciSchema(grist, {
+                        formulasMap: GENCI_DERIVED_FORMULAS,
+                        defaultChoices: {
+                            'Entites.niveau': ['direction', 'service', 'equipe'],
+                            'Team.role': ['membre', 'chef', 'chef_de_projet'],
+                            'Feuilles.statut': ['brouillon', 'soumis', 'valide', 'rejete'],
+                            'Disponibilites.type': ['conge', 'maladie', 'ferie', 'formation', 'temps_partiel', 'autre'],
+                            'Competences.categorie': ['technique', 'fonctionnel', 'transverse']
+                        },
+                        seedDemo: false  // Seed de démo désactivé par défaut
+                    });
                     
-                    if (result.log && result.log.length > 0) {
-                        console.log('[GENCI] Initialization log:', result.log);
+                    if (result.success) {
+                        var msg = 'Schéma GENCI prêt';
+                        if (result.duration) msg += ' (' + Math.round(result.duration) + 'ms)';
+                        if (result.phases && result.phases.tables && result.phases.tables.created.length > 0) {
+                            msg += ' — ' + result.phases.tables.created.length + ' tables';
+                        }
+                        showToast(msg, 'success');
+                        
+                        if (result.log && result.log.length > 0) {
+                            console.log('[GENCI] Initialization log:', result.log);
+                        }
+                        if (result.warnings && result.warnings.length > 0) {
+                            console.warn('[GENCI] Warnings:', result.warnings);
+                        }
+                        if (result.errors && result.errors.length > 0) {
+                            console.error('[GENCI] Errors:', JSON.stringify(result.errors, null, 2));
+                        }
+                        
+                        // IMPORTANT : Réinspecter le schéma après installation
+                        // Ne jamais considérer l'installation réussie sans validation finale
+                        console.log('[Kanban] Re-inspecting schema after installation...');
+                        var postInspection = await TaskFlowBootstrap.inspectGenciSchema(grist, [
+                            'Team', 'Programmes', 'Entites', 'Projects', 'Tasks', 'Actions'
+                        ]);
+                        
+                        if (!postInspection.ready) {
+                            console.error('[Kanban] Schema still incomplete after installation:', {
+                                missingTables: postInspection.missingTables,
+                                missingColumns: postInspection.missingColumns,
+                                corrupted: postInspection.corrupted,
+                                duplicateColumns: postInspection.duplicateColumns
+                            });
+                            result.success = false;
+                            result.postInspection = postInspection;
+                            throw new Error('Schema still incomplete after installation');
+                        }
+                        
+                        console.log('[Kanban] ✓ Schema validated successfully after installation');
+                    } else {
+                        var errorMsg = 'Échec initialisation GENCI';
+                        if (result.errors && result.errors.length > 0) {
+                            console.error('[GENCI] Errors:', JSON.stringify(result.errors, null, 2));
+                            errorMsg += ' — voir console';
+                        }
+                        showToast(errorMsg, 'error');
                     }
-                    if (result.warnings && result.warnings.length > 0) {
-                        console.warn('[GENCI] Warnings:', result.warnings);
+                    
+                    return result;
+                    
+                } catch (e) {
+                    console.error('[GENCI] Initialization error:', e);
+                    showToast('Échec initialisation: ' + (e.message || e), 'error');
+                    throw e;
+                } finally {
+                    // Nettoyer le single-flight guard
+                    schemaInstallPromise = null;
+                    
+                    // Réactiver le bouton
+                    if (btn && originalBtnState) {
+                        btn.style.opacity = originalBtnState.opacity;
+                        btn.style.pointerEvents = originalBtnState.pointerEvents;
+                        btn.disabled = originalBtnState.disabled;
                     }
-                    if (result.errors && result.errors.length > 0) {
-                        console.error('[GENCI] Errors:', JSON.stringify(result.errors, null, 2));
-                    }
-                } else {
-                    var errorMsg = 'Échec initialisation GENCI';
-                    if (result.errors && result.errors.length > 0) {
-                        console.error('[GENCI] Errors:', JSON.stringify(result.errors, null, 2));
-                        errorMsg += ' — voir console';
-                    }
-                    showToast(errorMsg, 'error');
                 }
-                
-                return result;
-                
-            } catch (e) {
-                console.error('[GENCI] Initialization error:', e);
-                showToast('Échec initialisation: ' + (e.message || e), 'error');
-                throw e;
-            } finally {
-                if (btn) {
-                    btn.style.opacity = '';
-                    btn.style.pointerEvents = '';
-                }
-            }
+            })();
+            
+            return schemaInstallPromise;
         }
 
         // ═══════════════════════════════════════════════════════════════════════
@@ -3953,6 +4146,145 @@ if $projet and $projet.responsable:
             } catch (e) {
                 console.error('initKanbanSteps error:', e);
             }
+        }
+
+        // ========================================================================
+        // DIAGNOSTIC DE SCHÉMA — Interface administrative
+        // ========================================================================
+        
+        /**
+         * Affiche un panneau de diagnostic lorsque le schéma est incomplet ou corrompu.
+         * @param {Object} inspection - Résultat de inspectGenciSchema
+         * @param {boolean} readOnly - Si true, le document est en lecture seule
+         */
+        function showSchemaDiagnostic(inspection, readOnly) {
+            if (!inspection) {
+                showToast('Schéma : erreur d\'inspection', 'error');
+                return;
+            }
+            
+            // Déterminer le message principal
+            var title, message, showInstallButton;
+            
+            if (inspection.corrupted) {
+                title = '⚠️ Schéma TaskFlow corrompu';
+                message = '<p>Le schéma contient des colonnes dupliquées, probablement créées par une concurrence entre widgets.</p>';
+                message += '<p><strong>Aucune installation automatique ne sera tentée.</strong></p>';
+                
+                if (inspection.duplicateColumns && inspection.duplicateColumns.length > 0) {
+                    message += '<div style="background:#fef2f2;border:1px solid #ef4444;border-radius:8px;padding:12px;margin:12px 0;font-size:0.85rem">';
+                    message += '<strong>Colonnes dupliquées détectées :</strong><ul style="margin:8px 0 0 20px">';
+                    inspection.duplicateColumns.forEach(function(dup) {
+                        message += '<li><strong>' + dup.table + '.' + dup.canonicalColumn + '</strong> → ' + dup.duplicates.join(', ') + '</li>';
+                    });
+                    message += '</ul></div>';
+                }
+                
+                message += '<p style="margin-top:12px;font-size:0.85rem;color:#64748b">Un nettoyage manuel ou un nouveau document sera nécessaire pour résoudre cette corruption.</p>';
+                showInstallButton = false;
+                
+            } else if (readOnly) {
+                title = '🔒 Schéma incomplet (lecture seule)';
+                message = '<p>Le schéma TaskFlow est incomplet, mais le document est en lecture seule.</p>';
+                
+                if (inspection.missingTables && inspection.missingTables.length > 0) {
+                    message += '<div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:12px;margin:12px 0;font-size:0.85rem">';
+                    message += '<strong>Tables manquantes :</strong> ' + inspection.missingTables.join(', ');
+                    message += '</div>';
+                }
+                
+                if (inspection.missingColumns && inspection.missingColumns.length > 0) {
+                    message += '<div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:12px;margin:12px 0;font-size:0.85rem">';
+                    message += '<strong>Colonnes manquantes :</strong><ul style="margin:8px 0 0 20px">';
+                    inspection.missingColumns.slice(0, 10).forEach(function(col) {
+                        message += '<li>' + col + '</li>';
+                    });
+                    if (inspection.missingColumns.length > 10) {
+                        message += '<li>… et ' + (inspection.missingColumns.length - 10) + ' autres</li>';
+                    }
+                    message += '</ul></div>';
+                }
+                
+                message += '<p style="margin-top:12px;font-size:0.85rem;color:#64748b">Ouvrez le document avec des droits d\'écriture, puis utilisez le Kanban pour initialiser le schéma.</p>';
+                showInstallButton = false;
+                
+            } else {
+                title = '⚙️ Schéma TaskFlow incomplet';
+                message = '<p>Le schéma TaskFlow n\'est pas entièrement installé.</p>';
+                
+                if (inspection.missingTables && inspection.missingTables.length > 0) {
+                    message += '<div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:12px;margin:12px 0;font-size:0.85rem">';
+                    message += '<strong>Tables manquantes :</strong> ' + inspection.missingTables.join(', ');
+                    message += '</div>';
+                }
+                
+                if (inspection.missingColumns && inspection.missingColumns.length > 0) {
+                    message += '<div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:12px;margin:12px 0;font-size:0.85rem">';
+                    message += '<strong>Colonnes manquantes :</strong><ul style="margin:8px 0 0 20px">';
+                    inspection.missingColumns.slice(0, 10).forEach(function(col) {
+                        message += '<li>' + col + '</li>';
+                    });
+                    if (inspection.missingColumns.length > 10) {
+                        message += '<li>… et ' + (inspection.missingColumns.length - 10) + ' autres</li>';
+                    }
+                    message += '</ul></div>';
+                }
+                
+                showInstallButton = true;
+            }
+            
+            // Créer le panneau de diagnostic
+            var panelHtml = '<div style="position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#fff;border:1px solid #e2e8f0;border-radius:12px;box-shadow:0 20px 60px rgba(0,0,0,0.3);z-index:10000;max-width:600px;width:90vw;max-height:80vh;overflow:auto">';
+            panelHtml += '<div style="padding:20px;border-bottom:1px solid #e2e8f0">';
+            panelHtml += '<h2 style="margin:0;font-size:1.25rem;color:#1e293b">' + title + '</h2>';
+            panelHtml += '</div>';
+            panelHtml += '<div style="padding:20px;font-size:0.9rem;line-height:1.6;color:#334155">';
+            panelHtml += message;
+            panelHtml += '</div>';
+            
+            if (showInstallButton && !readOnly) {
+                panelHtml += '<div style="padding:16px 20px;border-top:1px solid #e2e8f0;display:flex;justify-content:flex-end;gap:12px;background:#f8fafc">';
+                panelHtml += '<button onclick="this.closest(\'.schema-diagnostic-panel\').remove()" style="padding:10px 20px;border:1px solid #e2e8f0;background:#fff;color:#64748b;border-radius:8px;cursor:pointer;font-size:0.9rem">Plus tard</button>';
+                panelHtml += '<button id="btnInstallSchema" onclick="installSchemaFromDiagnostic()" style="padding:10px 20px;border:none;background:#3e5de7;color:#fff;border-radius:8px;cursor:pointer;font-size:0.9rem;font-weight:600">Initialiser / mettre à niveau le schéma TaskFlow</button>';
+                panelHtml += '</div>';
+            } else {
+                panelHtml += '<div style="padding:16px 20px;border-top:1px solid #e2e8f0;display:flex;justify-content:flex-end;background:#f8fafc">';
+                panelHtml += '<button onclick="this.closest(\'.schema-diagnostic-panel\').remove()" style="padding:10px 20px;border:1px solid #e2e8f0;background:#fff;color:#64748b;border-radius:8px;cursor:pointer;font-size:0.9rem">Fermer</button>';
+                panelHtml += '</div>';
+            }
+            
+            panelHtml += '</div>';
+            
+            // Overlay
+            var overlayHtml = '<div class="schema-diagnostic-overlay" style="position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999" onclick="this.nextElementSibling.remove()"></div>';
+            
+            // Ajouter au DOM
+            var container = document.createElement('div');
+            container.className = 'schema-diagnostic-panel';
+            container.innerHTML = overlayHtml + panelHtml;
+            document.body.appendChild(container);
+        }
+        
+        /**
+         * Fonction appelée par le bouton d'installation du diagnostic
+         */
+        function installSchemaFromDiagnostic() {
+            var btn = document.getElementById('btnInstallSchema');
+            if (!btn || btn.disabled) return;
+            
+            // Fermer le diagnostic
+            var panel = btn.closest('.schema-diagnostic-panel');
+            if (panel) panel.remove();
+            
+            // Lancer l'installation
+            initGenciSchema(btn).then(function(result) {
+                if (result && result.success) {
+                    // Recharger les données après succès
+                    loadAllData();
+                }
+            }).catch(function(e) {
+                console.error('[Diagnostic] Installation failed:', e);
+            });
         }
 
         // Sauvegarder une nouvelle étape
@@ -5434,27 +5766,52 @@ if $projet and $projet.responsable:
                 onReadOnly: () => showToast('Lecture seule : modification non autorisee', 'error'),
                 onDenied: () => { showToast('Modification refusee par vos droits', 'error'); loadAllData(); }
             });
-            // Phase 2 : Vérifier si le schéma GENCI existe déjà avec inspection complète
-            let schemaInitialized = false;
+            // Phase 2 : Vérifier si le schéma GENCI existe déjà avec inspection COMPLÈTE
+            let schemaState = {
+                ready: false,
+                incomplete: false,
+                corrupted: false,
+                readOnlyIncomplete: false,
+                inspectionError: false,
+                inspection: null
+            };
+            
             try {
-                console.log('[Kanban] Checking if schema exists...');
+                console.log('[Kanban] Performing comprehensive schema inspection...');
                 
                 // Utiliser l'inspection complète du schéma
                 if (TaskFlowBootstrap && TaskFlowBootstrap.inspectGenciSchema) {
-                    var inspection = await TaskFlowBootstrap.inspectGenciSchema(grist, ['Team', 'Programmes', 'Entites', 'Projects', 'Tasks', 'Actions']);
+                    var inspection = await TaskFlowBootstrap.inspectGenciSchema(grist, [
+                        'Team', 'Programmes', 'Entites', 'Projects', 'Tasks', 'Actions'
+                    ]);
                     
-                    if (inspection.ready) {
-                        schemaInitialized = true;
-                        console.log('[Kanban] ✓ Schéma GENCI déjà initialisé et valide');
+                    schemaState.inspection = inspection;
+                    
+                    if (inspection.ready && !inspection.corrupted) {
+                        schemaState.ready = true;
+                        console.log('[Kanban] ✓ Schema READY - all tables and columns present');
+                    } else if (inspection.corrupted) {
+                        schemaState.corrupted = true;
+                        schemaState.incomplete = true;
+                        console.error('[Kanban] ✗ Schema CORRUPTED - duplicate columns detected:', inspection.duplicateColumns);
                     } else {
-                        console.log('[Kanban] ✗ Schéma incomplet:', {
+                        schemaState.incomplete = true;
+                        console.warn('[Kanban] ✗ Schema INCOMPLETE:', {
                             missingTables: inspection.missingTables,
                             missingColumns: inspection.missingColumns,
-                            invalidTypes: inspection.invalidColumnTypes.length
+                            invalidTypes: inspection.invalidColumnTypes.length,
+                            duplicateColumns: inspection.duplicateColumns.length
                         });
+                    }
+                    
+                    // Vérifier si en lecture seule avec schéma incomplet
+                    if (TF.isReadOnly() && !inspection.ready) {
+                        schemaState.readOnlyIncomplete = true;
+                        console.warn('[Kanban] ✗ Schema READ_ONLY_INCOMPLETE');
                     }
                 } else {
                     // Fallback pour compatibilité
+                    console.warn('[Kanban] inspectGenciSchema not available, using fallback');
                     const tables = await grist.docApi.listTables();
                     const essentialTables = ['Team', 'Projects', 'Tasks'];
                     const allExist = essentialTables.every(t => tables.includes(t));
@@ -5462,39 +5819,41 @@ if $projet and $projet.responsable:
                     if (allExist) {
                         const tasksData = await grist.docApi.fetchTable('Tasks');
                         if (tasksData && tasksData.statut !== undefined) {
-                            schemaInitialized = true;
-                            console.log('[Kanban] ✓ Schéma GENCI déjà initialisé (fallback)');
+                            schemaState.ready = true;
+                            console.log('[Kanban] ✓ Schema READY (fallback check)');
+                        } else {
+                            schemaState.incomplete = true;
                         }
+                    } else {
+                        schemaState.incomplete = true;
                     }
                 }
             } catch (e) {
-                console.warn('[Kanban] ✗ Erreur vérification schéma:', e?.message);
-                schemaInitialized = false;
+                console.error('[Kanban] ✗ Schema inspection ERROR:', e?.message);
+                schemaState.inspectionError = true;
+                schemaState.incomplete = true;
             }
-            // Initialiser TOUT le schéma GENCI seulement si nécessaire
-            if (!TF.isReadOnly() && !schemaInitialized) {
-                console.log('[Kanban] → Initializing GENCI schema...');
-                showToast('Initialisation du schéma GENCI…', 'info');
-                try {
-                    var schemaResult = await initGenciSchema(null); // null = pas d'événement bouton
-                    
-                    // Vérifier le résultat réel
-                    if (!schemaResult || schemaResult.success !== true) {
-                        console.error(
-                            '[Kanban] ✗ GENCI schema initialization failed',
-                            schemaResult && schemaResult.errors
-                        );
-                        throw new Error('Le schéma GENCI reste incomplet après initialisation');
-                    }
-                    
-                    console.log('[Kanban] ✓ GENCI schema initialization complete');
-                } catch (e) {
-                    console.error('[Kanban] ✗ initGenciSchema error:', e);
-                    showToast('Schéma GENCI: ' + (e?.message || e), 'error');
-                }
+            
+            // Décider de l'action en fonction de l'état du schéma
+            if (schemaState.ready) {
+                // État READY : charger normalement, aucune mutation
+                console.log('[Kanban] → Schema ready, loading data normally...');
+            } else if (schemaState.readOnlyIncomplete) {
+                // État READ_ONLY_INCOMPLETE : afficher diagnostic, aucune action possible
+                console.error('[Kanban] → Schema incomplete and read-only, showing diagnostic...');
+                showSchemaDiagnostic(schemaState.inspection, true);
+            } else if (schemaState.corrupted) {
+                // État CORRUPTED : afficher les duplications, bloquer toute installation
+                console.error('[Kanban] → Schema corrupted, blocking installation...');
+                showSchemaDiagnostic(schemaState.inspection, false);
+            } else if (schemaState.inspectionError) {
+                // État INSPECTION_ERROR : afficher l'erreur, ne pas lancer de réparation automatique
+                console.error('[Kanban] → Schema inspection error, showing error...');
+                showToast('Erreur inspection schéma: voir console', 'error');
             } else {
-                if (TF.isReadOnly()) console.log('[Kanban] → Lecture seule, skip schema init');
-                if (schemaInitialized) console.log('[Kanban] → Schema already initialized, skip init');
+                // État INCOMPLETE : afficher panneau administratif
+                console.warn('[Kanban] → Schema incomplete, showing admin panel...');
+                showSchemaDiagnostic(schemaState.inspection, false);
             }
             try { CRA_ACTIVE = (await grist.docApi.listTables()).includes('TimeEntries'); } catch (e) {}
             console.log('[Kanban] → Calling loadAllData()...');
