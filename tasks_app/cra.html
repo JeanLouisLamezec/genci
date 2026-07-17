@@ -7,6 +7,7 @@
 <script src="https://docs.getgrist.com/grist-plugin-api.js"></script>
 <script src="core/filters/filter-manager.js"></script>
 <script src="core/cra/cra-time-entry-controller.js"></script>
+<script src="core/cra/cra-data-loader.js"></script>
 <link rel="stylesheet" href="core/filters/filter-styles.css">
 <style>
 :root {
@@ -2961,7 +2962,44 @@ function cellHours(taskId, dayMs, personId) {
 }
 
 // ---- Agrégats séparés : prévu vs réalisé ----------------------------------
+// ============================================================================
+// FONCTIONS D'AGRÉGAT OPTIMISÉES AVEC INDEX (TODO 10)
+// ============================================================================
+
+/**
+ * Helper : clé de cellule
+ */
+function cellKey(taskId, dayMs, personId) {
+  return personId + '|' + taskId + '|' + dayMs;
+}
+
+/**
+ * Helper : clé de jour (YYYY-MM-DD local)
+ */
+function dayKey(dayMs) {
+  const d = new Date(dayMs);
+  return [d.getFullYear(), String(d.getMonth() + 1).padStart(2, '0'), String(d.getDate()).padStart(2, '0')].join('-');
+}
+
+/**
+ * Renvoie les entrées pour une cellule donnée (utilise les index si disponibles)
+ */
 function cellEntries(taskId, dayMs, personId) {
+  // Utiliser les index si disponibles
+  if (S.indexes && S.indexes.entriesByPersonWeek) {
+    const key = personId + '|' + taskId;
+    const entries = S.indexes.entriesByPersonWeek.get(key);
+    if (entries) {
+      const dk = dayKey(dayMs);
+      return entries.filter(e => {
+        const eDate = typeof e.date === 'number' ? new Date(e.date * 1000) : new Date(0);
+        const edk = [eDate.getFullYear(), String(eDate.getMonth() + 1).padStart(2, '0'), String(eDate.getDate()).padStart(2, '0')].join('-');
+        return edk === dk;
+      });
+    }
+  }
+  
+  // Fallback : filtrage complet
   return S.entries.filter(e => 
     e.membre === personId && 
     e.tache === taskId && 
@@ -2969,99 +3007,276 @@ function cellEntries(taskId, dayMs, personId) {
   );
 }
 
+/**
+ * Heures réalisées pour une cellule (optimisé avec index)
+ */
 function cellActualHours(taskId, dayMs, personId) {
+  const entries = cellEntries(taskId, dayMs, personId);
   let h = 0;
-  for (const e of cellEntries(taskId, dayMs, personId)) {
+  for (const e of entries) {
     h += (Number(e.heures) || 0);
   }
   return h;
 }
 
+/**
+ * Heures prévues pour une cellule (optimisé avec index)
+ */
 function cellPlannedHours(taskId, dayMs, personId) {
+  const entries = cellEntries(taskId, dayMs, personId);
   let h = 0;
-  for (const e of cellEntries(taskId, dayMs, personId)) {
+  for (const e of entries) {
     h += (Number(e.heuresPrevues) || 0);
   }
   return h;
 }
 
-function dayActualHours(dayMs, personId) { 
-  let h = 0; 
-  for (const e of S.entries) 
-    if (e.membre === personId && sameDay(gristToMs(e.date), dayMs)) 
-      h += (Number(e.heures) || 0); 
-  return h; 
-}
-
-function dayPlannedHours(dayMs, personId) {
+/**
+ * Heures réalisées pour un jour (optimisé avec index)
+ */
+function dayActualHours(dayMs, personId) {
+  const dk = dayKey(dayMs);
   let h = 0;
-  for (const e of S.entries)
-    if (e.membre === personId && sameDay(gristToMs(e.date), dayMs))
-      h += (Number(e.heuresPrevues) || 0);
+  
+  if (S.indexes && S.indexes.entriesByPersonWeek) {
+    // Parcourir toutes les entrées de la personne pour cette semaine
+    for (const [key, entries] of S.indexes.entriesByPersonWeek) {
+      if (key.startsWith(personId + '|')) {
+        for (const e of entries) {
+          const eDate = typeof e.date === 'number' ? new Date(e.date * 1000) : new Date(0);
+          const edk = [eDate.getFullYear(), String(eDate.getMonth() + 1).padStart(2, '0'), String(eDate.getDate()).padStart(2, '0')].join('-');
+          if (edk === dk) {
+            h += (Number(e.heures) || 0);
+          }
+        }
+      }
+    }
+    return h;
+  }
+  
+  // Fallback
+  for (const e of S.entries) {
+    if (e.membre === personId && sameDay(gristToMs(e.date), dayMs)) {
+      h += (Number(e.heures) || 0);
+    }
+  }
   return h;
 }
 
-function taskWeekActualHours(taskId, personId) { 
-  let h = 0; 
-  for (const d of weekDays()) 
-    h += cellActualHours(taskId, d, personId); 
-  return h; 
+/**
+ * Heures prévues pour un jour (optimisé avec index)
+ */
+function dayPlannedHours(dayMs, personId) {
+  const dk = dayKey(dayMs);
+  let h = 0;
+  
+  if (S.indexes && S.indexes.entriesByPersonWeek) {
+    for (const [key, entries] of S.indexes.entriesByPersonWeek) {
+      if (key.startsWith(personId + '|')) {
+        for (const e of entries) {
+          const eDate = typeof e.date === 'number' ? new Date(e.date * 1000) : new Date(0);
+          const edk = [eDate.getFullYear(), String(eDate.getMonth() + 1).padStart(2, '0'), String(eDate.getDate()).padStart(2, '0')].join('-');
+          if (edk === dk) {
+            h += (Number(e.heuresPrevues) || 0);
+          }
+        }
+      }
+    }
+    return h;
+  }
+  
+  // Fallback
+  for (const e of S.entries) {
+    if (e.membre === personId && sameDay(gristToMs(e.date), dayMs)) {
+      h += (Number(e.heuresPrevues) || 0);
+    }
+  }
+  return h;
 }
 
+/**
+ * Heures réalisées pour une tâche sur la semaine
+ */
+function taskWeekActualHours(taskId, personId) {
+  let h = 0;
+  const weekDaysArr = weekDays();
+  
+  if (S.indexes && S.indexes.entriesByPersonWeek) {
+    const key = personId + '|' + taskId;
+    const entries = S.indexes.entriesByPersonWeek.get(key);
+    if (entries) {
+      const weekStartMs = weekDaysArr[0];
+      const weekEndMs = weekDaysArr[weekDaysArr.length - 1] + (24 * 60 * 60 * 1000);
+      for (const e of entries) {
+        const eMs = typeof e.date === 'number' ? e.date * 1000 : 0;
+        if (eMs >= weekStartMs && eMs <= weekEndMs) {
+          h += (Number(e.heures) || 0);
+        }
+      }
+    }
+    return h;
+  }
+  
+  // Fallback
+  for (const d of weekDaysArr) {
+    h += cellActualHours(taskId, d, personId);
+  }
+  return h;
+}
+
+/**
+ * Heures prévues pour une tâche sur la semaine
+ */
 function taskWeekPlannedHours(taskId, personId) {
   let h = 0;
-  for (const d of weekDays())
+  const weekDaysArr = weekDays();
+  
+  if (S.indexes && S.indexes.entriesByPersonWeek) {
+    const key = personId + '|' + taskId;
+    const entries = S.indexes.entriesByPersonWeek.get(key);
+    if (entries) {
+      const weekStartMs = weekDaysArr[0];
+      const weekEndMs = weekDaysArr[weekDaysArr.length - 1] + (24 * 60 * 60 * 1000);
+      for (const e of entries) {
+        const eMs = typeof e.date === 'number' ? e.date * 1000 : 0;
+        if (eMs >= weekStartMs && eMs <= weekEndMs) {
+          h += (Number(e.heuresPrevues) || 0);
+        }
+      }
+    }
+    return h;
+  }
+  
+  // Fallback
+  for (const d of weekDaysArr) {
     h += cellPlannedHours(taskId, d, personId);
+  }
   return h;
 }
 
-function weekActualHours(personId) { 
-  let h = 0; 
-  for (const d of weekDays()) 
-    h += dayActualHours(d, personId); 
-  return h; 
+/**
+ * Heures réalisées pour la semaine
+ */
+function weekActualHours(personId) {
+  let h = 0;
+  const weekDaysArr = weekDays();
+  
+  if (S.indexes && S.indexes.entriesByPersonWeek) {
+    const weekStartMs = weekDaysArr[0];
+    const weekEndMs = weekDaysArr[weekDaysArr.length - 1] + (24 * 60 * 60 * 1000);
+    
+    for (const [key, entries] of S.indexes.entriesByPersonWeek) {
+      if (key.startsWith(personId + '|')) {
+        for (const e of entries) {
+          const eMs = typeof e.date === 'number' ? e.date * 1000 : 0;
+          if (eMs >= weekStartMs && eMs <= weekEndMs) {
+            h += (Number(e.heures) || 0);
+          }
+        }
+      }
+    }
+    return h;
+  }
+  
+  // Fallback
+  for (const d of weekDaysArr) {
+    h += dayActualHours(d, personId);
+  }
+  return h;
 }
 
+/**
+ * Heures prévues pour la semaine
+ */
 function weekPlannedHours(personId) {
   let h = 0;
-  for (const d of weekDays())
+  const weekDaysArr = weekDays();
+  
+  if (S.indexes && S.indexes.entriesByPersonWeek) {
+    const weekStartMs = weekDaysArr[0];
+    const weekEndMs = weekDaysArr[weekDaysArr.length - 1] + (24 * 60 * 60 * 1000);
+    
+    for (const [key, entries] of S.indexes.entriesByPersonWeek) {
+      if (key.startsWith(personId + '|')) {
+        for (const e of entries) {
+          const eMs = typeof e.date === 'number' ? e.date * 1000 : 0;
+          if (eMs >= weekStartMs && eMs <= weekEndMs) {
+            h += (Number(e.heuresPrevues) || 0);
+          }
+        }
+      }
+    }
+    return h;
+  }
+  
+  // Fallback
+  for (const d of weekDaysArr) {
     h += dayPlannedHours(d, personId);
+  }
   return h;
 }
 
-// Tâches pour une personne donnée
+// Tâches pour une personne donnée (optimisé avec index)
 function gridTasksForPerson(personId) {
   const ids = new Set();
   
-  // Tâches assignées à cette personne (legacy - pour compatibilité)
-  for (const t of S.tasks) {
-    if (refIds(t.assignees).includes(personId)) {
-      ids.add(t.id);
+  // Tâches assignées à cette personne (via index)
+  if (S.indexes && S.indexes.taskById) {
+    for (const [taskId, task] of S.indexes.taskById) {
+      if (refIds(task.assignees).includes(personId)) {
+        ids.add(taskId);
+      }
+    }
+  } else {
+    // Fallback sans index
+    for (const t of S.tasks) {
+      if (refIds(t.assignees).includes(personId)) {
+        ids.add(t.id);
+      }
     }
   }
   
-  // Tâches provenant des affectations actives de la personne
-  for (const a of S.assignments) {
-    if (a.membre === personId && a.actif !== false) {
-      ids.add(a.tache);
+  // Tâches provenant des affectations actives (optimisé avec index)
+  if (S.indexes && S.indexes.assignmentsByPersonTask) {
+    for (const [key, assignment] of S.indexes.assignmentsByPersonTask) {
+      if (key.startsWith(personId + '|')) {
+        ids.add(assignment.tache);
+      }
+    }
+  } else {
+    // Fallback
+    for (const a of S.assignments) {
+      if (a.membre === personId && a.actif !== false) {
+        ids.add(a.tache);
+      }
     }
   }
   
-  // Tâches avec saisie (réalisé ou prévu) cette semaine pour cette personne
-  for (const e of S.entries) {
-    if (e.membre === personId && weekDays().some(d => sameDay(gristToMs(e.date), d))) {
-      ids.add(e.tache);
+  // Tâches avec saisie cette semaine (déjà dans les index entriesByPersonWeek)
+  if (S.indexes && S.indexes.entriesByPersonWeek) {
+    for (const [key, entries] of S.indexes.entriesByPersonWeek) {
+      if (key.startsWith(personId + '|')) {
+        const taskId = Number(key.split('|')[1]);
+        if (taskId) {
+          ids.add(taskId);
+        }
+      }
     }
   }
   
-  // Tâches ajoutées manuellement pour cette personne
+  // Tâches ajoutées manuellement
   const extraForPerson = S.extraRows[personId] || [];
   for (const id of extraForPerson) {
     ids.add(id);
   }
   
-  // Appliquer le filtre par projet si présent
-  let tasks = [...ids].map(id => S.tasks.find(t => t.id === id)).filter(Boolean);
+  // Appliquer le filtre par projet
+  let tasks = [...ids].map(id => {
+    if (S.indexes && S.indexes.taskById) {
+      return S.indexes.taskById.get(id);
+    }
+    return S.tasks.find(t => t.id === id);
+  }).filter(Boolean);
   
   if (S.filters.project && S.filters.project.length > 0) {
     tasks = tasks.filter(t => S.filters.project.includes(String(t.projet)));
@@ -3083,115 +3298,9 @@ function projName(t) { const p = S.projects.find(x => x.id === t.projet); return
 
 // ---- Filter Manager (inter-widgets) ---------------------------------------
 function initFilterManager() {
-  // Nettoyer l'ancien si existe
-  if (S.filterManager && S.filterManager.filterPanel) {
-    S.filterManager.filterPanel.remove();
-  }
-  
-  // Initialiser le FilterManager
-  S.filterManager = new FilterManager({
-    data: {
-      team: S.team,
-      entites: S.entites || [],
-      projects: S.projects,
-      tasks: S.tasks,
-      programmes: S.programmes || []
-    },
-    initialFilters: S.filters,
-    onChange: (filters) => {
-      S.filters = filters;
-      
-      console.log('[CRA] onChange - Filtres reçus:', JSON.stringify(filters));
-      console.log('[CRA] onChange - assignee:', filters.assignee, 'types:', filters.assignee.map(x => typeof x));
-      console.log('[CRA] onChange - team:', filters.team);
-      
-      // Calculer les personnes visibles selon les filtres
-      S.visiblePersonIds = S.team.filter(m => {
-        // Si pas de filtres, afficher tout le monde
-        if (!filters.assignee.length && !filters.team.length) {
-          console.log('[CRA] Pas de filtres, on affiche tout le monde');
-          return true;
-        }
-        // Filtre par personne
-        if (filters.assignee.length && !filters.assignee.includes(Number(m.id))) {
-          console.log('[CRA] Personne', m.nom, '(' + m.id + ') exclue par filtre assignee:', filters.assignee);
-          return false;
-        }
-        // Filtre par équipe/entité
-        if (filters.team.length && !filters.team.includes(Number(m.entite))) {
-          console.log('[CRA] Personne', m.nom, 'exclue par filtre team:', filters.team, 'vs entite', m.entite);
-          return false;
-        }
-        console.log('[CRA] Personne', m.nom, '(' + m.id + ') INCLUSE');
-        return true;
-      }).map(m => m.id);
-      
-      console.log('[CRA] visiblePersonIds brut:', S.visiblePersonIds);
-      
-      // Si aucune personne visible, afficher au moins la première
-      if (S.visiblePersonIds.length === 0 && S.team.length > 0) {
-        S.visiblePersonIds = [S.team[0].id];
-        console.log('[CRA] Aucune personne visible, default sur Alice');
-      }
-      
-      // Mettre à jour S.me :
-      // - Si une seule personne visible → S.me = cette personne
-      // - Si S.me n'est plus visible → S.me = première personne visible
-      // - Sinon → on garde S.me actuel
-      if (S.visiblePersonIds.length === 1) {
-        S.me = S.visiblePersonIds[0];
-        const meRow = S.team.find(t => t.id === S.me);
-        S.meName = meRow ? meRow.nom : '';
-        console.log('[CRA] S.me mis à jour (1 personne):', S.me, S.meName);
-      } else if (!S.visiblePersonIds.includes(S.me)) {
-        S.me = S.visiblePersonIds[0];
-        const meRow = S.team.find(t => t.id === S.me);
-        S.meName = meRow ? meRow.nom : '';
-        console.log('[CRA] S.me mis à jour (default):', S.me, S.meName);
-      }
-      
-      console.log('[CRA] Personnes visibles:', S.visiblePersonIds.length, S.visiblePersonIds.map(id => S.team.find(t => t.id === id).nom));
-      console.log('[CRA] S.me actuel:', S.me, S.meName);
-      
-      render();
-    },
-    onBroadcast: (filters) => {
-      // Diffuser les filtres aux autres widgets via Grist
-      if (grist?.widgetApi) {
-        grist.widgetApi.setOptions({ filters });
-      }
-    },
-    effCharges: (t) => {
-      try {
-        return t.charges ? JSON.parse(t.charges) : [];
-      } catch (e) { return []; }
-    },
-    teamById: (id) => S.team.find(t => t.id === Number(id)) || null,
-    theme: 'light'
-  });
-  
-  // Initialiser l'UI avec les conteneurs
-  const containers = {
-    assignee: document.getElementById('filterPersonContainer'),
-    team: document.getElementById('filterTeamContainer'),
-    project: document.getElementById('filterProjectContainer'),
-    programme: document.getElementById('filterProgramContainer')
-  };
-  const filterPanel = document.getElementById('filterPanel');
-  
-  S.filterManager.initUI(containers, filterPanel);
-  
-  // Initialiser les personnes visibles (toutes par défaut)
-  S.visiblePersonIds = S.team.map(m => m.id);
-  
-  // Écouter les filtres externes (depuis d'autres widgets)
-  if (grist?.onOptions) {
-    grist.onOptions((options) => {
-      if (options?.filters) {
-        S.filterManager.applyExternalFilters(options.filters);
-      }
-    });
-  }
+  // Cette fonction est maintenant obsolète - utiliser ensureFilterManager() à la place
+  // Gardée pour compatibilité avec d'éventuels appels résiduels
+  return ensureFilterManager();
 }
 
 // ---- Capacité & indisponibilités ------------------------------------------
@@ -3979,11 +4088,7 @@ async function loadGrist() {
   if (!S.mesGeres.length && meRow) { const f = (meRow.agentsGeres || []).filter(id => id && id !== S.me); if (f.length) S.mesGeres = f; }
   S.gOk = true;
   
-  // Initialiser le FilterManager
-  initFilterManager();
-  
-  render();
-}
+  // Le FilterManager sera initialisé via ensureFilterManager() après le premier snapshot
 // chaine_chefs d'une personne = chefs de son entite + entites ancetres (Entites.parent), borne anti-cycle.
 function chaineChefsOf(entiteId) {
   const byId = {}; for (const e of (S.entites || [])) byId[e.id] = e;
@@ -3998,58 +4103,524 @@ function computeMesGeres(me) {
   return out;
 }
 
+/**
+ * Fonction d'activation / réparation explicite (TODO 17)
+ */
+let schemaRepairInProgress = false;
+
 async function activate() {
-  // Utiliser le bootstrap central pour créer le schéma
+  // Éviter les doubles clics
+  if (schemaRepairInProgress) {
+    toast('Réparation déjà en cours...');
+    return;
+  }
+  
+  schemaRepairInProgress = true;
+  
+  const btn = document.getElementById('activateBtn');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Initialisation...';
+  }
+  
   try {
-    await TaskFlowBootstrap.ensureGenciSchema(grist, { force: true });
-    await loadGrist();
-    toast('Schema TaskFlow initialise avec succes');
+    // Utiliser le bootstrap central pour créer le schéma
+    await TaskFlowBootstrap.ensureGenciSchema(grist, { 
+      force: true,
+      reason: 'manual-cra-repair'
+    });
+    
+    // Demander un rechargement via le scheduler
+    requestCraReload({ reason: 'manual-repair', immediate: true });
+    
+    toast('Schéma TaskFlow initialisé avec succès');
   } catch (e) {
     document.getElementById('main').innerHTML = '<div class="empty-cta">Erreur initialisation : ' + esc(e.message || e) + '</div>';
+    toast('Erreur : ' + (e.message || e));
+  } finally {
+    schemaRepairInProgress = false;
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'Activer la feuille de temps';
+    }
   }
 }
 
-// ---- Init -----------------------------------------------------------------
+// ============================================================================
+// CRA OPTIMISÉ - Fast path et chargement unique
+// ============================================================================
+
+// État du scheduler de rechargement
+let craReloadInProgress = false;
+let craReloadRequested = false;
+let craReloadGeneration = 0;
+let craAppliedGeneration = 0;
+let craReloadTimer = null;
+let craFilterManagerInitialized = false;
+
+/**
+ * Instrumentation performance (TODO 1)
+ */
+const CRA_PERF_DEBUG = (function() {
+  try {
+    return typeof location !== 'undefined' &&
+      new URLSearchParams(location.search).get('debugPerf') === '1';
+  } catch (e) {
+    return false;
+  }
+})();
+
+function craPerfLog(label, details) {
+  if (!CRA_PERF_DEBUG) return;
+  console.info('[CRA perf] ' + label, details || '');
+}
+
+/**
+ * Assure une instance unique de FilterManager (TODO 8)
+ */
+function ensureFilterManager() {
+  if (S.filterManager && craFilterManagerInitialized) {
+    return S.filterManager;
+  }
+  
+  // Initialiser le FilterManager
+  S.filterManager = new FilterManager({
+    data: {
+      team: S.team || [],
+      entites: S.entites || [],
+      projects: S.projects || [],
+      tasks: S.tasks || [],
+      programmes: S.programmes || []
+    },
+    initialFilters: S.filters || { assignee: [], team: [], project: [], programme: [] },
+    onChange: (filters) => {
+      S.filters = filters;
+      
+      // Calculer les personnes visibles selon les filtres
+      S.visiblePersonIds = (S.team || []).filter(m => {
+        if (!filters.assignee.length && !filters.team.length) {
+          return true;
+        }
+        if (filters.assignee.length && !filters.assignee.includes(Number(m.id))) {
+          return false;
+        }
+        if (filters.team.length && !filters.team.includes(Number(m.entite))) {
+          return false;
+        }
+        return true;
+      }).map(m => m.id);
+      
+      // Si aucune personne visible, afficher au moins la première
+      if (S.visiblePersonIds.length === 0 && S.team.length > 0) {
+        S.visiblePersonIds = [S.team[0].id];
+      }
+      
+      // Mettre à jour S.me
+      if (S.visiblePersonIds.length === 1) {
+        S.me = S.visiblePersonIds[0];
+        const meRow = S.team.find(t => t.id === S.me);
+        S.meName = meRow ? meRow.nom : '';
+      } else if (!S.visiblePersonIds.includes(S.me)) {
+        S.me = S.visiblePersonIds[0];
+        const meRow = S.team.find(t => t.id === S.me);
+        S.meName = meRow ? meRow.nom : '';
+      }
+      
+      render();
+    },
+    onBroadcast: (filters) => {
+      if (grist?.widgetApi) {
+        grist.widgetApi.setOptions({ filters });
+      }
+    },
+    effCharges: (t) => {
+      try {
+        return t.charges ? JSON.parse(t.charges) : [];
+      } catch (e) { return []; }
+    },
+    teamById: (id) => S.team.find(t => t.id === Number(id)) || null,
+    theme: 'light'
+  });
+  
+  // Initialiser l'UI avec les conteneurs
+  const containers = {
+    assignee: document.getElementById('filterPersonContainer'),
+    team: document.getElementById('filterTeamContainer'),
+    project: document.getElementById('filterProjectContainer'),
+    programme: document.getElementById('filterProgramContainer')
+  };
+  const filterPanel = document.getElementById('filterPanel');
+  
+  S.filterManager.initUI(containers, filterPanel);
+  craFilterManagerInitialized = true;
+  
+  return S.filterManager;
+}
+
+/**
+ * Met à jour le FilterManager avec les nouvelles données (TODO 8)
+ */
+function updateFilterManagerData() {
+  const manager = ensureFilterManager();
+  manager.setData({
+    team: S.team,
+    entites: S.entites || [],
+    projects: S.projects,
+    tasks: S.tasks,
+    programmes: S.programmes || []
+  });
+}
+
+/**
+ * Construit les index de données pour le rendu (TODO 10)
+ */
+function buildCraIndexes() {
+  S.indexes = {
+    teamById: new Map(),
+    taskById: new Map(),
+    projectById: new Map(),
+    entriesByPersonWeek: new Map(),
+    assignmentsByPersonTask: new Map(),
+    dailyCapacityByPersonDate: new Map(),
+    feuillesByPersonWeek: new Map()
+  };
+  
+  // Index team
+  for (const m of S.team) {
+    S.indexes.teamById.set(m.id, m);
+  }
+  
+  // Index tasks
+  for (const t of S.tasks) {
+    S.indexes.taskById.set(t.id, t);
+  }
+  
+  // Index projects
+  for (const p of S.projects) {
+    S.indexes.projectById.set(p.id, p);
+  }
+  
+  // Index entries par personne et semaine
+  const mondayMs = S.weekStart || mondayOf(Date.now());
+  const sundayMs = mondayMs + (6 * 24 * 60 * 60 * 1000);
+  
+  for (const e of S.entries) {
+    const personId = e.membre;
+    const entryMs = typeof e.date === 'number' ? e.date * 1000 : 0;
+    
+    if (entryMs >= mondayMs && entryMs <= sundayMs) {
+      const key = personId + '|' + e.tache;
+      if (!S.indexes.entriesByPersonWeek.has(key)) {
+        S.indexes.entriesByPersonWeek.set(key, []);
+      }
+      S.indexes.entriesByPersonWeek.get(key).push(e);
+    }
+    
+    // Index daily capacity
+    if (e.capaciteJour) {
+      const capKey = personId + '|' + e.date;
+      S.indexes.dailyCapacityByPersonDate.set(capKey, e.capaciteJour);
+    }
+  }
+  
+  // Index feuilles
+  for (const f of S.feuilles) {
+    const fWeekMs = typeof f.semaine === 'number' ? f.semaine * 1000 : 0;
+    if (fWeekMs >= mondayMs && fWeekMs <= sundayMs + (24 * 60 * 60 * 1000)) {
+      const key = f.membre + '|' + f.semaine;
+      S.indexes.feuillesByPersonWeek.set(key, f);
+    }
+  }
+  
+  // Index assignments
+  for (const a of S.assignments) {
+    if (a.actif) {
+      const key = a.membre + '|' + a.tache;
+      S.indexes.assignmentsByPersonTask.set(key, a);
+    }
+  }
+}
+
+/**
+ * Applique un snapshot de données de manière atomique (TODO 9)
+ */
+function applyCraSnapshot(snapshot, generation) {
+  // Vérifier que ce snapshot n'est pas obsolète
+  if (generation < craAppliedGeneration) {
+    craPerfLog('snapshot.discarded', { generation, applied: craAppliedGeneration });
+    return;
+  }
+  
+  // Appliquer le snapshot
+  Object.assign(S, snapshot);
+  
+  // Construire les index
+  buildCraIndexes();
+  
+  // Mettre à jour le FilterManager
+  updateFilterManagerData();
+  
+  // Marquer comme appliqué
+  craAppliedGeneration = generation;
+  
+  // Rendu unique
+  render();
+  
+  craPerfLog('snapshot.applied', { generation, duration: snapshot.loadDuration });
+}
+
+/**
+ * Demande un rechargement des données CRA (TODO 6)
+ */
+function requestCraReload(options) {
+  const opts = options || {};
+  const reason = opts.reason || 'unknown';
+  
+  if (craReloadInProgress) {
+    craReloadRequested = true;
+    craPerfLog('reload.deferred', { reason });
+    return;
+  }
+  
+  if (opts.immediate) {
+    runCraReloadLoop(reason);
+    return;
+  }
+  
+  clearTimeout(craReloadTimer);
+  craReloadTimer = setTimeout(() => {
+    runCraReloadLoop(reason);
+  }, 120);
+}
+
+/**
+ * Boucle de rechargement - sérialise les appels (TODO 6)
+ */
+async function runCraReloadLoop(reason) {
+  if (craReloadInProgress) {
+    craReloadRequested = true;
+    return;
+  }
+  
+  craReloadInProgress = true;
+  
+  try {
+    do {
+      craReloadRequested = false;
+      const generation = ++craReloadGeneration;
+      
+      craPerfLog('reload.start', { generation, reason });
+      
+      try {
+        const snapshot = await loadCraSnapshotForReason(reason);
+        
+        if (generation < craReloadGeneration) {
+          craPerfLog('reload.discarded', { generation, current: craReloadGeneration });
+          continue;
+        }
+        
+        applyCraSnapshot(snapshot, generation);
+      } catch (error) {
+        console.error('[CRA] Erreur de rechargement:', error);
+        if (generation < craReloadGeneration) {
+          continue;
+        }
+      }
+    } while (craReloadRequested);
+  } finally {
+    craReloadInProgress = false;
+  }
+}
+
+/**
+ * Charge un snapshot CRA pour une raison donnée
+ */
+async function loadCraSnapshotForReason(reason) {
+  const loadId = CraDataLoader.createLoadId();
+  const startedAt = performance.now();
+  
+  craPerfLog('fetch.start', { loadId, reason });
+  
+  // Charger les données en parallèle
+  const { raw, fetchDuration } = await CraDataLoader.fetchCraSnapshot(grist);
+  
+  // Normaliser
+  const normalized = CraDataLoader.normalizeCraSnapshot(raw, raw.currentUser);
+  normalized.loadDuration = fetchDuration;
+  
+  craPerfLog('fetch.complete', { loadId, duration: fetchDuration });
+  
+  return normalized;
+}
+
+/**
+ * Valide et récupère le schéma CRA avec fast path (TODO 4, 16)
+ */
+async function ensureCraReadyAndLoad() {
+  const startedAt = performance.now();
+  const isReadOnly = TF.isReadOnly();
+  
+  try {
+    // Tenter de charger directement
+    const { raw } = await CraDataLoader.fetchCraSnapshot(grist);
+    
+    // Inspecter le snapshot
+    const inspection = CraDataLoader.inspectCraSnapshot(raw);
+    
+    if (inspection.ready) {
+      // Fast path : schéma valide, pas de bootstrap nécessaire
+      craPerfLog('schema.fast-path', { duration: performance.now() - startedAt, readOnly: isReadOnly });
+      return CraDataLoader.normalizeCraSnapshot(raw, raw.currentUser);
+    }
+    
+    // Slow path : schéma incomplet
+    if (isReadOnly) {
+      // TODO 16 : En lecture seule, ne pas tenter de réparation
+      throw new Error(
+        'Le schéma CRA est incomplet et le document est en lecture seule. ' +
+        'Impossible de procéder à la mise à niveau. ' +
+        'Tables manquantes : ' + inspection.missingTables.join(', ') +
+        '. Colonnes manquantes : ' + inspection.missingColumns.join(', ')
+      );
+    }
+    
+    // Afficher l'état de mise à niveau
+    showSchemaUpgradeState(inspection);
+    
+    // Appeler le bootstrap une seule fois
+    await TaskFlowBootstrap.ensureGenciSchema(grist, {
+      reason: 'cra-schema-recovery'
+    });
+    
+    // Recharger après réparation
+    const { raw: rawAfter } = await CraDataLoader.fetchCraSnapshot(grist);
+    const inspectionAfter = CraDataLoader.inspectCraSnapshot(rawAfter);
+    
+    if (!inspectionAfter.ready) {
+      throw new Error(
+        'Le schéma CRA reste incomplet après réparation. ' +
+        'Tables manquantes : ' + inspectionAfter.missingTables.join(', ') +
+        '. Colonnes manquantes : ' + inspectionAfter.missingColumns.join(', ')
+      );
+    }
+    
+    craPerfLog('schema.repaired', { duration: performance.now() - startedAt });
+    return CraDataLoader.normalizeCraSnapshot(rawAfter, rawAfter.currentUser);
+    
+  } catch (error) {
+    if (!isConfirmedSchemaError(error)) {
+      // Erreur non liée au schéma (réseau, etc.)
+      throw error;
+    }
+    
+    // Erreur de schéma confirmée
+    if (isReadOnly) {
+      // TODO 16 : En lecture seule, afficher un diagnostic clair
+      throw new Error(
+        'Le schéma CRA est incomplet et le document est en lecture seule. ' +
+        'Veuillez demander à un administrateur de procéder à la mise à niveau. ' +
+        'Détails : ' + (error.message || error)
+      );
+    }
+    
+    // Tenter la réparation
+    showSchemaUpgradeState({ missingTables: [], missingColumns: [], ready: false });
+    
+    await TaskFlowBootstrap.ensureGenciSchema(grist, {
+      reason: 'cra-schema-recovery'
+    });
+    
+    const { raw } = await CraDataLoader.fetchCraSnapshot(grist);
+    return CraDataLoader.normalizeCraSnapshot(raw, raw.currentUser);
+  }
+}
+
+/**
+ * Vérifie si une erreur est liée au schéma
+ */
+function isConfirmedSchemaError(error) {
+  const msg = error.message || String(error);
+  return /table|column|schema/i.test(msg);
+}
+
+/**
+ * Affiche l'état de mise à niveau du schéma
+ */
+function showSchemaUpgradeState(inspection) {
+  const main = document.getElementById('main');
+  if (main) {
+    main.innerHTML = '<div class="empty-cta">Mise à niveau du document en cours...<br><small>' +
+      'Tables : ' + (inspection.missingTables || []).join(', ') + '<br>' +
+      'Colonnes : ' + (inspection.missingColumns || []).join(', ') + '</small></div>';
+  }
+}
+
+/**
+ * Enregistre les listeners Grist une seule fois (TODO 7)
+ */
+let craGristListenersRegistered = false;
+
+function registerGristListenersOnce() {
+  if (craGristListenersRegistered) {
+    return;
+  }
+  
+  craGristListenersRegistered = true;
+  
+  grist.onRecords(() => {
+    requestCraReload({ reason: 'grist.onRecords' });
+  });
+}
+
+/**
+ * Initialisation optimisée de Grist (TODO 5)
+ */
 async function initGrist() {
   try {
     await grist.ready({
       requiredAccess: 'full'
     });
-
+    
     S.alone = false;
-
+    
     TF.readOnlyBanner();
-
+    
     TF.guardWrites(grist, {
       onReadOnly: () => {
         toast('Lecture seule : modification non autorisée');
       },
       onDenied: () => {
         toast('Modification refusée par vos droits');
-        loadGrist().catch(console.error);
+        requestCraReload({ reason: 'onDenied', immediate: false });
       }
     });
-
-    if (!TF.isReadOnly()) {
-      await TaskFlowBootstrap.ensureGenciSchema(grist);
-    }
-
-    await loadGrist();
-
-    grist.onRecords(() => {
-      loadGrist().catch(error => {
-        console.error('[CRA] Rechargement impossible', error);
-      });
-    });
+    
+    // Enregistrer les listeners une seule fois
+    registerGristListenersOnce();
+    
+    // Charger avec fast path
+    await ensureCraReadyAndLoad();
+    
+    // Demander un premier rechargement
+    requestCraReload({ reason: 'initial', immediate: true });
+    
   } catch (error) {
     console.error('[CRA] Initialisation Grist impossible', error);
+    
     // Mode démo uniquement si hors iframe Grist
     if (window.self === window.top) {
       loadDemo();
+    } else {
+      const main = document.getElementById('main');
+      if (main) {
+        main.innerHTML = '<div class="empty-cta">Erreur d\'initialisation : ' +
+          esc(error.message || error) + '</div>';
+      }
     }
   }
 }
 
+// Démarrage
 initGrist();
 </script>
 </body>

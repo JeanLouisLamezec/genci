@@ -1,0 +1,226 @@
+/**
+ * Tests pour CRA Data Loader
+ */
+
+'use strict';
+
+const CraDataLoader = require('./cra-data-loader.js');
+
+describe('CRA Data Loader', () => {
+  beforeEach(() => {
+    CraDataLoader.resetScheduler();
+  });
+  
+  describe('fetchOptionalTable', () => {
+    test('retourne null si la table n\'existe pas', async () => {
+      const mockGrist = {
+        docApi: {
+          fetchTable: jest.fn().mockRejectedValue(new Error('Table not found'))
+        }
+      };
+      
+      const result = await CraDataLoader.fetchOptionalTable(mockGrist, 'MissingTable');
+      
+      expect(result).toBeNull();
+    });
+    
+    test('retourne les données si la table existe', async () => {
+      const mockData = { id: [1, 2], nom: ['A', 'B'] };
+      const mockGrist = {
+        docApi: {
+          fetchTable: jest.fn().mockResolvedValue(mockData)
+        }
+      };
+      
+      const result = await CraDataLoader.fetchOptionalTable(mockGrist, 'ExistingTable');
+      
+      expect(result).toEqual(mockData);
+    });
+  });
+  
+  describe('fetchRequiredTable', () => {
+    test('propage l\'erreur si la table n\'existe pas', async () => {
+      const mockGrist = {
+        docApi: {
+          fetchTable: jest.fn().mockRejectedValue(new Error('Table not found'))
+        }
+      };
+      
+      await expect(CraDataLoader.fetchRequiredTable(mockGrist, 'MissingTable'))
+        .rejects.toThrow('Table not found');
+    });
+  });
+  
+  describe('inspectCraSnapshot', () => {
+    test('retourne ready=true quand toutes les tables obligatoires sont présentes', () => {
+      const snapshot = {
+        Team: { id: [1], nom: ['A'] },
+        Tasks: { id: [1], titre: ['T'], projet: [1] },
+        Projects: { id: [1], nom: ['P'] },
+        TimeEntries: { id: [1], membre: [1], tache: [1], date: [1], heures: [1], heuresPrevues: [1], affectation: [1], capaciteTheorique: [1], capaciteDisponible: [1], capaciteJour: [1], feuille: [1], revisionPlan: [1], imputation: [''], description: [''] },
+        Feuilles: { id: [1], membre: [1], semaine: [1], statut: [''], validePar: [1], dateValidation: [1], motifRejet: [''] },
+        TaskAssignments: { id: [1], tache: [1], membre: [1], actif: [true] },
+        MemberDailyCapacities: { id: [1], membre: [1], date: [1], capaciteTheorique: [1], capaciteDisponible: [1], revision: [1] }
+      };
+      
+      const result = CraDataLoader.inspectCraSnapshot(snapshot);
+      
+      expect(result.ready).toBe(true);
+      expect(result.missingTables).toEqual([]);
+      expect(result.missingColumns).toEqual([]);
+    });
+    
+    test('retourne ready=false si une table obligatoire manque', () => {
+      const snapshot = {
+        Team: { id: [1], nom: ['A'] }
+        // Autres tables manquantes
+      };
+      
+      const result = CraDataLoader.inspectCraSnapshot(snapshot);
+      
+      expect(result.ready).toBe(false);
+      expect(result.missingTables.length).toBeGreaterThan(0);
+    });
+    
+    test('retourne ready=false si une colonne obligatoire manque', () => {
+      const snapshot = {
+        Team: { id: [1], nom: ['A'] },
+        Tasks: { id: [1], titre: ['T'] }, // manque 'projet'
+        Projects: { id: [1], nom: ['P'] },
+        TimeEntries: { id: [1], membre: [1], tache: [1], date: [1], heures: [1], heuresPrevues: [1], affectation: [1], capaciteTheorique: [1], capaciteDisponible: [1], capaciteJour: [1], feuille: [1], revisionPlan: [1], imputation: [''], description: [''] },
+        Feuilles: { id: [1], membre: [1], semaine: [1], statut: [''], validePar: [1], dateValidation: [1], motifRejet: [''] },
+        TaskAssignments: { id: [1], tache: [1], membre: [1], actif: [true] },
+        MemberDailyCapacities: { id: [1], membre: [1], date: [1], capaciteTheorique: [1], capaciteDisponible: [1], revision: [1] }
+      };
+      
+      const result = CraDataLoader.inspectCraSnapshot(snapshot);
+      
+      expect(result.ready).toBe(false);
+      expect(result.missingColumns).toContain('Tasks.projet');
+    });
+    
+    test('ne considère pas les tables optionnelles comme bloquantes', () => {
+      const snapshot = {
+        Team: { id: [1], nom: ['A'] },
+        Tasks: { id: [1], titre: ['T'], projet: [1] },
+        Projects: { id: [1], nom: ['P'] },
+        TimeEntries: { id: [1], membre: [1], tache: [1], date: [1], heures: [1], heuresPrevues: [1], affectation: [1], capaciteTheorique: [1], capaciteDisponible: [1], capaciteJour: [1], feuille: [1], revisionPlan: [1], imputation: [''], description: [''] },
+        Feuilles: { id: [1], membre: [1], semaine: [1], statut: [''], validePar: [1], dateValidation: [1], motifRejet: [''] },
+        TaskAssignments: { id: [1], tache: [1], membre: [1], actif: [true] },
+        MemberDailyCapacities: { id: [1], membre: [1], date: [1], capaciteTheorique: [1], capaciteDisponible: [1], revision: [1] }
+        // Entites, Programmes, Disponibilites manquants
+      };
+      
+      const result = CraDataLoader.inspectCraSnapshot(snapshot);
+      
+      expect(result.ready).toBe(true);
+      expect(result.optionalMissing).toContain('Entites');
+      expect(result.optionalMissing).toContain('Programmes');
+      expect(result.optionalMissing).toContain('Disponibilites');
+    });
+  });
+  
+  describe('hasColumn', () => {
+    test('retourne true si la colonne existe', () => {
+      const data = { id: [1], nom: ['A'] };
+      expect(CraDataLoader.hasColumn(data, 'id')).toBe(true);
+      expect(CraDataLoader.hasColumn(data, 'nom')).toBe(true);
+    });
+    
+    test('retourne false si la colonne n\'existe pas', () => {
+      const data = { id: [1], nom: ['A'] };
+      expect(CraDataLoader.hasColumn(data, 'missing')).toBe(false);
+      expect(CraDataLoader.hasColumn(null, 'id')).toBe(false);
+    });
+  });
+  
+  describe('columnarToRows', () => {
+    test('convertit un tableau colonnaire en lignes', () => {
+      const colData = {
+        id: [1, 2, 3],
+        nom: ['A', 'B', 'C'],
+        value: [10, 20, 30]
+      };
+      
+      const rows = CraDataLoader.columnarToRows(colData);
+      
+      expect(rows).toEqual([
+        { id: 1, nom: 'A', value: 10 },
+        { id: 2, nom: 'B', value: 20 },
+        { id: 3, nom: 'C', value: 30 }
+      ]);
+    });
+    
+    test('gère les données vides', () => {
+      expect(CraDataLoader.columnarToRows(null)).toEqual([]);
+      expect(CraDataLoader.columnarToRows({})).toEqual([]);
+      expect(CraDataLoader.columnarToRows([])).toEqual([]);
+    });
+  });
+  
+  describe('normalizeCraSnapshot', () => {
+    test('normalise un snapshot complet', () => {
+      const raw = {
+        team: { id: [1, 2], nom: ['Alice', 'Bob'], gristUserId: [100, 101], capaciteHebdo: [35, 35] },
+        tasks: { id: [1], titre: ['Task 1'], projet: [1] },
+        projects: { id: [1], nom: ['Project 1'] },
+        timeEntries: { id: [1], membre: [1], tache: [1], date: [1705276800], heures: [2], heuresPrevues: [3], affectation: [1], capaciteTheorique: [7], capaciteDisponible: [7], capaciteJour: [1], feuille: [1], revisionPlan: [1], imputation: [''], description: [''] },
+        feuilles: { id: [1], membre: [1], semaine: [1705276800], statut: ['brouillon'] },
+        assignments: { id: [1], tache: [1], membre: [1], actif: [true] },
+        dailyCapacities: { id: [1], membre: [1], date: [1705276800], capaciteTheorique: [7], capaciteDisponible: [7], revision: [1] }
+      };
+      
+      const currentUser = { userId: 100 };
+      const result = CraDataLoader.normalizeCraSnapshot(raw, currentUser);
+      
+      expect(result.team).toHaveLength(2);
+      expect(result.team[0].nom).toBe('Alice');
+      expect(result.me).toBe(1);
+      expect(result.meName).toBe('Alice');
+      expect(result.entries).toHaveLength(1);
+      expect(result.gOk).toBe(true);
+    });
+  });
+  
+  describe('Scheduler (TODO 6)', () => {
+    test('getSchedulerState retourne l\'état initial', () => {
+      const state = CraDataLoader.getSchedulerState();
+      
+      expect(state.reloadInProgress).toBe(false);
+      expect(state.reloadRequested).toBe(false);
+      expect(state.reloadGeneration).toBe(0);
+      expect(state.appliedGeneration).toBe(0);
+    });
+    
+    test('resetScheduler réinitialise l\'état', () => {
+      // Simuler un état modifié
+      CraDataLoader.requestCraReload({ immediate: false, reason: 'test' });
+      
+      CraDataLoader.resetScheduler();
+      
+      const state = CraDataLoader.getSchedulerState();
+      expect(state.reloadInProgress).toBe(false);
+      expect(state.reloadRequested).toBe(false);
+    });
+  });
+  
+  describe('Performance logging (TODO 1)', () => {
+    test('perfLog n\'affiche pas en mode normal', () => {
+      const consoleInfo = console.info;
+      console.info = jest.fn();
+      
+      CraDataLoader.perfLog('test.label', { data: 'test' });
+      
+      expect(console.info).not.toHaveBeenCalled();
+      
+      console.info = consoleInfo;
+    });
+    
+    test('createLoadId incrémente le compteur', () => {
+      const id1 = CraDataLoader.createLoadId();
+      const id2 = CraDataLoader.createLoadId();
+      
+      expect(id2).toBeGreaterThan(id1);
+    });
+  });
+});

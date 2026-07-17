@@ -88,6 +88,27 @@
         return new Promise(function (resolve) { setTimeout(resolve, ms); });
     }
 
+    // Helper : attente conditionnelle avec backoff borné (TODO 13)
+    async function waitUntil(predicate, options) {
+        var opts = options || {};
+        var attempts = opts.attempts || 6;
+        var initialDelay = opts.initialDelay || 50;
+        var maxDelay = opts.maxDelay || 300;
+        
+        for (var i = 0; i < attempts; i++) {
+            var result = await predicate();
+            if (result) {
+                return { success: true, attempts: i + 1 };
+            }
+            if (i < attempts - 1) {
+                var delayMs = Math.min(initialDelay * Math.pow(2, i), maxDelay);
+                await delay(delayMs);
+            }
+        }
+        
+        return { success: false, attempts: attempts };
+    }
+
     // Helper : vérifie si un type est Ref ou RefList
     function isRefType(type) {
         return /^(Ref|RefList):/.test(String(type || ''));
@@ -124,8 +145,14 @@
     }
 
     async function loadSchemaMetadata(grist) {
-        var tablesData = await grist.docApi.fetchTable('_grist_Tables');
-        var columnsData = await grist.docApi.fetchTable('_grist_Tables_column');
+        // TODO 14 : Paralléliser les lectures indépendantes
+        var results = await Promise.all([
+            grist.docApi.fetchTable('_grist_Tables'),
+            grist.docApi.fetchTable('_grist_Tables_column')
+        ]);
+        
+        var tablesData = results[0];
+        var columnsData = results[1];
         
         var tables = columnarToRows(tablesData);
         var columns = columnarToRows(columnsData);
@@ -299,32 +326,34 @@
     // ========================================================================
     
     async function syncMetadata(grist, expectedTables) {
-        log('[GENCI sync] Attente stabilisation métadonnées (3 tentatives)...');
+        log('[GENCI sync] Attente stabilisation métadonnées...');
         
         var lastMetadata = null;
         
-        for (var attempt = 0; attempt < 3; attempt++) {
-            lastMetadata = await loadSchemaMetadata(grist);
-            
-            var missing = expectedTables.filter(function(tableId) {
-                return !lastMetadata.tableById[tableId];
+        // Utiliser waitUntil pour une attente conditionnelle (TODO 13)
+        var result = await waitUntil(function() {
+            return loadSchemaMetadata(grist).then(function(metadata) {
+                lastMetadata = metadata;
+                var missing = expectedTables.filter(function(tableId) {
+                    return !metadata.tableById[tableId];
+                });
+                return missing.length === 0;
             });
-            
-            if (missing.length === 0) {
-                log('[GENCI sync] Métadonnées stabilisées');
-                return lastMetadata;
-            }
-            
-            if (attempt < 2) {
-                await delay(150);
-            }
+        }, { attempts: 6, initialDelay: 50, maxDelay: 200 });
+        
+        if (result.success) {
+            log('[GENCI sync] Métadonnées stabilisées (' + result.attempts + ' tentatives)');
+            return lastMetadata;
         }
         
+        // Échec après 6 tentatives
+        var missing = expectedTables.filter(function(tableId) {
+            return !lastMetadata.tableById[tableId];
+        });
+        
         throw new Error(
-            'Tables absentes après création: ' +
-            expectedTables.filter(function(tableId) {
-                return !lastMetadata.tableById[tableId];
-            }).join(', ')
+            'Tables absentes après ' + result.attempts + ' tentatives: ' +
+            missing.join(', ')
         );
     }
 
