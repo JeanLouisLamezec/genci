@@ -158,13 +158,15 @@ function isDateInRange(date, startDate, endDate) {
  */
 function generateDateRange(startDate, endDate) {
   const dates = [];
-  const current = parseDateUTC(startDate);
-  const end = parseDateUTC(endDate);
   
-  if (!current || !end) return dates;
+  // Accepter objets Date ou timestamps
+  let current = startDate instanceof Date ? startDate : new Date(startDate);
+  const end = endDate instanceof Date ? endDate : new Date(endDate);
   
-  while (compareDates(formatDateUTC(current), endDate) <= 0) {
-    dates.push(formatDateUTC(current));
+  if (!current.getTime() || !end.getTime()) return dates;
+  
+  while (compareDates(formatDateUTC(current), formatDateUTC(end)) <= 0) {
+    dates.push(formatDateUTC(current));  // Retourner des strings
     current.setUTCDate(current.getUTCDate() + 1);
   }
   

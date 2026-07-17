@@ -319,7 +319,7 @@ describe('Idempotence', () => {
     beforeEach(() => {
         mockGrist = createMockGrist({
             Tasks: [{ id: 1, titre: 'Test' }],
-            Team: [{ id: 1, nom: 'Alice' }],
+            Team: [{ id: 1, nom: 'Alice' }, { id: 2, nom: 'Bob' }],
             TaskAssignments: [],
             TimeEntries: []
         });
@@ -528,7 +528,7 @@ describe('Scénarios d\'intégration métier', () => {
 
     beforeEach(() => {
         mockGrist = createMockGrist({
-            Tasks: [],
+            Tasks: [{ id: 1, titre: 'Tâche A' }],
             Team: [{ id: 1, nom: 'Alice' }, { id: 2, nom: 'Bob' }],
             TaskAssignments: [],
             TimeEntries: []
