@@ -3419,6 +3419,30 @@ var reconcileDailyEntries = PlanningReconciliation.reconcileDailyEntries;
   // ===========================================================================
   
   /**
+   * Convertit un tableau colonnaire en lignes
+   */
+  function columnarToRows(data) {
+    if (!data || !data.id || data.id.length === 0) {
+      return [];
+    }
+    
+    var cols = Object.keys(data);
+    var n = data.id.length;
+    var rows = [];
+    
+    for (var i = 0; i < n; i++) {
+      var rec = {};
+      for (var j = 0; j < cols.length; j++) {
+        var col = cols[j];
+        rec[col] = data[col][i];
+      }
+      rows.push(rec);
+    }
+    
+    return rows;
+  }
+  
+  /**
    * Convertit un timestamp Grist (secondes) en date YYYY-MM-DD
    */
   function gristTimestampToDate(timestamp) {
@@ -3435,6 +3459,104 @@ var reconcileDailyEntries = PlanningReconciliation.reconcileDailyEntries;
     var date = parseDateUTC(dateStr);
     if (!date) return null;
     return Math.floor(date.getTime() / 1000);
+  }
+  
+  /**
+   * Convertit une date Grist (timestamp ou string) en ISO UTC (YYYY-MM-DD)
+   */
+  function gristDateToIso(value) {
+    if (value === null || value === undefined || value === '') {
+      return null;
+    }
+    if (typeof value === 'string') {
+      if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+        return value;
+      }
+      var date = new Date(value);
+      if (!isNaN(date.getTime())) {
+        return formatDateUTC(date);
+      }
+    }
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      var date = new Date(value * 1000);
+      if (!isNaN(date.getTime())) {
+        return formatDateUTC(date);
+      }
+    }
+    if (value instanceof Date) {
+      return formatDateUTC(value);
+    }
+    return null;
+  }
+  
+  /**
+   * Convertit une date ISO UTC (YYYY-MM-DD) en timestamp Grist
+   */
+  function isoToGristDate(value) {
+    if (!value || typeof value !== 'string') {
+      return null;
+    }
+    var date = parseDateUTC(value);
+    if (!date) {
+      return null;
+    }
+    return Math.floor(date.getTime() / 1000);
+  }
+  
+  /**
+   * Normalise un statut de feuille Grist vers le statut du domaine
+   */
+  function normalizeSheetStatus(status) {
+    if (status === null || status === undefined || status === '') {
+      return null;
+    }
+    var STATUS_MAPPING = {
+      'brouillon': 'draft',
+      'soumis': 'submitted',
+      'valide': 'validated',
+      'rejete': 'draft',
+      'draft': 'draft',
+      'submitted': 'submitted',
+      'validated': 'validated',
+      'rejected': 'draft'
+    };
+    return STATUS_MAPPING[String(status).toLowerCase()] || null;
+  }
+  
+  /**
+   * Mappe une affectation Grist vers le format domaine
+   */
+  function assignmentToDomain(assignment) {
+    return {
+      id: assignment.id,
+      taskId: assignment.tache,
+      memberId: assignment.membre,
+      allocatedHours: Number(assignment.heuresAllouees || 0),
+      startDate: gristDateToIso(assignment.dateDebut),
+      endDate: gristDateToIso(assignment.dateFin)
+    };
+  }
+  
+  /**
+   * Codes de diagnostics bloquants
+   */
+  var BLOCKING_DIAGNOSTIC_PREFIXES = ['MISSING_', 'INVALID_', 'DUPLICATE_'];
+  var BLOCKING_DIAGNOSTIC_CODES = ['PROTECTED_PLAN_EXCEEDS_ALLOCATION', 'OVERCONSUMPTION'];
+  
+  /**
+   * Vérifie si un diagnostic est bloquant
+   */
+  function isBlockingDiagnostic(diagnostic) {
+    var code = diagnostic.code || '';
+    for (var i = 0; i < BLOCKING_DIAGNOSTIC_PREFIXES.length; i++) {
+      if (code.startsWith(BLOCKING_DIAGNOSTIC_PREFIXES[i])) {
+        return true;
+      }
+    }
+    if (BLOCKING_DIAGNOSTIC_CODES.indexOf(code) >= 0) {
+      return true;
+    }
+    return false;
   }
   
   /**
@@ -3514,7 +3636,7 @@ var reconcileDailyEntries = PlanningReconciliation.reconcileDailyEntries;
         availableCapacityHours: baseCapacity,
         protectedHours: protectedHours,
         remainingCapacityHours: baseCapacity - protectedHours,
-        plannedHours: 0 // Sera incrémenté par les affectations
+        plannedHours: 0
       };
     });
     
@@ -3530,12 +3652,11 @@ var reconcileDailyEntries = PlanningReconciliation.reconcileDailyEntries;
         
         var remaining = registry[date].remainingCapacityHours;
         if (remaining < hours) {
-          return false; // Capacité insuffisante
+          return false;
         }
         
         registry[date].plannedHours += hours;
         registry[date].remainingCapacityHours -= hours;
-        registry[date].availableCapacityHours -= hours;
         return true;
       },
       
@@ -3626,26 +3747,23 @@ var reconcileDailyEntries = PlanningReconciliation.reconcileDailyEntries;
       var disponibilitesTable = tables[5];
       var capacitiesTable = tables[6];
       
-      // Trouver le membre
-      var memberIndex = -1;
+      var member = null;
       if (teamTable.id) {
         for (var i = 0; i < teamTable.id.length; i++) {
           if (teamTable.id[i] === memberId) {
-            memberIndex = i;
+            member = {
+              id: teamTable.id[i],
+              nom: teamTable.nom ? teamTable.nom[i] : '',
+              capaciteHebdo: teamTable.capaciteHebdo ? teamTable.capaciteHebdo[i] : 35
+            };
             break;
           }
         }
       }
       
-      if (memberIndex < 0) {
+      if (!member) {
         throw new Error('Membre ' + memberId + ' non trouvé');
       }
-      
-      var member = {
-        id: teamTable.id[memberIndex],
-        nom: teamTable.nom ? teamTable.nom[memberIndex] : '',
-        capaciteHebdo: teamTable.capaciteHebdo ? teamTable.capaciteHebdo[memberIndex] : 35
-      };
       
       // Charger les affectations actives du membre
       var assignments = [];
@@ -3681,20 +3799,42 @@ var reconcileDailyEntries = PlanningReconciliation.reconcileDailyEntries;
         }
       }
       
-      // Charger les TimeEntries du membre
+      // Indexer les feuilles par ID
+      var feuillesById = {};
+      if (feuillesTable.id) {
+        for (var p = 0; p < feuillesTable.id.length; p++) {
+          feuillesById[feuillesTable.id[p]] = {
+            id: feuillesTable.id[p],
+            membre: feuillesTable.membre[p],
+            semaine: feuillesTable.semaine[p],
+            statut: feuillesTable.statut[p]
+          };
+        }
+      }
+      
+      // Charger les TimeEntries du membre - rattachés par affectation
       var timeEntries = [];
       if (timeEntriesTable.id) {
         for (var l = 0; l < timeEntriesTable.id.length; l++) {
           if (timeEntriesTable.membre[l] === memberId) {
+            var feuilleId = timeEntriesTable.feuille[l];
+            var feuille = feuilleId ? feuillesById[feuilleId] : null;
+            var sheetStatus = feuille ? normalizeSheetStatus(feuille.statut) : null;
+            
             timeEntries.push({
               id: timeEntriesTable.id[l],
+              affectation: timeEntriesTable.affectation[l] || null,
               tache: timeEntriesTable.tache[l],
               membre: timeEntriesTable.membre[l],
-              date: timeEntriesTable.date[l],
+              date: gristDateToIso(timeEntriesTable.date[l]),
+              heuresPrevues: timeEntriesTable.heuresPrevues ? timeEntriesTable.heuresPrevues[l] : 0,
               heures: timeEntriesTable.heures[l] || 0,
-              feuille: timeEntriesTable.feuille[l],
-              sheetStatus: timeEntriesTable.sheetStatus[l],
-              plannedHours: timeEntriesTable.heuresPrevues ? timeEntriesTable.heuresPrevues[l] : 0
+              feuille: timeEntriesTable.feuille[l] || null,
+              sheetStatus: sheetStatus,
+              capaciteTheorique: Number(timeEntriesTable.capaciteTheorique[l] || 0),
+              capaciteDisponible: Number(timeEntriesTable.capaciteDisponible[l] || 0),
+              capaciteJour: timeEntriesTable.capaciteJour[l] || null,
+              revisionPlan: Number(timeEntriesTable.revisionPlan[l] || 0)
             });
           }
         }
@@ -3708,8 +3848,13 @@ var reconcileDailyEntries = PlanningReconciliation.reconcileDailyEntries;
             capacities.push({
               id: capacitiesTable.id[m],
               membre: capacitiesTable.membre[m],
-              date: capacitiesTable.date[m],
-              capaciteDisponible: capacitiesTable.capaciteDisponible[m] || 0
+              date: gristDateToIso(capacitiesTable.date[m]),
+              capaciteTheorique: Number(capacitiesTable.capaciteTheorique[m] || 0),
+              disponibiliteRatio: Number(capacitiesTable.disponibiliteRatio[m] || 1),
+              capaciteDisponible: Number(capacitiesTable.capaciteDisponible[m] || 0),
+              absenceHeures: Number(capacitiesTable.absenceHeures[m] || 0),
+              source: capacitiesTable.source[m] || 'calcul',
+              revision: Number(capacitiesTable.revision[m] || 1)
             });
           }
         }
@@ -3732,19 +3877,6 @@ var reconcileDailyEntries = PlanningReconciliation.reconcileDailyEntries;
         }
       }
       
-      // Charger les feuilles
-      var feuilles = [];
-      if (feuillesTable.id) {
-        for (var p = 0; p < feuillesTable.id.length; p++) {
-          feuilles.push({
-            id: feuillesTable.id[p],
-            membre: feuillesTable.membre[p],
-            semaine: feuillesTable.semaine[p],
-            statut: feuillesTable.statut[p]
-          });
-        }
-      }
-      
       return {
         member: member,
         assignments: assignments,
@@ -3752,7 +3884,7 @@ var reconcileDailyEntries = PlanningReconciliation.reconcileDailyEntries;
         timeEntries: timeEntries,
         capacities: capacities,
         disponibilites: disponibilites,
-        feuilles: feuilles
+        feuilles: Object.keys(feuillesById).map(function(k) { return feuillesById[k]; })
       };
     }
     
@@ -3767,24 +3899,22 @@ var reconcileDailyEntries = PlanningReconciliation.reconcileDailyEntries;
       var minDate = null;
       var maxDate = null;
       
-      // Période des affectations
       assignments.forEach(function(a) {
         if (a.dateDebut) {
-          var start = gristTimestampToDate(a.dateDebut);
-          if (!minDate || start < minDate) minDate = start;
+          var start = gristDateToIso(a.dateDebut);
+          if (start && (!minDate || start < minDate)) minDate = start;
         }
         if (a.dateFin) {
-          var end = gristTimestampToDate(a.dateFin);
-          if (!maxDate || end > maxDate) maxDate = end;
+          var end = gristDateToIso(a.dateFin);
+          if (end && (!maxDate || end > maxDate)) maxDate = end;
         }
       });
       
-      // Inclure les TimeEntries protégées
       timeEntries.forEach(function(e) {
         if (e.date) {
-          var date = gristTimestampToDate(e.date);
-          if (!minDate || date < minDate) minDate = date;
-          if (!maxDate || date > maxDate) maxDate = date;
+          var date = typeof e.date === 'string' ? e.date : gristDateToIso(e.date);
+          if (date && (!minDate || date < minDate)) minDate = date;
+          if (date && (!maxDate || date > maxDate)) maxDate = date;
         }
       });
       
@@ -3801,32 +3931,18 @@ var reconcileDailyEntries = PlanningReconciliation.reconcileDailyEntries;
     /**
      * Identifie les entrées protégées (verrouillées)
      */
-    function identifyProtectedEntries(timeEntries, options) {
+    function identifyProtectedEntries(timeEntries, feuillesById, options) {
       options = options || {};
       var replanFromDate = options.replanFromDate;
       
       return timeEntries.filter(function(entry) {
-        // Feuille soumise ou validée
-        if (entry.sheetStatus === 'submitted' || entry.sheetStatus === 'validated') {
-          return true;
-        }
+        var isSubmitted = entry.sheetStatus === 'submitted';
+        var isValidated = entry.sheetStatus === 'validated';
+        var hasActualHours = entry.heures > 0;
+        var isBeforeReplan = replanFromDate && entry.date && entry.date < replanFromDate;
         
-        // Feuille renseignée
-        if (entry.feuille && entry.feuille !== null) {
+        if (isSubmitted || isValidated || hasActualHours || isBeforeReplan) {
           return true;
-        }
-        
-        // Heures réalisées > 0
-        if (entry.heures > 0) {
-          return true;
-        }
-        
-        // Avant replanFromDate
-        if (replanFromDate && entry.date) {
-          var entryDate = gristTimestampToDate(entry.date);
-          if (entryDate < replanFromDate) {
-            return true;
-          }
         }
         
         return false;
@@ -3842,10 +3958,15 @@ var reconcileDailyEntries = PlanningReconciliation.reconcileDailyEntries;
       try {
         log('Preview planification membre ' + memberId);
         
-        // 1. Charger les données
-        var data = await loadMemberData(memberId);
+        var data;
+        try {
+          data = await loadMemberData(memberId);
+        } catch (loadError) {
+          log('Erreur loadMemberData: ' + loadError.message);
+          throw loadError;
+        }
         
-        log('Données chargées: ' + data.assignments.length + ' affectations, ' + data.tasks.length + ' tâches');
+        log('Données chargées: ' + data.assignments.length + ' affectations, ' + Object.keys(data.tasks).length + ' tâches');
         
         if (data.assignments.length === 0) {
           log('Aucune affectation pour le membre ' + memberId);
@@ -3854,22 +3975,24 @@ var reconcileDailyEntries = PlanningReconciliation.reconcileDailyEntries;
             memberId: memberId,
             assignmentResults: [],
             capacities: [],
-            timeEntries: {
+            capacityActions: [],
+            timeEntryActions: [],
+            reconciliation: {
               creates: [],
               updates: [],
               deletes: [],
-              unchanged: [],
-              locked: [],
               conflicts: []
             },
             diagnostics: [],
             totals: {
-              totalAllocated: 0,
-              totalPlanned: 0,
-              unplannedHours: 0
+              totalAllocatedHours: 0,
+              totalPlannedHours: 0,
+              totalUnplannedHours: 0,
+              protectedHours: 0
             },
             canCommit: false,
-            code: 'NO_ASSIGNMENTS'
+            code: 'NO_ASSIGNMENTS',
+            fingerprint: ''
           };
         }
         
@@ -3886,12 +4009,27 @@ var reconcileDailyEntries = PlanningReconciliation.reconcileDailyEntries;
         
         log('Période globale: ' + period.dateFrom + ' → ' + period.dateTo);
         
-        // 3. Identifier les entrées protégées
-        var protectedEntries = identifyProtectedEntries(data.timeEntries, {
+        // 3. Indexer les feuilles par ID
+        var feuillesById = {};
+        data.feuilles.forEach(function(f) {
+          feuillesById[f.id] = f;
+        });
+        
+        // 4. Identifier les entrées protégées
+        var protectedEntries = identifyProtectedEntries(data.timeEntries, feuillesById, {
           replanFromDate: options.replanFromDate
         });
         
-        // 4. Créer le registre de capacité
+        // Calculer les heures protégées par date
+        var protectedHoursByDate = {};
+        protectedEntries.forEach(function(entry) {
+          if (!protectedHoursByDate[entry.date]) {
+            protectedHoursByDate[entry.date] = 0;
+          }
+          protectedHoursByDate[entry.date] += entry.heuresPrevues || 0;
+        });
+        
+        // 5. Créer le registre de capacité
         var registry = createCapacityRegistry({
           memberId: memberId,
           capacities: data.capacities,
@@ -3902,25 +4040,36 @@ var reconcileDailyEntries = PlanningReconciliation.reconcileDailyEntries;
         
         log('Registre créé: ' + registry.dates.length + ' jours');
         
-        // 5. Traiter chaque affectation dans l'ordre
+        // 6. Traiter chaque affectation dans l'ordre
         var assignmentResults = [];
         var allDiagnostics = [];
+        var totalAllocated = 0;
+        var totalPlanned = 0;
         var totalUnplanned = 0;
         
         log('Début traitement de ' + data.assignments.length + ' affectations...');
         
         for (var i = 0; i < data.assignments.length; i++) {
           var assignment = data.assignments[i];
+          totalAllocated += assignment.heuresAllouees || 0;
           
-          // Trouver la tâche par ID (data.tasks est un objet, pas un tableau)
           var task = data.tasks[assignment.tache];
           
           if (!task) {
             log('Tâche ' + assignment.tache + ' non trouvée, ignorée');
+            assignmentResults.push({
+              assignmentId: assignment.id,
+              success: false,
+              error: 'Tâche non trouvée',
+              diagnostics: [{ code: 'TASK_NOT_FOUND', taskId: assignment.tache }]
+            });
             continue;
           }
           
           log('Traitement affectation ' + assignment.id + ' (tâche ' + assignment.tache + ')');
+          
+          // Convertir l'affectation au format domaine
+          var domainAssignment = assignmentToDomain(assignment);
           
           // Construire le tableau de capacités restantes pour le moteur
           var capacitiesArray = registry.dates.map(function(date) {
@@ -3932,38 +4081,70 @@ var reconcileDailyEntries = PlanningReconciliation.reconcileDailyEntries;
             };
           });
           
+          // Filtrer les TimeEntries pour cette affectation uniquement
+          var entriesForAssignment = data.timeEntries.filter(function(e) {
+            return e.affectation === assignment.id;
+          });
+          
           // Appeler le moteur de planification avec le bon contrat
           var planningResult = PlanningEngine.buildAssignmentPlan({
-            assignment: assignment,
+            assignment: domainAssignment,
             capacities: capacitiesArray,
-            existingEntries: data.timeEntries.filter(function(e) {
-              return e.tache === assignment.tache && e.membre === memberId;
-            }),
+            existingEntries: entriesForAssignment,
             replanFromDate: null,
             precisionHours: 0.01,
             capacityPolicy: 'cap'
           });
           
           // Vérifier les diagnostics bloquants
-          var hasBlockingDiagnostic = planningResult.diagnostics.some(function(d) {
-            return d.severity === 'error' || d.code === 'MISSING_ASSIGNMENT';
-          });
+          var hasBlockingDiagnostic = false;
+          for (var j = 0; j < planningResult.diagnostics.length; j++) {
+            if (isBlockingDiagnostic(planningResult.diagnostics[j])) {
+              hasBlockingDiagnostic = true;
+              break;
+            }
+          }
           
           if (hasBlockingDiagnostic) {
+            log('Diagnostic bloquant pour affectation ' + assignment.id);
             assignmentResults.push({
               assignmentId: assignment.id,
               success: false,
               error: 'Diagnostic bloquant',
-              diagnostics: planningResult.diagnostics
+              diagnostics: planningResult.diagnostics,
+              plannedEntries: [],
+              summary: planningResult.summary
             });
+            totalUnplanned += planningResult.summary.unplannedHours || 0;
+            allDiagnostics = allDiagnostics.concat(planningResult.diagnostics);
             continue;
           }
           
           // Réserver les heures dans le registre
           var plannedEntries = planningResult.desiredPlan || [];
-          plannedEntries.forEach(function(entry) {
-            registry.reserveHours(entry.date, entry.plannedHours);
-          });
+          var reservationFailed = false;
+          for (var k = 0; k < plannedEntries.length; k++) {
+            var entry = plannedEntries[k];
+            if (!registry.reserveHours(entry.date, entry.plannedHours)) {
+              reservationFailed = true;
+              break;
+            }
+          }
+          
+          if (reservationFailed) {
+            log('Échec réservation pour affectation ' + assignment.id);
+            assignmentResults.push({
+              assignmentId: assignment.id,
+              success: false,
+              error: 'Capacité insuffisante',
+              diagnostics: [{ code: 'INSUFFICIENT_CAPACITY', assignmentId: assignment.id }],
+              plannedEntries: [],
+              summary: planningResult.summary
+            });
+            totalUnplanned += planningResult.summary.unplannedHours || 0;
+            allDiagnostics = allDiagnostics.concat(planningResult.diagnostics);
+            continue;
+          }
           
           assignmentResults.push({
             assignmentId: assignment.id,
@@ -3974,10 +4155,10 @@ var reconcileDailyEntries = PlanningReconciliation.reconcileDailyEntries;
           });
           
           allDiagnostics = allDiagnostics.concat(planningResult.diagnostics || []);
-          totalUnplanned += (planningResult.summary.unplannedHours || 0);
+          totalUnplanned += planningResult.summary.unplannedHours || 0;
         }
         
-        // 6. Vérifier la postcondition
+        // 7. Vérifier la postcondition
         var postconditionCheck = registry.verifyPostcondition();
         
         if (!postconditionCheck.valid) {
@@ -3989,17 +4170,20 @@ var reconcileDailyEntries = PlanningReconciliation.reconcileDailyEntries;
           };
         }
         
-        // 7. Réconciliation globale
+        // 8. Réconciliation globale
         var allDesiredEntries = [];
         assignmentResults.forEach(function(result) {
-          if (result.plannedEntries) {
+          if (result.plannedEntries && result.success) {
             result.plannedEntries.forEach(function(entry) {
               allDesiredEntries.push({
                 assignmentId: result.assignmentId,
-                taskId: data.assignments.find(function(a) { return a.id === result.assignmentId; }).tache,
+                taskId: entry.taskId,
                 memberId: memberId,
                 date: entry.date,
-                plannedHours: entry.plannedHours
+                plannedHours: entry.plannedHours,
+                baseCapacityHours: entry.baseCapacityHours,
+                availableCapacityHours: entry.availableCapacityHours,
+                capacityRecordId: null
               });
             });
           }
@@ -4009,21 +4193,21 @@ var reconcileDailyEntries = PlanningReconciliation.reconcileDailyEntries;
           precisionHours: 0.01
         });
         
-        // 8. Calculer les totaux
-        var totalAllocated = 0;
-        data.assignments.forEach(function(a) {
-          totalAllocated += (a.heuresAllouees || 0);
-        });
-        
-        var totalPlanned = 0;
+        // 9. Calculer les totaux depuis le registre
+        totalPlanned = 0;
+        var totalProtectedHours = 0;
         Object.keys(registry.getRegistry()).forEach(function(date) {
-          totalPlanned += registry.getRegistry()[date].plannedHours;
+          var regEntry = registry.getRegistry()[date];
+          totalPlanned += regEntry.plannedHours;
+          totalProtectedHours += regEntry.protectedHours;
         });
         
-        // 9. Générer le fingerprint
+        // 10. Générer le fingerprint
         var fingerprint = generateFingerprint(data, registry);
         
         log('Preview terminé: ' + totalPlanned + 'h planifiées sur ' + totalAllocated + 'h allouées');
+        
+        var hasUnplanned = totalUnplanned > 0;
         
         return {
           success: true,
@@ -4032,16 +4216,19 @@ var reconcileDailyEntries = PlanningReconciliation.reconcileDailyEntries;
           capacities: Object.keys(registry.getRegistry()).map(function(date) {
             return registry.getRegistry()[date];
           }),
-          timeEntries: reconciliation,
+          capacityActions: [],
+          timeEntryActions: [],
+          reconciliation: reconciliation,
           diagnostics: allDiagnostics,
           totals: {
-            totalAllocated: totalAllocated,
-            totalPlanned: totalPlanned,
-            unplannedHours: totalUnplanned
+            totalAllocatedHours: totalAllocated,
+            totalPlannedHours: totalPlanned,
+            totalUnplannedHours: totalUnplanned,
+            protectedHours: totalProtectedHours
           },
           fingerprint: fingerprint,
-          canCommit: totalUnplanned === 0 || options.allowPartialPlanning === true,
-          code: totalUnplanned > 0 ? 'INSUFFICIENT_SHARED_CAPACITY' : 'SUCCESS'
+          canCommit: !hasUnplanned || options.allowPartialPlanning === true,
+          code: hasUnplanned ? 'INSUFFICIENT_SHARED_CAPACITY' : 'SUCCESS'
         };
         
       } catch (e) {
@@ -4078,7 +4265,6 @@ var reconcileDailyEntries = PlanningReconciliation.reconcileDailyEntries;
       try {
         log('Commit planification membre ' + memberId);
         
-        // 1. Vérifier le preview
         if (!preview || !preview.success) {
           return {
             success: false,
@@ -4086,40 +4272,10 @@ var reconcileDailyEntries = PlanningReconciliation.reconcileDailyEntries;
           };
         }
         
-        // 2. Vérifier le fingerprint (optionnel, à implémenter)
-        // var currentData = await loadMemberData(memberId);
-        // var currentFingerprint = generateFingerprint(currentData);
-        // if (currentFingerprint !== preview.fingerprint) {
-        //   return { success: false, code: 'STALE_PREVIEW' };
-        // }
-        
-        // 3. Appliquer les actions
         var actions = [];
         
-        // Capacités d'abord
-        if (preview.capacities && preview.capacities.length > 0) {
-          // ... actions AddRecord/UpdateRecord MemberDailyCapacities
-        }
-        
-        // TimeEntries
-        var timeEntries = preview.timeEntries;
-        
-        if (timeEntries.creates) {
-          timeEntries.creates.forEach(function(create) {
-            actions.push(['AddRecord', 'TimeEntries', null, create]);
-          });
-        }
-        
-        if (timeEntries.updates) {
-          timeEntries.updates.forEach(function(update) {
-            actions.push(['UpdateRecord', 'TimeEntries', update.id, update]);
-          });
-        }
-        
-        if (timeEntries.deletes) {
-          timeEntries.deletes.forEach(function(del) {
-            actions.push(['RemoveRecord', 'TimeEntries', del.id]);
-          });
+        for (var i = 0; i < preview.timeEntryActions.length; i++) {
+          actions.push(preview.timeEntryActions[i]);
         }
         
         if (actions.length === 0) {
@@ -4130,7 +4286,6 @@ var reconcileDailyEntries = PlanningReconciliation.reconcileDailyEntries;
           };
         }
         
-        // 4. Exécuter les actions
         var result = await grist.docApi.applyUserActions(actions);
         
         log('Commit terminé: ' + actions.length + ' actions');
@@ -4198,17 +4353,27 @@ var reconcileDailyEntries = PlanningReconciliation.reconcileDailyEntries;
       
       log('Replanification tâche ' + taskId);
       
-      // Charger les affectations de la tâche
-      var data = await loadMemberData(0); // Charger toutes les données
-      var memberIds = [];
+      var assignmentsData = await grist.docApi.fetchTable('TaskAssignments');
+      var taskAssignments = [];
       
-      data.assignments
-        .filter(function(a) { return a.tache === taskId; })
-        .forEach(function(a) {
-          if (memberIds.indexOf(a.membre) < 0) {
-            memberIds.push(a.membre);
+      if (assignmentsData.id) {
+        for (var i = 0; i < assignmentsData.id.length; i++) {
+          if (assignmentsData.tache[i] === taskId && assignmentsData.actif[i] !== false) {
+            taskAssignments.push({
+              id: assignmentsData.id[i],
+              tache: assignmentsData.tache[i],
+              membre: assignmentsData.membre[i]
+            });
           }
-        });
+        }
+      }
+      
+      var memberIds = [];
+      taskAssignments.forEach(function(a) {
+        if (memberIds.indexOf(a.membre) < 0) {
+          memberIds.push(a.membre);
+        }
+      });
       
       return await replanMembers(memberIds, options);
     }
@@ -4221,17 +4386,27 @@ var reconcileDailyEntries = PlanningReconciliation.reconcileDailyEntries;
       
       log('Replanification de ' + taskIds.length + ' tâches');
       
-      // Collecter tous les membres concernés
-      var data = await loadMemberData(0);
-      var memberIds = [];
+      var assignmentsData = await grist.docApi.fetchTable('TaskAssignments');
+      var taskAssignments = [];
       
-      data.assignments
-        .filter(function(a) { return taskIds.indexOf(a.tache) >= 0; })
-        .forEach(function(a) {
-          if (memberIds.indexOf(a.membre) < 0) {
-            memberIds.push(a.membre);
+      if (assignmentsData.id) {
+        for (var i = 0; i < assignmentsData.id.length; i++) {
+          if (taskIds.indexOf(assignmentsData.tache[i]) >= 0 && assignmentsData.actif[i] !== false) {
+            taskAssignments.push({
+              id: assignmentsData.id[i],
+              tache: assignmentsData.tache[i],
+              membre: assignmentsData.membre[i]
+            });
           }
-        });
+        }
+      }
+      
+      var memberIds = [];
+      taskAssignments.forEach(function(a) {
+        if (memberIds.indexOf(a.membre) < 0) {
+          memberIds.push(a.membre);
+        }
+      });
       
       return await replanMembers(memberIds, options);
     }
@@ -4249,11 +4424,20 @@ var reconcileDailyEntries = PlanningReconciliation.reconcileDailyEntries;
   }
   
   // Export CommonJS
-  return {
-    createMemberPlanningOrchestrator: createMemberPlanningOrchestrator,
-    createCapacityRegistry: createCapacityRegistry,
-    sortAssignments: sortAssignments
-  };
+  if (typeof module !== 'undefined' && module.exports) {
+    return {
+      createMemberPlanningOrchestrator: createMemberPlanningOrchestrator,
+      createCapacityRegistry: createCapacityRegistry,
+      sortAssignments: sortAssignments
+    };
+  }
+  
+  // Export pour le navigateur
+  if (typeof window !== 'undefined') {
+    window.createMemberPlanningOrchestrator = createMemberPlanningOrchestrator;
+    window.createCapacityRegistry = createCapacityRegistry;
+    window.sortAssignments = sortAssignments;
+  }
 
   }));
 

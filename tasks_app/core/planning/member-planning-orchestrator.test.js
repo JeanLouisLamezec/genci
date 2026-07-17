@@ -23,12 +23,11 @@
     };
   };
   
-  // Charger les dépendances
-  require('./planning-engine.js');
-  require('./planning-reconciliation.js');
-  require('./member-planning-orchestrator.js');
-  
   var createMemberPlanningOrchestrator = global.createMemberPlanningOrchestrator;
+  
+  if (!createMemberPlanningOrchestrator) {
+    throw new Error('createMemberPlanningOrchestrator is not defined in global scope');
+  }
   
   describe('Member Planning Orchestrator - API publique', function() {
     
