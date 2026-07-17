@@ -9,6 +9,7 @@
     <script src="core/filters/filter-manager.js"></script>
     <script src="core/planning/task-assignment-service.js"></script>
     <script src="core/planning/gantt-task-assignment-integration.js"></script>
+    <script src="core/generated/taskflow-planning-browser.js"></script>
     <link rel="stylesheet" href="core/filters/filter-styles.css">
     <style>
         :root {
@@ -3619,6 +3620,7 @@ if (typeof globalThis !== 'undefined') {
         let dragState = { active: false, type: null, taskId: null, startX: 0, originalLeft: 0, originalWidth: 0, originalStart: null, originalEnd: null };
         let panelState = { open: false, isNew: false, taskId: null, taskIndex: -1, taskList: [], editData: null };
         let assignmentIntegration = null;  // Global pour les fonctions de sauvegarde
+        var planningService = null;  // Global pour le service de planning par membre
         let overlayPointerStart = { x: 0, y: 0 };
         let effectiveStart = new Date();    // Plage effective calculée à chaque render()
         let effectiveDays = 30;             // = période vue + extension pour tâches qui chevauchent
@@ -5315,6 +5317,37 @@ if (typeof globalThis !== 'undefined') {
                         console.warn('[Gantt] Échec synchronisation affectations:', syncResult);
                         assignmentSyncSuccess = false;
                         syncErrorMessage = syncResult.message || syncResult.code;
+                    } else {
+                        // Replanifier si les affectations ou dates ont changé
+                        if (planningService && (datesChanged || assigneesChanged || chargesChanged)) {
+                            try {
+                                console.log('[Gantt] Replanification après modification');
+                                // Charger les affectations de la tâche pour identifier les membres
+                                var assignmentsTable = await grist.docApi.fetchTable('TaskAssignments');
+                                var memberIds = [];
+                                
+                                if (assignmentsTable.id) {
+                                    for (var i = 0; i < assignmentsTable.id.length; i++) {
+                                        if (assignmentsTable.tache[i] === panelState.taskId && assignmentsTable.actif[i] !== false) {
+                                            var memberId = assignmentsTable.membre[i];
+                                            if (memberId && memberIds.indexOf(memberId) < 0) {
+                                                memberIds.push(memberId);
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                if (memberIds.length > 0) {
+                                    console.log('[Gantt] Replanification membres:', memberIds);
+                                    var replanResult = await planningService.replanMembers(memberIds, {
+                                        allowPartialPlanning: false
+                                    });
+                                    console.log('[Gantt] Résultat replanification:', replanResult);
+                                }
+                            } catch (e) {
+                                console.warn('[Gantt] Erreur replanification:', e);
+                            }
+                        }
                     }
                 }
                 
@@ -5393,6 +5426,36 @@ if (typeof globalThis !== 'undefined') {
                         showToast('Tâche créée mais affectations non synchronisées', 'warning');
                         await loadAllData();
                         return;
+                    }
+                    
+                    // 4. Replanifier les membres concernés
+                    if (planningService && syncResult.createdIds && syncResult.createdIds.length > 0) {
+                        try {
+                            // Charger les affectations créées pour identifier les membres
+                            var assignmentsTable = await grist.docApi.fetchTable('TaskAssignments');
+                            var memberIds = [];
+                            
+                            if (assignmentsTable.id) {
+                                for (var i = 0; i < assignmentsTable.id.length; i++) {
+                                    if (syncResult.createdIds.indexOf(assignmentsTable.id[i]) >= 0) {
+                                        var memberId = assignmentsTable.membre[i];
+                                        if (memberId && memberIds.indexOf(memberId) < 0) {
+                                            memberIds.push(memberId);
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            if (memberIds.length > 0) {
+                                console.log('[Gantt] Replanification après création: membres', memberIds);
+                                var replanResult = await planningService.replanMembers(memberIds, {
+                                    allowPartialPlanning: false
+                                });
+                                console.log('[Gantt] Résultat replanification:', replanResult);
+                            }
+                        } catch (e) {
+                            console.warn('[Gantt] Erreur replanification:', e);
+                        }
                     }
                     
                     showToast('Tâche et affectations créées', 'success');
@@ -5583,6 +5646,7 @@ if (typeof globalThis !== 'undefined') {
                     // Synchroniser les affectations pour TOUTES les tâches modifiées
                     var allSuccess = true;
                     var syncErrors = [];
+                    var tasksSynced = [];
                     
                     if (assignmentIntegration) {
                         try {
@@ -5591,6 +5655,8 @@ if (typeof globalThis !== 'undefined') {
                             if (!mainResult.ok) {
                                 allSuccess = false;
                                 syncErrors.push('Tâche principale: ' + (mainResult.message || 'échec'));
+                            } else {
+                                tasksSynced.push(task.id);
                             }
                             
                             // Tâches enfants déplacées
@@ -5599,6 +5665,8 @@ if (typeof globalThis !== 'undefined') {
                                 if (!childResult.ok) {
                                     allSuccess = false;
                                     syncErrors.push('Enfant ' + child.id + ': ' + (childResult.message || 'échec'));
+                                } else {
+                                    tasksSynced.push(child.id);
                                 }
                             }
                             
@@ -5608,6 +5676,41 @@ if (typeof globalThis !== 'undefined') {
                                 if (!depResult.ok) {
                                     allSuccess = false;
                                     syncErrors.push('Dépendante ' + dep.id + ': ' + (depResult.message || 'échec'));
+                                } else {
+                                    tasksSynced.push(dep.id);
+                                }
+                            }
+                            
+                            // Replanifier les membres concernés
+                            if (planningService && allSuccess && tasksSynced.length > 0) {
+                                try {
+                                    console.log('[Gantt] Replanification après drag: ' + tasksSynced.length + ' tâches');
+                                    
+                                    // Collecter tous les membres affectés aux tâches modifiées
+                                    var assignmentsTable = await grist.docApi.fetchTable('TaskAssignments');
+                                    var memberIds = [];
+                                    
+                                    if (assignmentsTable.id) {
+                                        for (var m = 0; m < assignmentsTable.id.length; m++) {
+                                            if (tasksSynced.indexOf(assignmentsTable.tache[m]) >= 0 && 
+                                                assignmentsTable.actif[m] !== false) {
+                                                var memberId = assignmentsTable.membre[m];
+                                                if (memberId && memberIds.indexOf(memberId) < 0) {
+                                                    memberIds.push(memberId);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    
+                                    if (memberIds.length > 0) {
+                                        console.log('[Gantt] Replanification membres:', memberIds);
+                                        var replanResult = await planningService.replanMembers(memberIds, {
+                                            allowPartialPlanning: false
+                                        });
+                                        console.log('[Gantt] Résultat replanification:', replanResult);
+                                    }
+                                } catch (replanErr) {
+                                    console.warn('[Gantt] Erreur replanification:', replanErr);
                                 }
                             }
                         } catch (syncErr) {
@@ -5922,6 +6025,14 @@ if (typeof globalThis !== 'undefined') {
                 console.log('[Gantt] TaskAssignment integration initialized');
             } else {
                 console.warn('[Gantt] TaskAssignment integration not available');
+            }
+            
+            // Initialiser le service de planning par membre
+            if (typeof global !== 'undefined' && global.TaskFlowPlanning && global.TaskFlowPlanning.createMemberPlanningOrchestrator) {
+                planningService = global.TaskFlowPlanning.createMemberPlanningOrchestrator(grist, { logEnabled: false });
+                console.log('[Gantt] Member Planning Orchestrator initialized');
+            } else {
+                console.warn('[Gantt] Member Planning Orchestrator not available');
             }
             
             // #7 respect des droits : bandeau lecture seule + garde transverse sur toutes les ecritures.
