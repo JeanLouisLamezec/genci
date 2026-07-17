@@ -7,6 +7,8 @@
     <script src="https://docs.getgrist.com/grist-plugin-api.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
     <script src="core/filters/filter-manager.js"></script>
+    <script src="core/planning/task-assignment-service.js"></script>
+    <script src="core/planning/gantt-task-assignment-integration.js"></script>
     <link rel="stylesheet" href="core/filters/filter-styles.css">
     <style>
         :root {
@@ -4147,7 +4149,7 @@ if (typeof globalThis !== 'undefined') {
         // ═══════════════════════════════════════════════════════════════════════
         function render() {
             // En mode loading, afficher uniquement le skeleton
-            if (appMode === 'loading') {
+            if (appMode === 'loading' || dataLoadState === 'loading') {
                 renderGanttSkeleton();
                 return;
             }
@@ -4176,7 +4178,29 @@ if (typeof globalThis !== 'undefined') {
         function clearAllGanttFilters() { filters = { project: [], assignee: [], priority: [] }; updateFilterUI(); broadcastFilters(); render(); }
         function updateGanttOverlay() {
             const ov = document.getElementById("ganttOverlay"); if (!ov) return;
-            if (currentVisible && currentVisible.length > 0) { ov.style.display = "none"; ov.innerHTML = ""; return; }
+            
+            // Pendant le chargement initial, ne jamais afficher l'état vide
+            if (dataLoadState === 'loading' || !initialLoadComplete) {
+                renderGanttSkeleton();
+                return;
+            }
+            
+            // En cas d'erreur, afficher un message d'erreur
+            if (dataLoadState === 'error' || initialLoadError) {
+                const errorIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>';
+                ov.innerHTML = '<div class="tf-empty"><span class="tf-empty-glyph" style="color:#ef4444">'+errorIcon+'</span><div class="tf-empty-title">Erreur de chargement</div><div class="tf-empty-sub">'+escapeHtml(initialLoadError?.message || 'Une erreur est survenue lors du chargement des données.')+'</div><button class="tf-empty-btn primary" onclick="location.reload()">Rafraîchir</button></div>';
+                ov.style.display = "flex";
+                return;
+            }
+            
+            // Si des tâches sont visibles, pas d'overlay
+            if (currentVisible && currentVisible.length > 0) { 
+                ov.style.display = "none"; 
+                ov.innerHTML = ""; 
+                return; 
+            }
+            
+            // Afficher l'état vide seulement après chargement complet
             const hasFilters = filters.project && filters.project.length || filters.assignee && filters.assignee.length || filters.priority && filters.priority.length || filters.team && filters.team.length || filters.programme && filters.programme.length;
             const gicon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>';
             const search = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>';
@@ -5250,12 +5274,23 @@ if (typeof globalThis !== 'undefined') {
             };
 
             try {
+                // 1. Mettre à jour la tâche
                 await grist.docApi.applyUserActions([['UpdateRecord', 'Tasks', panelState.taskId, pruneTaskRecord(record)]]);
+                
+                // 2. Synchroniser les affectations si le service est disponible
+                if (typeof assignmentIntegration !== 'undefined' && assignmentIntegration) {
+                    var syncResult = await assignmentIntegration.onTaskUpdated(panelState.taskId, data);
+                    if (!syncResult.ok) {
+                        console.warn('[Gantt] Échec synchronisation affectations:', syncResult);
+                    }
+                }
+                
                 showSaveIndicator();
                 const idx = tasks.findIndex(t => t.id === panelState.taskId);
                 if (idx !== -1) tasks[idx] = { ...tasks[idx], ...record };
             } catch (e) {
                 console.error(e);
+                showToast('Erreur sauvegarde', 'error');
                 showToast('Erreur sauvegarde', 'error');
             }
         }
@@ -5282,14 +5317,22 @@ if (typeof globalThis !== 'undefined') {
                 charges: TF.chargesToJson((data.charges || []).filter(c => data.assignees.includes(c.teamId))), dateCloture: data.dateCloture || null
             };
 
-            if (gristReady) {
-                try {
-                    await grist.docApi.applyUserActions([['AddRecord', 'Tasks', null, pruneTaskRecord(record)]]);
+                    // 1. Créer la tâche
+                    var createResults = await grist.docApi.applyUserActions([['AddRecord', 'Tasks', null, pruneTaskRecord(record)]]);
+                    var taskId = createResults && createResults[0] ? createResults[0] : null;
+                    
+                    // 2. Synchroniser les affectations si le service est disponible
+                    if (taskId && typeof assignmentIntegration !== 'undefined' && assignmentIntegration) {
+                        var syncResult = await assignmentIntegration.onTaskCreated(taskId, data);
+                        if (!syncResult.ok) {
+                            console.warn('[Gantt] Échec synchronisation affectations:', syncResult);
+                            showToast('Tâche créée mais affectations non synchronisées', 'error');
+                        }
+                    }
+                    
                     showToast('Tâche créée', 'success');
                     closePanel();
                     await loadAllData();
-                } catch (e) {
-                    console.error(e);
                     showToast('Erreur création', 'error');
                 }
             } else {
@@ -5451,6 +5494,15 @@ if (typeof globalThis !== 'undefined') {
                     cascadeUpdates.forEach(u => actions.push(['UpdateRecord', 'Tasks', u.id, { dateDebut: u.dateDebut, dateEcheance: u.dateEcheance }]));
                     await grist.docApi.applyUserActions(actions);
 
+                    
+                    // Synchroniser les affectations pour la tâche principale si le service est disponible
+                    if (typeof assignmentIntegration !== 'undefined' && assignmentIntegration) {
+                        try {
+                            await assignmentIntegration.syncTaskDates(task.id, task.dateDebut, task.dateEcheance);
+                        } catch (syncErr) {
+                            console.warn('[Gantt] Échec synchronisation dates affectations:', syncErr);
+                        }
+                    }
                     const extras = childUpdates.length + cascadeUpdates.length;
                     showToast(extras > 0 ? `Dates mises à jour (+${extras} tâches liées)` : 'Dates mises à jour', 'success');
                 } catch (err) { showToast('Erreur de mise à jour', 'error'); }
@@ -5548,25 +5600,57 @@ if (typeof globalThis !== 'undefined') {
         
         async function loadAllData() {
             const generation = ++loadGeneration;
+            const loadStart = performance.now();
             console.log('[Gantt data] loadAllData started', { generation, appMode: appMode });
             
-            try { const _raw = await grist.docApi.fetchTable('Tasks'); TASK_COLS = new Set(Object.keys(_raw || {})); tasks = convert(_raw); } catch (e) { tasks = []; }
-            try { team = convert(await grist.docApi.fetchTable('Team')); } catch (e) { team = []; }
-            try { projects = convert(await grist.docApi.fetchTable('Projects')); } catch (e) { projects = []; }
-            try { entites = convert(await grist.docApi.fetchTable('Entites')); } catch (e) { entites = []; }
-            try { programmes = convert(await grist.docApi.fetchTable('Programmes')); } catch (e) { programmes = []; }
+            // Helper pour fetch optionnel
+            const fetchOptional = async (tableName) => {
+                try {
+                    return convert(await grist.docApi.fetchTable(tableName));
+                } catch (e) {
+                    return [];
+                }
+            };
+            
+            // Charger toutes les tables en parallèle
+            const [tasksRaw, teamData, projectsData, entitesData, programmesData] = await Promise.all([
+                grist.docApi.fetchTable('Tasks').then(raw => {
+                    TASK_COLS = new Set(Object.keys(raw || {}));
+                    return convert(raw);
+                }).catch(() => []),
+                fetchOptional('Team'),
+                fetchOptional('Projects'),
+                fetchOptional('Entites'),
+                fetchOptional('Programmes')
+            ]);
+            
+            // Construire le snapshot localement
+            const snapshot = {
+                tasks: tasksRaw,
+                team: teamData,
+                projects: projectsData,
+                entites: entitesData,
+                programmes: programmesData
+            };
             
             // Vérifier que cette génération est toujours la courante
             if (generation !== loadGeneration) {
                 console.log('[Gantt data] loadAllData cancelled: stale generation', { generation, current: loadGeneration });
-                return;
+                return null;
             }
             
             // Vérifier que le mode est toujours 'grist'
             if (appMode !== 'grist') {
                 console.log('[Gantt data] loadAllData cancelled: appMode changed', { appMode: appMode });
-                return;
+                return null;
             }
+            
+            // Publication atomique des données
+            tasks = snapshot.tasks;
+            team = snapshot.team;
+            projects = snapshot.projects;
+            entites = snapshot.entites;
+            programmes = snapshot.programmes;
             
             gristReady = true;
             rebuildChildrenCache();
@@ -5587,14 +5671,24 @@ if (typeof globalThis !== 'undefined') {
                 });
             }
             
+            // Marquer le chargement comme terminé
+            initialLoadComplete = true;
+            dataLoadState = tasks.length ? 'ready' : 'empty';
+            loadStartTime = performance.now() - loadStart;
+            
             updateFilterUI();
             render();
+            
+            const loadDuration = performance.now() - loadStart;
             console.log('[Gantt data] loadAllData complete', {
                 generation: generation,
                 tasks: tasks.length,
                 team: team.length,
-                projects: projects.length
+                projects: projects.length,
+                loadDuration: Math.round(loadDuration) + 'ms'
             });
+            
+            return snapshot;
         }
         
         // Initialiser le FilterManager pour le Gantt
@@ -5643,6 +5737,9 @@ if (typeof globalThis !== 'undefined') {
         }
 
         async function initGrist() {
+            performance.mark('gantt-load-start');
+            const gristStart = performance.now();
+            loadStartTime = gristStart;
             console.log('[Gantt init] initGrist started', { appMode: appMode });
             
             // Phase 1 : tenter grist.ready — si Grist absent, basculer en démo
@@ -5655,6 +5752,9 @@ if (typeof globalThis !== 'undefined') {
                 return;
             }
             
+            const gristDuration = performance.now() - gristStart;
+            console.log('[Gantt init] grist.ready() succeeded in ' + Math.round(gristDuration) + 'ms, appMode = grist');
+            
             // Succès de grist.ready() : mode Grist confirmé
             appMode = 'grist';
             gristReady = true;
@@ -5662,7 +5762,14 @@ if (typeof globalThis !== 'undefined') {
             // Supprimer tout badge démo résiduel
             document.querySelectorAll('.demo-badge').forEach(el => el.remove());
             
-            console.log('[Gantt init] grist.ready() succeeded, appMode = grist');
+            // Initialiser l'intégration TaskAssignments
+            var assignmentIntegration = null;
+            if (typeof createGanttAssignmentIntegration === 'function') {
+                assignmentIntegration = createGanttAssignmentIntegration(grist, { logEnabled: false });
+                console.log('[Gantt] TaskAssignment integration initialized');
+            } else {
+                console.warn('[Gantt] TaskAssignment integration not available');
+            }
             
             // #7 respect des droits : bandeau lecture seule + garde transverse sur toutes les ecritures.
             TF.readOnlyBanner();
@@ -5681,17 +5788,31 @@ if (typeof globalThis !== 'undefined') {
                 }
             }
             try { CRA_ACTIVE = (await grist.docApi.listTables()).includes('TimeEntries'); } catch (e) {}
+            
+            // Afficher le squelette pendant le chargement
+            dataLoadState = 'loading';
+            renderGanttSkeleton();
+            
             try {
                 await loadAllData();
             } catch (e) {
                 console.error('loadAllData error (continuing):', e);
                 showToast('Chargement: ' + (e?.message || e), 'error');
+                dataLoadState = 'error';
+                initialLoadError = e;
                 appMode = 'error';
             }
+            
+            const totalLoadTime = performance.now() - loadStartTime;
+            performance.mark('gantt-data-ready');
+            performance.measure('gantt-full-load', 'gantt-load-start', 'gantt-data-ready');
+            
             console.log('[Gantt data] loaded', {
                 tasks: tasks.length,
                 team: team.length,
-                projects: projects.length
+                projects: projects.length,
+                loadState: dataLoadState,
+                totalLoadTime: Math.round(totalLoadTime) + 'ms'
             });
             try {
                 grist.onRecords(async () => await loadAllData());
@@ -5737,6 +5858,11 @@ if (typeof globalThis !== 'undefined') {
         // État d'initialisation explicite
         let appMode = 'loading';  // 'loading' | 'grist' | 'demo' | 'error'
         let loadGeneration = 0;
+        // État de chargement des données
+        let dataLoadState = 'loading';  // loading | ready | empty | error
+        let initialLoadComplete = false;
+        let initialLoadError = null;
+        let loadStartTime = 0;
         
         // Vérifier si le mode démo est demandé explicitement via l'URL
         function isExplicitDemoMode() {
