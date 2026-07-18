@@ -9,8 +9,8 @@
  * 5. Vérifier que la deuxième sauvegarde identique ne fait rien
  * ============================================================================ */
 
-require('../planning/task-assignment-service');
-require('../planning/gantt-task-assignment-integration');
+require('./task-assignment-service');
+require('../gantt/gantt-task-assignment-integration');
 
 const { createTaskAssignmentService } = global;
 const { createGanttAssignmentIntegration } = global;

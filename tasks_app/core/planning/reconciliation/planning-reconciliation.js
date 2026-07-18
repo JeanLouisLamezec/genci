@@ -7,7 +7,7 @@
 
 'use strict';
 
-const { toCentiHours, toHours, validateNumber } = require('./planning-engine.js');
+const { toCentiHours, toHours, validateNumber } = require('../planning-engine.js');
 
 const PRECISION_CENTIHOURS = 1;
 

@@ -7,7 +7,7 @@
 
 'use strict';
 
-const { getDocApi } = require('../grist/grist-api-helper.js');
+const { getDocApi } = require('../../grist/grist-api-helper.js');
 const { 
   parseDateUTC, 
   formatDateUTC, 
@@ -18,9 +18,9 @@ const {
   toHours, 
   validateNumber,
   generateDateRange
-} = require('../planning/planning-engine.js');
+} = require('../planning-engine.js');
 
-const { buildDesiredMemberDailyCapacities } = require('../capacity/member-daily-capacity-service.js');
+const { buildDesiredMemberDailyCapacities } = require('../../capacity/member-daily-capacity-service.js');
 
 // ============================================================================
 // CONSTANTES

@@ -5,8 +5,8 @@
 
 'use strict';
 
-var PlanningEngine = require('./planning-engine.js');
-var PlanningReconciliation = require('./planning-reconciliation.js');
+var PlanningEngine = require('../planning-engine.js');
+var PlanningReconciliation = require('../reconciliation/planning-reconciliation.js');
 var OrchestratorModule = require('./member-planning-orchestrator.js');
 
 var createMemberPlanningOrchestrator = OrchestratorModule.createMemberPlanningOrchestrator;

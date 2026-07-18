@@ -9,9 +9,9 @@
 'use strict';
 
 // Import des dépendances
-var PlanningEngine = require('./planning-engine.js');
-var PlanningReconciliation = require('./planning-reconciliation.js');
-var CapacityService = require('../capacity/member-daily-capacity-service.js');
+var PlanningEngine = require('../planning-engine.js');
+var PlanningReconciliation = require('../reconciliation/planning-reconciliation.js');
+var CapacityService = require('../../capacity/member-daily-capacity-service.js');
 
 var toCentiHours = PlanningEngine.toCentiHours;
 var toHours = PlanningEngine.toHours;

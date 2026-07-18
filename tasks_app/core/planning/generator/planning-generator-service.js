@@ -10,7 +10,7 @@
 
 'use strict';
 
-const { getDocApi } = require('../grist/grist-api-helper.js');
+const { getDocApi } = require('../../grist/grist-api-helper.js');
 const { 
   parseDateUTC, 
   formatDateUTC, 
@@ -18,10 +18,10 @@ const {
   compareDates,
   datesAreEqual,
   getDaysInRange 
-} = require('../planning/planning-engine.js');
+} = require('../planning-engine.js');
 
-const { buildDesiredMemberDailyCapacities } = require('../capacity/member-daily-capacity-service.js');
-const { planAssignment, validateAssignment } = require('./time-entry-planning-service.js');
+const { buildDesiredMemberDailyCapacities } = require('../../capacity/member-daily-capacity-service.js');
+const { planAssignment, validateAssignment } = require('../time_entry/time-entry-planning-service.js');
 
 // ============================================================================
 // CRÉATION DU SERVICE

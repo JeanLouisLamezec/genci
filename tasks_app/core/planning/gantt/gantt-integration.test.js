@@ -10,8 +10,8 @@
  * ============================================================================ */
 
 // Charger les modules (UMD pattern - exporte dans global)
-require('../planning/task-assignment-service');
-const { createGanttAssignmentIntegration } = require('../planning/gantt-task-assignment-integration');
+require('../task_assignment/task-assignment-service');
+const { createGanttAssignmentIntegration } = require('./gantt-task-assignment-integration');
 const { createTaskAssignmentService } = global;
 
 describe('Gantt Integration - buildDesiredAssignments', () => {
@@ -171,7 +171,7 @@ describe('Gantt Integration - syncTaskDates', () => {
             }
         };
 
-        const serviceModule = require('../planning/task-assignment-service');
+        const serviceModule = require('../task_assignment/task-assignment-service');
         service = serviceModule.createTaskAssignmentService(mockGrist);
     });
 
@@ -219,7 +219,7 @@ describe('Gantt Integration - Validation', () => {
             }
         };
 
-        const serviceModule = require('../planning/task-assignment-service');
+        const serviceModule = require('../task_assignment/task-assignment-service');
         service = serviceModule.createTaskAssignmentService(mockGrist);
     });
 

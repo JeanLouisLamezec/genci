@@ -11,7 +11,7 @@
 'use strict';
 
 const { buildAssignmentPlan, toCentiHours, toHours, parseDateUTC, formatDateUTC, addDaysUTC } = require('../planning/planning-engine.js');
-const { reconcileDailyEntries } = require('../planning/planning-reconciliation.js');
+const { reconcileDailyEntries } = require('../planning/reconciliation/planning-reconciliation.js');
 const { getDocApi } = require('./grist-api-helper.js');
 const { ensureMemberDailyCapacities } = require('../capacity/member-daily-capacity-service.js');
 
