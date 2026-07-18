@@ -561,10 +561,10 @@ describe('Scénarios d\'intégration métier', () => {
         expect(assignmentsTable.membre[0]).toBe(1);
         expect(assignmentsTable.heuresAllouees[0]).toBe(35);
 
-        // Vérifier Tasks.assignees
+        // Vérifier Tasks.assignees (format RefList Grist)
         const tasksTable = await mockGrist.docApi.fetchTable('Tasks');
         const assignees = tasksTable.assignees[0];
-        expect(assignees).toEqual([1]);
+        expect(assignees).toEqual(['L', 1]);
 
         // Vérifier Tasks.charges
         const charges = JSON.parse(tasksTable.charges[0]);
@@ -617,10 +617,11 @@ describe('Scénarios d\'intégration métier', () => {
         const assignmentsTable = await mockGrist.docApi.fetchTable('TaskAssignments');
         expect(assignmentsTable.id.length).toBe(2);
 
-        // Vérifier assignees
+        // Vérifier assignees (format RefList Grist)
         const tasksTable = await mockGrist.docApi.fetchTable('Tasks');
-        const assignees = tasksTable.assignees[0].sort();
-        expect(assignees).toEqual([1, 2]);
+        const assignees = tasksTable.assignees[0];
+        expect(assignees[0]).toBe('L');
+        expect(assignees.slice(1).sort()).toEqual([1, 2]);
 
         // Vérifier charges
         const charges = JSON.parse(tasksTable.charges[0]);
@@ -661,9 +662,9 @@ describe('Scénarios d\'intégration métier', () => {
         );
         expect(assignmentsTable.actif[bobAssignment]).toBe(true);
 
-        // Vérifier assignees (Alice exclue)
+        // Vérifier assignees (Alice exclue, format RefList Grist)
         const tasksTable = await mockGrist.docApi.fetchTable('Tasks');
-        expect(tasksTable.assignees[0]).toEqual([2]);
+        expect(tasksTable.assignees[0]).toEqual(['L', 2]);
 
         // Vérifier charges (Alice exclue)
         const charges = JSON.parse(tasksTable.charges[0]);

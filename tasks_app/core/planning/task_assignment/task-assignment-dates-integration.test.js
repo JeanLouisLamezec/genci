@@ -28,7 +28,7 @@ describe('Scénario réel - Modification de dates TaskAssignments', () => {
             titre: ['Tâche 1', 'Tâche 2', 'Tâche 3', 'Tâche 4', 'Tâche 5', 'Tâche 6'],
             dateDebut: [null, null, null, null, null, 1784419200], // 2026-07-19
             dateEcheance: [null, null, null, null, null, 1790726400], // 2026-10-04
-            assignees: [[], [], [], [], [], [1]],
+            assignees: [[], [], [], [], [], ['L', 1]],
             charges: ['', '', '', '', '', '[{"teamId":1,"heures":40}]']
         };
 
@@ -293,7 +293,7 @@ describe('Champ absent vs suppression explicite', () => {
     test('buildDesiredAssignments sans assignmentsEdited retourne []', () => {
         const task = { id: 1, dateDebut: 1000, dateEcheance: 2000 };
         const editData = {
-            assignees: [1],
+            assignees: ['L', 1],
             charges: [{ teamId: 1, heures: 35 }]
             // assignmentsEdited: false ou absent
         };
@@ -306,7 +306,7 @@ describe('Champ absent vs suppression explicite', () => {
     test('buildDesiredAssignments avec assignmentsEdited=true crée les affectations', () => {
         const task = { id: 1, dateDebut: 1000, dateEcheance: 2000 };
         const editData = {
-            assignees: [1, 2],
+            assignees: ['L', 1, 2],
             charges: [
                 { teamId: 1, heures: 35 },
                 { teamId: 2, heures: 20 }

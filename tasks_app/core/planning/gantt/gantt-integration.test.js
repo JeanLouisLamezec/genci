@@ -108,7 +108,7 @@ describe('Gantt Integration - buildDesiredAssignments', () => {
     test('gère les dates manquantes', () => {
         const task = { id: 1 }; // Pas de dates
         const editData = {
-            assignees: [1],
+            assignees: ['L', 1],
             charges: [{ teamId: 1, heures: 35 }]
         };
 
@@ -140,7 +140,7 @@ describe('Gantt Integration - onTaskCreated', () => {
     test('appelle syncTaskAssignments avec les bonnes données', async () => {
         const taskId = 1;
         const editData = {
-            assignees: [1],
+            assignees: ['L', 1],
             charges: [{ teamId: 1, heures: 35 }],
             dateDebut: 1000,
             dateEcheance: 2000

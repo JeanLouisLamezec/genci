@@ -152,7 +152,7 @@
             titre: 'Tâche Test',
             dateDebut: 1700050000,
             dateEcheance: 1700090000,
-            assignees: [1],
+            assignees: ['L', 1],
             charges: [{ teamId: 1, heures: 35 }]
         };
 
@@ -218,7 +218,7 @@
             titre: 'Tâche Test',
             dateDebut: 1700000000,
             dateEcheance: 1700100000,
-            assignees: [1],
+            assignees: ['L', 1],
             charges: [{ teamId: 1, heures: 35 }]
         };
 
@@ -270,7 +270,7 @@
             titre: 'Tâche Test',
             dateDebut: 1700050000,
             dateEcheance: 1700100000,
-            assignees: [1],
+            assignees: ['L', 1],
             charges: [{ teamId: 1, heures: 35 }]
         };
 
@@ -318,7 +318,7 @@
             titre: 'Nouveau Titre',
             dateDebut: 1700000000,
             dateEcheance: 1700086400,
-            assignees: [1],
+            assignees: ['L', 1],
             charges: [{ teamId: 1, heures: 35 }]
         };
 

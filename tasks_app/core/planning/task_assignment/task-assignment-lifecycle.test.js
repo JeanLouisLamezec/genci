@@ -185,7 +185,7 @@ describe('Cycle de vie TaskAssignments - Intégration réelle', () => {
     describe('1. Création réelle', () => {
         test('Création avec assignees et charges normales', async () => {
             const editData = {
-                assignees: [1],
+                assignees: ['L', 1],
                 charges: [{ teamId: 1, heures: 50 }],
                 dateDebut: 1784505600,
                 dateEcheance: 1785456000
@@ -227,7 +227,7 @@ describe('Cycle de vie TaskAssignments - Intégration réelle', () => {
 
         test('Création avec charges JSON string', async () => {
             const editData = {
-                assignees: [1],
+                assignees: ['L', 1],
                 charges: '[{"teamId":1,"heures":50}]',
                 dateDebut: 1784505600,
                 dateEcheance: 1785456000
@@ -245,7 +245,7 @@ describe('Cycle de vie TaskAssignments - Intégration réelle', () => {
             mockGrist.docApi.applyUserActions.mockResolvedValueOnce({ retValues: [] });
 
             const editData = {
-                assignees: [1],
+                assignees: ['L', 1],
                 charges: [{ teamId: 1, heures: 50 }],
                 dateDebut: 1784505600,
                 dateEcheance: 1785456000
@@ -277,7 +277,7 @@ describe('Cycle de vie TaskAssignments - Intégration réelle', () => {
         beforeEach(async () => {
             // Créer une tâche avec affectation
             await integration.onTaskCreated(6, {
-                assignees: [1],
+                assignees: ['L', 1],
                 charges: [{ teamId: 1, heures: 50 }],
                 dateDebut: 1784505600,
                 dateEcheance: 1785456000
@@ -326,7 +326,7 @@ describe('Cycle de vie TaskAssignments - Intégration réelle', () => {
             tasksTable.titre.push('Test');
             tasksTable.dateDebut.push(1784505600);
             tasksTable.dateEcheance.push(1785456000);
-            tasksTable.assignees.push([1]);
+            tasksTable.assignees.push(['L', 1]);
             tasksTable.charges.push('[{"teamId":1,"heures":50}]');
             tasksTable.parentTask.push(null);
 
@@ -348,7 +348,7 @@ describe('Cycle de vie TaskAssignments - Intégration réelle', () => {
         beforeEach(async () => {
             // Créer une tâche avec affectation
             const createResult = await integration.onTaskCreated(6, {
-                assignees: [1],
+                assignees: ['L', 1],
                 charges: [{ teamId: 1, heures: 50 }],
                 dateDebut: 1784505600,
                 dateEcheance: 1785456000
