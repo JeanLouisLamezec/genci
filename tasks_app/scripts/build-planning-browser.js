@@ -25,11 +25,12 @@ const OUTPUT_FILE = path.join(OUTPUT_DIR, 'taskflow-planning-browser.js');
 // Les IDs doivent correspondre aux chemins relatifs depuis CORE_DIR
 const MODULES = [
   { path: path.join(CORE_DIR, 'planning', 'planning-engine.js') },
-  { path: path.join(CORE_DIR, 'planning', 'planning-reconciliation.js') },
+  { path: path.join(CORE_DIR, 'planning', 'reconciliation', 'planning-reconciliation.js') },
   { path: path.join(CORE_DIR, 'grist', 'grist-api-helper.js') },
   { path: path.join(CORE_DIR, 'capacity', 'member-daily-capacity-service.js') },
   { path: path.join(CORE_DIR, 'grist', 'grist-planning-adapter.js') },
-  { path: path.join(CORE_DIR, 'planning', 'member-planning-orchestrator.js') },
+  { path: path.join(CORE_DIR, 'planning', 'member', 'member-planning-orchestrator.js') },
+  { path: path.join(CORE_DIR, 'planning', 'gantt', 'gantt-auto-planning-integration.js') },
   { path: path.join(CORE_DIR, 'widget-planning-service.js') }
 ];
 
@@ -195,12 +196,14 @@ function build(options = {}) {
   var adapter = __require('grist/grist-planning-adapter');
   var widgetPlanningService = __require('widget-planning-service');
   var orchestrator = __require('planning/member-planning-orchestrator');
+  var ganttAutoPlanning = __require('planning/gantt/gantt-auto-planning-integration');
   
   global.TaskFlowPlanning = {
     createWidgetPlanningService: widgetPlanningService.createWidgetPlanningService,
     summarizeGristActions: widgetPlanningService.summarizeGristActions,
     createMemberPlanningOrchestrator: orchestrator.createMemberPlanningOrchestrator,
-    isBlockingDiagnostic: adapter.isBlockingDiagnostic
+    isBlockingDiagnostic: adapter.isBlockingDiagnostic,
+    createGanttAutoPlanningIntegration: ganttAutoPlanning.createGanttAutoPlanningIntegration
   };
   
 })(typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : this));

@@ -21,11 +21,20 @@
     function createGanttAssignmentIntegration(grist, options) {
         options = options || {};
         var logEnabled = options.logEnabled || false;
+        var enableAutoPlanning = options.enableAutoPlanning !== false;
         var assignmentService = null;
+        var autoPlanningIntegration = null;
 
         // Initialiser le service si disponible
         if (global.createTaskAssignmentService) {
             assignmentService = global.createTaskAssignmentService(grist, {
+                logEnabled: logEnabled
+            });
+        }
+
+        // Initialiser l'intégration de planification automatique
+        if (enableAutoPlanning && global.createGanttAutoPlanningIntegration) {
+            autoPlanningIntegration = global.createGanttAutoPlanningIntegration(grist, {
                 logEnabled: logEnabled
             });
         }
@@ -244,14 +253,35 @@
                         verifiedIds: activeAssignments.map(function(a) { return a.id; })
                     }));
                     
-                    return {
+                    // 4. Planification automatique (après la synchronisation réussie)
+                    var planningResult = null;
+                    if (autoPlanningIntegration && activeAssignments.length > 0) {
+                        try {
+                            log('Déclenchement planification automatique pour tâche ' + taskId);
+                            planningResult = await autoPlanningIntegration.autoPlanMembersAfterTaskSync({
+                                taskId: taskId,
+                                assignments: activeAssignments,
+                                operation: 'create'
+                            });
+                            
+                            log('Planification automatique terminée : ' + JSON.stringify(planningResult.summary));
+                        } catch (planError) {
+                            log('Erreur planification automatique : ' + planError.message);
+                            // Ne pas faire échouer la création de tâche
+                        }
+                    }
+                    
+                    var finalResult = {
                         ok: true,
                         taskId: taskId,
                         expectedAssignments: desiredAssignments.length,
                         createdIds: result.createdIds,
                         verifiedIds: activeAssignments.map(function(a) { return a.id; }),
-                        actionsExecuted: result.actionsExecuted
+                        actionsExecuted: result.actionsExecuted,
+                        planningResult: planningResult
                     };
+                    
+                    return finalResult;
 
                 } catch (e) {
                     log('Erreur : ' + e.message);
@@ -317,7 +347,31 @@
                             };
                         }
                         
-                        return result;
+                        // Planification automatique
+                        var planningResult = null;
+                        if (autoPlanningIntegration && desiredAssignments.length > 0) {
+                            try {
+                                log('Déclenchement planification automatique pour tâche ' + taskId);
+                                planningResult = await autoPlanningIntegration.autoPlanMembersAfterTaskSync({
+                                    taskId: taskId,
+                                    assignments: desiredAssignments,
+                                    operation: 'update'
+                                });
+                                
+                                log('Planification automatique terminée : ' + JSON.stringify(planningResult.summary));
+                            } catch (planError) {
+                                log('Erreur planification automatique : ' + planError.message);
+                                // Ne pas faire échouer la modification
+                            }
+                        }
+                        
+                        return {
+                            ok: true,
+                            taskId: taskId,
+                            updatedIds: result.updatedIds,
+                            actionsExecuted: result.actionsExecuted,
+                            planningResult: planningResult
+                        };
                     }
                     
                     // CAS 2: Modification de dates uniquement (drag-and-drop ou panneau)
@@ -325,7 +379,33 @@
                         log('Modification de dates uniquement pour tâche ' + taskId);
                         
                         // Appel direct à la version interne (déjà dans la file)
-                        return await syncTaskDatesInternal(taskId, editData.dateDebut, editData.dateEcheance);
+                        var dateSyncResult = await syncTaskDatesInternal(taskId, editData.dateDebut, editData.dateEcheance);
+                        
+                        // Planification automatique si succès
+                        if (dateSyncResult.ok && autoPlanningIntegration) {
+                            try {
+                                // Charger les affectations pour la planification
+                                var assignmentsForPlanning = await assignmentService.loadAssignmentsForTask(taskId);
+                                var activeAssignments = assignmentsForPlanning.filter(function(a) { return a.actif !== false; });
+                                
+                                if (activeAssignments.length > 0) {
+                                    log('Déclenchement planification automatique (dates) pour tâche ' + taskId);
+                                    var planningResult = await autoPlanningIntegration.autoPlanMembersAfterTaskSync({
+                                        taskId: taskId,
+                                        assignments: activeAssignments,
+                                        operation: 'update'
+                                    });
+                                    
+                                    log('Planification automatique terminée : ' + JSON.stringify(planningResult.summary));
+                                    dateSyncResult.planningResult = planningResult;
+                                }
+                            } catch (planError) {
+                                log('Erreur planification automatique : ' + planError.message);
+                                // Ne pas faire échouer la modification de dates
+                            }
+                        }
+                        
+                        return dateSyncResult;
                     }
                     
                     // CAS 3: Modification mixte (dates + autres champs sans affectations)
