@@ -3652,15 +3652,17 @@ if (typeof globalThis !== 'undefined') {
          * @param {Object} result - Résultat de autoPlanMembersAfterTaskSync
          */
         function showPlanningResult(result) {
-            if (!result) {
-                showToast(
-                    'Tâche enregistrée, mais le planning automatique a échoué.',
-                    'warning'
-                );
-                return;
-            }
-
-            if (result.failedMemberIds && result.failedMemberIds.length > 0) {
+            // Cas d'erreur ou d'échec
+            if (
+                !result ||
+                result.success === false ||
+                [
+                    'AUTO_PLANNING_ERROR',
+                    'ORCHESTRATOR_NOT_AVAILABLE',
+                    'COMMIT_FAILED',
+                    'PARTIAL_FAILURE'
+                ].includes(result.code)
+            ) {
                 showToast(
                     'Tâche enregistrée, mais le planning automatique a échoué. ' +
                     'Utilisez « Replanifier » dans le Plan.',
@@ -3669,9 +3671,9 @@ if (typeof globalThis !== 'undefined') {
                 return;
             }
 
+            // Cas bloqué
             if (result.blockedMemberIds && result.blockedMemberIds.length > 0) {
                 var blockedCount = result.blockedMemberIds.length;
-                var unplannedHours = result.summary ? result.summary.blocked : 0;
                 showToast(
                     'Tâche enregistrée, mais le planning nécessite un arbitrage (' + blockedCount + ' membre(s) bloqué(s)). ' +
                     'Utilisez « Replanifier » dans le Plan.',
@@ -3680,6 +3682,7 @@ if (typeof globalThis !== 'undefined') {
                 return;
             }
 
+            // Cas succès avec commit
             if (result.summary && result.summary.committed > 0) {
                 showToast(
                     'Tâche enregistrée et planning mis à jour (' + result.summary.committed + ' membre(s) planifié(s)).',
@@ -3688,6 +3691,7 @@ if (typeof globalThis !== 'undefined') {
                 return;
             }
 
+            // Cas déjà conforme
             if (result.summary && result.summary.alreadyConformant > 0) {
                 showToast(
                     'Tâche enregistrée. Le planning était déjà à jour.',
@@ -5791,6 +5795,7 @@ if (typeof globalThis !== 'undefined') {
                     var allSuccess = true;
                     var syncErrors = [];
                     var tasksSynced = [];
+                    var planningResults = [];
                     
                     if (assignmentIntegration) {
                         try {
@@ -5801,6 +5806,9 @@ if (typeof globalThis !== 'undefined') {
                                 syncErrors.push('Tâche principale: ' + (mainResult.message || 'échec'));
                             } else {
                                 tasksSynced.push(task.id);
+                                if (mainResult.planningResult) {
+                                    planningResults.push(mainResult.planningResult);
+                                }
                             }
                             
                             // Tâches enfants déplacées
@@ -5811,6 +5819,9 @@ if (typeof globalThis !== 'undefined') {
                                     syncErrors.push('Enfant ' + child.id + ': ' + (childResult.message || 'échec'));
                                 } else {
                                     tasksSynced.push(child.id);
+                                    if (childResult.planningResult) {
+                                        planningResults.push(childResult.planningResult);
+                                    }
                                 }
                             }
                             
@@ -5822,44 +5833,31 @@ if (typeof globalThis !== 'undefined') {
                                     syncErrors.push('Dépendante ' + dep.id + ': ' + (depResult.message || 'échec'));
                                 } else {
                                     tasksSynced.push(dep.id);
+                                    if (depResult.planningResult) {
+                                        planningResults.push(depResult.planningResult);
+                                    }
                                 }
                             }
                             
-                            // Replanifier les membres concernés
-                            if (planningService && allSuccess && tasksSynced.length > 0) {
-                                try {
-                                    console.log('[Gantt] Replanification après drag: ' + tasksSynced.length + ' tâches');
-                                    
-                                    // Collecter tous les membres affectés aux tâches modifiées
-                                    var assignmentsTable = await grist.docApi.fetchTable('TaskAssignments');
-                                    var memberIds = [];
-                                    
-                                    if (assignmentsTable.id) {
-                                        for (var m = 0; m < assignmentsTable.id.length; m++) {
-                                            if (tasksSynced.indexOf(assignmentsTable.tache[m]) >= 0 && 
-                                                assignmentsTable.actif[m] !== false) {
-                                                var memberId = assignmentsTable.membre[m];
-                                                if (memberId && memberIds.indexOf(memberId) < 0) {
-                                                    memberIds.push(memberId);
-                                                }
-                                            }
-                                        }
-                                    }
-                                    
-                                    // NOTE: La planification automatique est maintenant gérée par
-                                    // gantt-auto-planning-integration.js après la synchronisation.
-                                    // Ce bloc a été désactivé pour éviter les doubles appels.
-                                    /*
-                                    if (memberIds.length > 0) {
-                                        console.log('[Gantt] Replanification membres:', memberIds);
-                                        var replanResult = await planningService.replanMembers(memberIds, {
-                                            allowPartialPlanning: false
-                                        });
-                                        console.log('[Gantt] Résultat replanification:', replanResult);
-                                    }
-                                    */
-                                } catch (replanErr) {
-                                    console.warn('[Gantt] Erreur replanification:', replanErr);
+                            // Vérifier les résultats de planification
+                            var problematicResult = planningResults.find(function(result) {
+                                return result.success === false || 
+                                       (result.blockedMemberIds && result.blockedMemberIds.length > 0);
+                            });
+                            
+                            if (problematicResult) {
+                                showPlanningResult(problematicResult);
+                            } else if (planningResults.length > 0) {
+                                var hasCommitted = planningResults.some(function(r) {
+                                    return r.summary && r.summary.committed > 0;
+                                });
+                                if (hasCommitted) {
+                                    showToast(
+                                        extras > 0
+                                            ? 'Dates, affectations et planning mis à jour (+${extras} tâches liées)'
+                                            : 'Dates, affectations et planning mis à jour',
+                                        'success'
+                                    );
                                 }
                             }
                         } catch (syncErr) {
@@ -6170,15 +6168,19 @@ if (typeof globalThis !== 'undefined') {
             
             // Initialiser l'intégration TaskAssignments
             if (typeof createGanttAssignmentIntegration === 'function') {
-                assignmentIntegration = createGanttAssignmentIntegration(grist, { logEnabled: false });
+                assignmentIntegration = createGanttAssignmentIntegration(grist, { logEnabled: true });
                 console.log('[Gantt] TaskAssignment integration initialized');
             } else {
                 console.warn('[Gantt] TaskAssignment integration not available');
             }
             
             // Initialiser le service de planning par membre
-            if (typeof global !== 'undefined' && global.TaskFlowPlanning && global.TaskFlowPlanning.createMemberPlanningOrchestrator) {
-                planningService = global.TaskFlowPlanning.createMemberPlanningOrchestrator(grist, { logEnabled: false });
+            // Le bundle expose les fonctions dans window/globalThis
+            var planningGlobal = (typeof window !== 'undefined' && window.TaskFlowPlanning) ||
+                                 (typeof globalThis !== 'undefined' && globalThis.TaskFlowPlanning);
+            
+            if (planningGlobal && planningGlobal.createMemberPlanningOrchestrator) {
+                planningService = planningGlobal.createMemberPlanningOrchestrator(grist, { logEnabled: false });
                 console.log('[Gantt] Member Planning Orchestrator initialized');
             } else {
                 console.warn('[Gantt] Member Planning Orchestrator not available');

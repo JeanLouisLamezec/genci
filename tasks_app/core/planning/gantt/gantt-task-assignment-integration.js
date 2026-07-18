@@ -267,6 +267,20 @@
                             log('Planification automatique terminée : ' + JSON.stringify(planningResult.summary));
                         } catch (planError) {
                             log('Erreur planification automatique : ' + planError.message);
+                            // Retourner un résultat structuré même en cas d'erreur
+                            planningResult = {
+                                success: false,
+                                code: 'AUTO_PLANNING_ERROR',
+                                failedMemberIds: activeAssignments.map(function(a) { return Number(a.membre); }),
+                                blockedMemberIds: [],
+                                members: [],
+                                summary: {
+                                    committed: 0,
+                                    blocked: 0,
+                                    failed: activeAssignments.length,
+                                    alreadyConformant: 0
+                                }
+                            };
                             // Ne pas faire échouer la création de tâche
                         }
                     }
@@ -917,6 +931,7 @@
                             operation: 'update'
                         });
                         log('Planification automatique terminée : ' + JSON.stringify(result.planningResult.summary));
+                        log('Résultat complet : ' + JSON.stringify(result.planningResult));
                     }
                 } catch (error) {
                     log('Erreur planification automatique après dates : ' + error.message);
@@ -924,7 +939,14 @@
                         success: false,
                         code: 'AUTO_PLANNING_ERROR',
                         failedMemberIds: [],
-                        blockedMemberIds: []
+                        blockedMemberIds: [],
+                        members: [],
+                        summary: {
+                            committed: 0,
+                            blocked: 0,
+                            failed: 0,
+                            alreadyConformant: 0
+                        }
                     };
                 }
                 
@@ -950,7 +972,14 @@
         };
     }
 
-    // Export
+    // Export pour le navigateur
     global.createGanttAssignmentIntegration = createGanttAssignmentIntegration;
 
 })(typeof window !== 'undefined' ? window : (typeof global !== 'undefined' ? global : this));
+
+// Export CommonJS pour tests
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = {
+        createGanttAssignmentIntegration: globalThis.createGanttAssignmentIntegration
+    };
+}
