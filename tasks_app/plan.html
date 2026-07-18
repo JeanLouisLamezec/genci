@@ -6,6 +6,7 @@
 <title>Plan - TaskFlow</title>
 <script src="https://docs.getgrist.com/grist-plugin-api.js"></script>
 <script src="core/filters/filter-manager.js"></script>
+<script src="core/planning/time_entry/time-entry-loader.js"></script>
 <script src="core/generated/taskflow-planning-browser.js"></script>
 <link rel="stylesheet" href="core/filters/filter-styles.css">
 <style>
@@ -3777,36 +3778,81 @@ function renderSeg(id, opts, cur, cb) {
 // Drill cellule -> panel (liste des tâches composant la charge)
 // ============================================================================
 function tasksInCell(key, period) {
-  const kf = keyFn(); const out = [];
-  for (const t of planTasks()) {
-    const charges = chargesFor(t);
-    if (!charges.length || t.dateDebut == null || t.dateEcheance == null) continue;
-    const d0 = Math.floor((t.dateDebut * 1000) / 86400000), d1 = Math.floor((t.dateEcheance * 1000) / 86400000);
-    const days = []; for (let dd = d0; dd <= d1; dd++) { if (S.workdays) { const wd = new Date(dd * 86400000).getUTCDay(); if (wd < 1 || wd > 5) continue; } days.push(dd); }
-    if (!days.length) days.push(d0);
-    let slice = 0, total = 0;
-    for (const c of charges) {
-      if (String(kf(t, c)) !== String(key)) continue;
-      total += c.heures;
-      const perDay = c.heures / days.length;
-      for (const dd of days) if (TF.periodKey(new Date(dd * 86400000), S.granularity) === period) slice += perDay;
+  // Utilise TimeEntries au lieu de planTasks() + charges (contrat Plan/CRA unifié)
+  const periodRange = TF.periodRange(TF.shiftPeriods(new Date(), S.granularity, S.offset), S.granularity, S.horizon);
+  const periodStartsArr = periodStarts(TF.shiftPeriods(new Date(), S.granularity, S.offset), S.granularity, S.horizon);
+  const pi = periodRange.indexOf(period);
+  const pstart = pi >= 0 ? periodStartsArr[pi] : new Date();
+  const periodDuration = S.granularity === 'week' ? 7 : 30;
+  const pend = new Date(pstart.getTime() + periodDuration * 24 * 60 * 60 * 1000);
+  const startDate = TF.formatDateUTC(pstart);
+  const endDate = TF.formatDateUTC(pend);
+  
+  // Filtrer les TimeEntries pour cette cellule (membre + période)
+  const entries = (S.entries || []).filter(e => 
+    e.memberId === Number(key) &&
+    e.date >= startDate &&
+    e.date <= endDate
+  );
+  
+  // Regrouper par affectation
+  const byAssignment = TaskFlowTimeEntryLoader.groupEntriesByAssignment(entries);
+  
+  // Mapper vers les tâches
+  const out = [];
+  byAssignment.forEach((assignmentEntries, assignmentId) => {
+    if (!assignmentId) return; // Skip legacy (sans affectation)
+    
+    const totalHours = assignmentEntries.reduce((sum, e) => sum + e.plannedHours, 0);
+    const taskId = assignmentEntries[0].taskId;
+    const task = S.tasks.find(t => t.id === taskId);
+    
+    if (task) {
+      out.push({ 
+        task: task,
+        assignmentId: assignmentId,
+        slice: r1(totalHours),
+        total: r1(totalHours),
+        entries: assignmentEntries
+      });
     }
-    if (slice > 0.01) out.push({ task: t, slice: r1(slice), total: r1(total) });
-  }
+  });
+  
   return out.sort((a, b) => b.slice - a.slice);
 }
 
 // Disponibilité par membre sur une période (charge TOTALE tous projets vs capacité) → guide la réaffectation.
+// Utilise TimeEntries.heuresPrevues comme source canonique (contrat Plan/CRA unifié)
 function memberAvail(period) {
   const pr = TF.periodRange(TF.shiftPeriods(new Date(), S.granularity, S.offset), S.granularity, S.horizon);
   const ss = periodStarts(TF.shiftPeriods(new Date(), S.granularity, S.offset), S.granularity, S.horizon);
-  const pi = pr.indexOf(period); const pstart = pi >= 0 ? ss[pi] : new Date();
-  const mat = TF.chargeMatrix(planTasks(), (t, c) => String(c.teamId), S.granularity, effCharges, S.workdays);
+  const pi = pr.indexOf(period);
+  const pstart = pi >= 0 ? ss[pi] : new Date();
+  
+  // Calculer la fin de période (semaine = 7 jours, mois = 30 jours)
+  const periodDuration = S.granularity === 'week' ? 7 : 30;
+  const pend = new Date(pstart.getTime() + periodDuration * 24 * 60 * 60 * 1000);
+  const startDate = TF.formatDateUTC(pstart);
+  const endDate = TF.formatDateUTC(pend);
+  
   const out = {};
   for (const m of activeTeam()) {
-    const load = (mat[String(m.id)] || {})[period] || 0;
+    // Filtrer les TimeEntries du membre sur cette période
+    const memberEntries = (S.entries || []).filter(e => 
+      e.memberId === m.id && 
+      e.date >= startDate && 
+      e.date <= endDate
+    );
+    
+    // NOUVEAU : Somme des heures prévues depuis TimeEntries.heuresPrevues
+    const plannedHours = memberEntries.reduce((sum, e) => sum + e.plannedHours, 0);
+    
     const cap = capPeriod(capOf(m)) * (1 - indispoFrac(m, pstart));
-    out[m.id] = { load: r1(load), cap: r1(cap), free: r1(Math.max(cap - load, 0)) };
+    out[m.id] = { 
+      load: r1(plannedHours),  // Utilise TimeEntries.heuresPrevues
+      cap: r1(cap), 
+      free: r1(Math.max(cap - plannedHours, 0)) 
+    };
   }
   return out;
 }
@@ -4935,8 +4981,16 @@ async function loadGrist(options = {}) {
   S.programmes = prog ? TF.columnarToRows(prog) : [];
   S.entites = entites ? TF.columnarToRows(entites) : [];
   // #5 : réalisé daté EXACT depuis la Feuille de temps (TimeEntries). Opt-in : actif seulement si la table existe.
-  S.entries = entries ? TF.columnarToRows(entries) : [];
+  // Utilisation du loader commun pour normaliser les données (contrat Plan/CRA unifié)
+  const timeEntriesResult = entries ? await TaskFlowTimeEntryLoader.loadTimeEntries(grist) : { entries: [], feuillesById: {}, diagnostics: [] };
+  S.entries = timeEntriesResult.entries;
+  S.feuillesById = timeEntriesResult.feuillesById;
   S.hasEntries = !!(entries && S.entries.length);
+  
+  // Logger les diagnostics (optionnel)
+  if (timeEntriesResult.diagnostics && timeEntriesResult.diagnostics.length > 0) {
+    console.log('[Plan] TimeEntries chargées:', timeEntriesResult.diagnostics);
+  }
   // TaskAssignments : chargement pour la prévisualisation du planning
   S.assignments = assignments ? TF.columnarToRows(assignments) : [];
   // Programme = opt-in : actif seulement si la colonne Projects.programme (ou portefeuille) existe. Sinon le groupement propose l'activation.
