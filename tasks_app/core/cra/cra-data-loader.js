@@ -477,7 +477,8 @@ function normalizeCraSnapshot(raw, currentUser) {
   
   const projects = columnarToRows(raw.projects).map(r => ({
     id: r.id,
-    nom: r.nom
+    nom: r.nom,
+    programme: Number(r.programme) || null
   }));
   
   const programmes = raw.programmes ? columnarToRows(raw.programmes) : [];
@@ -546,6 +547,7 @@ function normalizeCraSnapshot(raw, currentUser) {
     meName,
     mesGeres: [],
     visiblePersonIds: team.map(m => m.id),
+    hasTable: true,
     gOk: true
   };
 }

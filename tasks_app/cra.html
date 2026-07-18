@@ -3049,7 +3049,7 @@ const S = {
   me: null,                 // id Team du connecte (pour soumission)
   meName: '',               // nom du connecte
   meUserId: null,           // userId Grist
-  team: [], tasks: [], projects: [], entries: [], feuilles: [],
+  team: [], tasks: [], projects: [], entries: [],
   weekStart: 0,             // ms, lundi
   unit: 'heures',           // heures | jours | demi
   hoursPerDay: 7,
@@ -3432,13 +3432,6 @@ function gridTasks() {
 }
 function projName(t) { const p = S.projects.find(x => x.id === t.projet); return p ? p.nom : ''; }
 
-// ---- Filter Manager (inter-widgets) ---------------------------------------
-function initFilterManager() {
-  // Cette fonction est maintenant obsolète - utiliser ensureFilterManager() à la place
-  // Gardée pour compatibilité avec d'éventuels appels résiduels
-  return ensureFilterManager();
-}
-
 // ---- Capacité & indisponibilités ------------------------------------------
 // Parse Team.indispos (JSON) + Disponibilites table pour une personne donnée
 function parseIndisposFor(personId) {
@@ -3724,7 +3717,13 @@ async function setCell(taskId, dayMs, personId, qtyStr) {
   }
   
   // Vérifier le verrouillage de la semaine
-  if (isPersonWeekLocked(personId)) {
+  const weekLock = CRAController.isPersonWeekLocked(
+    personId,
+    CRAController.localDayKeyFromMs(S.weekStart),
+    S.feuilles
+  );
+  
+  if (weekLock.locked) {
     toast('Semaine verrouillée - saisie impossible');
     render();
     return;
@@ -3747,7 +3746,7 @@ async function setCell(taskId, dayMs, personId, qtyStr) {
   );
   
   // Résoudre l'entrée éditable
-  const dayIso = new Date(dayMs).toISOString().split('T')[0];
+  const dayIso = CRAController.localDayKeyFromMs(dayMs);
   const entryResult = CRAController.resolveEditableCellEntry(
     S.entries, taskId, dayIso, personId, activeAssignment
   );
@@ -3785,6 +3784,7 @@ async function setCell(taskId, dayMs, personId, qtyStr) {
     } else if (actionResult.action === 'delete' && existingEntry) {
       S.entries = S.entries.filter(e => e !== existingEntry);
     }
+    buildCraIndexes();
     render();
     return;
   }
@@ -3823,6 +3823,8 @@ async function setCell(taskId, dayMs, personId, qtyStr) {
       } catch (e) {}
     }
     
+    // Reconstruire les index après modification locale
+    buildCraIndexes();
     render();
   } catch (e) { 
     toast('Ecriture refusee : ' + (e.message || e)); 
@@ -3843,9 +3845,9 @@ function taskRealizedHours(taskId) {
 function toast(msg) { const t = document.getElementById('toast'); t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2600); }
 
 // ---- Controles ------------------------------------------------------------
-document.getElementById('wPrev').onclick = () => { S.weekStart -= 7 * DAY; if (S.filterManager) S.filterManager.setData({ tasks: S.tasks }); render(); };
-document.getElementById('wNext').onclick = () => { S.weekStart += 7 * DAY; if (S.filterManager) S.filterManager.setData({ tasks: S.tasks }); render(); };
-document.getElementById('wNow').onclick = () => { S.weekStart = mondayOf(Date.now()); if (S.filterManager) S.filterManager.setData({ tasks: S.tasks }); render(); };
+document.getElementById('wPrev').onclick = () => { S.weekStart -= 7 * DAY; buildCraIndexes(); if (S.filterManager) S.filterManager.setData({ tasks: S.tasks }); render(); };
+document.getElementById('wNext').onclick = () => { S.weekStart += 7 * DAY; buildCraIndexes(); if (S.filterManager) S.filterManager.setData({ tasks: S.tasks }); render(); };
+document.getElementById('wNow').onclick = () => { S.weekStart = mondayOf(Date.now()); buildCraIndexes(); if (S.filterManager) S.filterManager.setData({ tasks: S.tasks }); render(); };
 document.getElementById('unitSeg').querySelectorAll('button').forEach(b => b.onclick = () => {
   document.querySelectorAll('#unitSeg button').forEach(x => x.classList.remove('active'));
   b.classList.add('active'); S.unit = b.dataset.u; render();
@@ -3879,9 +3881,17 @@ async function setFeuille(membre, wkSec, patch) {
  * @returns {number} ID de l'enregistrement
  */
 function getAddedRecordId(actionResult, label) {
-  var value = Array.isArray(actionResult)
-    ? actionResult[0]
-    : actionResult;
+  let value = actionResult;
+
+  if (
+    value &&
+    Array.isArray(value.retValues) &&
+    value.retValues.length
+  ) {
+    value = value.retValues[0];
+  } else if (Array.isArray(value)) {
+    value = value[0];
+  }
 
   if (typeof value === 'number' && Number.isFinite(value)) {
     return value;
@@ -3997,14 +4007,12 @@ async function submitWeekForPerson(personId) {
     }
     
     // Recharger les données depuis Grist
-    await loadGristData();
-    render();
+    await reloadCra('submit-week', { immediate: true });
     toast('Semaine soumise pour validation (' + S.team.find(t => t.id === personId).nom + ')');
   } catch (e) {
     // En cas d'échec, recharger depuis Grist pour annuler l'optimiste
     try {
-      await loadGristData();
-      render();
+      await reloadCra('write-error-recovery', { immediate: true });
     } catch (reloadError) {
       // Ignorer les erreurs de rechargement
     }
@@ -4033,14 +4041,12 @@ async function withdrawWeekForPerson(personId) {
     ]);
     
     // Recharger les données
-    await loadGristData();
-    render();
+    await reloadCra('withdraw-week', { immediate: true });
     toast('Soumission retiree (' + S.team.find(t => t.id === personId).nom + ')');
   } catch (e) {
     // Recharger en cas d'erreur
     try {
-      await loadGristData();
-      render();
+      await reloadCra('write-error-recovery', { immediate: true });
     } catch (reloadError) {
       // Ignorer
     }
@@ -4060,14 +4066,12 @@ window.validerFeuille = async (id) => {
     ]);
     
     // Recharger après succès
-    await loadGristData();
-    render();
+    await reloadCra('validate-sheet', { immediate: true });
     toast('Feuille validee');
   } catch (e) {
     // Recharger en cas d'erreur
     try {
-      await loadGristData();
-      render();
+      await reloadCra('write-error-recovery', { immediate: true });
     } catch (reloadError) {
       // Ignorer
     }
@@ -4085,14 +4089,12 @@ window.rejeterFeuille = async (id) => {
     ]);
     
     // Recharger après succès
-    await loadGristData();
-    render();
+    await reloadCra('reject-sheet', { immediate: true });
     toast('Feuille rejetee');
   } catch (e) {
     // Recharger en cas d'erreur
     try {
-      await loadGristData();
-      render();
+      await reloadCra('write-error-recovery', { immediate: true });
     } catch (reloadError) {
       // Ignorer
     }
@@ -4129,6 +4131,15 @@ function exportCSV() {
 }
 
 
+// Helpers pour le rechargement via CraDataLoader
+function reloadCra(reason, options) {
+  return CraDataLoader.requestCraReload({
+    reason: reason,
+    immediate: options?.immediate !== false,
+    allowSchemaRecovery: options?.allowSchemaRecovery === true
+  });
+}
+
 // ---- Grist ----------------------------------------------------------------
 function colObjToRows(d) { const rows = []; const ids = d.id || []; for (let i = 0; i < ids.length; i++) { const o = {}; for (const k in d) o[k] = d[k][i]; rows.push(o); } return rows; }
 
@@ -4136,95 +4147,6 @@ async function getMyUserId() {
   try { const tok = await grist.docApi.getAccessToken({ readOnly: true }); const p = JSON.parse(atob(tok.token.split('.')[1])); return p.userId || null; } catch (e) { return null; }
 }
 
-async function loadGrist() {
-  S.weekStart = S.weekStart || mondayOf(Date.now());
-  const tables = await grist.docApi.listTables();
-  S.hasTable = tables.includes('TimeEntries');
-  S.team = colObjToRows(await grist.docApi.fetchTable('Team')).map(r => ({ 
-    id: r.id, nom: r.nom, email: r.email, gristUserId: r.gristUserId, 
-    entite: Number(r.entite) || 0, agentsGeres: refIds(r.agents_geres),
-    capaciteHebdo: r.capaciteHebdo || 35, indispos: r.indispos || ''
-  }));
-  // Annuaire (Entites) : Refs SIMPLES parent/chef — necessaires pour recalculer "qui je gere" cote client
-  // (la colonne FORMULE Team.agents_geres se vide en passant par le relais launcher : valeurs null).
-  S.entites = tables.includes('Entites') ? colObjToRows(await grist.docApi.fetchTable('Entites')).map(e => ({ 
-    id: e.id, 
-    nom: e.nom || '', 
-    parent: Number(e.parent) || 0, 
-    chef: Number(e.chef) || 0 
-  })) : [];
-  S.tasks = tables.includes('Tasks') ? colObjToRows(await grist.docApi.fetchTable('Tasks')).map(r => ({ 
-    id: r.id, titre: r.titre, projet: r.projet, assignees: r.assignees, 
-    charges: r.charges || null, dateDebut: r.dateDebut, dateEcheance: r.dateEcheance 
-  })) : [];
-  S.projects = tables.includes('Projects') ? colObjToRows(await grist.docApi.fetchTable('Projects')).map(r => ({ id: r.id, nom: r.nom })) : [];
-  
-  // Charger TimeEntries avec TOUS les champs du planning
-  S.entries = S.hasTable ? colObjToRows(await grist.docApi.fetchTable('TimeEntries')).map(r => ({ 
-    id: r.id, 
-    membre: Number(r.membre) || null, 
-    tache: Number(r.tache) || null, 
-    date: r.date, 
-    heures: Number(r.heures) || 0,
-    heuresPrevues: Number(r.heuresPrevues) || 0,
-    affectation: Number(r.affectation) || null,
-    capaciteTheorique: Number(r.capaciteTheorique) || 0,
-    capaciteDisponible: Number(r.capaciteDisponible) || 0,
-    capaciteJour: Number(r.capaciteJour) || null,
-    feuille: Number(r.feuille) || null,
-    revisionPlan: Number(r.revisionPlan) || 0,
-    imputation: r.imputation || '',
-    description: r.description || ''
-  })) : [];
-  
-  S.feuilles = tables.includes('Feuilles') ? colObjToRows(await grist.docApi.fetchTable('Feuilles')).map(r => ({ id: r.id, membre: r.membre, semaine: r.semaine, statut: r.statut, validePar: r.validePar, motifRejet: r.motifRejet })) : [];
-  
-  // Charger Disponibilites si la table existe
-  S.disponibilites = tables.includes('Disponibilites') ? colObjToRows(await grist.docApi.fetchTable('Disponibilites')) : [];
-  
-  // Charger TaskAssignments
-  S.assignments = tables.includes('TaskAssignments') ? colObjToRows(await grist.docApi.fetchTable('TaskAssignments')).map(r => ({
-    id: r.id,
-    tache: Number(r.tache) || null,
-    membre: Number(r.membre) || null,
-    heuresAllouees: Number(r.heuresAllouees) || 0,
-    dateDebut: r.dateDebut,
-    dateFin: r.dateFin,
-    modeRepartition: r.modeRepartition || 'uniforme',
-    actif: r.actif !== false,
-    commentaire: r.commentaire || ''
-  })) : [];
-  
-  // Charger MemberDailyCapacities
-  S.dailyCapacities = tables.includes('MemberDailyCapacities') ? colObjToRows(await grist.docApi.fetchTable('MemberDailyCapacities')) : [];
-  
-  S.meUserId = await getMyUserId();
-  
-  // resolution "moi" : par gristUserId (si pont present) sinon premiere personne visible
-  let me = S.team.find(t => t.gristUserId && t.gristUserId === S.meUserId);
-  
-  // Initialiser les personnes visibles (toutes par défaut)
-  S.visiblePersonIds = S.team.map(m => m.id);
-  
-  // Si pas de gristUserId, prendre la première personne
-  S.me = me ? me.id : (S.team[0] ? S.team[0].id : null);
-  const meRow = S.team.find(t => t.id === S.me);
-  S.meName = meRow ? meRow.nom : '';
-  
-  // Si gristUserId trouvé, filtrer automatiquement sur cette personne
-  if (me && S.filterManager) {
-    S.filters = { assignee: [String(me.id)], team: [], project: [], programme: [] };
-    S.visiblePersonIds = [me.id];
-    S.filterManager.setState(S.filters);
-  }
-  
-  // "Qui je gere" : recalcul cote client depuis l'annuaire (Refs simples, robuste au relais) ;
-  // repli sur la formule agents_geres si pas d'Entites mais ids valides (widget direct hors relais).
-  S.mesGeres = S.me ? computeMesGeres(S.me) : [];
-  if (!S.mesGeres.length && meRow) { const f = (meRow.agentsGeres || []).filter(id => id && id !== S.me); if (f.length) S.mesGeres = f; }
-  S.gOk = true;
-  
-  // Le FilterManager sera initialisé via ensureFilterManager() après le premier snapshot
 // chaine_chefs d'une personne = chefs de son entite + entites ancetres (Entites.parent), borne anti-cycle.
 function chaineChefsOf(entiteId) {
   const byId = {}; for (const e of (S.entites || [])) byId[e.id] = e;
@@ -4267,7 +4189,7 @@ async function activate() {
     });
     
     // Demander un rechargement via le scheduler
-    requestCraReload({ reason: 'manual-repair', immediate: true });
+    await CraDataLoader.requestCraReload({ reason: 'manual-repair', immediate: true });
     
     toast('Schéma TaskFlow initialisé avec succès');
   } catch (e) {
@@ -4513,68 +4435,28 @@ function showCraError(error) {
 }
 
 /**
- * Helper : assure qu'une seule instance de FilterManager existe (TODO 13)
- */
-function ensureFilterManager() {
-  if (S.filterManager) {
-    return S.filterManager;
-  }
-  
-  S.filterManager = new FilterManager({
-    data: {
-      team: S.team || [],
-      entites: S.entites || [],
-      projects: S.projects || [],
-      tasks: S.tasks || [],
-      programmes: S.programmes || []
-    },
-    onChange: function(filters) {
-      // Callback quand les filtres changent
-    },
-    onBroadcast: function(filters) {
-      // Broadcast via grist.setOptions si nécessaire
-    },
-    effCharges: function(task) {
-      return TF.parseCharges(task && task.charges);
-    },
-    teamById: function(id) {
-      return S.indexes.teamById.get(Number(id)) || null;
-    }
-  });
-  
-  const filterContainers = {
-    assignee: document.getElementById('filterPersonContainer'),
-    team: document.getElementById('filterTeamContainer'),
-    project: document.getElementById('filterProjectContainer'),
-    programme: document.getElementById('filterProgramContainer')
-  };
-  
-  const filterPanel = document.getElementById('filterPanel');
-  
-  S.filterManager.initUI(filterContainers, filterPanel);
-  
-  return S.filterManager;
-}
-
-/**
- * Helper : met à jour les données du FilterManager (TODO 13)
- */
-function updateFilterManagerData() {
-  const manager = ensureFilterManager();
-  
-  manager.setData({
-    team: S.team,
-    entites: S.entites,
-    projects: S.projects,
-    tasks: S.tasks,
-    programmes: S.programmes
-  });
-}
-
-/**
  * Enregistre les listeners Grist une seule fois (TODO 7, 12)
  */
 let craGristListenersRegistered = false;
+
+/**
+ * Applique les options externes (filtres partagés via grist.onOptions)
+ */
+function applyExternalOptions(options) {
+  const filters = options && options.filters;
+
+  if (!filters) {
+    return;
+  }
+
+  const manager = ensureFilterManager();
+
+  if (typeof manager.applyExternalFilters === 'function') {
+    manager.applyExternalFilters(filters);
+  } else if (typeof manager.setState === 'function') {
+    manager.setState(filters);
+  }
+}
 
 function registerGristListenersOnce() {
   if (craGristListenersRegistered) {
@@ -4643,7 +4525,15 @@ async function initGrist() {
         // Application atomique (TODO 7)
         Object.assign(S, normalized);
         
-        rebuildCraIndexes();
+        // Initialiser la semaine courante si non définie
+        if (!S.weekStart) {
+          S.weekStart = mondayOf(Date.now());
+        }
+        
+        // Calculer "qui je gere" après chaque snapshot
+        S.mesGeres = S.me ? computeMesGeres(S.me) : [];
+        
+        buildCraIndexes();
         ensureFilterManager();
         updateFilterManagerData();
         render();
