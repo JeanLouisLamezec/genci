@@ -227,6 +227,20 @@
 
                     if (!preview.canCommit) {
                         log('Preview non committable pour membre ' + memberId + ' : ' + preview.code);
+                        
+                        // Essayer de committer les capacités même si le planning est bloqué
+                        if (preview.capacityActions && preview.capacityActions.length > 0) {
+                            try {
+                                log('Commit des capacités uniquement pour membre ' + memberId);
+                                var capacityCommitResult = await orchestrator.commitCapacityActions(preview);
+                                if (capacityCommitResult.success) {
+                                    log('Capacités enregistrées pour membre ' + memberId);
+                                }
+                            } catch (capError) {
+                                log('Erreur commit capacités: ' + capError.message);
+                            }
+                        }
+                        
                         results.push({
                             memberId: memberId,
                             status: 'blocked',

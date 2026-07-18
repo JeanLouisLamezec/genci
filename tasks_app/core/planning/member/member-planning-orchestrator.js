@@ -667,6 +667,32 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
           feuillesById[f.id] = f;
         });
         
+        // 4. Déterminer la date de replanification effective
+        // Si aucune TimeEntry n'existe avec du prévu/réalisé, utiliser la date la plus ancienne des affectations
+        var hasExistingPlan = data.timeEntries.some(function(entry) {
+          return Number(entry.plannedHours || 0) > 0 || Number(entry.actualHours || 0) > 0;
+        });
+        
+        var effectiveReplanFromDate = options.replanFromDate || null;
+        
+        if (!hasExistingPlan) {
+          // Aucune TimeEntry avec du contenu : utiliser la date la plus ancienne de toutes les affectations
+          var earliestDate = null;
+          data.assignments.forEach(function(a) {
+            var startDate = gristDateToIso(a.dateDebut);
+            if (startDate && (!earliestDate || startDate < earliestDate)) {
+              earliestDate = startDate;
+            }
+          });
+          
+          if (earliestDate && (!effectiveReplanFromDate || earliestDate < effectiveReplanFromDate)) {
+            log('Aucun planning existant : utilisation de la date la plus ancienne (' + earliestDate + ') au lieu de ' + effectiveReplanFromDate);
+            effectiveReplanFromDate = earliestDate;
+          }
+        }
+        
+        log('replanFromDate effective: ' + effectiveReplanFromDate + ' (hasExistingPlan: ' + hasExistingPlan + ')');
+        
         // 4. Générer les capacités désirées sur toute la période
         var capacityResult = null;
         if (period) {
@@ -721,7 +747,7 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
         
         // 6. Identifier les entrées protégées
         var protectedEntries = identifyProtectedEntries(data.timeEntries, feuillesById, {
-          replanFromDate: options.replanFromDate
+          replanFromDate: effectiveReplanFromDate
         });
         
         // Calculer les heures protégées par date selon le statut
@@ -793,12 +819,12 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
             return e.assignmentId === assignment.id;
           });
           
-          // Appeler le moteur de planification avec le bon contrat
+          // Appeler le moteur de planification avec effectiveReplanFromDate
           var planningResult = PlanningEngine.buildAssignmentPlan({
             assignment: domainAssignment,
             capacities: capacitiesArray,
             existingEntries: entriesForAssignment,
-            replanFromDate: options.replanFromDate || null,
+            replanFromDate: effectiveReplanFromDate,
             precisionHours: 0.01,
             capacityPolicy: 'cap'
           });
@@ -889,13 +915,24 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
         });
         
         // Filtrer les entrées existantes pour la réconciliation
-        // Exclure les lignes protégées par replanFromDate
-        var entriesForReconciliation = data.timeEntries;
-        if (options.replanFromDate) {
-          entriesForReconciliation = data.timeEntries.filter(function(e) {
-            return e.date >= options.replanFromDate;
-          });
-        }
+        // Inclure TOUTES les entrées mutables (pas seulement >= replanFromDate)
+        // La réconciliation décidera lesquelles mettre à jour/supprimer
+        var entriesForReconciliation = data.timeEntries.filter(function(e) {
+          // Exclure les lignes verrouillées (réalisé, soumises, validées)
+          var hasActualHours = Number(e.actualHours || 0) > 0;
+          var isSubmitted = e.sheetStatus === 'submitted';
+          var isValidated = e.sheetStatus === 'validated';
+          var hasFeuille = e.feuille != null && e.feuille !== '';
+          
+          if (hasActualHours || isSubmitted || isValidated || hasFeuille) {
+            return false; // Garder dans data.timeEntries mais pas dans la réconciliation
+          }
+          
+          // Inclure toutes les autres lignes (mutables)
+          return true;
+        });
+        
+        log('Réconciliation: ' + entriesForReconciliation.length + ' entrées mutables sur ' + data.timeEntries.length + ' totales');
         
         var allDesiredEntries = [];
         assignmentResults.forEach(function(result) {
@@ -942,6 +979,25 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
         
         var hasUnplanned = totalUnplanned > 0;
         var hasFailure = hasAssignmentFailure || hasUnplanned;
+        
+        // Log détaillé pour débogage
+        if (hasUnplanned) {
+          log('Heures non planifiées: ' + totalUnplanned + 'h');
+          assignmentResults.forEach(function(result) {
+            if (result.summary && result.summary.unplannedHours > 0) {
+              log('  Affectation ' + result.assignmentId + ': ' + result.summary.unplannedHours + 'h non planifiées');
+            }
+          });
+        }
+        
+        log('Détails du preview: ' + JSON.stringify({
+          timeEntryActions: (actions.timeEntryActions || []).length,
+          capacityActions: capacityActions.length,
+          totalAllocated: totalAllocated,
+          totalPlanned: totalPlanned,
+          totalUnplanned: totalUnplanned,
+          canCommit: !hasFailure || options.allowPartialPlanning === true
+        }));
         
         return {
           success: !hasAssignmentFailure,
@@ -1152,6 +1208,42 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
     }
     
     /**
+     * Commit des actions de capacité uniquement (sans le planning)
+     * Utile lorsque le planning est bloqué mais qu'on veut quand même enregistrer les capacités
+     */
+    async function commitCapacityActions(preview) {
+      var actions = preview && preview.capacityActions ? preview.capacityActions : [];
+      
+      if (!actions.length) {
+        log('Aucune action de capacité à appliquer');
+        return {
+          success: true,
+          actionsExecuted: 0
+        };
+      }
+      
+      log('Application de ' + actions.length + ' actions de capacité...');
+      
+      try {
+        var result = await grist.docApi.applyUserActions(actions);
+        log('Commit capacité terminé: ' + actions.length + ' actions');
+        
+        return {
+          success: true,
+          actionsExecuted: actions.length,
+          result: result
+        };
+      } catch (e) {
+        log('Erreur commit capacité: ' + e.message);
+        return {
+          success: false,
+          code: 'CAPACITY_COMMIT_ERROR',
+          message: e.message
+        };
+      }
+    }
+    
+    /**
      * Replanifie plusieurs membres
      */
     async function replanMembers(memberIds, options) {
@@ -1260,6 +1352,7 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
     return {
       previewMember: previewMember,
       commitMember: commitMember,
+      commitCapacityActions: commitCapacityActions,
       replanMembers: replanMembers,
       replanTask: replanTask,
       replanTasks: replanTasks,
