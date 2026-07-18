@@ -125,7 +125,7 @@ describe('Member Planning Orchestrator - Commit et actions Grist', function() {
     var commitResult = await orchestrator.commitMember(1, preview);
     
     expect(commitResult.success).toBe(true);
-    expect(commitResult.actionsExecuted).toBe(5);
+    expect(commitResult.totalActionsExecuted).toBe(5);
     
     var appliedActions = mockGrist.docApi.getAppliedActions();
     expect(appliedActions.length).toBe(5);
@@ -180,7 +180,7 @@ describe('Member Planning Orchestrator - Commit et actions Grist', function() {
     var commitResult = await orchestrator.commitMember(1, preview);
     
     expect(commitResult.success).toBe(true);
-    expect(commitResult.actionsExecuted).toBe(0);
+    expect(commitResult.totalActionsExecuted).toBe(0);
   });
   
   it('Scénario 7: Entrée protégée - feuille soumise de 4h le lundi', async function() {

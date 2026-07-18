@@ -498,9 +498,49 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
     }
     
     /**
-     * Calcule la période globale couvrant toutes les affectations
+     * Identifie les entrées protégées (verrouillées)
+     * Critères :
+     * - feuille soumise ou validée
+     * - heures réalisées > 0
+     * - historique avant historyCutoffDate (sans feuille et sans réalisé)
      */
-    function calculateGlobalPeriod(assignments, timeEntries) {
+    function identifyProtectedEntries(timeEntries, feuillesById, options) {
+      options = options || {};
+      var historyCutoffDate = options.historyCutoffDate;
+      
+      return timeEntries.filter(function(entry) {
+        var isSubmitted = entry.sheetStatus === 'submitted';
+        var isValidated = entry.sheetStatus === 'validated';
+        var hasActualHours = entry.actualHours > 0;
+        var isBeforeCutoff = historyCutoffDate && entry.date && entry.date < historyCutoffDate;
+        
+        // Feuille soumise ou validée
+        if (isSubmitted || isValidated) {
+          return true;
+        }
+        
+        // Heures réalisées > 0
+        if (hasActualHours) {
+          return true;
+        }
+        
+        // Historique avant historyCutoffDate (lignes sans feuille et sans réalisé)
+        if (isBeforeCutoff && !entry.feuille) {
+          return true;
+        }
+        
+        return false;
+      });
+    }
+    
+    /**
+     * Calcule la période de capacité utile
+     * N'inclut QUE :
+     * - les affectations actives actuelles
+     * - les TimeEntries protégées (réalisé, soumis, validé, historique)
+     * Exclut les TimeEntries mutables qui vont être supprimées
+     */
+    function calculateCapacityPeriod(assignments, protectedEntries) {
       if (!assignments || assignments.length === 0) {
         return null;
       }
@@ -508,6 +548,7 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
       var minDate = null;
       var maxDate = null;
       
+      // Bornes des affectations actives
       assignments.forEach(function(a) {
         if (a.dateDebut) {
           var start = gristDateToIso(a.dateDebut);
@@ -519,13 +560,16 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
         }
       });
       
-      timeEntries.forEach(function(e) {
-        if (e.date) {
-          var date = typeof e.date === 'string' ? e.date : gristDateToIso(e.date);
-          if (date && (!minDate || date < minDate)) minDate = date;
-          if (date && (!maxDate || date > maxDate)) maxDate = date;
-        }
-      });
+      // Extension pour les entrées protégées uniquement
+      if (protectedEntries && protectedEntries.length > 0) {
+        protectedEntries.forEach(function(e) {
+          if (e.date) {
+            var date = typeof e.date === 'string' ? e.date : gristDateToIso(e.date);
+            if (date && (!minDate || date < minDate)) minDate = date;
+            if (date && (!maxDate || date > maxDate)) maxDate = date;
+          }
+        });
+      }
       
       if (!minDate || !maxDate) {
         return null;
@@ -538,17 +582,52 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
     }
     
     /**
+     * Détermine la date de coupure historique (historyCutoffDate)
+     * Par défaut : date du jour
+     * Peut être injectée via options.todayIso pour les tests
+     */
+    function determineHistoryCutoffDate(options) {
+      if (options && options.todayIso) {
+        return options.todayIso;
+      }
+      var today = new Date();
+      return formatDateUTC(today);
+    }
+    
+    /**
+     * Détermine la date de début de distribution pour une affectation
+     * max(historyCutoffDate, assignment.startDate)
+     */
+    function determineDistributionStartDate(assignment, historyCutoffDate) {
+      var assignmentStartDate = gristDateToIso(assignment.dateDebut);
+      
+      if (!historyCutoffDate) {
+        return assignmentStartDate;
+      }
+      
+      if (!assignmentStartDate) {
+        return historyCutoffDate;
+      }
+      
+      return assignmentStartDate > historyCutoffDate ? assignmentStartDate : historyCutoffDate;
+    }
+    
+    /**
      * Identifie les entrées protégées (verrouillées)
+     * Critères :
+     * - feuille soumise ou validée
+     * - heures réalisées > 0
+     * - historique avant historyCutoffDate (sans feuille et sans réalisé)
      */
     function identifyProtectedEntries(timeEntries, feuillesById, options) {
       options = options || {};
-      var replanFromDate = options.replanFromDate;
+      var historyCutoffDate = options.historyCutoffDate;
       
       return timeEntries.filter(function(entry) {
         var isSubmitted = entry.sheetStatus === 'submitted';
         var isValidated = entry.sheetStatus === 'validated';
         var hasActualHours = entry.actualHours > 0;
-        var isBeforeReplan = replanFromDate && entry.date && entry.date < replanFromDate;
+        var isBeforeCutoff = historyCutoffDate && entry.date && entry.date < historyCutoffDate;
         
         // Feuille soumise ou validée
         if (isSubmitted || isValidated) {
@@ -560,8 +639,8 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
           return true;
         }
         
-        // Avant replanFromDate
-        if (isBeforeReplan) {
+        // Historique avant historyCutoffDate (lignes sans feuille et sans réalisé)
+        if (isBeforeCutoff && !entry.feuille) {
           return true;
         }
         
@@ -648,8 +727,24 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
           };
         }
         
-        // 2. Calculer la période globale
-        var period = calculateGlobalPeriod(data.assignments, data.timeEntries);
+        // 1. Déterminer historyCutoffDate (date du jour par défaut)
+        var historyCutoffDate = determineHistoryCutoffDate(options);
+        log('historyCutoffDate: ' + historyCutoffDate);
+        
+        // 2. Identifier les entrées protégées
+        var feuillesById = {};
+        data.feuilles.forEach(function(f) {
+          feuillesById[f.id] = f;
+        });
+        
+        var protectedEntries = identifyProtectedEntries(data.timeEntries, feuillesById, {
+          historyCutoffDate: historyCutoffDate
+        });
+        
+        log('Entrées protégées: ' + protectedEntries.length + ' sur ' + data.timeEntries.length + ' totales');
+        
+        // 3. Calculer la période de capacité utile (affectations actives + entrées protégées)
+        var period = calculateCapacityPeriod(data.assignments, protectedEntries);
         
         if (!period) {
           log('Période invalide');
@@ -659,41 +754,9 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
           };
         }
         
-        log('Période globale: ' + period.dateFrom + ' → ' + period.dateTo);
+        log('Période capacité: ' + period.dateFrom + ' → ' + period.dateTo);
         
-        // 3. Indexer les feuilles par ID
-        var feuillesById = {};
-        data.feuilles.forEach(function(f) {
-          feuillesById[f.id] = f;
-        });
-        
-        // 4. Déterminer la date de replanification effective
-        // Si aucune TimeEntry n'existe avec du prévu/réalisé, utiliser la date la plus ancienne des affectations
-        var hasExistingPlan = data.timeEntries.some(function(entry) {
-          return Number(entry.plannedHours || 0) > 0 || Number(entry.actualHours || 0) > 0;
-        });
-        
-        var effectiveReplanFromDate = options.replanFromDate || null;
-        
-        if (!hasExistingPlan) {
-          // Aucune TimeEntry avec du contenu : utiliser la date la plus ancienne de toutes les affectations
-          var earliestDate = null;
-          data.assignments.forEach(function(a) {
-            var startDate = gristDateToIso(a.dateDebut);
-            if (startDate && (!earliestDate || startDate < earliestDate)) {
-              earliestDate = startDate;
-            }
-          });
-          
-          if (earliestDate && (!effectiveReplanFromDate || earliestDate < effectiveReplanFromDate)) {
-            log('Aucun planning existant : utilisation de la date la plus ancienne (' + earliestDate + ') au lieu de ' + effectiveReplanFromDate);
-            effectiveReplanFromDate = earliestDate;
-          }
-        }
-        
-        log('replanFromDate effective: ' + effectiveReplanFromDate + ' (hasExistingPlan: ' + hasExistingPlan + ')');
-        
-        // 4. Générer les capacités désirées sur toute la période
+        // 4. Générer les capacités désirées sur la période utile
         var capacityResult = null;
         if (period) {
           capacityResult = buildDesiredMemberDailyCapacities({
@@ -716,7 +779,7 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
           var capReconciliation = reconcileMemberDailyCapacities(
             data.capacities,
             capacityResult.capacities,
-            { nowUnixSeconds: nowUnixSeconds }
+            { nowUnixSeconds: nowUnixSeconds, todayIso: historyCutoffDate }
           );
           
           for (var capI = 0; capI < capReconciliation.creates.length; capI++) {
@@ -745,12 +808,7 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
           capacitiesToUse = reconciledCapacities;
         }
         
-        // 6. Identifier les entrées protégées
-        var protectedEntries = identifyProtectedEntries(data.timeEntries, feuillesById, {
-          replanFromDate: effectiveReplanFromDate
-        });
-        
-        // Calculer les heures protégées par date selon le statut
+        // 6. Calculer les heures protégées par date selon le statut
         var protectedHoursByDate = calculateProtectedHoursByDate(protectedEntries);
         
         // 7. Créer le registre de capacité avec les heures protégées correctes
@@ -804,6 +862,10 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
           // Convertir l'affectation au format domaine
           var domainAssignment = assignmentToDomain(assignment);
           
+          // Déterminer la date de début de distribution pour cette affectation
+          var distributionStartDate = determineDistributionStartDate(assignment, historyCutoffDate);
+          log('distributionStartDate pour affectation ' + assignment.id + ': ' + distributionStartDate);
+          
           // Construire le tableau de capacités restantes pour le moteur
           var capacitiesArray = registry.dates.map(function(date) {
             var regEntry = registry.getRegistry()[date];
@@ -819,12 +881,12 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
             return e.assignmentId === assignment.id;
           });
           
-          // Appeler le moteur de planification avec effectiveReplanFromDate
+          // Appeler le moteur de planification avec distributionStartDate
           var planningResult = PlanningEngine.buildAssignmentPlan({
             assignment: domainAssignment,
             capacities: capacitiesArray,
             existingEntries: entriesForAssignment,
-            replanFromDate: effectiveReplanFromDate,
+            replanFromDate: distributionStartDate,
             precisionHours: 0.01,
             capacityPolicy: 'cap'
           });
@@ -915,20 +977,35 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
         });
         
         // Filtrer les entrées existantes pour la réconciliation
-        // Inclure TOUTES les entrées mutables (pas seulement >= replanFromDate)
-        // La réconciliation décidera lesquelles mettre à jour/supprimer
+        // Inclure TOUTES les entrées mutables
+        // Exclure uniquement les lignes vraiment protégées
         var entriesForReconciliation = data.timeEntries.filter(function(e) {
-          // Exclure les lignes verrouillées (réalisé, soumises, validées)
           var hasActualHours = Number(e.actualHours || 0) > 0;
           var isSubmitted = e.sheetStatus === 'submitted';
           var isValidated = e.sheetStatus === 'validated';
           var hasFeuille = e.feuille != null && e.feuille !== '';
           
-          if (hasActualHours || isSubmitted || isValidated || hasFeuille) {
-            return false; // Garder dans data.timeEntries mais pas dans la réconciliation
+          // Lignes protégées (exclues de la réconciliation)
+          if (isSubmitted || isValidated) {
+            return false;
           }
           
-          // Inclure toutes les autres lignes (mutables)
+          // Lignes avec réalisé (protégées)
+          if (hasActualHours) {
+            return false;
+          }
+          
+          // Lignes avec feuille brouillon : à exclure car l'utilisateur travaille dessus
+          if (hasFeuille && e.sheetStatus === 'draft') {
+            return false;
+          }
+          
+          // Lignes historiques avant historyCutoffDate (sans feuille et sans réalisé)
+          if (e.date && e.date < historyCutoffDate && !hasFeuille) {
+            return false;
+          }
+          
+          // Toutes les autres lignes sont mutables et doivent être réconciliées
           return true;
         });
         
@@ -1131,13 +1208,17 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
     }
     
     /**
-     * Commit de la planification pour un membre
+     * Commit de la planification pour un membre - Version multi-phase
+     * Phase 1 : Upsert des capacités
+     * Phase 2 : Rechargement et nouveau preview
+     * Phase 3 : Mutation des TimeEntries avec vrais IDs de capacité
+     * Phase 4 : Nettoyage sûr des capacités (optionnel)
      */
     async function commitMember(memberId, preview, options) {
       options = options || {};
       
       try {
-        log('Commit planification membre ' + memberId);
+        log('Commit planification membre ' + memberId + ' (multi-phase)');
         
         if (!preview || !preview.success) {
           return {
@@ -1164,37 +1245,166 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
           };
         }
         
-        // Appliquer les actions
-        var actions = [];
+        var phases = {
+          capacityUpsert: { actionsExecuted: 0 },
+          timeEntryReconciliation: { actionsExecuted: 0 },
+          capacityCleanup: { actionsExecuted: 0 }
+        };
         
-        // Capacités d'abord
-        for (var i = 0; i < preview.capacityActions.length; i++) {
-          actions.push(preview.capacityActions[i]);
+        // =========================================================================
+        // PHASE 1 : Upsert des capacités
+        // =========================================================================
+        log('PHASE 1 : Upsert des capacités (' + preview.capacityActions.length + ' actions)');
+        
+        if (preview.capacityActions.length > 0) {
+          var capacityResult = await grist.docApi.applyUserActions(preview.capacityActions);
+          phases.capacityUpsert.actionsExecuted = preview.capacityActions.length;
+          log('Phase 1 terminée : ' + preview.capacityActions.length + ' capacités créées/mises à jour');
+        } else {
+          log('Phase 1 : aucune action de capacité');
         }
         
-        // TimeEntries
-        for (var j = 0; j < preview.timeEntryActions.length; j++) {
-          actions.push(preview.timeEntryActions[j]);
+        // =========================================================================
+        // PHASE 2 : Rechargement et reconstruction de l'index capaciteJour
+        // =========================================================================
+        log('PHASE 2 : Rechargement des capacités et recalcul des références');
+        
+        // Recharger MemberDailyCapacities pour obtenir les vrais IDs
+        var capacitiesTable = await grist.docApi.fetchTable('MemberDailyCapacities');
+        var capacityIdByDate = {};
+        
+        if (capacitiesTable.id) {
+          for (var capI = 0; capI < capacitiesTable.id.length; capI++) {
+            if (capacitiesTable.membre[capI] === memberId) {
+              var capDate = typeof capacitiesTable.date[capI] === 'number'
+                ? formatDateUTC(new Date(capacitiesTable.date[capI] * 1000))
+                : capacitiesTable.date[capI];
+              capacityIdByDate[capDate] = capacitiesTable.id[capI];
+            }
+          }
         }
         
-        if (actions.length === 0) {
-          log('Aucune action à appliquer');
-          return {
-            success: true,
-            actionsExecuted: 0
-          };
+        log('Capacités rechargées : ' + Object.keys(capacityIdByDate).length + ' dates indexées');
+        
+        // Reconstruire les actions TimeEntries avec les vrais IDs
+        var correctedTimeEntryActions = [];
+        
+        if (preview.reconciliation && preview.reconciliation.creates) {
+          for (var i = 0; i < preview.reconciliation.creates.length; i++) {
+            var create = preview.reconciliation.creates[i];
+            var date = create.date;
+            var capacityId = capacityIdByDate[date] || null;
+            
+            if (!capacityId) {
+              log('Avertissement : pas de capacité trouvée pour la date ' + date + ', création différée');
+              // On passe cette création pour l'instant
+              continue;
+            }
+            
+            correctedTimeEntryActions.push([
+              'AddRecord',
+              'TimeEntries',
+              null,
+              {
+                affectation: create.assignmentId,
+                tache: create.taskId,
+                membre: create.memberId,
+                date: isoToGristDate(date),
+                heuresPrevues: create.plannedHours,
+                heures: 0,
+                capaciteTheorique: create.baseCapacityHours || 0,
+                capaciteDisponible: create.availableCapacityHours || 0,
+                capaciteJour: capacityId,
+                revisionPlan: 1,
+                description: null,
+                imputation: null
+              }
+            ]);
+          }
         }
         
-        log('Application de ' + actions.length + ' actions...');
+        // Mises à jour (inchangées)
+        if (preview.reconciliation && preview.reconciliation.updates) {
+          for (var j = 0; j < preview.reconciliation.updates.length; j++) {
+            var update = preview.reconciliation.updates[j];
+            var fields = {};
+            
+            if (update.fields.plannedHours !== undefined) {
+              fields.heuresPrevues = update.fields.plannedHours;
+            }
+            if (update.fields.baseCapacityHours !== undefined) {
+              fields.capaciteTheorique = update.fields.baseCapacityHours;
+            }
+            if (update.fields.availableCapacityHours !== undefined) {
+              fields.capaciteDisponible = update.fields.availableCapacityHours;
+            }
+            if (update.fields.capacityRecordId !== undefined) {
+              // Mettre à jour avec le vrai ID si disponible
+              var updateDate = update.date;
+              var updateCapacityId = capacityIdByDate[updateDate] || update.fields.capacityRecordId;
+              fields.capaciteJour = updateCapacityId;
+            }
+            
+            if (Object.keys(fields).length > 0) {
+              if (update.fields.revisionPlan !== undefined) {
+                fields.revisionPlan = update.fields.revisionPlan;
+              }
+              correctedTimeEntryActions.push([
+                'UpdateRecord',
+                'TimeEntries',
+                update.id,
+                fields
+              ]);
+            }
+          }
+        }
         
-        var result = await grist.docApi.applyUserActions(actions);
+        // Suppressions (inchangées)
+        if (preview.reconciliation && preview.reconciliation.deletes) {
+          for (var k = 0; k < preview.reconciliation.deletes.length; k++) {
+            var del = preview.reconciliation.deletes[k];
+            correctedTimeEntryActions.push([
+              'RemoveRecord',
+              'TimeEntries',
+              del.id
+            ]);
+          }
+        }
         
-        log('Commit terminé: ' + actions.length + ' actions');
+        // =========================================================================
+        // PHASE 3 : Mutation des TimeEntries
+        // =========================================================================
+        log('PHASE 3 : Mutation des TimeEntries (' + correctedTimeEntryActions.length + ' actions)');
+        
+        if (correctedTimeEntryActions.length > 0) {
+          var timeEntryResult = await grist.docApi.applyUserActions(correctedTimeEntryActions);
+          phases.timeEntryReconciliation.actionsExecuted = correctedTimeEntryActions.length;
+          log('Phase 3 terminée : ' + correctedTimeEntryActions.length + ' TimeEntries créées/mises à jour/supprimées');
+        } else {
+          log('Phase 3 : aucune action TimeEntry');
+        }
+        
+        // =========================================================================
+        // PHASE 4 : Nettoyage sûr des capacités (optionnel)
+        // =========================================================================
+        // Cette phase sera implémentée ultérieurement
+        log('PHASE 4 : Nettoyage des capacités (skip pour l\'instant)');
+        
+        // =========================================================================
+        // Résultat final
+        // =========================================================================
+        var totalActions = phases.capacityUpsert.actionsExecuted + 
+                          phases.timeEntryReconciliation.actionsExecuted + 
+                          phases.capacityCleanup.actionsExecuted;
+        
+        log('Commit terminé : ' + totalActions + ' actions totales');
         
         return {
           success: true,
-          actionsExecuted: actions.length,
-          result: result
+          memberId: memberId,
+          phases: phases,
+          totalActionsExecuted: totalActions,
+          code: 'SUCCESS'
         };
         
       } catch (e) {
@@ -1202,7 +1412,8 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
         return {
           success: false,
           code: 'COMMIT_ERROR',
-          message: e.message
+          message: e.message,
+          phases: phases
         };
       }
     }

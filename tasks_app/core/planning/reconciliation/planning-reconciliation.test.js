@@ -181,7 +181,7 @@ describe('Planning Reconciliation - Suppression lignes vides', () => {
     
     expect(result.deletes.length).toBe(1);
     expect(result.deletes[0].id).toBe(1);
-    expect(result.deletes[0].reason).toBe('ENTRY_EMPTY_AND_MUTABLE');
+    expect(result.deletes[0].reason).toBe('ENTRY_EMPTY_OR_PLANNED_ONLY');
   });
 
   test('Ligne avec description n\'est pas supprimée', () => {

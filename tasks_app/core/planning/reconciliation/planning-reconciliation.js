@@ -190,21 +190,39 @@ function reconcileDailyEntries(existingEntries, desiredPlan, options = {}) {
         continue;
       }
       
-      if (isEmpty) {
-        deletes.push({
-          id: primaryEntry.id,
-          reason: "ENTRY_EMPTY_AND_MUTABLE"
-        });
-      } else if (plannedCentiHours !== 0) {
-        // Ligne mutable avec du prévu mais absente de desiredPlan
-        updates.push({
-          id: primaryEntry.id,
-          fields: {
-            plannedHours: 0
-          },
-          reason: "PLANNED_HOURS_ZEROED"
-        });
+      // Ligne avec réalisé : ne pas supprimer, mais possiblement mettre à zéro le prévu
+      if (actualCentiHours > 0) {
+        if (plannedCentiHours !== 0) {
+          updates.push({
+            id: primaryEntry.id,
+            fields: {
+              plannedHours: 0
+            },
+            reason: "ACTUAL_HOURS_PRESENT_ZERO_PLANNED"
+          });
+        }
+        continue;
       }
+      
+      // Ligne avec description/imputation/feuille : mettre à zéro le prévu
+      if (hasDescription || hasImputation || hasFeuille) {
+        if (plannedCentiHours !== 0) {
+          updates.push({
+            id: primaryEntry.id,
+            fields: {
+              plannedHours: 0
+            },
+            reason: "HAS_METADATA_ZERO_PLANNED"
+          });
+        }
+        continue;
+      }
+      
+      // Ligne vide ou avec juste du prévu : supprimer
+      deletes.push({
+        id: primaryEntry.id,
+        reason: "ENTRY_EMPTY_OR_PLANNED_ONLY"
+      });
       
       continue;
     }
