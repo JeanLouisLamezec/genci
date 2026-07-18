@@ -4213,21 +4213,12 @@ async function activate() {
 let craFilterManagerInitialized = false;
 
 /**
- * Instrumentation performance (TODO 1)
+ * Helper de log performance - utilise celui de CraDataLoader
  */
-const CRA_PERF_DEBUG = (function() {
-  try {
-    return typeof location !== 'undefined' &&
-      new URLSearchParams(location.search).get('debugPerf') === '1';
-  } catch (e) {
-    return false;
-  }
-})();
-
-function craPerfLog(label, details) {
-  if (!CRA_PERF_DEBUG) return;
+const craPerfLog = CraDataLoader.perfLog || function(label, details) {
+  if (!CraDataLoader.CRA_PERF_DEBUG) return;
   console.info('[CRA perf] ' + label, details || '');
-}
+};
 
 /**
  * Assure une instance unique de FilterManager (TODO 8)

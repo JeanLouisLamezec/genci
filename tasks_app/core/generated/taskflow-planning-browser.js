@@ -4720,8 +4720,25 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
         }
 
         /**
+         * Normalise une affectation (accepte les deux formats : Grist et domaine)
+         * @param {Object} a - Affectation
+         * @returns {Object} Affectation normalisée
+         */
+        function normalizeAssignment(a) {
+            return {
+                id: a.id || null,
+                membre: Number(a.membre ?? a.memberId) || null,
+                actif: (a.actif ?? a.active) !== false,
+                dateDebut: a.dateDebut ?? a.startDate ?? null,
+                dateFin: a.dateFin ?? a.endDate ?? null,
+                heuresAllouees: a.heuresAllouees ?? a.allocatedHours ?? 0,
+                modeRepartition: a.modeRepartition ?? a.distributionMode ?? 'uniforme'
+            };
+        }
+
+        /**
          * Détermine la date de début de replanification
-         * @param {Object} assignment - Affectation
+         * @param {Object} assignment - Affectation (format Grist ou domaine)
          * @param {string} operation - 'create' | 'update'
          * @returns {string} Date YYYY-MM-DD
          */
@@ -4729,12 +4746,15 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
             var today = new Date();
             var todayStr = formatDateUTC(today);
             
+            // Normaliser la date de début (accepte les deux formats)
+            var rawStartDate = assignment.dateDebut ?? assignment.startDate;
+            var startDate = rawStartDate ? formatDateUTC(new Date(rawStartDate * 1000)) : null;
+            
             if (operation === 'create') {
                 // Pour une création, commencer à la date de début de l'affectation
-                return assignment.startDate ? formatDateUTC(new Date(assignment.startDate * 1000)) : todayStr;
+                return startDate || todayStr;
             } else {
                 // Pour une modification, max(today, dateDebut)
-                var startDate = assignment.startDate ? formatDateUTC(new Date(assignment.startDate * 1000)) : null;
                 if (startDate && startDate > todayStr) {
                     return startDate;
                 }
@@ -4769,8 +4789,9 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
 
             log('autoPlanMembersAfterTaskSync pour tâche ' + taskId + ' (' + operation + ')');
 
-            // 1. Filtrer les affectations actives
-            var activeAssignments = assignments.filter(function(a) {
+            // 1. Normaliser et filtrer les affectations actives
+            var normalizedAssignments = assignments.map(normalizeAssignment);
+            var activeAssignments = normalizedAssignments.filter(function(a) {
                 return a.actif !== false && a.membre != null && a.membre > 0;
             });
 
@@ -4802,7 +4823,18 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
             log('Membres concernés : ' + memberIds.join(', '));
 
             // 3. Vérifier si l'orchestrateur est disponible
-            if (!global.createMemberPlanningOrchestrator) {
+            var orchestratorFactory = null;
+            
+            // Essayer planningApi en premier, puis global.TaskFlowPlanning, puis global
+            if (planningApi && planningApi.createMemberPlanningOrchestrator) {
+                orchestratorFactory = planningApi.createMemberPlanningOrchestrator;
+            } else if (global.TaskFlowPlanning && global.TaskFlowPlanning.createMemberPlanningOrchestrator) {
+                orchestratorFactory = global.TaskFlowPlanning.createMemberPlanningOrchestrator;
+            } else if (global.createMemberPlanningOrchestrator) {
+                orchestratorFactory = global.createMemberPlanningOrchestrator;
+            }
+
+            if (!orchestratorFactory) {
                 log('Orchestrateur non disponible');
                 return {
                     success: false,
@@ -4816,7 +4848,7 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
             }
 
             // 4. Créer l'orchestrateur
-            var orchestrator = global.createMemberPlanningOrchestrator(grist, {
+            var orchestrator = orchestratorFactory(grist, {
                 logEnabled: logEnabled
             });
 
@@ -4958,13 +4990,29 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
             var hasCommitted = committedMemberIds.length > 0;
             var hasBlocked = blockedMemberIds.length > 0;
             var hasFailed = failedMemberIds.length > 0;
+            var hasAlreadyConformant = results.some(function(r) { return r.status === 'already-conformant'; });
 
             log('Résultat global : ' + JSON.stringify({
                 success: allSuccess,
                 committed: committedMemberIds.length,
                 blocked: blockedMemberIds.length,
-                failed: failedMemberIds.length
+                failed: failedMemberIds.length,
+                alreadyConformant: results.filter(function(r) { return r.status === 'already-conformant'; }).length
             }));
+
+            // Déterminer le code de statut correct
+            var code;
+            if (hasFailed) {
+                code = hasCommitted ? 'PARTIAL_FAILURE' : 'COMMIT_FAILED';
+            } else if (hasBlocked) {
+                code = hasCommitted ? 'PARTIAL_BLOCKED' : 'BLOCKED';
+            } else if (hasCommitted) {
+                code = 'SUCCESS';
+            } else if (hasAlreadyConformant) {
+                code = 'ALREADY_CONFORMANT';
+            } else {
+                code = 'NO_ACTIVE_ASSIGNMENTS';
+            }
 
             return {
                 success: allSuccess,
@@ -4973,7 +5021,7 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
                 committedMemberIds: committedMemberIds,
                 blockedMemberIds: blockedMemberIds,
                 failedMemberIds: failedMemberIds,
-                code: hasCommitted ? (hasBlocked ? 'PARTIAL_COMMIT' : 'SUCCESS') : (hasFailed ? 'COMMIT_FAILED' : 'BLOCKED'),
+                code: code,
                 summary: {
                     totalMembers: memberIds.length,
                     committed: committedMemberIds.length,
@@ -4991,10 +5039,17 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
         };
     }
 
-    // Export
+    // Export pour le navigateur
     global.createGanttAutoPlanningIntegration = createGanttAutoPlanningIntegration;
 
 })(typeof window !== 'undefined' ? window : (typeof global !== 'undefined' ? global : this));
+
+// Export CommonJS pour tests et bundle (DOIT ÊTRE APRÈS l'IIFE)
+if (typeof module !== 'undefined' && module.exports) {
+    return {
+        createGanttAutoPlanningIntegration: globalThis.createGanttAutoPlanningIntegration
+    };
+}
 
   }));
 
@@ -5285,7 +5340,7 @@ return {
   // Exposer l'API publique
   var adapter = __require('grist/grist-planning-adapter');
   var widgetPlanningService = __require('widget-planning-service');
-  var orchestrator = __require('planning/member-planning-orchestrator');
+  var orchestrator = __require('planning/member/member-planning-orchestrator');
   var ganttAutoPlanning = __require('planning/gantt/gantt-auto-planning-integration');
   
   global.TaskFlowPlanning = {
@@ -5295,6 +5350,10 @@ return {
     isBlockingDiagnostic: adapter.isBlockingDiagnostic,
     createGanttAutoPlanningIntegration: ganttAutoPlanning.createGanttAutoPlanningIntegration
   };
+  
+  // Exposer aussi directement pour compatibilité avec le code existant
+  global.createMemberPlanningOrchestrator = orchestrator.createMemberPlanningOrchestrator;
+  global.createGanttAutoPlanningIntegration = ganttAutoPlanning.createGanttAutoPlanningIntegration;
   
 })(typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : this));
 

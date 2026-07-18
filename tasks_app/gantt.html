@@ -3647,6 +3647,62 @@ if (typeof globalThis !== 'undefined') {
 
         function showToast(msg, type = 'info') { const c = document.getElementById('toastContainer'); const t = document.createElement('div'); t.className = 'toast ' + type; t.textContent = msg; c.appendChild(t); setTimeout(() => t.remove(), 3000); }
         
+        /**
+         * Affiche le résultat de la planification automatique
+         * @param {Object} result - Résultat de autoPlanMembersAfterTaskSync
+         */
+        function showPlanningResult(result) {
+            if (!result) {
+                showToast(
+                    'Tâche enregistrée, mais le planning automatique a échoué.',
+                    'warning'
+                );
+                return;
+            }
+
+            if (result.failedMemberIds && result.failedMemberIds.length > 0) {
+                showToast(
+                    'Tâche enregistrée, mais le planning automatique a échoué. ' +
+                    'Utilisez « Replanifier » dans le Plan.',
+                    'warning'
+                );
+                return;
+            }
+
+            if (result.blockedMemberIds && result.blockedMemberIds.length > 0) {
+                var blockedCount = result.blockedMemberIds.length;
+                var unplannedHours = result.summary ? result.summary.blocked : 0;
+                showToast(
+                    'Tâche enregistrée, mais le planning nécessite un arbitrage (' + blockedCount + ' membre(s) bloqué(s)). ' +
+                    'Utilisez « Replanifier » dans le Plan.',
+                    'warning'
+                );
+                return;
+            }
+
+            if (result.summary && result.summary.committed > 0) {
+                showToast(
+                    'Tâche enregistrée et planning mis à jour (' + result.summary.committed + ' membre(s) planifié(s)).',
+                    'success'
+                );
+                return;
+            }
+
+            if (result.summary && result.summary.alreadyConformant > 0) {
+                showToast(
+                    'Tâche enregistrée. Le planning était déjà à jour.',
+                    'success'
+                );
+                return;
+            }
+
+            // Message par défaut
+            showToast(
+                'Tâche enregistrée.',
+                'success'
+            );
+        }
+        
         // GEN-03: Export functions
         // WBS-02: déplie toute la hiérarchie temporairement pour l'export, retourne l'état précédent
         function _expandAllForExport() {
@@ -5435,6 +5491,10 @@ if (typeof globalThis !== 'undefined') {
                                     }
                                 }
                                 
+                                // NOTE: La planification automatique est maintenant gérée par
+                                // gantt-auto-planning-integration.js après la synchronisation.
+                                // Ce bloc a été désactivé pour éviter les doubles appels.
+                                /*
                                 if (memberIds.length > 0) {
                                     console.log('[Gantt] Replanification membres:', memberIds);
                                     var replanResult = await planningService.replanMembers(memberIds, {
@@ -5442,6 +5502,7 @@ if (typeof globalThis !== 'undefined') {
                                     });
                                     console.log('[Gantt] Résultat replanification:', replanResult);
                                 }
+                                */
                             } catch (e) {
                                 console.warn('[Gantt] Erreur replanification:', e);
                             }
@@ -5450,14 +5511,20 @@ if (typeof globalThis !== 'undefined') {
                 }
                 
                 if (assignmentSyncSuccess) {
-                    if (datesChanged && (assigneesChanged || chargesChanged)) {
-                        showToast('Dates et affectations enregistrées', 'success');
-                    } else if (datesChanged) {
-                        showToast('Dates enregistrées', 'success');
-                    } else if (assigneesChanged || chargesChanged) {
-                        showToast('Affectations enregistrées', 'success');
+                    // Utiliser le résultat de la planification automatique si disponible
+                    if (syncResult && syncResult.planningResult) {
+                        showPlanningResult(syncResult.planningResult);
                     } else {
-                        showToast('Tâche enregistrée', 'success');
+                        // Messages par défaut si pas de résultat de planification
+                        if (datesChanged && (assigneesChanged || chargesChanged)) {
+                            showToast('Dates et affectations enregistrées', 'success');
+                        } else if (datesChanged) {
+                            showToast('Dates enregistrées', 'success');
+                        } else if (assigneesChanged || chargesChanged) {
+                            showToast('Affectations enregistrées', 'success');
+                        } else {
+                            showToast('Tâche enregistrée', 'success');
+                        }
                     }
                 } else {
                     showToast('Tâche enregistrée, mais échec synchronisation : ' + syncErrorMessage, 'warning');
@@ -5529,37 +5596,13 @@ if (typeof globalThis !== 'undefined') {
                         return;
                     }
                     
-                    // 4. Replanifier les membres concernés
-                    if (planningService && syncResult.createdIds && syncResult.createdIds.length > 0) {
-                        try {
-                            // Charger les affectations créées pour identifier les membres
-                            var assignmentsTable = await grist.docApi.fetchTable('TaskAssignments');
-                            var memberIds = [];
-                            
-                            if (assignmentsTable.id) {
-                                for (var i = 0; i < assignmentsTable.id.length; i++) {
-                                    if (syncResult.createdIds.indexOf(assignmentsTable.id[i]) >= 0) {
-                                        var memberId = assignmentsTable.membre[i];
-                                        if (memberId && memberIds.indexOf(memberId) < 0) {
-                                            memberIds.push(memberId);
-                                        }
-                                    }
-                                }
-                            }
-                            
-                            if (memberIds.length > 0) {
-                                console.log('[Gantt] Replanification après création: membres', memberIds);
-                                var replanResult = await planningService.replanMembers(memberIds, {
-                                    allowPartialPlanning: false
-                                });
-                                console.log('[Gantt] Résultat replanification:', replanResult);
-                            }
-                        } catch (e) {
-                            console.warn('[Gantt] Erreur replanification:', e);
-                        }
+                    // 4. La planification automatique est gérée par onTaskCreated
+                    // Utiliser le résultat de la planification si disponible
+                    if (syncResult && syncResult.planningResult) {
+                        showPlanningResult(syncResult.planningResult);
+                    } else {
+                        showToast('Tâche et affectations créées', 'success');
                     }
-                    
-                    showToast('Tâche et affectations créées', 'success');
                     closePanel();
                     await loadAllData();
                 } catch (e) {
@@ -5803,6 +5846,10 @@ if (typeof globalThis !== 'undefined') {
                                         }
                                     }
                                     
+                                    // NOTE: La planification automatique est maintenant gérée par
+                                    // gantt-auto-planning-integration.js après la synchronisation.
+                                    // Ce bloc a été désactivé pour éviter les doubles appels.
+                                    /*
                                     if (memberIds.length > 0) {
                                         console.log('[Gantt] Replanification membres:', memberIds);
                                         var replanResult = await planningService.replanMembers(memberIds, {
@@ -5810,6 +5857,7 @@ if (typeof globalThis !== 'undefined') {
                                         });
                                         console.log('[Gantt] Résultat replanification:', replanResult);
                                     }
+                                    */
                                 } catch (replanErr) {
                                     console.warn('[Gantt] Erreur replanification:', replanErr);
                                 }

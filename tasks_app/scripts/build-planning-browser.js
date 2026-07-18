@@ -195,7 +195,7 @@ function build(options = {}) {
   // Exposer l'API publique
   var adapter = __require('grist/grist-planning-adapter');
   var widgetPlanningService = __require('widget-planning-service');
-  var orchestrator = __require('planning/member-planning-orchestrator');
+  var orchestrator = __require('planning/member/member-planning-orchestrator');
   var ganttAutoPlanning = __require('planning/gantt/gantt-auto-planning-integration');
   
   global.TaskFlowPlanning = {
@@ -205,6 +205,10 @@ function build(options = {}) {
     isBlockingDiagnostic: adapter.isBlockingDiagnostic,
     createGanttAutoPlanningIntegration: ganttAutoPlanning.createGanttAutoPlanningIntegration
   };
+  
+  // Exposer aussi directement pour compatibilité avec le code existant
+  global.createMemberPlanningOrchestrator = orchestrator.createMemberPlanningOrchestrator;
+  global.createGanttAutoPlanningIntegration = ganttAutoPlanning.createGanttAutoPlanningIntegration;
   
 })(typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : this));
 
@@ -220,17 +224,34 @@ function build(options = {}) {
   console.log(`\n✅ Bundle généré: ${outputFile}`);
   console.log(`   Taille: ${(bundleContent.length / 1024).toFixed(2)} KB`);
   
-  // Vérification rapide
+  // Vérification runtime avec vm
   try {
-    // Vérifier que le fichier est syntaxiquement correct en le lisant
-    const check = fs.readFileSync(outputFile, 'utf8');
-    if (!check.includes('window.TaskFlowPlanning') && !check.includes('globalThis.TaskFlowPlanning')) {
-      console.warn('⚠️  Attention: le bundle ne semble pas exposer TaskFlowPlanning correctement');
-    } else {
-      console.log('   ✓ Vérification syntaxique OK');
+    const vm = require('vm');
+    const context = {
+      console: console,
+      Map: Map,
+      Date: Date,
+      globalThis: {}
+    };
+    
+    vm.createContext(context);
+    vm.runInContext(bundleContent, context);
+    
+    if (
+      !context.globalThis.TaskFlowPlanning ||
+      typeof context.globalThis.TaskFlowPlanning.createMemberPlanningOrchestrator !== 'function' ||
+      typeof context.globalThis.TaskFlowPlanning.createGanttAutoPlanningIntegration !== 'function'
+    ) {
+      throw new Error('TaskFlowPlanning mal exposé');
     }
+    
+    console.log('   ✓ Exécution runtime OK');
+    console.log('   ✓ TaskFlowPlanning correctement exposé');
+    console.log('   ✓ createMemberPlanningOrchestrator disponible');
+    console.log('   ✓ createGanttAutoPlanningIntegration disponible');
   } catch (e) {
-    console.error(`❌ Erreur de vérification: ${e.message}`);
+    console.error(`❌ Erreur d'exécution: ${e.message}`);
+    process.exit(1);
   }
   
   return {

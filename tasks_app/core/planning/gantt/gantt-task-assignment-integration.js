@@ -260,7 +260,7 @@
                             log('Déclenchement planification automatique pour tâche ' + taskId);
                             planningResult = await autoPlanningIntegration.autoPlanMembersAfterTaskSync({
                                 taskId: taskId,
-                                assignments: activeAssignments,
+                                assignments: activeAssignments, // Utiliser les affectations rechargées (format Grist)
                                 operation: 'create'
                             });
                             
@@ -347,14 +347,18 @@
                             };
                         }
                         
+                        // Recharger les affectations réelles après synchronisation
+                        var actualAssignments = await assignmentService.loadAssignmentsForTask(taskId);
+                        var activeAssignments = actualAssignments.filter(function(a) { return a.actif !== false; });
+                        
                         // Planification automatique
                         var planningResult = null;
-                        if (autoPlanningIntegration && desiredAssignments.length > 0) {
+                        if (autoPlanningIntegration && activeAssignments.length > 0) {
                             try {
                                 log('Déclenchement planification automatique pour tâche ' + taskId);
                                 planningResult = await autoPlanningIntegration.autoPlanMembersAfterTaskSync({
                                     taskId: taskId,
-                                    assignments: desiredAssignments,
+                                    assignments: activeAssignments, // Utiliser les affectations rechargées (format Grist)
                                     operation: 'update'
                                 });
                                 
@@ -885,78 +889,46 @@
 
         /**
          * Synchronise uniquement les dates des affectations (pour le drag-and-drop)
-         * Version publique - met en file d'attente
+         * Version publique - met en file d'attente et déclenche la planification automatique
          * @param {number} taskId - ID de la tâche
          * @param {number} newStartDate - Nouvelle date de début
          * @param {number} newEndDate - Nouvelle date de fin
          * @returns {Promise<Object>} Résultat
          */
         async function syncTaskDates(taskId, newStartDate, newEndDate) {
-            return enqueueTaskOperation(taskId, function() {
-                return syncTaskDatesInternal(taskId, newStartDate, newEndDate);
-            });
-        }
-
-        /**
-         * Répare les affectations manquantes pour une tâche endommagée
-
-                // 5. VÉRIFICATION POST-CONDITION : relire et vérifier que les dates sont correctes
-                var updated = await assignmentService.loadAssignmentsForTask(taskId);
-                var mismatches = [];
+            return enqueueTaskOperation(taskId, async function() {
+                // 1. Synchroniser les dates
+                var result = await syncTaskDatesInternal(taskId, newStartDate, newEndDate);
                 
-                for (var i = 0; i < updated.length; i++) {
-                    var a = updated[i];
-                    if (a.actif !== false) {
-                        if (a.dateDebut !== newStartDate || a.dateFin !== newEndDate) {
-                            mismatches.push({
-                                assignmentId: a.id,
-                                expected: { dateDebut: newStartDate, dateFin: newEndDate },
-                                actual: { dateDebut: a.dateDebut, dateFin: a.dateFin }
-                            });
-                        }
-                    }
+                if (!result.ok || !autoPlanningIntegration) {
+                    return result;
                 }
                 
-                if (mismatches.length > 0) {
-                    log('Post-condition échouée : ' + JSON.stringify(mismatches));
-                    return {
-                        ok: false,
-                        code: 'ASSIGNMENT_DATE_POSTCONDITION_FAILED',
-                        taskId: taskId,
-                        expected: { dateDebut: newStartDate, dateFin: newEndDate },
-                        mismatches: mismatches
+                // 2. Recharger les affectations réelles
+                try {
+                    var assignments = await assignmentService.loadAssignmentsForTask(taskId);
+                    var activeAssignments = assignments.filter(function(a) { return a.actif !== false; });
+                    
+                    if (activeAssignments.length > 0) {
+                        log('Déclenchement planification automatique après modification des dates');
+                        result.planningResult = await autoPlanningIntegration.autoPlanMembersAfterTaskSync({
+                            taskId: taskId,
+                            assignments: activeAssignments,
+                            operation: 'update'
+                        });
+                        log('Planification automatique terminée : ' + JSON.stringify(result.planningResult.summary));
+                    }
+                } catch (error) {
+                    log('Erreur planification automatique après dates : ' + error.message);
+                    result.planningResult = {
+                        success: false,
+                        code: 'AUTO_PLANNING_ERROR',
+                        failedMemberIds: [],
+                        blockedMemberIds: []
                     };
                 }
-
-                log('syncTaskDatesInternal réussi: ' + JSON.stringify({
-                    updatedIds: result.updatedIds,
-                    actionsExecuted: result.actionsExecuted
-                }));
-
+                
                 return result;
-
-            } catch (e) {
-                log('Erreur syncTaskDatesInternal: ' + e.message);
-                return {
-                    ok: false,
-                    code: 'SYNC_ERROR',
-                    message: e.message,
-                    details: e.stack
-                };
-            }
-        }
-
-        /**
-         * Synchronise uniquement les dates des affectations (pour le drag-and-drop)
-         * Version publique - met en file d'attente
-         * @param {number} taskId - ID de la tâche
-         * @param {number} newStartDate - Nouvelle date de début
-         * @param {number} newEndDate - Nouvelle date de fin
-         * @returns {Promise<Object>} Résultat
-         */
-        async function syncTaskDates(taskId, newStartDate, newEndDate) {
-            return enqueueTaskOperation(taskId, function() {
-                return syncTaskDatesInternal(taskId, newStartDate, newEndDate);
             });
         }
 
