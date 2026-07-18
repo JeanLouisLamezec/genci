@@ -4061,12 +4061,13 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
           feuillesById[f.id] = f;
         });
         
-        // 4. Générer les capacités manquantes
+        // 4. Générer les capacités désirées sur toute la période
         var capacityResult = null;
-        if (data.capacities.length === 0 && period) {
+        if (period) {
           capacityResult = buildDesiredMemberDailyCapacities({
             memberId: memberId,
             weeklyCapacity: data.member.capaciteHebdo,
+            availabilities: data.disponibilites,
             startDate: period.dateFrom,
             endDate: period.dateTo,
             defaultWeeklyCapacity: 35,
@@ -4075,26 +4076,9 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
           });
         }
         
-        // 5. Identifier les entrées protégées
-        var protectedEntries = identifyProtectedEntries(data.timeEntries, feuillesById, {
-          replanFromDate: options.replanFromDate
-        });
-        
-        // Calculer les heures protégées par date selon le statut
-        var protectedHoursByDate = calculateProtectedHoursByDate(protectedEntries);
-        
-        // 6. Créer le registre de capacité avec les heures protégées correctes
-        var capacitiesToUse = capacityResult && capacityResult.capacities ? capacityResult.capacities : data.capacities;
-        var registry = createCapacityRegistry({
-          memberId: memberId,
-          capacities: capacitiesToUse,
-          protectedHoursByDate: protectedHoursByDate,
-          dateFrom: period.dateFrom,
-          dateTo: period.dateTo
-        });
-        
-        // 7. Générer les actions de capacités si nécessaire
+        // 5. Réconcilier avec les capacités existantes
         var capacityActions = [];
+        var capacitiesToUse = data.capacities;
         if (capacityResult && capacityResult.capacities) {
           var nowUnixSeconds = Math.floor(Date.now() / 1000);
           var capReconciliation = reconcileMemberDailyCapacities(
@@ -4111,7 +4095,40 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
             var capUpdate = capReconciliation.updates[capJ];
             capacityActions.push(['UpdateRecord', 'MemberDailyCapacities', capUpdate.id, capUpdate.fields]);
           }
+          
+          // Utiliser les capacités réconciliées
+          var reconciledCapacities = [];
+          data.capacities.forEach(function(cap) {
+            reconciledCapacities.push(cap);
+          });
+          capReconciliation.creates.forEach(function(cap) {
+            reconciledCapacities.push({
+              id: null,
+              membre: cap.membre,
+              date: typeof cap.date === 'number' ? formatDateUTC(new Date(cap.date * 1000)) : cap.date,
+              capaciteTheorique: cap.capaciteTheorique,
+              capaciteDisponible: cap.capaciteDisponible
+            });
+          });
+          capacitiesToUse = reconciledCapacities;
         }
+        
+        // 6. Identifier les entrées protégées
+        var protectedEntries = identifyProtectedEntries(data.timeEntries, feuillesById, {
+          replanFromDate: options.replanFromDate
+        });
+        
+        // Calculer les heures protégées par date selon le statut
+        var protectedHoursByDate = calculateProtectedHoursByDate(protectedEntries);
+        
+        // 7. Créer le registre de capacité avec les heures protégées correctes
+        var registry = createCapacityRegistry({
+          memberId: memberId,
+          capacities: capacitiesToUse,
+          protectedHoursByDate: protectedHoursByDate,
+          dateFrom: period.dateFrom,
+          dateTo: period.dateTo
+        });
         
         log('Registre créé: ' + registry.dates.length + ' jours');
         
@@ -4201,6 +4218,7 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
             });
             totalUnplanned += planningResult.summary.unplannedHours || 0;
             allDiagnostics = allDiagnostics.concat(planningResult.diagnostics);
+            hasAssignmentFailure = true;
             continue;
           }
           
@@ -4227,6 +4245,7 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
             });
             totalUnplanned += planningResult.summary.unplannedHours || 0;
             allDiagnostics = allDiagnostics.concat(planningResult.diagnostics);
+            hasAssignmentFailure = true;
             continue;
           }
           
@@ -4263,6 +4282,15 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
           }
         });
         
+        // Filtrer les entrées existantes pour la réconciliation
+        // Exclure les lignes protégées par replanFromDate
+        var entriesForReconciliation = data.timeEntries;
+        if (options.replanFromDate) {
+          entriesForReconciliation = data.timeEntries.filter(function(e) {
+            return e.date >= options.replanFromDate;
+          });
+        }
+        
         var allDesiredEntries = [];
         assignmentResults.forEach(function(result) {
           if (result.plannedEntries && result.success) {
@@ -4281,7 +4309,7 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
           }
         });
         
-        var reconciliation = reconcileDailyEntries(data.timeEntries, allDesiredEntries, {
+        var reconciliation = reconcileDailyEntries(entriesForReconciliation, allDesiredEntries, {
           precisionHours: 0.01
         });
         
