@@ -1270,9 +1270,9 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
         }
         
         // =========================================================================
-        // PHASE 2 : Rechargement et reconstruction de l'index capaciteJour
+        // PHASE 2 : Rechargement et NOUVEAU PREVIEW avec les vrais IDs de capacité
         // =========================================================================
-        log('PHASE 2 : Rechargement des capacités et recalcul des références');
+        log('PHASE 2 : Rechargement des capacités et NOUVEAU PREVIEW');
         
         // Recharger MemberDailyCapacities pour obtenir les vrais IDs
         var capacitiesTable = await grist.docApi.fetchTable('MemberDailyCapacities');
@@ -1291,90 +1291,101 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
         
         log('Capacités rechargées : ' + Object.keys(capacityIdByDate).length + ' dates indexées');
         
-        // Reconstruire les actions TimeEntries avec les vrais IDs
-        var correctedTimeEntryActions = [];
+        // IMPORTANT : Refaire un preview avec les vrais IDs pour corriger les capaciteJour null
+        // On recharge d'abord toutes les données fraîches
+        var refreshedData = await loadMemberData(memberId);
         
-        if (preview.reconciliation && preview.reconciliation.creates) {
-          for (var i = 0; i < preview.reconciliation.creates.length; i++) {
-            var create = preview.reconciliation.creates[i];
-            var date = create.date;
-            var capacityId = capacityIdByDate[date] || null;
-            
-            if (!capacityId) {
-              log('Avertissement : pas de capacité trouvée pour la date ' + date + ', création différée');
-              // On passe cette création pour l'instant
-              continue;
-            }
-            
-            correctedTimeEntryActions.push([
-              'AddRecord',
-              'TimeEntries',
-              null,
-              {
-                affectation: create.assignmentId,
-                tache: create.taskId,
-                membre: create.memberId,
-                date: isoToGristDate(date),
-                heuresPrevues: create.plannedHours,
-                heures: 0,
-                capaciteTheorique: create.baseCapacityHours || 0,
-                capaciteDisponible: create.availableCapacityHours || 0,
-                capaciteJour: capacityId,
-                revisionPlan: 1,
-                description: null,
-                imputation: null
-              }
-            ]);
-          }
-        }
+        // Filtrer les entrées protégées avec les nouvelles données
+        var refreshedFeuillesById = {};
+        refreshedData.feuilles.forEach(function(f) {
+          refreshedFeuillesById[f.id] = f;
+        });
         
-        // Mises à jour (inchangées)
-        if (preview.reconciliation && preview.reconciliation.updates) {
-          for (var j = 0; j < preview.reconciliation.updates.length; j++) {
-            var update = preview.reconciliation.updates[j];
-            var fields = {};
-            
-            if (update.fields.plannedHours !== undefined) {
-              fields.heuresPrevues = update.fields.plannedHours;
-            }
-            if (update.fields.baseCapacityHours !== undefined) {
-              fields.capaciteTheorique = update.fields.baseCapacityHours;
-            }
-            if (update.fields.availableCapacityHours !== undefined) {
-              fields.capaciteDisponible = update.fields.availableCapacityHours;
-            }
-            if (update.fields.capacityRecordId !== undefined) {
-              // Mettre à jour avec le vrai ID si disponible
-              var updateDate = update.date;
-              var updateCapacityId = capacityIdByDate[updateDate] || update.fields.capacityRecordId;
-              fields.capaciteJour = updateCapacityId;
-            }
-            
-            if (Object.keys(fields).length > 0) {
-              if (update.fields.revisionPlan !== undefined) {
-                fields.revisionPlan = update.fields.revisionPlan;
-              }
-              correctedTimeEntryActions.push([
-                'UpdateRecord',
-                'TimeEntries',
-                update.id,
-                fields
-              ]);
+        var refreshedProtectedEntries = identifyProtectedEntries(refreshedData.timeEntries, refreshedFeuillesById, {
+          historyCutoffDate: historyCutoffDate
+        });
+        
+        // Calculer les heures protégées
+        var refreshedProtectedHoursByDate = calculateProtectedHoursByDate(refreshedProtectedEntries);
+        
+        // Reconstruire le registre avec les vraies capacités
+        var refreshedCapacities = [];
+        if (capacitiesTable.id) {
+          for (var capJ = 0; capJ < capacitiesTable.id.length; capJ++) {
+            if (capacitiesTable.membre[capJ] === memberId) {
+              refreshedCapacities.push({
+                id: capacitiesTable.id[capJ],
+                membre: capacitiesTable.membre[capJ],
+                date: typeof capacitiesTable.date[capJ] === 'number'
+                  ? formatDateUTC(new Date(capacitiesTable.date[capJ] * 1000))
+                  : capacitiesTable.date[capJ],
+                capaciteTheorique: Number(capacitiesTable.capaciteTheorique[capJ] || 0),
+                capaciteDisponible: Number(capacitiesTable.capaciteDisponible[capJ] || 0)
+              });
             }
           }
         }
         
-        // Suppressions (inchangées)
-        if (preview.reconciliation && preview.reconciliation.deletes) {
-          for (var k = 0; k < preview.reconciliation.deletes.length; k++) {
-            var del = preview.reconciliation.deletes[k];
-            correctedTimeEntryActions.push([
-              'RemoveRecord',
-              'TimeEntries',
-              del.id
-            ]);
+        var refreshedRegistry = createCapacityRegistry({
+          memberId: memberId,
+          capacities: refreshedCapacities,
+          protectedHoursByDate: refreshedProtectedHoursByDate,
+          dateFrom: period.dateFrom,
+          dateTo: period.dateTo
+        });
+        
+        // Reconstruire le plan désiré avec les vrais IDs de capacité
+        var refreshedDesiredEntries = [];
+        assignmentResults.forEach(function(result) {
+          if (result.plannedEntries && result.success) {
+            result.plannedEntries.forEach(function(entry) {
+              refreshedDesiredEntries.push({
+                assignmentId: result.assignmentId,
+                taskId: entry.taskId,
+                memberId: memberId,
+                date: entry.date,
+                plannedHours: entry.plannedHours,
+                baseCapacityHours: entry.baseCapacityHours,
+                availableCapacityHours: entry.availableCapacityHours,
+                capacityRecordId: capacityIdByDate[entry.date] || null
+              });
+            });
           }
-        }
+        });
+        
+        // Réconciliation avec les vraies capacités
+        var refreshedEntriesForReconciliation = refreshedData.timeEntries.filter(function(e) {
+          var hasActualHours = Number(e.actualHours || 0) > 0;
+          var isSubmitted = e.sheetStatus === 'submitted';
+          var isValidated = e.sheetStatus === 'validated';
+          var hasFeuille = e.feuille != null && e.feuille !== '';
+          
+          if (hasActualHours || isSubmitted || isValidated || (hasFeuille && e.sheetStatus === 'draft')) {
+            return false;
+          }
+          
+          if (e.date && e.date < historyCutoffDate && !hasFeuille) {
+            return false;
+          }
+          
+          return true;
+        });
+        
+        var refreshedReconciliation = reconcileDailyEntries(refreshedEntriesForReconciliation, refreshedDesiredEntries, {
+          precisionHours: 0.01
+        });
+        
+        log('Nouvelle réconciliation : ' + refreshedReconciliation.creates.length + ' créations, ' + 
+            refreshedReconciliation.updates.length + ' updates, ' + refreshedReconciliation.deletes.length + ' suppressions');
+        
+        // Utiliser la nouvelle réconciliation pour les actions TimeEntries
+        var existingEntriesMap = new Map();
+        refreshedData.timeEntries.forEach(function(e) {
+          existingEntriesMap.set(e.id, e);
+        });
+        
+        var refreshedActions = reconciliationToActions(refreshedReconciliation, memberId, existingEntriesMap);
+        var correctedTimeEntryActions = refreshedActions.timeEntryActions;
         
         // =========================================================================
         // PHASE 3 : Mutation des TimeEntries
