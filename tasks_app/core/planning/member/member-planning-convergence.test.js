@@ -635,7 +635,7 @@
 
   describe('CONVERGENCE — Nettoyage des capacités obsolètes', function() {
     it('La fonction de nettoyage est disponible', function() {
-      // Test de présence - la logique est testée manuellement dans Grist
+      // Test de présence - la logique complète sera testée manuellement dans Grist
       expect(true).toBe(true);
     });
 

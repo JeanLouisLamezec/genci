@@ -4507,7 +4507,9 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
           },
           fingerprint: fingerprint,
           canCommit: !hasFailure || options.allowPartialPlanning === true,
-          code: hasAssignmentFailure ? 'ASSIGNMENT_PLANNING_FAILED' : (hasUnplanned ? 'INSUFFICIENT_SHARED_CAPACITY' : 'SUCCESS')
+          code: hasAssignmentFailure ? 'ASSIGNMENT_PLANNING_FAILED' : (hasUnplanned ? 'INSUFFICIENT_SHARED_CAPACITY' : 'SUCCESS'),
+          historyCutoffDate: historyCutoffDate,
+          capacityPeriod: period
         };
         
       } catch (e) {
@@ -4638,6 +4640,9 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
             code: 'INVALID_PREVIEW'
           };
         }
+        
+        // Récupérer historyCutoffDate du preview ou le recalculer
+        var historyCutoffDate = preview.historyCutoffDate || determineHistoryCutoffDate(options);
         
         // Vérifier canCommit
         if (!preview.canCommit) {
@@ -5418,11 +5423,12 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
                     var commitResult = await orchestrator.commitMember(memberId, preview);
 
                     if (commitResult.success) {
-                        log('Commit réussi pour membre ' + memberId + ' : ' + commitResult.actionsExecuted + ' actions');
+                        var executedActions = commitResult.totalActionsExecuted || 0;
+                        log('Commit réussi pour membre ' + memberId + ' : ' + executedActions + ' actions');
                         results.push({
                             memberId: memberId,
                             status: 'committed',
-                            actionCount: commitResult.actionsExecuted
+                            actionCount: executedActions
                         });
                         committedMemberIds.push(memberId);
                     } else {

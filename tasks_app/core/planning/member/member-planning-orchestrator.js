@@ -1095,7 +1095,9 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
           },
           fingerprint: fingerprint,
           canCommit: !hasFailure || options.allowPartialPlanning === true,
-          code: hasAssignmentFailure ? 'ASSIGNMENT_PLANNING_FAILED' : (hasUnplanned ? 'INSUFFICIENT_SHARED_CAPACITY' : 'SUCCESS')
+          code: hasAssignmentFailure ? 'ASSIGNMENT_PLANNING_FAILED' : (hasUnplanned ? 'INSUFFICIENT_SHARED_CAPACITY' : 'SUCCESS'),
+          historyCutoffDate: historyCutoffDate,
+          capacityPeriod: period
         };
         
       } catch (e) {
@@ -1226,6 +1228,9 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
             code: 'INVALID_PREVIEW'
           };
         }
+        
+        // Récupérer historyCutoffDate du preview ou le recalculer
+        var historyCutoffDate = preview.historyCutoffDate || determineHistoryCutoffDate(options);
         
         // Vérifier canCommit
         if (!preview.canCommit) {

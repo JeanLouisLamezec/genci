@@ -269,11 +269,12 @@
                     var commitResult = await orchestrator.commitMember(memberId, preview);
 
                     if (commitResult.success) {
-                        log('Commit réussi pour membre ' + memberId + ' : ' + commitResult.actionsExecuted + ' actions');
+                        var executedActions = commitResult.totalActionsExecuted || 0;
+                        log('Commit réussi pour membre ' + memberId + ' : ' + executedActions + ' actions');
                         results.push({
                             memberId: memberId,
                             status: 'committed',
-                            actionCount: commitResult.actionsExecuted
+                            actionCount: executedActions
                         });
                         committedMemberIds.push(memberId);
                     } else {
