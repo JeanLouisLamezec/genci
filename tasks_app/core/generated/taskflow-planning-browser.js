@@ -3435,6 +3435,46 @@ var reconcileDailyEntries = PlanningReconciliation.reconcileDailyEntries;
 var buildDesiredMemberDailyCapacities = CapacityService.buildDesiredMemberDailyCapacities;
 var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacities;
   
+  /**
+   * Helper : convertit une valeur Grist en heures ou null
+   * CONTRAT : préserve la nullabilité de heures pour distinguer :
+   *   - null = aucun réalisé encore confirmé (proposition à confirmer)
+   *   - 0 = l'utilisateur a explicitement déclaré zéro
+   *   - >0 = réalisé saisi
+   * 
+   * @param {*} value - Valeur Grist à convertir
+   * @returns {number|null} Nombre ou null
+   */
+  function nullableHours(value) {
+    if (
+      value === null ||
+      value === undefined ||
+      value === ''
+    ) {
+      return null;
+    }
+
+    const parsed = Number(value);
+
+    return Number.isFinite(parsed)
+      ? parsed
+      : null;
+  }
+  
+  /**
+   * Vérifie si une entrée a un réalisé explicitement renseigné
+   * @param {Object} entry - Entrée TimeEntry
+   * @returns {boolean} true si heures est une valeur numérique valide
+   */
+  function hasExplicitActual(entry) {
+    return (
+      entry.actualHours !== null &&
+      entry.actualHours !== undefined &&
+      entry.actualHours !== '' &&
+      Number.isFinite(Number(entry.actualHours))
+    );
+  }
+  
   // ===========================================================================
   // Helpers de date
   // ===========================================================================
@@ -3839,6 +3879,10 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
             var feuille = feuilleId ? feuillesById[feuilleId] : null;
             var sheetStatus = feuille ? normalizeSheetStatus(feuille.statut) : null;
             
+            // PHASE 1 : Utiliser nullableHours pour préserver null
+            var rawActualHours = timeEntriesTable.heures[l];
+            var actualHours = nullableHours(rawActualHours);
+            
             // Normaliser au format domaine avec TOUS les champs nécessaires
             timeEntries.push({
               id: timeEntriesTable.id[l],
@@ -3847,7 +3891,8 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
               memberId: timeEntriesTable.membre[l],
               date: gristDateToIso(timeEntriesTable.date[l]),
               plannedHours: Number(timeEntriesTable.heuresPrevues[l] || 0),
-              actualHours: Number(timeEntriesTable.heures[l] || 0),
+              actualHours: actualHours,  // PHASE 1 : null ≠ 0
+              hasExplicitActual: hasExplicitActual({ actualHours: actualHours }),  // PHASE 1 : indicateur explicite
               feuille: timeEntriesTable.feuille[l] || null,
               sheetStatus: sheetStatus,
               baseCapacityHours: Number(timeEntriesTable.capaciteTheorique[l] || 0),
@@ -4025,42 +4070,6 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
     }
     
     /**
-     * Identifie les entrées protégées (verrouillées)
-     * Critères :
-     * - feuille soumise ou validée
-     * - heures réalisées > 0
-     * - historique avant historyCutoffDate (sans feuille et sans réalisé)
-     */
-    function identifyProtectedEntries(timeEntries, feuillesById, options) {
-      options = options || {};
-      var historyCutoffDate = options.historyCutoffDate;
-      
-      return timeEntries.filter(function(entry) {
-        var isSubmitted = entry.sheetStatus === 'submitted';
-        var isValidated = entry.sheetStatus === 'validated';
-        var hasActualHours = entry.actualHours > 0;
-        var isBeforeCutoff = historyCutoffDate && entry.date && entry.date < historyCutoffDate;
-        
-        // Feuille soumise ou validée
-        if (isSubmitted || isValidated) {
-          return true;
-        }
-        
-        // Heures réalisées > 0
-        if (hasActualHours) {
-          return true;
-        }
-        
-        // Historique avant historyCutoffDate (lignes sans feuille et sans réalisé)
-        if (isBeforeCutoff && !entry.feuille) {
-          return true;
-        }
-        
-        return false;
-      });
-    }
-    
-    /**
      * Calcule les heures protégées par date selon le statut
      */
     function calculateProtectedHoursByDate(protectedEntries) {
@@ -4071,19 +4080,22 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
           protectedHoursByDate[entry.date] = 0;
         }
         
+        // PHASE 1 : Utiliser hasExplicitActual pour détecter le réalisé
+        var hasRealise = hasExplicitActual(entry);
+        
         // Feuille validée : protéger max(heuresPrevues, heures)
         if (entry.sheetStatus === 'validated') {
-          protectedHoursByDate[entry.date] += Math.max(entry.plannedHours, entry.actualHours);
+          protectedHoursByDate[entry.date] += Math.max(entry.plannedHours, entry.actualHours || 0);
         }
         // Feuille soumise : protéger heuresPrevues
         else if (entry.sheetStatus === 'submitted') {
           protectedHoursByDate[entry.date] += entry.plannedHours;
         }
-        // Ligne avec réalisé : protéger max(heuresPrevues, heures)
-        else if (entry.actualHours > 0) {
-          protectedHoursByDate[entry.date] += Math.max(entry.plannedHours, entry.actualHours);
+        // Ligne avec réalisé explicite : protéger max(heuresPrevues, heures)
+        else if (hasRealise) {
+          protectedHoursByDate[entry.date] += Math.max(entry.plannedHours, entry.actualHours || 0);
         }
-        // Historique avant replanFromDate : protéger heuresPrevues
+        // Historique avant replanFromDate ou ligne sans réalisé : protéger heuresPrevues
         else {
           protectedHoursByDate[entry.date] += entry.plannedHours;
         }
@@ -4392,7 +4404,8 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
         // Inclure TOUTES les entrées mutables
         // Exclure uniquement les lignes vraiment protégées
         var entriesForReconciliation = data.timeEntries.filter(function(e) {
-          var hasActualHours = Number(e.actualHours || 0) > 0;
+          // PHASE 1 : Utiliser hasExplicitActual au lieu de actualHours > 0
+          var hasRealise = hasExplicitActual(e);
           var isSubmitted = e.sheetStatus === 'submitted';
           var isValidated = e.sheetStatus === 'validated';
           var hasFeuille = e.feuille != null && e.feuille !== '';
@@ -4402,8 +4415,8 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
             return false;
           }
           
-          // Lignes avec réalisé (protégées)
-          if (hasActualHours) {
+          // Lignes avec réalisé explicite (protégées, y compris 0)
+          if (hasRealise) {
             return false;
           }
           
@@ -4557,7 +4570,7 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
               membre: create.memberId,
               date: isoToGristDate(create.date),
               heuresPrevues: create.plannedHours,
-              heures: 0,
+              heures: null,  // PHASE 1 : null = proposition, pas encore de réalisé
               capaciteTheorique: create.baseCapacityHours || 0,
               capaciteDisponible: create.availableCapacityHours || 0,
               capaciteJour: create.capacityRecordId,
