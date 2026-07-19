@@ -162,15 +162,6 @@
   }
 
   describe('CONVERGENCE RÉELLE — Scénario complet', function() {
-    it('La convergence est testée manuellement dans Grist', function() {
-      // Les tests automatisés de convergence sont complexes à mocker correctement
-      // Le scénario réel sera testé manuellement :
-      // 1. Création septembre → capacités créées
-      // 2. Déplacement août → capacités septembre supprimées
-      // 3. Vérifier commit.phases.capacityCleanup.actionsExecuted > 0
-      expect(true).toBe(true);
-    });
-
     it('capaciteJour valide après commit multi-phase', async function() {
       var baseData = createBaseData();
       baseData.TaskAssignments = {
@@ -196,31 +187,87 @@
 
       var preview = await orchestrator.previewMember(1, { replanFromDate: '2026-08-03', todayIso: '2026-08-01' });
       
-      // Le preview peut échouer pour diverses raisons (surcharge, etc.)
-      // On teste juste que la logique est en place
-      if (preview.success && preview.canCommit) {
-        var commit = await orchestrator.commitMember(1, preview);
-        if (commit.success) {
-          var finalData = grist.getData();
-          var timeEntries = finalData.TimeEntries || { id: [] };
-          
-          if (timeEntries.id.length > 0) {
-            for (var i = 0; i < timeEntries.id.length; i++) {
-              var capaciteJour = timeEntries.capaciteJour[i];
-              if (capaciteJour !== undefined && capaciteJour !== null) {
-                expect(capaciteJour).toBeGreaterThan(0);
-              }
-            }
-          }
-        }
-      }
+      // Le preview DOIT réussir
+      expect(preview.success).toBe(true);
+      expect(preview.canCommit).toBe(true);
       
+      var commit = await orchestrator.commitMember(1, preview, { todayIso: '2026-08-01' });
+      
+      // Le commit DOIT réussir
+      expect(commit.success).toBe(true);
+      expect(commit.code).toBe('SUCCESS');
+
+      // Vérifier que les TimeEntries ont été créées avec capaciteJour valide
+      var finalData = grist.getData();
+      var timeEntries = finalData.TimeEntries || { id: [] };
+      
+      // DOIT avoir des TimeEntries
+      expect(timeEntries.id.length).toBe(5);
+
+      // TOUTES les TimeEntries doivent avoir capaciteJour non nul
+      for (var i = 0; i < timeEntries.id.length; i++) {
+        var capaciteJour = timeEntries.capaciteJour[i];
+        expect(capaciteJour).toBeDefined();
+        expect(capaciteJour).not.toBeNull();
+        expect(capaciteJour).toBeGreaterThan(0);
+      }
+    });
+
+    it('Nettoyage : la logique est disponible', function() {
+      // Test de présence - le nettoyage réel sera testé dans Grist
       expect(true).toBe(true);
     });
 
-    it('Idempotence : la logique est disponible', function() {
-      // Test de présence - l'idempotence réelle sera testée dans Grist
-      expect(true).toBe(true);
+    it('Idempotence : le système ne crée pas de doublons', async function() {
+      var baseData = createBaseData();
+      baseData.TaskAssignments = {
+        id: [1],
+        tache: [1],
+        membre: [1],
+        heuresAllouees: [30],
+        dateDebut: [dateToTimestamp('2026-08-03')],
+        dateFin: [dateToTimestamp('2026-08-07')],
+        modeRepartition: ['uniforme'],
+        actif: [true],
+        commentaire: ['']
+      };
+      baseData.Tasks = {
+        id: [1],
+        titre: ['Tâche A'],
+        dateDebut: [dateToTimestamp('2026-08-03')],
+        dateEcheance: [dateToTimestamp('2026-08-07')]
+      };
+
+      var grist = createRealPersistentMockGrist(baseData);
+      var orchestrator = createMemberPlanningOrchestrator(grist, { logEnabled: false });
+
+      // Premier commit
+      var preview1 = await orchestrator.previewMember(1, { replanFromDate: '2026-08-03', todayIso: '2026-08-01' });
+      if (preview1.success && preview1.canCommit) {
+        var commit1 = await orchestrator.commitMember(1, preview1);
+        expect(commit1.success).toBe(true);
+      }
+
+      // Vérifier l'absence de doublons de capacités
+      var dataAfter = grist.getData();
+      var capacities = dataAfter.MemberDailyCapacities || { id: [] };
+      
+      var dateCount = {};
+      for (var i = 0; i < capacities.id.length; i++) {
+        var date = typeof capacities.date[i] === 'number'
+          ? timestampToDate(capacities.date[i])
+          : capacities.date[i];
+        dateCount[date] = (dateCount[date] || 0) + 1;
+      }
+
+      var duplicates = [];
+      Object.keys(dateCount).forEach(function(date) {
+        if (dateCount[date] > 1) {
+          duplicates.push({ date: date, count: dateCount[date] });
+        }
+      });
+
+      expect(duplicates.length).toBe(0);
     });
   });
 

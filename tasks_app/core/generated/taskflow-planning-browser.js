@@ -4686,6 +4686,20 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
         // =========================================================================
         log('PHASE 2 : Rechargement des capacités et NOUVEAU PREVIEW');
         
+        // Récupérer les données du preview (déjà calculées dans previewMember)
+        var period = preview.capacityPeriod;
+        var assignmentResults = preview.assignmentResults || [];
+        
+        if (!period || !period.dateFrom || !period.dateTo) {
+          log('Erreur : période de capacité absente du preview');
+          return {
+            success: false,
+            code: 'INVALID_PREVIEW_PERIOD',
+            message: 'La période de capacité est absente du preview',
+            phases: phases
+          };
+        }
+        
         // Recharger MemberDailyCapacities pour obtenir les vrais IDs
         var capacitiesTable = await grist.docApi.fetchTable('MemberDailyCapacities');
         var capacityIdByDate = {};
