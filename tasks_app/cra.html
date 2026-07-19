@@ -3841,39 +3841,23 @@ async function setCell(taskId, dayMs, personId, qtyStr) {
       S.disponibilites || []
     );
     
-    // BUG 5 : Rattacher capaciteJour (référence à MemberDailyCapacities)
-    // et distinguer capaciteTheorique vs capaciteDisponible
-    if (capacityResult.source !== 'none') {
-      // Trouver la ligne complète de capacité pour obtenir son ID
-      const dayKey = CRAController.localDayKeyFromMs(dayMs);
-      const capacityLine = (S.dailyCapacities || []).find(cap => {
-        const capDate = CRAController.gristDateKey(cap.date);
-        return cap.membre === personId && capDate === dayKey;
-      });
-      
-      if (capacityLine && capacityLine.id) {
-        fieldsToCreate.capaciteJour = capacityLine.id;
-      }
-      
-      // Utiliser les vraies valeurs de la capacité
-      fieldsToCreate.capaciteTheorique = capacityResult.capacity;
-      fieldsToCreate.capaciteDisponible = capacityResult.capacity;
-      
-      // Si on a trouvé une ligne avec capaciteDisponible différent
-      if (capacityLine) {
-        if (typeof capacityLine.capaciteDisponible === 'number') {
-          fieldsToCreate.capaciteDisponible = capacityLine.capaciteDisponible;
-        }
-        if (typeof capacityLine.capaciteTheorique === 'number') {
-          fieldsToCreate.capaciteTheorique = capacityLine.capaciteTheorique;
-        }
-      }
+    // BUG 5 : Utiliser directement le résultat complet du contrôleur
+    // Ne pas refaire une seconde recherche dans S.dailyCapacities
+    if (capacityResult.capacityRecordId) {
+      fieldsToCreate.capaciteJour = capacityResult.capacityRecordId;
     }
+    
+    // Utiliser les vraies valeurs retournées par le contrôleur
+    fieldsToCreate.capaciteTheorique = capacityResult.theoreticalCapacity;
+    fieldsToCreate.capaciteDisponible = capacityResult.availableCapacity;
       
       const r = await grist.docApi.applyUserActions([
         ['AddRecord', 'TimeEntries', null, fieldsToCreate]
       ]);
-      S.entries.push({ id: r.retValues[0], ...fieldsToCreate });
+      
+      // Utiliser getAddedRecordId() pour extraire l'ID de manière robuste
+      const entryId = getAddedRecordId(r, 'TimeEntry ' + dayIso);
+      S.entries.push({ id: entryId, ...fieldsToCreate });
     } else if (actionResult.action === 'delete' && existingEntry) {
       await grist.docApi.applyUserActions([
         ['RemoveRecord', 'TimeEntries', existingEntry.id]

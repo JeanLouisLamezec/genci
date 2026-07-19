@@ -863,6 +863,46 @@ describe('CRA Time Entry Controller', () => {
       expect(result.status).toBe('multiple');
       expect(result.reason).toBe('MULTIPLE_ASSIGNMENT_ENTRIES');
     });
+    
+    // CRITIQUE : Ne jamais retourner une entrée d'une autre affectation
+    test('ne sélectionne pas une autre affectation (CRITIQUE)', () => {
+      const activeAssignment = { id: 100, tache: 10, membre: 1 };
+      const entries = [
+        { id: 1, membre: 1, tache: 10, date: 1705276800, affectation: 200 }
+      ];
+      
+      const result = resolveEditableCellEntry(entries, 10, '2024-01-15', 1, activeAssignment);
+      
+      expect(result.status).toBe('none');
+      expect(result.entry).toBeNull();
+    });
+    
+    // CRITIQUE : Ne jamais retourner une entrée d'une autre tâche
+    test('ne sélectionne pas une legacy d\'une autre tâche (CRITIQUE)', () => {
+      const activeAssignment = { id: 100, tache: 10, membre: 1 };
+      const entries = [
+        { id: 1, membre: 1, tache: 20, date: 1705276800, affectation: null }
+      ];
+      
+      const result = resolveEditableCellEntry(entries, 10, '2024-01-15', 1, activeAssignment);
+      
+      expect(result.status).toBe('none');
+      expect(result.entry).toBeNull();
+    });
+    
+    // CRITIQUE : Retourne legacy seulement si même tâche
+    test('retourne legacy seulement si même tâche', () => {
+      const activeAssignment = { id: 100, tache: 10, membre: 1 };
+      const entries = [
+        { id: 1, membre: 1, tache: 10, date: 1705276800, affectation: null }
+      ];
+      
+      const result = resolveEditableCellEntry(entries, 10, '2024-01-15', 1, activeAssignment);
+      
+      expect(result.status).toBe('found');
+      expect(result.entry.id).toBe(1);
+      expect(result.isLegacy).toBe(true);
+    });
   });
   
   describe('dailyCapacityForPersonAndDate (TODO 7, 14)', () => {
@@ -940,7 +980,32 @@ describe('CRA Time Entry Controller', () => {
       const result = dailyCapacityForPersonAndDate(1, 1705276800 * 1000, duplicateCapacities, team, []);
       
       expect(result.capacity).toBe(6);
+      expect(result.availableCapacity).toBe(6);
+      expect(result.theoreticalCapacity).toBe(8);
+      expect(result.capacityRecordId).toBe(2);
+      expect(result.capacityRecord).toEqual(duplicateCapacities[1]);
       expect(result.warning).toContain('Doublon');
+    });
+    
+    test('retourne capacité complète avec tous les champs (BUG 5)', () => {
+      const capacities = [
+        { id: 5, membre: 1, date: 1705276800, capaciteTheorique: 7, capaciteDisponible: 5, revision: 1 }
+      ];
+      
+      const result = dailyCapacityForPersonAndDate(1, 1705276800 * 1000, capacities, team, []);
+      
+      expect(result).toHaveProperty('capacity');
+      expect(result).toHaveProperty('theoreticalCapacity');
+      expect(result).toHaveProperty('availableCapacity');
+      expect(result).toHaveProperty('capacityRecordId');
+      expect(result).toHaveProperty('capacityRecord');
+      expect(result).toHaveProperty('source');
+      expect(result).toHaveProperty('warning');
+      
+      expect(result.capacity).toBe(5);
+      expect(result.theoreticalCapacity).toBe(7);
+      expect(result.availableCapacity).toBe(5);
+      expect(result.capacityRecordId).toBe(5);
     });
   });
 });

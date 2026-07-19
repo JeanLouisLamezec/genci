@@ -107,6 +107,7 @@ function resolveActiveAssignment(taskId, personId, dateIso, assignments) {
  * - Fallback : tache + membre + date (pour données legacy sans affectation)
  * - Priorité à l'entrée avec affectation correspondante
  * - Retourne 'multiple' en cas d'ambiguïté non résolue (blocage)
+ * - CRITIQUE : Ne jamais retourner une entrée d'une autre tâche ou affectation
  * 
  * @param {Array} entries - Toutes les TimeEntries
  * @param {number} taskId - ID de la tâche
@@ -132,7 +133,7 @@ function resolveEditableCellEntry(entries, taskId, dateIso, personId, activeAssi
   
   // ÉTAPE 2 : Si une affectation active est présente, l'utiliser comme clé principale
   if (activeAssignment && activeAssignment.id) {
-    // Filtrer les entrées qui correspondent à l'affectation active
+    // Filtrer les entrées qui correspondent EXACTEMENT à l'affectation active
     const matchingAssignmentEntries = candidates.filter(e => e.affectation === activeAssignment.id);
     
     if (matchingAssignmentEntries.length === 1) {
@@ -149,33 +150,44 @@ function resolveEditableCellEntry(entries, taskId, dateIso, personId, activeAssi
       return {
         status: 'multiple',
         entry: null,
-        entries: candidates,
+        entries: matchingAssignmentEntries,
         reason: 'MULTIPLE_ASSIGNMENT_ENTRIES'
       };
     }
     
-    // ÉTAPE 3 : Aucune entrée avec affectation, chercher des entrées legacy (sans affectation)
-    const legacyEntries = candidates.filter(e => e.affectation === null || e.affectation === 0 || e.affectation === undefined);
+    // ÉTAPE 3 : Aucune entrée avec la bonne affectation
+    // Chercher des entrées legacy SANS affectation ET de la MÊME TÂCHE
+    const sameTaskLegacyEntries = candidates.filter(e => {
+      return e.tache === taskId && (e.affectation === null || e.affectation === 0 || e.affectation === undefined);
+    });
     
-    if (legacyEntries.length === 1) {
-      // Entrée legacy trouvée, peut être mise à jour avec l'affectation
+    if (sameTaskLegacyEntries.length === 1) {
+      // Entrée legacy trouvée pour la même tâche, peut être mise à jour
       return {
         status: 'found',
-        entry: legacyEntries[0],
+        entry: sameTaskLegacyEntries[0],
         entries: candidates,
         isLegacy: true
       };
     }
     
-    if (legacyEntries.length > 1) {
-      // Plusieurs entrées legacy : ambiguïté
+    if (sameTaskLegacyEntries.length > 1) {
+      // Plusieurs entrées legacy pour la même tâche : ambiguïté
       return {
         status: 'multiple',
         entry: null,
-        entries: candidates,
+        entries: sameTaskLegacyEntries,
         reason: 'MULTIPLE_LEGACY_ENTRIES'
       };
     }
+    
+    // CRITIQUE : Aucune entrée correspondant à l'affectation active ou à la tâche
+    // Ne surtout PAS retourner une entrée d'une autre affectation ou tâche
+    return {
+      status: 'none',
+      entry: null,
+      entries: []
+    };
   }
   
   // ÉTAPE 4 : Pas d'affectation active, utiliser tache comme fallback
@@ -518,12 +530,26 @@ function hasNumericValue(value) {
  * - Si ratio <= 1, on utilise tel quel (nouveau format 0-1)
  * - dispo = 0 signifie indisponibilité totale (capacité = 0)
  * 
+ * BUG 5 - RETOURNE CAPACITÉ COMPLÈTE :
+ * - capacityRecordId : ID de la ligne MemberDailyCapacities
+ * - theoreticalCapacity : capaciteTheorique
+ * - availableCapacity : capaciteDisponible
+ * - capacityRecord : ligne complète pour référence
+ * 
  * @param {number} personId - ID de la personne
  * @param {number} dayMs - Timestamp du jour en millisecondes
  * @param {Array} dailyCapacities - Toutes les capacités quotidiennes
  * @param {Array} team - Équipe avec capaciteHebdo
  * @param {Array} availabilities - Indisponibilités
- * @returns {{ capacity: number, source: string, warning: string|null }}
+ * @returns {{ 
+ *   capacity: number,
+ *   theoreticalCapacity: number,
+ *   availableCapacity: number,
+ *   capacityRecordId: number|null,
+ *   capacityRecord: object|null,
+ *   source: string,
+ *   warning: string|null
+ * }}
  */
 function dailyCapacityForPersonAndDate(personId, dayMs, dailyCapacities, team, availabilities) {
   const dayKey = localDayKeyFromMs(dayMs);
@@ -539,6 +565,10 @@ function dailyCapacityForPersonAndDate(personId, dayMs, dailyCapacities, team, a
     if (!member) {
       return {
         capacity: 0,
+        theoreticalCapacity: 0,
+        availableCapacity: 0,
+        capacityRecordId: null,
+        capacityRecord: null,
         source: 'none',
         warning: 'Membre non trouvé'
       };
@@ -547,20 +577,24 @@ function dailyCapacityForPersonAndDate(personId, dayMs, dailyCapacities, team, a
     const weeklyCapacity = Number(member.capaciteHebdo) || 35;
     let dailyCapacity = weeklyCapacity / 5;
     
-    const dayDate = new Date(dayMs);
+    // BUG 4 : Utiliser des clés de dates civiles pour les indisponibilités
     const indispos = (availabilities || []).filter(a => {
       if (a.membre !== personId) return false;
-      const start = typeof a.dateDebut === 'number' ? a.dateDebut * 1000 : 0;
-      const end = typeof a.dateFin === 'number' ? a.dateFin * 1000 : 0;
-      return dayMs >= start && dayMs <= end;
+      
+      const startKey = gristDateKey(a.dateDebut);
+      const endKey = gristDateKey(a.dateFin);
+      
+      // Comparaison avec bornes inclusives en dates civiles
+      if (startKey && dayKey < startKey) return false;
+      if (endKey && dayKey > endKey) return false;
+      
+      return true;
     });
     
     for (const ind of indispos) {
       const ratio = Number(ind.dispo) || 0;
       
       // PHASE 1.1.2 : Corriger format dispo (0-1 vs 0-100)
-      // Si ratio > 1, on suppose ancien format en pourcentage (0-100)
-      // Si ratio <= 1, on utilise tel quel (nouveau format 0-1)
       const normalizedRatio = ratio > 1 ? ratio / 100 : ratio;
       
       dailyCapacity = dailyCapacity * normalizedRatio;
@@ -568,6 +602,10 @@ function dailyCapacityForPersonAndDate(personId, dayMs, dailyCapacities, team, a
     
     return {
       capacity: dailyCapacity,
+      theoreticalCapacity: dailyCapacity,
+      availableCapacity: dailyCapacity,
+      capacityRecordId: null,
+      capacityRecord: null,
       source: 'legacy',
       warning: null
     };
@@ -588,36 +626,47 @@ function dailyCapacityForPersonAndDate(personId, dayMs, dailyCapacities, team, a
   
   const cap = personCapacities[0];
   
+  // BUG 5 : Retourner la capacité complète avec toutes les informations
+  const result = {
+    capacity: 0,
+    theoreticalCapacity: 0,
+    availableCapacity: 0,
+    capacityRecordId: cap.id || null,
+    capacityRecord: cap,
+    source: '',
+    warning: personCapacities.length > 1 ? 'Doublon de capacité détecté' : null
+  };
+  
   if (hasNumericValue(cap.capaciteDisponible)) {
-    return {
-      capacity: Number(cap.capaciteDisponible),
-      source: 'daily_available',
-      warning: personCapacities.length > 1 ? 'Doublon de capacité détecté' : null
-    };
+    result.capacity = Number(cap.capaciteDisponible);
+    result.availableCapacity = Number(cap.capaciteDisponible);
+    result.theoreticalCapacity = Number(cap.capaciteTheorique) || 0;
+    result.source = 'daily_available';
+    return result;
   }
   
   if (hasNumericValue(cap.capaciteTheorique)) {
-    return {
-      capacity: Number(cap.capaciteTheorique),
-      source: 'daily_theoretical',
-      warning: personCapacities.length > 1 ? 'Doublon de capacité détecté' : null
-    };
+    result.capacity = Number(cap.capaciteTheorique);
+    result.theoreticalCapacity = Number(cap.capaciteTheorique);
+    result.availableCapacity = Number(cap.capaciteTheorique);
+    result.source = 'daily_theoretical';
+    return result;
   }
   
+  // Fallback legacy
   const member = (team || []).find(m => m.id === personId);
   if (member) {
-    return {
-      capacity: (Number(member.capaciteHebdo) || 35) / 5,
-      source: 'legacy_fallback',
-      warning: 'Capacité quotidienne invalide, repli legacy'
-    };
+    const legacyCapacity = (Number(member.capaciteHebdo) || 35) / 5;
+    result.capacity = legacyCapacity;
+    result.theoreticalCapacity = legacyCapacity;
+    result.availableCapacity = legacyCapacity;
+    result.source = 'legacy_fallback';
+    result.warning = 'Capacité quotidienne invalide, repli legacy';
+    return result;
   }
   
-  return {
-    capacity: 0,
-    source: 'none',
-    warning: 'Aucune capacité disponible'
-  };
+  result.warning = 'Aucune capacité disponible';
+  return result;
 }
 
 const CRAController = {
