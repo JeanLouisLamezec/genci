@@ -302,4 +302,94 @@ describe('CRA Data Loader', () => {
       expect(result.type).toBe('RPC_OR_NETWORK');
     });
   });
+  
+  describe('nullableNumber (PHASE 2)', () => {
+    test('préserve une valeur null dans heures', () => {
+      expect(CraDataLoader.nullableNumber(null)).toBe(null);
+    });
+    
+    test('préserve undefined comme null', () => {
+      expect(CraDataLoader.nullableNumber(undefined)).toBe(null);
+    });
+    
+    test('préserve une chaîne vide comme null', () => {
+      expect(CraDataLoader.nullableNumber('')).toBe(null);
+    });
+    
+    test('préserve un zéro explicite dans heures', () => {
+      expect(CraDataLoader.nullableNumber(0)).toBe(0);
+      expect(CraDataLoader.nullableNumber('0')).toBe(0);
+    });
+    
+    test('préserve une valeur positive dans heures', () => {
+      expect(CraDataLoader.nullableNumber(3)).toBe(3);
+      expect(CraDataLoader.nullableNumber('3')).toBe(3);
+      expect(CraDataLoader.nullableNumber(3.5)).toBe(3.5);
+    });
+    
+    test('gère les valeurs non numériques', () => {
+      expect(CraDataLoader.nullableNumber('abc')).toBe(null);
+      expect(CraDataLoader.nullableNumber(NaN)).toBe(null);
+      expect(CraDataLoader.nullableNumber(Infinity)).toBe(null);
+    });
+  });
+  
+  describe('normalizeCraSnapshot (PHASE 2 - nullabilité)', () => {
+    test('préserve null dans heures', () => {
+      const raw = {
+        team: { id: [1], nom: ['Alice'], gristUserId: [100], capaciteHebdo: [35] },
+        tasks: { id: [1], titre: ['Task 1'], projet: [1] },
+        projects: { id: [1], nom: ['Project 1'] },
+        timeEntries: { id: [1], membre: [1], tache: [1], date: [1705276800], heures: [null], heuresPrevues: [3], affectation: [1], capaciteTheorique: [7], capaciteDisponible: [7], capaciteJour: [1], feuille: [null], revisionPlan: [1], imputation: [''], description: [''] },
+        feuilles: { id: [1], membre: [1], semaine: [1705276800], statut: ['brouillon'] },
+        assignments: { id: [1], tache: [1], membre: [1], actif: [true] },
+        dailyCapacities: { id: [1], membre: [1], date: [1705276800], capaciteTheorique: [7], capaciteDisponible: [7], revision: [1] },
+        currentUser: { userId: 100 }
+      };
+      
+      const result = CraDataLoader.normalizeCraSnapshot(raw, raw.currentUser);
+      
+      expect(result.entries).toHaveLength(1);
+      expect(result.entries[0].heures).toBe(null);
+      expect(result.entries[0].heuresPrevues).toBe(3);
+    });
+    
+    test('préserve zéro explicite dans heures', () => {
+      const raw = {
+        team: { id: [1], nom: ['Alice'], gristUserId: [100], capaciteHebdo: [35] },
+        tasks: { id: [1], titre: ['Task 1'], projet: [1] },
+        projects: { id: [1], nom: ['Project 1'] },
+        timeEntries: { id: [1], membre: [1], tache: [1], date: [1705276800], heures: [0], heuresPrevues: [3], affectation: [1], capaciteTheorique: [7], capaciteDisponible: [7], capaciteJour: [1], feuille: [null], revisionPlan: [1], imputation: [''], description: [''] },
+        feuilles: { id: [1], membre: [1], semaine: [1705276800], statut: ['brouillon'] },
+        assignments: { id: [1], tache: [1], membre: [1], actif: [true] },
+        dailyCapacities: { id: [1], membre: [1], date: [1705276800], capaciteTheorique: [7], capaciteDisponible: [7], revision: [1] },
+        currentUser: { userId: 100 }
+      };
+      
+      const result = CraDataLoader.normalizeCraSnapshot(raw, raw.currentUser);
+      
+      expect(result.entries).toHaveLength(1);
+      expect(result.entries[0].heures).toBe(0);
+      expect(result.entries[0].heuresPrevues).toBe(3);
+    });
+    
+    test('préserve une valeur positive dans heures', () => {
+      const raw = {
+        team: { id: [1], nom: ['Alice'], gristUserId: [100], capaciteHebdo: [35] },
+        tasks: { id: [1], titre: ['Task 1'], projet: [1] },
+        projects: { id: [1], nom: ['Project 1'] },
+        timeEntries: { id: [1], membre: [1], tache: [1], date: [1705276800], heures: [2], heuresPrevues: [3], affectation: [1], capaciteTheorique: [7], capaciteDisponible: [7], capaciteJour: [1], feuille: [null], revisionPlan: [1], imputation: [''], description: [''] },
+        feuilles: { id: [1], membre: [1], semaine: [1705276800], statut: ['brouillon'] },
+        assignments: { id: [1], tache: [1], membre: [1], actif: [true] },
+        dailyCapacities: { id: [1], membre: [1], date: [1705276800], capaciteTheorique: [7], capaciteDisponible: [7], revision: [1] },
+        currentUser: { userId: 100 }
+      };
+      
+      const result = CraDataLoader.normalizeCraSnapshot(raw, raw.currentUser);
+      
+      expect(result.entries).toHaveLength(1);
+      expect(result.entries[0].heures).toBe(2);
+      expect(result.entries[0].heuresPrevues).toBe(3);
+    });
+  });
 });

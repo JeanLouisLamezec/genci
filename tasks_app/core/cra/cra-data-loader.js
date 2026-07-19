@@ -464,12 +464,39 @@ function inspectCraSnapshot(rawSnapshot) {
 // ============================================================================
 
 /**
+ * Helper : convertit une valeur Grist en nombre ou null
+ * CONTRAT : préserve la nullabilité de heures pour distinguer :
+ *   - null = aucun réalisé encore confirmé (proposition à confirmer)
+ *   - 0 = l'utilisateur a explicitement déclaré zéro
+ *   - >0 = réalisé saisi
+ * 
+ * @param {*} value - Valeur Grist à convertir
+ * @returns {number|null} Nombre ou null
+ */
+function nullableNumber(value) {
+  if (
+    value === null ||
+    value === undefined ||
+    value === ''
+  ) {
+    return null;
+  }
+
+  const parsed = Number(value);
+
+  return Number.isFinite(parsed)
+    ? parsed
+    : null;
+}
+
+/**
  * Normalise un snapshot brut en état CRA utilisable
  * 
  * PHASE 3 - CORRECTIONS :
  * - Conserve TOUS les champs originaux de TimeEntries
  * - Garantit que id est présent sur chaque entrée
  * - Initialisation défensive pour les valeurs nulles
+ * - PHASE 2 : préserve null dans heures (ne pas convertir en 0)
  * 
  * @param {Object} raw - Snapshot brut Grist
  * @param {Object} currentUser - Utilisateur Grist actuel
@@ -514,12 +541,13 @@ function normalizeCraSnapshot(raw, currentUser) {
   
   const timeEntries = columnarToRows(raw.timeEntries).map(r => {
     // PHASE 3 : Conserver TOUS les champs, surtout id
+    // PHASE 2 : nullableNumber pour heures (préserve null, 0 reste 0)
     return {
       id: r.id,  // ID Grist requis pour UpdateRecord
       membre: Number(r.membre) || null,
       tache: Number(r.tache) || null,
       date: r.date,  // Timestamp Grist (secondes)
-      heures: Number(r.heures) || 0,
+      heures: nullableNumber(r.heures),  // PHASE 2 : null ≠ 0
       heuresPrevues: Number(r.heuresPrevues) || 0,
       affectation: Number(r.affectation) || null,
       capaciteTheorique: Number(r.capaciteTheorique) || 0,
@@ -954,6 +982,8 @@ const CraDataLoader = {
   inspectCraSnapshot,
   hasColumn,
   columnarToRows,
+  
+  nullableNumber,  // PHASE 2 : export pour tests
   
   normalizeCraSnapshot,
   

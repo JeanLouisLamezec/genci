@@ -1008,4 +1008,214 @@ describe('CRA Time Entry Controller', () => {
       expect(result.capacityRecordId).toBe(5);
     });
   });
+  
+  // ============================================================================
+  // PHASE 3 : TESTS DES HELPERS MÉTIER (NULL / 0 / PROPOSITION)
+  // ============================================================================
+  
+  describe('hasExplicitActualHours (PHASE 3)', () => {
+    test('retourne false pour heures null', () => {
+      const entry = { heures: null, heuresPrevues: 3 };
+      expect(CRAController.hasExplicitActualHours(entry)).toBe(false);
+    });
+    
+    test('retourne false pour heures undefined', () => {
+      const entry = { heures: undefined, heuresPrevues: 3 };
+      expect(CRAController.hasExplicitActualHours(entry)).toBe(false);
+    });
+    
+    test('retourne false pour heures chaîne vide', () => {
+      const entry = { heures: '', heuresPrevues: 3 };
+      expect(CRAController.hasExplicitActualHours(entry)).toBe(false);
+    });
+    
+    test('retourne true pour heures = 0 (zéro explicite)', () => {
+      const entry = { heures: 0, heuresPrevues: 3 };
+      expect(CRAController.hasExplicitActualHours(entry)).toBe(true);
+    });
+    
+    test('retourne true pour heures > 0', () => {
+      const entry = { heures: 2, heuresPrevues: 3 };
+      expect(CRAController.hasExplicitActualHours(entry)).toBe(true);
+    });
+    
+    test('retourne false pour entrée null', () => {
+      expect(CRAController.hasExplicitActualHours(null)).toBe(false);
+    });
+  });
+  
+  describe('effectiveDisplayedHours (PHASE 3)', () => {
+    test('affiche heuresPrevues quand heures est null', () => {
+      const entry = { heures: null, heuresPrevues: 3 };
+      expect(CRAController.effectiveDisplayedHours(entry)).toBe(3);
+    });
+    
+    test('affiche 0 quand heures est 0 (zéro explicite)', () => {
+      const entry = { heures: 0, heuresPrevues: 3 };
+      expect(CRAController.effectiveDisplayedHours(entry)).toBe(0);
+    });
+    
+    test('affiche heures quand heures > 0', () => {
+      const entry = { heures: 2, heuresPrevues: 3 };
+      expect(CRAController.effectiveDisplayedHours(entry)).toBe(2);
+    });
+    
+    test('retourne 0 pour entrée null', () => {
+      expect(CRAController.effectiveDisplayedHours(null)).toBe(0);
+    });
+    
+    test('retourne 0 quand heuresPrevues = 0 et heures null', () => {
+      const entry = { heures: null, heuresPrevues: 0 };
+      expect(CRAController.effectiveDisplayedHours(entry)).toBe(0);
+    });
+  });
+  
+  describe('isPrefilledFromPlanning (PHASE 3)', () => {
+    test('retourne true quand heures null et heuresPrevues > 0', () => {
+      const entry = { heures: null, heuresPrevues: 3 };
+      expect(CRAController.isPrefilledFromPlanning(entry)).toBe(true);
+    });
+    
+    test('retourne false quand heures = 0 (zéro explicite)', () => {
+      const entry = { heures: 0, heuresPrevues: 3 };
+      expect(CRAController.isPrefilledFromPlanning(entry)).toBe(false);
+    });
+    
+    test('retourne false quand heures > 0', () => {
+      const entry = { heures: 2, heuresPrevues: 3 };
+      expect(CRAController.isPrefilledFromPlanning(entry)).toBe(false);
+    });
+    
+    test('retourne false quand heuresPrevues = 0', () => {
+      const entry = { heures: null, heuresPrevues: 0 };
+      expect(CRAController.isPrefilledFromPlanning(entry)).toBe(false);
+    });
+    
+    test('retourne false pour entrée null', () => {
+      expect(CRAController.isPrefilledFromPlanning(null)).toBe(false);
+    });
+  });
+  
+  describe('buildSubmissionEntryPatch (PHASE 3)', () => {
+    test('matérialise heures quand heures est null', () => {
+      const entry = { id: 42, heures: null, heuresPrevues: 3, feuille: null };
+      const patch = CRAController.buildSubmissionEntryPatch(entry, 50);
+      
+      expect(patch.heures).toBe(3);
+      expect(patch.feuille).toBe(50);
+    });
+    
+    test('ne modifie pas heures quand heures = 0 (zéro explicite)', () => {
+      const entry = { id: 42, heures: 0, heuresPrevues: 3, feuille: null };
+      const patch = CRAController.buildSubmissionEntryPatch(entry, 50);
+      
+      expect(patch.heures).toBeUndefined();
+      expect(patch.feuille).toBe(50);
+    });
+    
+    test('ne modifie pas heures quand heures > 0', () => {
+      const entry = { id: 42, heures: 2, heuresPrevues: 3, feuille: null };
+      const patch = CRAController.buildSubmissionEntryPatch(entry, 50);
+      
+      expect(patch.heures).toBeUndefined();
+      expect(patch.feuille).toBe(50);
+    });
+    
+    test('patch vide quand feuille déjà égale et réalisé explicite', () => {
+      const entry = { id: 42, heures: 2, heuresPrevues: 3, feuille: 50 };
+      const patch = CRAController.buildSubmissionEntryPatch(entry, 50);
+      
+      expect(Object.keys(patch).length).toBe(0);
+    });
+    
+    test('ne modifie jamais heuresPrevues', () => {
+      const entry = { id: 42, heures: null, heuresPrevues: 3, feuille: null };
+      const patch = CRAController.buildSubmissionEntryPatch(entry, 50);
+      
+      expect(patch.heuresPrevues).toBeUndefined();
+    });
+    
+    test('ne modifie pas affectation, date, etc.', () => {
+      const entry = {
+        id: 42,
+        heures: null,
+        heuresPrevues: 3,
+        feuille: null,
+        affectation: 100,
+        tache: 10,
+        membre: 1,
+        date: 1705276800
+      };
+      const patch = CRAController.buildSubmissionEntryPatch(entry, 50);
+      
+      expect(patch.affectation).toBeUndefined();
+      expect(patch.tache).toBeUndefined();
+      expect(patch.membre).toBeUndefined();
+      expect(patch.date).toBeUndefined();
+    });
+  });
+  
+  describe('buildCellDisplayState (PHASE 4)', () => {
+    test('retourne état vide pour tableau vide', () => {
+      const state = CRAController.buildCellDisplayState([]);
+      
+      expect(state.actualHours).toBe(0);
+      expect(state.plannedHours).toBe(0);
+      expect(state.displayedHours).toBe(0);
+      expect(state.hasDisplayValue).toBe(false);
+      expect(state.hasExplicitActual).toBe(false);
+      expect(state.isPrefilled).toBe(false);
+    });
+    
+    test('calcule correctement pour une entrée avec proposition', () => {
+      const entries = [{ heures: null, heuresPrevues: 3 }];
+      const state = CRAController.buildCellDisplayState(entries);
+      
+      expect(state.actualHours).toBe(0);
+      expect(state.plannedHours).toBe(3);
+      expect(state.displayedHours).toBe(3);
+      expect(state.hasDisplayValue).toBe(true);
+      expect(state.hasExplicitActual).toBe(false);
+      expect(state.isPrefilled).toBe(true);
+    });
+    
+    test('calcule correctement pour une entrée avec réalisé', () => {
+      const entries = [{ heures: 2, heuresPrevues: 3 }];
+      const state = CRAController.buildCellDisplayState(entries);
+      
+      expect(state.actualHours).toBe(2);
+      expect(state.plannedHours).toBe(3);
+      expect(state.displayedHours).toBe(2);
+      expect(state.hasDisplayValue).toBe(true);
+      expect(state.hasExplicitActual).toBe(true);
+      expect(state.isPrefilled).toBe(false);
+    });
+    
+    test('calcule correctement pour zéro explicite', () => {
+      const entries = [{ heures: 0, heuresPrevues: 3 }];
+      const state = CRAController.buildCellDisplayState(entries);
+      
+      expect(state.actualHours).toBe(0);
+      expect(state.plannedHours).toBe(3);
+      expect(state.displayedHours).toBe(0);
+      expect(state.hasDisplayValue).toBe(true);
+      expect(state.hasExplicitActual).toBe(true);
+      expect(state.isPrefilled).toBe(false);
+    });
+    
+    test('gère plusieurs entrées dans une cellule', () => {
+      const entries = [
+        { heures: null, heuresPrevues: 2 },  // proposition 2
+        { heures: 1, heuresPrevues: 3 }      // réalisé 1
+      ];
+      const state = CRAController.buildCellDisplayState(entries);
+      
+      expect(state.actualHours).toBe(1);
+      expect(state.plannedHours).toBe(5);
+      expect(state.displayedHours).toBe(3);  // 2 + 1
+      expect(state.hasDisplayValue).toBe(true);
+      expect(state.hasExplicitActual).toBe(true);
+      expect(state.isPrefilled).toBe(true);
+    });
+  });
 });

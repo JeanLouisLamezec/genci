@@ -518,6 +518,158 @@ function hasNumericValue(value) {
   );
 }
 
+// ============================================================================
+// PHASE 3 - HELPERS MÉTIER : NULL / 0 / PROPOSITION
+// ============================================================================
+
+/**
+ * Vérifie si une entrée a un réalisé explicitement renseigné
+ * CONTRAT : distingue null (aucun réalisé) de 0 (zéro explicite)
+ * 
+ * @param {Object} entry - TimeEntry
+ * @returns {boolean} true si heures est une valeur numérique valide
+ */
+function hasExplicitActualHours(entry) {
+  return (
+    Boolean(entry) &&
+    entry.heures !== null &&
+    entry.heures !== undefined &&
+    entry.heures !== '' &&
+    Number.isFinite(Number(entry.heures))
+  );
+}
+
+/**
+ * Détermine la valeur affichée pour une entrée
+ * CONTRAT :
+ *   - si réalisé explicite → affiche réalisé
+ *   - sinon si heuresPrevues > 0 → affiche proposition
+ *   - sinon → 0
+ * 
+ * @param {Object|null} entry - TimeEntry
+ * @returns {number} Valeur à afficher
+ */
+function effectiveDisplayedHours(entry) {
+  if (!entry) {
+    return 0;
+  }
+
+  if (hasExplicitActualHours(entry)) {
+    return Number(entry.heures);
+  }
+
+  return Number(entry.heuresPrevues) || 0;
+}
+
+/**
+ * Vérifie si la valeur affichée provient du planning (proposition)
+ * CONTRAT : est prérempli si :
+ *   - pas de réalisé explicite
+ *   - heuresPrevues > 0
+ * 
+ * @param {Object|null} entry - TimeEntry
+ * @returns {boolean} true si la valeur est une proposition du planning
+ */
+function isPrefilledFromPlanning(entry) {
+  return (
+    Boolean(entry) &&
+    !hasExplicitActualHours(entry) &&
+    (Number(entry.heuresPrevues) || 0) > 0
+  );
+}
+
+/**
+ * Construit le patch de soumission pour une entrée
+ * CONTRAT :
+ *   - ajoute feuille si manquante
+ *   - matérialise heures uniquement si pas de réalisé explicite
+ *   - ne modifie jamais heuresPrevues, affectation, etc.
+ * 
+ * @param {Object} entry - TimeEntry
+ * @param {number} sheetId - ID de la feuille
+ * @returns {Object} Patch à appliquer
+ */
+function buildSubmissionEntryPatch(entry, sheetId) {
+  const fields = {};
+
+  // Rattacher à la feuille si pas encore fait
+  if (
+    entry.feuille == null ||
+    entry.feuille === 0
+  ) {
+    fields.feuille = sheetId;
+  }
+
+  // Matérialiser la proposition si pas de réalisé explicite
+  if (!hasExplicitActualHours(entry)) {
+    fields.heures = Number(entry.heuresPrevues) || 0;
+  }
+
+  return fields;
+}
+
+/**
+ * Construit l'état d'affichage pour une cellule (plusieurs entrées possibles)
+ * CONTRAT :
+ *   - actualHours = somme des heures explicitement renseignées
+ *   - plannedHours = somme des heuresPrevues
+ *   - displayedHours = pour chaque entrée : heures si explicite, sinon heuresPrevues
+ *   - isPrefilled = true si au moins une partie vient du planning sans réalisé
+ *   - hasDisplayValue = true si displayedHours > 0 OU s'il y a un réalisé explicite (même 0)
+ * 
+ * @param {Array} entries - TimeEntries de la cellule
+ * @returns {Object} État de cellule
+ */
+function buildCellDisplayState(entries) {
+  if (!entries || entries.length === 0) {
+    return {
+      actualHours: 0,
+      plannedHours: 0,
+      displayedHours: 0,
+      hasDisplayValue: false,
+      hasExplicitActual: false,
+      isPrefilled: false
+    };
+  }
+
+  let actualHours = 0;
+  let plannedHours = 0;
+  let displayedHours = 0;
+  let hasExplicitActual = false;
+  let isPrefilled = false;
+
+  for (const entry of entries) {
+    const entryActual = hasExplicitActualHours(entry) ? Number(entry.heures) : 0;
+    const entryPlanned = Number(entry.heuresPrevues) || 0;
+    const entryDisplayed = effectiveDisplayedHours(entry);
+
+    actualHours += entryActual;
+    plannedHours += entryPlanned;
+    displayedHours += entryDisplayed;
+
+    if (hasExplicitActualHours(entry)) {
+      hasExplicitActual = true;
+    }
+
+    if (isPrefilledFromPlanning(entry)) {
+      isPrefilled = true;
+    }
+  }
+
+  // PHASE 5 : hasDisplayValue = true si displayedHours > 0 OU s'il y a un réalisé explicite (même 0)
+  // Cela permet d'afficher "0" dans l'input quand l'utilisateur a explicitement saisi 0
+  const hasDisplayValue = displayedHours > 0 || hasExplicitActual;
+
+  return {
+    actualHours,
+    plannedHours,
+    displayedHours,
+    hasDisplayValue,
+    hasExplicitActual,
+    isPrefilled
+  };
+}
+
 /**
  * Obtient la capacité quotidienne pour une personne et une date (TODO 14)
  * Priorité :
@@ -679,7 +831,14 @@ const CRAController = {
   isPersonWeekLocked,
   localDayKeyFromMs,
   gristDateKey,
-  dailyCapacityForPersonAndDate
+  dailyCapacityForPersonAndDate,
+  // PHASE 3 : helpers métier exportés
+  hasExplicitActualHours,
+  effectiveDisplayedHours,
+  isPrefilledFromPlanning,
+  buildSubmissionEntryPatch,
+  // PHASE 4 : état de cellule
+  buildCellDisplayState
 };
 
 if (typeof globalThis !== 'undefined') {

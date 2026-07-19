@@ -351,6 +351,7 @@ function planAssignment(assignment, context) {
   result.unallocatedHours = distribution.unallocatedHours;
   
   // Créer les entrées planifiées
+  // CONTRAT : heures = null (pas de réalisé encore), heuresPrevues = planning
   for (const [dateStr, hours] of Object.entries(distribution.planned)) {
     const dayData = eligibleDays.find(d => d.date === dateStr);
     
@@ -360,6 +361,7 @@ function planAssignment(assignment, context) {
       affectation: assignment.id,
       date: dayData.timestamp,
       heuresPrevues: hours,
+      heures: null,  // PHASE 1 : null = aucun réalisé encore confirmé
       capaciteTheorique: dayData.capaciteTheorique,
       capaciteDisponible: dayData.capaciteDisponible,
       capaciteJour: dayData.capaciteJourId || null,

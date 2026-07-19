@@ -57,6 +57,7 @@ td.day { width: 70px; }
 td.day input { width: 100%; height: 38px; border: none; background: var(--cell); color: var(--text); text-align: center; font-family: inherit; font-size: .82rem; outline: none; }
 td.day input:focus { background: var(--cell-fill); box-shadow: inset 0 0 0 2px var(--primary); }
 td.day.filled input { background: var(--cell-fill); font-weight: 600; }
+td.day.prefilled input { color: var(--primary); font-weight: 600; }
 td.day.indispo-cell { background: var(--bg); }
 td.day.indispo-cell div { background: repeating-linear-gradient(45deg, var(--bg), var(--bg) 10px, color-mix(in srgb, var(--border) 30%, var(--bg)) 10px, color-mix(in srgb, var(--border) 30%, var(--bg)) 20px); }
 td.today { background: color-mix(in srgb, var(--primary) 7%, transparent); }
@@ -3088,6 +3089,192 @@ function hoursToQty(h) { const q = h / unitFactor(); return Math.round(q * 100) 
 function qtyToHours(q) { return (Number(q) || 0) * unitFactor(); }
 function fmtQty(h) { if (!h) return ''; const q = hoursToQty(h); return String(q); }
 
+// PHASE 5 : Formatter pour inputs (distingue 0 explicite de null)
+function fmtInputQty(hours, hasValue) {
+  if (!hasValue) {
+    return '';
+  }
+  return String(hoursToQty(hours));
+}
+
+// PHASE 5 : Helper pour obtenir l'état d'affichage d'une cellule
+function getCellDisplayState(taskId, dayMs, personId) {
+  const entries = cellEntries(taskId, dayMs, personId);
+  
+  if (!entries || entries.length === 0) {
+    return {
+      actualHours: 0,
+      plannedHours: 0,
+      displayedHours: 0,
+      hasDisplayValue: false,
+      hasExplicitActual: false,
+      isPrefilled: false
+    };
+  }
+  
+  // Utiliser les helpers du contrôleur si disponibles
+  if (typeof CRAController !== 'undefined' && CRAController.buildCellDisplayState) {
+    return CRAController.buildCellDisplayState(entries);
+  }
+  
+  // Fallback : calcul local
+  let actualHours = 0;
+  let plannedHours = 0;
+  let displayedHours = 0;
+  let hasExplicitActual = false;
+  let isPrefilled = false;
+  
+  for (const entry of entries) {
+    const hasActual = (
+      entry.heures !== null &&
+      entry.heures !== undefined &&
+      entry.heures !== '' &&
+      Number.isFinite(Number(entry.heures))
+    );
+    
+    const entryActual = hasActual ? Number(entry.heures) : 0;
+    const entryPlanned = Number(entry.heuresPrevues) || 0;
+    const entryDisplayed = hasActual ? Number(entry.heures) : entryPlanned;
+    
+    actualHours += entryActual;
+    plannedHours += entryPlanned;
+    displayedHours += entryDisplayed;
+    
+    if (hasActual) {
+      hasExplicitActual = true;
+    }
+    
+    if (!hasActual && entryPlanned > 0) {
+      isPrefilled = true;
+    }
+  }
+  
+  return {
+    actualHours,
+    plannedHours,
+    displayedHours,
+    hasDisplayValue: displayedHours > 0,
+    hasExplicitActual,
+    isPrefilled
+  };
+}
+
+// PHASE 5 : Heures affichées pour une cellule (proposition ou réalisé)
+function cellDisplayedHours(taskId, dayMs, personId) {
+  const state = getCellDisplayState(taskId, dayMs, personId);
+  return state.displayedHours;
+}
+
+// PHASE 5 : Heures affichées pour un jour
+function dayDisplayedHours(dayMs, personId) {
+  const dk = dayKey(dayMs);
+  let h = 0;
+  
+  if (S.indexes && S.indexes.entriesByPersonWeek) {
+    for (const [key, entries] of S.indexes.entriesByPersonWeek) {
+      if (key.startsWith(personId + '|')) {
+        for (const e of entries) {
+          const eDate = typeof e.date === 'number' ? new Date(e.date * 1000) : new Date(0);
+          const edk = [eDate.getFullYear(), String(eDate.getMonth() + 1).padStart(2, '0'), String(eDate.getDate()).padStart(2, '0')].join('-');
+          if (edk === dk) {
+            // PHASE 5 : utiliser heures si explicite, sinon heuresPrevues
+            const hasActual = (
+              e.heures !== null &&
+              e.heures !== undefined &&
+              e.heures !== '' &&
+              Number.isFinite(Number(e.heures))
+            );
+            h += hasActual ? Number(e.heures) : (Number(e.heuresPrevues) || 0);
+          }
+        }
+      }
+    }
+    return h;
+  }
+  
+  // Fallback
+  for (const e of S.entries) {
+    if (e.membre === personId && sameDay(gristToMs(e.date), dayMs)) {
+      const hasActual = (
+        e.heures !== null &&
+        e.heures !== undefined &&
+        e.heures !== '' &&
+        Number.isFinite(Number(e.heures))
+      );
+      h += hasActual ? Number(e.heures) : (Number(e.heuresPrevues) || 0);
+    }
+  }
+  return h;
+}
+
+// PHASE 5 : Heures affichées pour une tâche sur la semaine
+function taskWeekDisplayedHours(taskId, personId) {
+  let h = 0;
+  const weekDaysArr = weekDays();
+  
+  if (S.indexes && S.indexes.entriesByPersonWeek) {
+    const key = personId + '|' + taskId;
+    const entries = S.indexes.entriesByPersonWeek.get(key);
+    if (entries) {
+      const weekStartMs = weekDaysArr[0];
+      const weekEndMs = weekDaysArr[weekDaysArr.length - 1] + (24 * 60 * 60 * 1000);
+      for (const e of entries) {
+        const eMs = typeof e.date === 'number' ? e.date * 1000 : 0;
+        if (eMs >= weekStartMs && eMs <= weekEndMs) {
+          const hasActual = (
+            e.heures !== null &&
+            e.heures !== undefined &&
+            e.heures !== '' &&
+            Number.isFinite(Number(e.heures))
+          );
+          h += hasActual ? Number(e.heures) : (Number(e.heuresPrevues) || 0);
+        }
+      }
+    }
+    return h;
+  }
+  
+  // Fallback
+  for (const d of weekDaysArr) {
+    h += cellDisplayedHours(taskId, d, personId);
+  }
+  return h;
+}
+
+// PHASE 5 : Heures affichées pour la semaine
+function weekDisplayedHours(personId) {
+  let h = 0;
+  const weekDaysArr = weekDays();
+  
+  if (S.indexes && S.indexes.entriesByPersonWeek) {
+    for (const [key, entries] of S.indexes.entriesByPersonWeek) {
+      if (key.startsWith(personId + '|')) {
+        const weekStartMs = weekDaysArr[0];
+        const weekEndMs = weekDaysArr[weekDaysArr.length - 1] + (24 * 60 * 60 * 1000);
+        for (const e of entries) {
+          const eMs = typeof e.date === 'number' ? e.date * 1000 : 0;
+          if (eMs >= weekStartMs && eMs <= weekEndMs) {
+            const hasActual = (
+              e.heures !== null &&
+              e.heures !== undefined &&
+              e.heures !== '' &&
+              Number.isFinite(Number(e.heures))
+            );
+            h += hasActual ? Number(e.heures) : (Number(e.heuresPrevues) || 0);
+          }
+        }
+      }
+    }
+    return h;
+  }
+  
+  // Fallback
+  for (const d of weekDaysArr) {
+    h += dayDisplayedHours(d, personId);
+  }
+  return h;
+}
+
 // somme heures d'une (tache, jour) pour une personne
 function cellHours(taskId, dayMs, personId) {
   let h = 0;
@@ -3649,14 +3836,17 @@ function renderSaisie() {
       for (const t of tasks) {
         html += '<tr><td class="tcell"><div class="tt" style="font-size:.85rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(t.titre) + '</div><div class="tp" style="font-size:.75rem;color:var(--text-muted)">' + esc(projName(t)) + '</div></td>';
         weekDaysArr.forEach((d) => {
-          const actualH = cellActualHours(t.id, d, personId);
-          const plannedH = cellPlannedHours(t.id, d, personId);
+          // PHASE 5 : Utiliser l'état de cellule complet
+          const cellState = getCellDisplayState(t.id, d, personId);
+          const displayedH = cellState.displayedHours;
+          const plannedH = cellState.plannedHours;
           const cap = dayCapacityForPerson(d, personId);
           const ind = isIndispo(d, indispos);
           const isDayIndispo = ind.isIndispo && (!ind.dispo || ind.dispo === 0);
           
           let tdClass = 'day';
-          if (actualH) tdClass += ' filled';
+          if (cellState.hasDisplayValue) tdClass += ' filled';
+          if (cellState.isPrefilled) tdClass += ' prefilled';
           if (sameDay(d, todayMs)) tdClass += ' today';
           if (isDayIndispo) tdClass += ' indispo-cell';
           
@@ -3665,39 +3855,43 @@ function renderSaisie() {
             cellHtml += '<div style="height:38px;display:flex;align-items:center;justify-content:center;background:var(--bg);color:var(--text-muted);font-size:.75rem">' 
               + (ind.label || 'Indispo') + '</div>';
           } else {
-            cellHtml += '<input type="number" min="0" step="0.5" value="' + fmtQty(actualH) + '"' 
+            // PHASE 5 : Utiliser displayedHours et fmtInputQty
+            cellHtml += '<input type="number" min="0" step="0.5" value="' + fmtInputQty(displayedH, cellState.hasDisplayValue) + '"' 
               + (isLocked ? ' disabled' : '')
               + ' onchange="setCell(' + t.id + ',' + d + ',' + personId + ',this.value)" style="width:100%;font-size:.85rem">';
-            if (plannedH > 0) {
+            if (plannedH > 0 && !cellState.hasExplicitActual) {
               cellHtml += '<div class="planned-indicator">Prévu: <strong>' + fmtQty(plannedH) + '</strong></div>';
             }
           }
           cellHtml += '</td>';
           html += cellHtml;
         });
-        const totalActual = taskWeekActualHours(t.id, personId);
+        // PHASE 5 : Utiliser les totaux affichés (propositions incluses)
+        const totalDisplayed = taskWeekDisplayedHours(t.id, personId);
         const totalPlanned = taskWeekPlannedHours(t.id, personId);
-        html += '<td class="total" style="text-align:right;font-weight:700;padding-right:12px">' + (fmtQty(totalActual) || '0')
+        html += '<td class="total" style="text-align:right;font-weight:700;padding-right:12px">' + (fmtQty(totalDisplayed) || '0')
           + (totalPlanned > 0 ? '<br><small style="color:var(--text-muted);font-weight:400">/ ' + fmtQty(totalPlanned) + ' prevu</small>' : '')
           + '</td></tr>';
       }
     }
     
     // Pied de tableau avec totaux
-    html += '</tbody><tfoot><tr><td class="left" style="text-align:right;font-weight:600;padding:8px">Total (realise / prevu)</td>';
+    html += '</tbody><tfoot><tr><td class="left" style="text-align:right;font-weight:600;padding:8px">Total (declare ou propose / prevu)</td>';
     weekDaysArr.forEach((d) => {
-      const actual = dayActualHours(d, personId);
+      // PHASE 5 : Utiliser les heures affichées (propositions incluses)
+      const displayed = dayDisplayedHours(d, personId);
       const planned = dayPlannedHours(d, personId);
       const cap = dayCapacityForPerson(d, personId);
-      html += '<td style="text-align:center;font-weight:600;padding:8px">' + (fmtQty(actual) || '0')
+      html += '<td style="text-align:center;font-weight:600;padding:8px">' + (fmtQty(displayed) || '0')
         + (planned > 0 ? '<br><small style="color:var(--text-muted);font-size:.7rem;font-weight:400">' + fmtQty(planned) + ' prevu</small>' : '')
         + '<br><small style="color:var(--text-muted);font-size:.75rem">Cap: ' + cap.toFixed(1) + 'h</small>'
         + '</td>';
     });
     const weekCap = weekDaysArr.reduce((s,d) => s + dayCapacityForPerson(d, personId), 0);
-    const weekAct = weekActualHours(personId);
+    // PHASE 5 : Utiliser les totaux affichés
+    const weekDisplayed = weekDisplayedHours(personId);
     const weekPl = weekPlannedHours(personId);
-    html += '<td class="total" style="text-align:center;font-weight:700;padding:8px">' + (fmtQty(weekAct) || '0')
+    html += '<td class="total" style="text-align:center;font-weight:700;padding:8px">' + (fmtQty(weekDisplayed) || '0')
       + (weekPl > 0 ? '<br><small style="color:var(--text-muted);font-weight:400">/ ' + fmtQty(weekPl) + ' prevu</small>' : '')
       + '<br><small style="color:var(--text-muted);font-size:.75rem">Cap: ' + weekCap.toFixed(1) + 'h</small>'
       + '</td></tr></tfoot></table>';
@@ -4075,27 +4269,50 @@ async function submitWeekForPerson(personId) {
       }
     }
     
-    // Étape 4 : Rattacher puis soumettre
-    if (entriesToLink.length > 0) {
-      const attachActions = entriesToLink.map(e => [
+    // Étape 4 : PHASE 7 - Construire les patches de soumission
+    // Utiliser buildSubmissionEntryPatch pour matérialiser les propositions
+    const entryPatches = [];
+    for (const entry of entriesToLink) {
+      // Obtenir les données complètes de l'entrée
+      const fullEntry = S.entries.find(e => e.id === entry.id);
+      if (!fullEntry) continue;
+      
+      // PHASE 7 : Utiliser le helper du contrôleur
+      const patch = CRAController.buildSubmissionEntryPatch(fullEntry, sheetId);
+      
+      // Ne garder que les patches non vides
+      if (patch && Object.keys(patch).length > 0) {
+        entryPatches.push({
+          id: entry.id,
+          patch
+        });
+      }
+    }
+    
+    // Étape 5 : Appliquer les patches et soumettre
+    if (entryPatches.length > 0) {
+      const updateActions = entryPatches.map(ep => [
         'UpdateRecord',
         'TimeEntries',
-        e.id,
-        { feuille: sheetId }
+        ep.id,
+        ep.patch
       ]);
       
       // Ajouter la mise à jour du statut en DERNIER
-      attachActions.push(['UpdateRecord', 'Feuilles', sheetId, { statut: 'soumis' }]);
+      updateActions.push(['UpdateRecord', 'Feuilles', sheetId, { statut: 'soumis' }]);
       
-      await grist.docApi.applyUserActions(attachActions);
+      await grist.docApi.applyUserActions(updateActions);
       
       // Mettre à jour le cache local
-      for (const entry of entriesToLink) {
-        entry.feuille = sheetId;
+      for (const ep of entryPatches) {
+        const localEntry = S.entries.find(e => e.id === ep.id);
+        if (localEntry) {
+          Object.assign(localEntry, ep.patch);
+        }
       }
       sheet.statut = 'soumis';
-    } else {
-      // Aucune entrée à rattacher, juste soumettre la feuille
+    } else if (sheetId) {
+      // Aucune entrée à mettre à jour, juste soumettre la feuille
       await grist.docApi.applyUserActions([
         ['UpdateRecord', 'Feuilles', sheetId, { statut: 'soumis' }]
       ]);
