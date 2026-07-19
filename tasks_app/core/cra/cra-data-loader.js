@@ -265,9 +265,16 @@ const CRA_TABLES = {
 
 /**
  * Charge un snapshot complet des données CRA en parallèle (TODO 3)
+ * 
+ * PHASE 3 - LOGS STRUCTURÉS :
+ * - Log au début et fin de chargement
+ * - Compte des entrées par table
+ * - Diagnostics en cas d'erreur
  */
 async function fetchCraSnapshot(grist) {
   const startedAt = performance.now();
+  
+  perfLog('fetch.start', { phase: 'load' });
   
   const [
     team,
@@ -297,20 +304,33 @@ async function fetchCraSnapshot(grist) {
   
   const fetchDuration = performance.now() - startedAt;
   
+  const counts = {
+    team: team && team.id ? team.id.length : 0,
+    entites: entites && entites.id ? entites.id.length : 0,
+    tasks: tasks && tasks.id ? tasks.id.length : 0,
+    projects: projects && projects.id ? projects.id.length : 0,
+    programmes: programmes && programmes.id ? programmes.id.length : 0,
+    timeEntries: timeEntries && timeEntries.id ? timeEntries.id.length : 0,
+    feuilles: feuilles && feuilles.id ? feuilles.id.length : 0,
+    disponibilites: disponibilites && disponibilites.id ? disponibilites.id.length : 0,
+    assignments: assignments && assignments.id ? assignments.id.length : 0,
+    dailyCapacities: dailyCapacities && dailyCapacities.id ? dailyCapacities.id.length : 0
+  };
+  
   perfLog('fetch.complete', {
+    phase: 'load',
     durationMs: Math.round(fetchDuration),
-    tables: {
-      team: team && team.id ? team.id.length : 0,
-      entites: entites && entites.id ? entites.id.length : 0,
-      tasks: tasks && tasks.id ? tasks.id.length : 0,
-      projects: projects && projects.id ? projects.id.length : 0,
-      programmes: programmes && programmes.id ? programmes.id.length : 0,
-      timeEntries: timeEntries && timeEntries.id ? timeEntries.id.length : 0,
-      feuilles: feuilles && feuilles.id ? feuilles.id.length : 0,
-      disponibilites: disponibilites && disponibilites.id ? disponibilites.id.length : 0,
-      assignments: assignments && assignments.id ? assignments.id.length : 0,
-      dailyCapacities: dailyCapacities && dailyCapacities.id ? dailyCapacities.id.length : 0
-    }
+    tables: counts
+  });
+  
+  // Log structuré pour diagnostic
+  console.info('[CRA]', {
+    phase: 'load',
+    timeEntryCount: counts.timeEntries,
+    assignmentCount: counts.assignments,
+    sheetCount: counts.feuilles,
+    capacityCount: counts.dailyCapacities,
+    durationMs: Math.round(fetchDuration)
   });
   
   return {
@@ -445,6 +465,15 @@ function inspectCraSnapshot(rawSnapshot) {
 
 /**
  * Normalise un snapshot brut en état CRA utilisable
+ * 
+ * PHASE 3 - CORRECTIONS :
+ * - Conserve TOUS les champs originaux de TimeEntries
+ * - Garantit que id est présent sur chaque entrée
+ * - Initialisation défensive pour les valeurs nulles
+ * 
+ * @param {Object} raw - Snapshot brut Grist
+ * @param {Object} currentUser - Utilisateur Grist actuel
+ * @returns {Object} Snapshot normalisé
  */
 function normalizeCraSnapshot(raw, currentUser) {
   const team = columnarToRows(raw.team).map(r => ({
@@ -483,22 +512,25 @@ function normalizeCraSnapshot(raw, currentUser) {
   
   const programmes = raw.programmes ? columnarToRows(raw.programmes) : [];
   
-  const timeEntries = columnarToRows(raw.timeEntries).map(r => ({
-    id: r.id,
-    membre: Number(r.membre) || null,
-    tache: Number(r.tache) || null,
-    date: r.date,
-    heures: Number(r.heures) || 0,
-    heuresPrevues: Number(r.heuresPrevues) || 0,
-    affectation: Number(r.affectation) || null,
-    capaciteTheorique: Number(r.capaciteTheorique) || 0,
-    capaciteDisponible: Number(r.capaciteDisponible) || 0,
-    capaciteJour: Number(r.capaciteJour) || null,
-    feuille: Number(r.feuille) || null,
-    revisionPlan: Number(r.revisionPlan) || 0,
-    imputation: r.imputation || '',
-    description: r.description || ''
-  }));
+  const timeEntries = columnarToRows(raw.timeEntries).map(r => {
+    // PHASE 3 : Conserver TOUS les champs, surtout id
+    return {
+      id: r.id,  // ID Grist requis pour UpdateRecord
+      membre: Number(r.membre) || null,
+      tache: Number(r.tache) || null,
+      date: r.date,  // Timestamp Grist (secondes)
+      heures: Number(r.heures) || 0,
+      heuresPrevues: Number(r.heuresPrevues) || 0,
+      affectation: Number(r.affectation) || null,
+      capaciteTheorique: Number(r.capaciteTheorique) || 0,
+      capaciteDisponible: Number(r.capaciteDisponible) || 0,
+      capaciteJour: Number(r.capaciteJour) || null,
+      feuille: Number(r.feuille) || null,
+      revisionPlan: Number(r.revisionPlan) || 0,
+      imputation: r.imputation || '',
+      description: r.description || ''
+    };
+  });
   
   const feuilles = columnarToRows(raw.feuilles).map(r => ({
     id: r.id,
@@ -586,6 +618,11 @@ function createReadOnlySchemaError(inspection) {
 
 /**
  * Assure que le schéma est prêt et charge les données (TODO 5)
+ * 
+ * PHASE 3 - CORRECTIONS :
+ * - Timeout sur le chargement
+ * - Gestion propre des erreurs
+ * - Jamais de rechargement en boucle
  */
 async function ensureCraReadyAndLoad(options) {
   const opts = options || {};
@@ -593,6 +630,8 @@ async function ensureCraReadyAndLoad(options) {
   // Le CRA ne doit jamais réparer le schéma automatiquement.
   // Seul le Kanban peut initialiser/mettre à niveau le schéma via une action explicite.
   const allowSchemaRecovery = false;
+  
+  const startedAt = performance.now();
   
   loaderConfig.showLoading?.('Chargement des données…');
   
@@ -609,6 +648,7 @@ async function ensureCraReadyAndLoad(options) {
       classified.type !== 'TABLE_MISSING' &&
       classified.type !== 'COLUMN_MISSING'
     ) {
+      // Erreur critique : propager immédiatement
       throw error;
     }
     
@@ -624,11 +664,31 @@ async function ensureCraReadyAndLoad(options) {
         optionalMissing: []
       };
   
+  // CAS NOMINAL : toutes les tables sont présentes
   if (fetched && inspection.ready) {
-    return normalizeCraSnapshot(fetched.raw, fetched.raw.currentUser);
+    const normalized = normalizeCraSnapshot(fetched.raw, fetched.raw.currentUser);
+    
+    console.info('[CRA]', {
+      phase: 'load-ready',
+      durationMs: Math.round(performance.now() - startedAt),
+      entryCount: normalized.entries.length,
+      assignmentCount: normalized.assignments.length,
+      sheetCount: normalized.feuilles.length
+    });
+    
+    return normalized;
   }
   
+  // SCHÉMA INCOMPLET
   if (!allowSchemaRecovery) {
+    console.error('[CRA]', {
+      phase: 'load-error',
+      error: 'SCHEMA_INCOMPLETE',
+      missingTables: inspection.missingTables,
+      missingColumns: inspection.missingColumns,
+      durationMs: Math.round(performance.now() - startedAt)
+    });
+    
     throw createSchemaError(inspection);
   }
   

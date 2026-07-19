@@ -3433,6 +3433,36 @@ function gridTasks() {
 function projName(t) { const p = S.projects.find(x => x.id === t.projet); return p ? p.nom : ''; }
 
 // ---- Capacité & indisponibilités ------------------------------------------
+
+/**
+ * PHASE 1.1.1 - Utiliser MemberDailyCapacities comme source canonique
+ * 
+ * Priorité :
+ * 1. MemberDailyCapacities.capaciteDisponible (même si = 0)
+ * 2. MemberDailyCapacities.capaciteTheorique
+ * 3. Fallback legacy (capaciteHebdo / 5 + indisponibilités)
+ * 
+ * @param {number} dayMs - Timestamp du jour en ms
+ * @param {number} personId - ID de la personne
+ * @returns {number} Capacité en heures
+ */
+function dayCapacityForPerson(dayMs, personId) {
+  // Utiliser le contrôleur canonique qui lit MemberDailyCapacities
+  const result = CRAController.dailyCapacityForPersonAndDate(
+    personId,
+    dayMs,
+    S.dailyCapacities || [],
+    S.team || [],
+    S.disponibilites || []
+  );
+  
+  if (result.warning) {
+    console.warn('[CRA] dayCapacityForPerson:', result.warning);
+  }
+  
+  return result.capacity;
+}
+
 // Parse Team.indispos (JSON) + Disponibilites table pour une personne donnée
 function parseIndisposFor(personId) {
   const indispos = [];
@@ -3729,8 +3759,14 @@ async function setCell(taskId, dayMs, personId, qtyStr) {
     return;
   }
   
-  // Résoudre l'affectation active
-  const assignmentResult = CRAController.resolveActiveAssignment(taskId, personId, S.assignments);
+  // Résoudre l'affectation active (PHASE 1.1.3 : avec date)
+  const dayIso = CRAController.localDayKeyFromMs(dayMs);
+  const assignmentResult = CRAController.resolveActiveAssignment(
+    taskId,
+    personId,
+    dayIso,  // PHASE 1.1.3 : Date pour filtrer les affectations
+    S.assignments
+  );
   
   if (assignmentResult.status === 'ambiguous') {
     toast('Erreur : plusieurs affectations actives pour cette tâche. Veuillez corriger le planning.');
@@ -3767,6 +3803,17 @@ async function setCell(taskId, dayMs, personId, qtyStr) {
     existingEntry, hours, activeAssignment, currentSheet, hasPlanningData
   );
   
+  // PHASE 1.1.4 : Gérer le blocage création sans affectation
+  if (actionResult.action === 'blocked') {
+    if (actionResult.reason === 'MISSING_ACTIVE_ASSIGNMENT') {
+      toast('Aucune affectation active pour cette tâche et cette personne à cette date');
+    } else {
+      toast('Action bloquée : ' + actionResult.reason);
+    }
+    render();
+    return;
+  }
+  
   // Exécuter l'action
   if (S.alone) {
     // Mode démo
@@ -3801,8 +3848,25 @@ async function setCell(taskId, dayMs, personId, qtyStr) {
         membre: personId,
         tache: taskId,
         date: msToGrist(dayMs),
+        heuresPrevues: 0,  // PHASE 1.1.5 : Initialiser explicitement
+        revisionPlan: 0,   // PHASE 1.1.5 : Initialiser explicitement
         ...actionResult.fields
       };
+      
+      // PHASE 1.1.5 : Ajouter référence capacité si disponible
+      const capacityResult = CRAController.dailyCapacityForPersonAndDate(
+        personId,
+        dayMs,
+        S.dailyCapacities || [],
+        S.team || [],
+        S.disponibilites || []
+      );
+      
+      if (capacityResult.capacity > 0) {
+        fieldsToCreate.capaciteTheorique = capacityResult.capacity;
+        fieldsToCreate.capaciteDisponible = capacityResult.capacity;
+      }
+      
       const r = await grist.docApi.applyUserActions([
         ['AddRecord', 'TimeEntries', null, fieldsToCreate]
       ]);
@@ -3814,14 +3878,8 @@ async function setCell(taskId, dayMs, personId, qtyStr) {
       S.entries = S.entries.filter(e => e !== existingEntry);
     }
     
-    // Rollup Tasks.tempsPasse (réalisé uniquement)
-    if (actionResult.action !== 'none') {
-      try { 
-        await grist.docApi.applyUserActions([
-          ['UpdateRecord', 'Tasks', taskId, { tempsPasse: taskRealizedHours(taskId) }]
-        ]); 
-      } catch (e) {}
-    }
+    // PHASE 1.1.6 : SUPPRESSION écriture Tasks.tempsPasse
+    // Cette écriture sort du contrat du CRA et sera gérée par une formule Grist ou un service dédié
     
     // Reconstruire les index après modification locale
     buildCraIndexes();
@@ -4318,13 +4376,26 @@ function updateFilterManagerData() {
 
 /**
  * Construit les index de données pour le rendu (TODO 10)
+ * 
+ * PHASE 3 - CORRECTIONS :
+ * - Utilise affectation + date comme clé canonique (pas tache + membre + date)
+ * - Initialise weekStart s'il est manquant
+ * - Reconstruit les index à chaque appel (pas de cache figé)
  */
 function buildCraIndexes() {
+  // PHASE 3 : Initialiser weekStart s'il est manquant
+  if (!S.weekStart) {
+    S.weekStart = mondayOf(Date.now());
+    console.warn('[CRA] buildCraIndexes: weekStart initialisé par défaut', new Date(S.weekStart).toISOString());
+  }
+  
   S.indexes = {
     teamById: new Map(),
     taskById: new Map(),
     projectById: new Map(),
-    entriesByPersonWeek: new Map(),
+    // PHASE 3 : Nouvelle clé : affectation|date (ou tache|date en fallback)
+    entriesByAssignmentDate: new Map(),
+    entriesByTaskDate: new Map(),  // Fallback pour données legacy
     assignmentsByPersonTask: new Map(),
     dailyCapacityByPersonDate: new Map(),
     feuillesByPersonWeek: new Map()
@@ -4345,10 +4416,58 @@ function buildCraIndexes() {
     S.indexes.projectById.set(p.id, p);
   }
   
-  // Index entries par personne et semaine
-  const mondayMs = S.weekStart || mondayOf(Date.now());
+  // PHASE 3 : Index entries par affectation + date (clé canonique)
+  const mondayMs = S.weekStart;
   const sundayMs = mondayMs + (6 * 24 * 60 * 60 * 1000);
   
+  for (const e of S.entries) {
+    const personId = e.membre;
+    const entryMs = typeof e.date === 'number' ? e.date * 1000 : 0;
+    
+    // Index par affectation + date (clé canonique)
+    if (e.affectation != null && e.affectation !== 0) {
+      const assignmentKey = e.affectation + '|' + e.date;
+      if (!S.indexes.entriesByAssignmentDate.has(assignmentKey)) {
+        S.indexes.entriesByAssignmentDate.set(assignmentKey, []);
+      }
+      S.indexes.entriesByAssignmentDate.get(assignmentKey).push(e);
+    }
+    
+    // Index par tache + date (fallback pour données legacy)
+    if (e.tache != null && entryMs >= mondayMs && entryMs <= sundayMs) {
+      const taskKey = personId + '|' + e.tache + '|' + e.date;
+      if (!S.indexes.entriesByTaskDate.has(taskKey)) {
+        S.indexes.entriesByTaskDate.set(taskKey, []);
+      }
+      S.indexes.entriesByTaskDate.get(taskKey).push(e);
+    }
+    
+    // Index daily capacity
+    if (e.capaciteJour) {
+      const capKey = personId + '|' + e.date;
+      S.indexes.dailyCapacityByPersonDate.set(capKey, e.capaciteJour);
+    }
+  }
+  
+  // Index feuilles par personne + semaine
+  for (const f of S.feuilles) {
+    const fWeekMs = typeof f.semaine === 'number' ? f.semaine * 1000 : 0;
+    if (fWeekMs >= mondayMs && fWeekMs <= sundayMs + (24 * 60 * 60 * 1000)) {
+      const key = f.membre + '|' + f.semaine;
+      S.indexes.feuillesByPersonWeek.set(key, f);
+    }
+  }
+  
+  // Index assignments par personne + tache
+  for (const a of S.assignments) {
+    if (a.actif) {
+      const key = a.membre + '|' + a.tache;
+      S.indexes.assignmentsByPersonTask.set(key, a);
+    }
+  }
+  
+  // PHASE 1.1.7 : Ajouter index entriesByPersonWeek (manquant)
+  // Utilisé par les totaux et agrégats hebdomadaires
   for (const e of S.entries) {
     const personId = e.membre;
     const entryMs = typeof e.date === 'number' ? e.date * 1000 : 0;
@@ -4360,30 +4479,19 @@ function buildCraIndexes() {
       }
       S.indexes.entriesByPersonWeek.get(key).push(e);
     }
-    
-    // Index daily capacity
-    if (e.capaciteJour) {
-      const capKey = personId + '|' + e.date;
-      S.indexes.dailyCapacityByPersonDate.set(capKey, e.capaciteJour);
-    }
   }
   
-  // Index feuilles
-  for (const f of S.feuilles) {
-    const fWeekMs = typeof f.semaine === 'number' ? f.semaine * 1000 : 0;
-    if (fWeekMs >= mondayMs && fWeekMs <= sundayMs + (24 * 60 * 60 * 1000)) {
-      const key = f.membre + '|' + f.semaine;
-      S.indexes.feuillesByPersonWeek.set(key, f);
+  console.info('[CRA]', {
+    phase: 'indexes-built',
+    entryCount: S.entries.length,
+    assignmentCount: S.assignments.length,
+    indexSize: {
+      entriesByAssignmentDate: S.indexes.entriesByAssignmentDate.size,
+      entriesByTaskDate: S.indexes.entriesByTaskDate.size,
+      entriesByPersonWeek: S.indexes.entriesByPersonWeek.size,
+      feuillesByPersonWeek: S.indexes.feuillesByPersonWeek.size
     }
-  }
-  
-  // Index assignments
-  for (const a of S.assignments) {
-    if (a.actif) {
-      const key = a.membre + '|' + a.tache;
-      S.indexes.assignmentsByPersonTask.set(key, a);
-    }
-  }
+  });
 }
 
 // Les fonctions applyCraSnapshot, requestCraReload, runReloadLoop, loadCraSnapshotForReason,
@@ -4513,17 +4621,30 @@ async function initGrist() {
       bootstrap: typeof TaskFlowBootstrap !== 'undefined' ? TaskFlowBootstrap : null,
       isReadOnly: TF.isReadOnly,
       applySnapshot: function(normalized, metadata) {
-        // Application atomique (TODO 7)
+        // PHASE 3 : Application atomique avec initialisation défensive
         Object.assign(S, normalized);
         
-        // Initialiser la semaine courante si non définie
-        if (!S.weekStart) {
+        // PHASE 3 : Initialiser la semaine courante SI non définie
+        // Ceci garantit que la semaine n'est jamais undefined ou null
+        if (!S.weekStart || typeof S.weekStart !== 'number') {
           S.weekStart = mondayOf(Date.now());
+          console.info('[CRA]', {
+            phase: 'snapshot',
+            weekStartInitialized: new Date(S.weekStart).toISOString(),
+            reason: 'week-was-missing'
+          });
+        } else {
+          console.info('[CRA]', {
+            phase: 'snapshot',
+            weekStart: new Date(S.weekStart).toISOString(),
+            entryCount: S.entries.length
+          });
         }
         
         // Calculer "qui je gere" après chaque snapshot
         S.mesGeres = S.me ? computeMesGeres(S.me) : [];
         
+        // PHASE 3 : Reconstruire les index (utilise maintenant affectation+date)
         buildCraIndexes();
         ensureFilterManager();
         updateFilterManagerData();

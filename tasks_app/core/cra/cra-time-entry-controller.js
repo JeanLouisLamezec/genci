@@ -1,6 +1,19 @@
 /**
  * CRA Time Entry Controller — Logique métier pour la saisie des temps dans le CRA
  * 
+ * CONTRATS EXPLICITES (Phase 2) :
+ * =================================
+ * 1. heuresPrevues = LECTURE SEULE (provient du planning canonique)
+ * 2. heures = EDITABLE (réalisé saisi par l'utilisateur)
+ * 3. affectation + date = CLÉ CANONIQUE pour retrouver une TimeEntry
+ * 4. record ID Grist doit être CONSERVÉ dans toutes les opérations
+ * 5. Feuille soumis/validée/submitted/validated = VERROUILLÉE
+ * 6. AUCUNE écriture dans MemberDailyCapacities
+ * 7. AUCUNE écriture dans TaskAssignments.heuresAllouees
+ * 8. AUCUN déclenchement du moteur de planification depuis le CRA
+ * 9. Création d'une TimeEntry uniquement si aucune ligne n'existe pour affectation+date
+ * 10. Mise à jour minimale : ne renvoyer que les champs modifiés dans UpdateRecord
+ * 
  * Ce module centralise la logique critique de saisie des temps pour :
  * - Résoudre les affectations actives
  * - Identifier la ligne TimeEntry éditable sans ambiguïté
@@ -14,14 +27,45 @@
 
 /**
  * Résout l'affectation active pour une tâche et une personne données
+ * 
+ * CONTRAT :
+ * - Une affectation est active si actif !== false
+ * - L'affectation doit couvrir la date saisie (dateDebut <= date <= dateFin)
+ * - Retourne 'missing' si aucune affectation active
+ * - Retourne 'found' avec l'affectation unique si une seule correspond
+ * - Retourne 'ambiguous' si plusieurs affectations actives (blocage)
+ * 
+ * PHASE 1.1.3 - SENSIBLE À LA DATE :
+ * - Ajout du paramètre dateIso
+ * - Vérification que dateDebut <= date <= dateFin
+ * - Empêche de rattacher une saisie à une affectation terminée
+ * 
  * @param {number} taskId - ID de la tâche
  * @param {number} personId - ID de la personne
+ * @param {string} dateIso - Date ISO (YYYY-MM-DD) à vérifier
  * @param {Array} assignments - Toutes les affectations (TaskAssignments)
  * @returns {{ status: 'found' | 'missing' | 'ambiguous', assignment: null | object, assignments: Array }}
  */
-function resolveActiveAssignment(taskId, personId, assignments) {
+function resolveActiveAssignment(taskId, personId, dateIso, assignments) {
+  const dateMs = new Date(dateIso + 'T12:00:00').getTime(); // Milieu de journée pour éviter fuseaux
+  
   const activeAssignments = (assignments || []).filter(a => {
-    return a.tache === taskId && a.membre === personId && a.actif !== false;
+    // Vérifier actif
+    if (a.actif === false) return false;
+    
+    // Vérifier dates de couverture
+    if (a.dateDebut != null) {
+      const debutMs = typeof a.dateDebut === 'number' ? a.dateDebut * 1000 : 0;
+      if (dateMs < debutMs) return false; // Date avant le début
+    }
+    
+    if (a.dateFin != null) {
+      const finMs = typeof a.dateFin === 'number' ? a.dateFin * 1000 : 0;
+      if (dateMs > finMs) return false; // Date après la fin
+    }
+    
+    // Vérifier tâche et membre
+    return a.tache === taskId && a.membre === personId;
   });
   
   if (activeAssignments.length === 0) {
@@ -50,6 +94,13 @@ function resolveActiveAssignment(taskId, personId, assignments) {
 
 /**
  * Résout la ligne TimeEntry éditable pour une cellule donnée
+ * 
+ * CONTRAT (CLÉ CANONIQUE) :
+ * - La clé principale est : affectation + membre + date (si affectation présente)
+ * - Fallback : tache + membre + date (pour données legacy sans affectation)
+ * - Priorité à l'entrée avec affectation correspondante
+ * - Retourne 'multiple' en cas d'ambiguïté non résolue (blocage)
+ * 
  * @param {Array} entries - Toutes les TimeEntries
  * @param {number} taskId - ID de la tâche
  * @param {string} dateIso - Date ISO (YYYY-MM-DD)
@@ -58,9 +109,10 @@ function resolveActiveAssignment(taskId, personId, assignments) {
  * @returns {{ status: 'found' | 'multiple' | 'none', entry: null | object, entries: Array }}
  */
 function resolveEditableCellEntry(entries, taskId, dateIso, personId, activeAssignment) {
+  // ÉTAPE 1 : Filtrer par membre + date (critères de base)
   const candidates = (entries || []).filter(e => {
     const entryDate = gristDateKey(e.date);
-    return e.tache === taskId && entryDate === dateIso && e.membre === personId;
+    return e.membre === personId && entryDate === dateIso;
   });
   
   if (candidates.length === 0) {
@@ -71,11 +123,13 @@ function resolveEditableCellEntry(entries, taskId, dateIso, personId, activeAssi
     };
   }
   
-  // Compter les correspondances avec l'affectation active
+  // ÉTAPE 2 : Si une affectation active est présente, l'utiliser comme clé principale
   if (activeAssignment && activeAssignment.id) {
+    // Filtrer les entrées qui correspondent à l'affectation active
     const matchingAssignmentEntries = candidates.filter(e => e.affectation === activeAssignment.id);
     
     if (matchingAssignmentEntries.length === 1) {
+      // Cas nominal : une seule entrée avec la bonne affectation
       return {
         status: 'found',
         entry: matchingAssignmentEntries[0],
@@ -84,6 +138,7 @@ function resolveEditableCellEntry(entries, taskId, dateIso, personId, activeAssi
     }
     
     if (matchingAssignmentEntries.length > 1) {
+      // ERREUR : plusieurs entrées avec la même affectation (doublon)
       return {
         status: 'multiple',
         entry: null,
@@ -91,22 +146,68 @@ function resolveEditableCellEntry(entries, taskId, dateIso, personId, activeAssi
         reason: 'MULTIPLE_ASSIGNMENT_ENTRIES'
       };
     }
+    
+    // ÉTAPE 3 : Aucune entrée avec affectation, chercher des entrées legacy (sans affectation)
+    const legacyEntries = candidates.filter(e => e.affectation === null || e.affectation === 0 || e.affectation === undefined);
+    
+    if (legacyEntries.length === 1) {
+      // Entrée legacy trouvée, peut être mise à jour avec l'affectation
+      return {
+        status: 'found',
+        entry: legacyEntries[0],
+        entries: candidates,
+        isLegacy: true
+      };
+    }
+    
+    if (legacyEntries.length > 1) {
+      // Plusieurs entrées legacy : ambiguïté
+      return {
+        status: 'multiple',
+        entry: null,
+        entries: candidates,
+        reason: 'MULTIPLE_LEGACY_ENTRIES'
+      };
+    }
   }
   
-  if (candidates.length === 1) {
+  // ÉTAPE 4 : Pas d'affectation active, utiliser tache comme fallback
+  const taskCandidates = candidates.filter(e => e.tache === taskId);
+  
+  if (taskCandidates.length === 1) {
     return {
       status: 'found',
-      entry: candidates[0],
+      entry: taskCandidates[0],
       entries: candidates
     };
   }
   
-  // Ambiguïté non résolue
+  if (taskCandidates.length > 1) {
+    // Vérifier s'il y a une entrée sans affectation
+    const noAssignmentEntries = taskCandidates.filter(e => e.affectation === null || e.affectation === 0 || e.affectation === undefined);
+    
+    if (noAssignmentEntries.length === 1) {
+      return {
+        status: 'found',
+        entry: noAssignmentEntries[0],
+        entries: candidates,
+        isLegacy: true
+      };
+    }
+    
+    return {
+      status: 'multiple',
+      entry: null,
+      entries: taskCandidates,
+      reason: 'MULTIPLE_TASK_ENTRIES'
+    };
+  }
+  
+  // Aucun candidat pour cette tâche
   return {
-    status: 'multiple',
+    status: 'none',
     entry: null,
-    entries: candidates,
-    reason: 'MULTIPLE_CELL_ENTRIES'
+    entries: []
   };
 }
 
@@ -170,34 +271,52 @@ function hasSheetLink(entry) {
 
 /**
  * Détermine l'action à effectuer sur une TimeEntry lors d'une saisie
+ * 
+ * CONTRATS DE SAUVEGARDE :
+ * - UPDATE : ne renvoyer QUE { heures: nouvelleValeur } (minimaliste)
+ * - CREATE : inclure affectation OBLIGATOIRE, heuresPrevues = 0 par défaut
+ * - DELETE : uniquement si ligne manuelle vide (pas d'affectation, pas de planning)
+ * - JAMAIS modifier heuresPrevues, affectation, capaciteJour, revisionPlan dans un update
+ * 
+ * PHASE 1.1.4 - INTERDICTION CRÉATION SANS AFFECTATION :
+ * - Si aucune affectation et pas de ligne existante : blocage
+ * - Les lignes legacy existantes peuvent être éditées
+ * - Mais aucune nouvelle ligne sans affectation ne peut être créée
+ * 
  * @param {object|null} existingEntry - Ligne existante (ou null)
  * @param {number} actualHours - Heures réelles saisies
  * @param {object|null} activeAssignment - Affectation active (ou null)
  * @param {object|null} currentSheet - Feuille actuelle (ou null)
  * @param {boolean} hasPlanningData - true si la ligne a des champs de planning
- * @returns {{ action: 'update' | 'create' | 'delete' | 'none', fields: object|null, reason: string }}
+ * @returns {{ action: 'update' | 'create' | 'delete' | 'none' | 'blocked', fields: object|null, reason: string }}
  */
 function determineEntryAction(existingEntry, actualHours, activeAssignment, currentSheet, hasPlanningData) {
-  // Cas 1 : Ligne existante
+  // ============================================================================
+  // CAS 1 : LIGNE EXISTANTE - MISE À JOUR
+  // ============================================================================
   if (existingEntry && existingEntry.id) {
     // Remise à zéro
     if (actualHours <= 0) {
       if (hasPlanningData || hasSheetLink(existingEntry)) {
-        // Ligne planifiée ou liée à une feuille : mettre heures à 0 uniquement
+        // CONTRAT : Ligne planifiée ou liée à une feuille
+        // → Ne jamais supprimer, mettre heures à 0 uniquement
+        // → heuresPrevues, capaciteJour, revisionPlan restent inchangés
         return {
           action: 'update',
           fields: { heures: 0 },
           reason: 'ZERO_PLANNED_OR_SHEET_ENTRY'
         };
       } else if (canDeleteEmptyManualEntry(existingEntry)) {
-        // Ligne manuelle complètement vide : supprimer
+        // CONTRAT : Ligne manuelle complètement vide
+        // → Suppression autorisée (aucune information de planning)
         return {
           action: 'delete',
           fields: null,
           reason: 'DELETE_EMPTY_MANUAL_ENTRY'
         };
       } else {
-        // Ligne manuelle avec autres informations : mettre heures à 0
+        // CONTRAT : Ligne manuelle avec description/imputation
+        // → Mettre heures à 0, conserver les autres champs
         return {
           action: 'update',
           fields: { heures: 0 },
@@ -205,7 +324,15 @@ function determineEntryAction(existingEntry, actualHours, activeAssignment, curr
         };
       }
     } else {
-      // Saisie positive : mettre à jour heures uniquement
+      // ========================================================================
+      // CAS NOMINAL : SAISIE POSITIVE SUR LIGNE EXISTANTE
+      // ========================================================================
+      // CONTRAT : Ne modifier QUE le champ 'heures'
+      // - heuresPrevues reste inchangé (lecture seule)
+      // - affectation reste inchangée
+      // - capaciteJour, capaciteTheorique, capaciteDisponible restent inchangés
+      // - revisionPlan reste inchangé
+      // - description, imputation restent inchangés
       return {
         action: 'update',
         fields: { heures: actualHours },
@@ -214,22 +341,34 @@ function determineEntryAction(existingEntry, actualHours, activeAssignment, curr
     }
   }
   
-  // Cas 2 : Nouvelle ligne
+  // ============================================================================
+  // CAS 2 : NOUVELLE LIGNE - CRÉATION
+  // ============================================================================
   if (actualHours > 0) {
+    // PHASE 1.1.4 : INTERDICTION CRÉATION SANS AFFECTATION
+    // Une nouvelle ligne ne peut être créée que si une affectation active existe
+    if (!activeAssignment || !activeAssignment.id) {
+      return {
+        action: 'blocked',
+        fields: null,
+        reason: 'MISSING_ACTIVE_ASSIGNMENT'
+      };
+    }
+    
     const fields = {
       heures: actualHours
     };
     
-    // Rattacher à l'affectation active si elle existe
-    if (activeAssignment && activeAssignment.id) {
-      fields.affectation = activeAssignment.id;
-    }
+    // Rattacher à l'affectation active (OBLIGATOIRE)
+    fields.affectation = activeAssignment.id;
     
     // Rattacher à la feuille si elle existe
     if (currentSheet && currentSheet.id) {
       fields.feuille = currentSheet.id;
     }
     
+    // NOTE : heuresPrevues n'est PAS initialisé ici
+    // Il sera positionné par le moteur de planification si nécessaire
     return {
       action: 'create',
       fields,
@@ -237,7 +376,9 @@ function determineEntryAction(existingEntry, actualHours, activeAssignment, curr
     };
   }
   
-  // Cas 3 : Aucune action nécessaire
+  // ============================================================================
+  // CAS 3 : AUCUNE ACTION NÉCESSAIRE
+  // ============================================================================
   return {
     action: 'none',
     fields: null,
@@ -246,7 +387,14 @@ function determineEntryAction(existingEntry, actualHours, activeAssignment, curr
 }
 
 /**
- * Vérifie si une semaine est verrouillée pour une personne donnée (TODO 15)
+ * Vérifie si une semaine est verrouillée pour une personne donnée
+ * 
+ * CONTRAT DE VERROUILLAGE :
+ * - Statuts verrouillés : 'soumis', 'valide', 'submitted', 'validated'
+ * - Statuts éditables : 'brouillon', 'rejete', 'draft', 'rejected'
+ * - Une feuille soumise ou validée bloque toute saisie
+ * - Une feuille rejetée redevient éditable (retour en brouillon)
+ * 
  * @param {number} personId - ID de la personne
  * @param {string} weekStart - Date de début de semaine (YYYY-MM-DD)
  * @param {Array} sheets - Toutes les feuilles (Feuilles)
@@ -357,6 +505,12 @@ function hasNumericValue(value) {
  * 1. MemberDailyCapacities.capaciteDisponible (même si = 0)
  * 2. MemberDailyCapacities.capaciteTheorique
  * 3. Calcul legacy (capaciteHebdo / 5 + indisponibilités)
+ * 
+ * PHASE 1.1.2 - CORRECTION FORMAT DISPO :
+ * - Si ratio > 1, on divise par 100 (ancien format 0-100)
+ * - Si ratio <= 1, on utilise tel quel (nouveau format 0-1)
+ * - dispo = 0 signifie indisponibilité totale (capacité = 0)
+ * 
  * @param {number} personId - ID de la personne
  * @param {number} dayMs - Timestamp du jour en millisecondes
  * @param {Array} dailyCapacities - Toutes les capacités quotidiennes
@@ -396,7 +550,13 @@ function dailyCapacityForPersonAndDate(personId, dayMs, dailyCapacities, team, a
     
     for (const ind of indispos) {
       const ratio = Number(ind.dispo) || 0;
-      dailyCapacity = dailyCapacity * (ratio / 100);
+      
+      // PHASE 1.1.2 : Corriger format dispo (0-1 vs 0-100)
+      // Si ratio > 1, on suppose ancien format en pourcentage (0-100)
+      // Si ratio <= 1, on utilise tel quel (nouveau format 0-1)
+      const normalizedRatio = ratio > 1 ? ratio / 100 : ratio;
+      
+      dailyCapacity = dailyCapacity * normalizedRatio;
     }
     
     return {

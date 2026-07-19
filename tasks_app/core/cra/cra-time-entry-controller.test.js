@@ -1,5 +1,15 @@
 /**
  * Tests pour CRA Time Entry Controller
+ * 
+ * CONTRATS TESTÉS (Phase 2) :
+ * 1. heuresPrevues = lecture seule
+ * 2. heures = éditable
+ * 3. affectation + date = clé canonique
+ * 4. record ID conservé
+ * 5. feuille soumis/validée = verrouillée
+ * 6. aucune écriture dans les capacités
+ * 7. aucune mutation de TaskAssignments
+ * 8. création contrôlée (pas de doublons)
  */
 
 'use strict';
@@ -64,6 +74,208 @@ describe('CRA Time Entry Controller', () => {
     });
   });
   
+  // ============================================================================
+  // TESTS DE CONTRATS - PHASE 2
+  // ============================================================================
+  
+  describe('Contrats de résolution (affectation + date)', () => {
+    test('resolveEditableCellEntry utilise affectation comme clé principale', () => {
+      const entries = [
+        { id: 1, membre: 1, tache: 10, date: 1705276800, heures: 2, affectation: 100 },
+        { id: 2, membre: 1, tache: 10, date: 1705276800, heures: 3, affectation: 200 },
+        { id: 3, membre: 1, tache: 10, date: 1705276800, heures: 4, affectation: null }
+      ];
+      
+      const activeAssignment = { id: 100, tache: 10, membre: 1 };
+      const result = resolveEditableCellEntry(entries, 10, '2024-01-15', 1, activeAssignment);
+      
+      expect(result.status).toBe('found');
+      expect(result.entry.id).toBe(1); // Celle avec affectation=100
+      expect(result.entry.affectation).toBe(100);
+    });
+    
+    test('resolveEditableCellEntry retourne multiple si plusieurs entrées avec même affectation', () => {
+      const entries = [
+        { id: 1, membre: 1, tache: 10, date: 1705276800, heures: 2, affectation: 100 },
+        { id: 2, membre: 1, tache: 10, date: 1705276800, heures: 3, affectation: 100 }
+      ];
+      
+      const activeAssignment = { id: 100, tache: 10, membre: 1 };
+      const result = resolveEditableCellEntry(entries, 10, '2024-01-15', 1, activeAssignment);
+      
+      expect(result.status).toBe('multiple');
+      expect(result.reason).toBe('MULTIPLE_ASSIGNMENT_ENTRIES');
+    });
+    
+    test('resolveEditableCellEntry gère les entrées legacy sans affectation', () => {
+      const entries = [
+        { id: 1, membre: 1, tache: 10, date: 1705276800, heures: 2, affectation: null }
+      ];
+      
+      const activeAssignment = { id: 100, tache: 10, membre: 1 };
+      const result = resolveEditableCellEntry(entries, 10, '2024-01-15', 1, activeAssignment);
+      
+      expect(result.status).toBe('found');
+      expect(result.entry.id).toBe(1);
+      expect(result.isLegacy).toBe(true);
+    });
+    
+    test('resolveEditableCellEntry retourne none si aucune entrée', () => {
+      const entries = [];
+      const activeAssignment = { id: 100, tache: 10, membre: 1 };
+      const result = resolveEditableCellEntry(entries, 10, '2024-01-15', 1, activeAssignment);
+      
+      expect(result.status).toBe('none');
+      expect(result.entry).toBeNull();
+    });
+  });
+  
+  describe('Contrats de sauvegarde (UPDATE minimaliste)', () => {
+    test('determineEntryAction ne modifie QUE heures sur ligne existante', () => {
+      const existing = {
+        id: 42,
+        membre: 1,
+        tache: 10,
+        date: 1705276800,
+        heures: 2,
+        heuresPrevues: 6,
+        affectation: 100,
+        capaciteJour: 5,
+        revisionPlan: 1
+      };
+      
+      const result = determineEntryAction(existing, 4.5, null, null, true);
+      
+      expect(result.action).toBe('update');
+      expect(result.reason).toBe('UPDATE_EXISTING_ENTRY');
+      
+      // CONTRAT : Seul le champ 'heures' est dans fields
+      expect(Object.keys(result.fields).length).toBe(1);
+      expect(result.fields.heures).toBe(4.5);
+      expect(result.fields.heuresPrevues).toBeUndefined();
+      expect(result.fields.affectation).toBeUndefined();
+      expect(result.fields.capaciteJour).toBeUndefined();
+      expect(result.fields.revisionPlan).toBeUndefined();
+    });
+    
+    test('determineEntryAction préserve heuresPrevues à 0 sur ligne planifiée', () => {
+      const existing = {
+        id: 42,
+        membre: 1,
+        tache: 10,
+        date: 1705276800,
+        heures: 3,
+        heuresPrevues: 6,
+        affectation: 100
+      };
+      
+      const result = determineEntryAction(existing, 0, null, null, true);
+      
+      expect(result.action).toBe('update');
+      expect(result.fields.heures).toBe(0);
+      expect(result.fields.heuresPrevues).toBeUndefined(); // JAMAIS modifié
+    });
+    
+    test('determineEntryAction crée avec affectation OBLIGATOIRE', () => {
+      const activeAssignment = { id: 100, tache: 10, membre: 1 };
+      const currentSheet = { id: 50 };
+      
+      const result = determineEntryAction(null, 4.5, activeAssignment, currentSheet, false);
+      
+      expect(result.action).toBe('create');
+      expect(result.fields.heures).toBe(4.5);
+      expect(result.fields.affectation).toBe(100);
+      expect(result.fields.feuille).toBe(50);
+      expect(result.fields.heuresPrevues).toBeUndefined(); // Sera mis à 0 par défaut
+    });
+    
+    test('determineEntryAction bloque création sans affectation (PHASE 1.1.4)', () => {
+      const result = determineEntryAction(null, 4.5, null, null, false);
+      
+      expect(result.action).toBe('blocked');
+      expect(result.reason).toBe('MISSING_ACTIVE_ASSIGNMENT');
+      expect(result.fields).toBeNull();
+    });
+    
+    test('determineEntryAction permet création avec affectation (PHASE 1.1.4)', () => {
+      const activeAssignment = { id: 100, tache: 10, membre: 1, actif: true };
+      
+      const result = determineEntryAction(null, 4.5, activeAssignment, null, false);
+      
+      expect(result.action).toBe('create');
+      expect(result.fields.heures).toBe(4.5);
+      expect(result.fields.affectation).toBe(100);
+    });
+    
+    test('determineEntryAction permet modification ligne legacy sans affectation', () => {
+      const existing = {
+        id: 42,
+        membre: 1,
+        tache: 10,
+        date: 1705276800,
+        heures: 2,
+        affectation: null  // Ligne legacy
+      };
+      
+      const result = determineEntryAction(existing, 4.5, null, null, false);
+      
+      expect(result.action).toBe('update');
+      expect(result.fields.heures).toBe(4.5);
+    });
+  });
+  
+  // Anciens tests à supprimer ou mettre à jour
+  test('determineEntryAction crée nouvelle ligne sans affectation', () => {
+    // PHASE 1.1.4 : Ce comportement est maintenant BLOQUÉ
+    const result = determineEntryAction(null, 3, null, null, false);
+    
+    expect(result.action).toBe('blocked');
+    expect(result.reason).toBe('MISSING_ACTIVE_ASSIGNMENT');
+  });
+  
+  test('determineEntryAction crée nouvelle ligne avec feuille', () => {
+    // PHASE 1.1.4 : Ce test nécessite une affectation maintenant
+    const activeAssignment = { id: 100, tache: 10, membre: 1 };
+    const currentSheet = { id: 50 };
+    
+    const result = determineEntryAction(null, 3, activeAssignment, currentSheet, false);
+    
+    expect(result.action).toBe('create');
+    expect(result.fields.heures).toBe(3);
+    expect(result.fields.feuille).toBe(50);
+    expect(result.fields.affectation).toBe(100);
+  });
+  
+  describe('Contrats de verrouillage', () => {
+    test('isPersonWeekLocked verrouille soumis et valide', () => {
+      const sheets = [
+        { id: 1, membre: 1, semaine: '2024-01-15', statut: 'soumis' },
+        { id: 2, membre: 2, semaine: '2024-01-15', statut: 'valide' },
+        { id: 3, membre: 3, semaine: '2024-01-15', statut: 'submitted' },
+        { id: 4, membre: 4, semaine: '2024-01-15', statut: 'validated' }
+      ];
+      
+      expect(isPersonWeekLocked(1, '2024-01-15', sheets).locked).toBe(true);
+      expect(isPersonWeekLocked(2, '2024-01-15', sheets).locked).toBe(true);
+      expect(isPersonWeekLocked(3, '2024-01-15', sheets).locked).toBe(true);
+      expect(isPersonWeekLocked(4, '2024-01-15', sheets).locked).toBe(true);
+    });
+    
+    test('isPersonWeekLocked permet édition sur brouillon et rejete', () => {
+      const sheets = [
+        { id: 1, membre: 1, semaine: '2024-01-15', statut: 'brouillon' },
+        { id: 2, membre: 2, semaine: '2024-01-15', statut: 'rejete' },
+        { id: 3, membre: 3, semaine: '2024-01-15', statut: 'draft' },
+        { id: 4, membre: 4, semaine: '2024-01-15', statut: 'rejected' }
+      ];
+      
+      expect(isPersonWeekLocked(1, '2024-01-15', sheets).locked).toBe(false);
+      expect(isPersonWeekLocked(2, '2024-01-15', sheets).locked).toBe(false);
+      expect(isPersonWeekLocked(3, '2024-01-15', sheets).locked).toBe(false);
+      expect(isPersonWeekLocked(4, '2024-01-15', sheets).locked).toBe(false);
+    });
+  });
+  
   describe('resolveActiveAssignment', () => {
     test('retourne missing quand aucune affectation active', () => {
       const assignments = [
@@ -71,7 +283,7 @@ describe('CRA Time Entry Controller', () => {
         { id: 2, tache: 2, membre: 1, actif: true }
       ];
       
-      const result = resolveActiveAssignment(1, 1, assignments);
+      const result = resolveActiveAssignment(1, 1, '2024-01-15', assignments);
       
       expect(result.status).toBe('missing');
       expect(result.assignment).toBeNull();
@@ -80,11 +292,11 @@ describe('CRA Time Entry Controller', () => {
     
     test('retourne found quand une affectation active existe', () => {
       const assignments = [
-        { id: 1, tache: 1, membre: 1, actif: true },
-        { id: 2, tache: 2, membre: 1, actif: true }
+        { id: 1, tache: 1, membre: 1, actif: true, dateDebut: 1704067200, dateFin: 1706745600 },
+        { id: 2, tache: 2, membre: 1, actif: true, dateDebut: 1704067200, dateFin: 1706745600 }
       ];
       
-      const result = resolveActiveAssignment(1, 1, assignments);
+      const result = resolveActiveAssignment(1, 1, '2024-01-15', assignments);
       
       expect(result.status).toBe('found');
       expect(result.assignment).toEqual(assignments[0]);
@@ -93,11 +305,11 @@ describe('CRA Time Entry Controller', () => {
     
     test('retourne ambiguous quand plusieurs affectations actives', () => {
       const assignments = [
-        { id: 1, tache: 1, membre: 1, actif: true },
-        { id: 2, tache: 1, membre: 1, actif: true }
+        { id: 1, tache: 1, membre: 1, actif: true, dateDebut: 1704067200, dateFin: 1706745600 },
+        { id: 2, tache: 1, membre: 1, actif: true, dateDebut: 1704067200, dateFin: 1706745600 }
       ];
       
-      const result = resolveActiveAssignment(1, 1, assignments);
+      const result = resolveActiveAssignment(1, 1, '2024-01-15', assignments);
       
       expect(result.status).toBe('ambiguous');
       expect(result.assignment).toBeNull();
@@ -106,14 +318,42 @@ describe('CRA Time Entry Controller', () => {
     
     test('ignore les affectations inactives', () => {
       const assignments = [
-        { id: 1, tache: 1, membre: 1, actif: false },
-        { id: 2, tache: 1, membre: 1, actif: true }
+        { id: 1, tache: 1, membre: 1, actif: false, dateDebut: 1704067200, dateFin: 1706745600 },
+        { id: 2, tache: 1, membre: 1, actif: true, dateDebut: 1704067200, dateFin: 1706745600 }
       ];
       
-      const result = resolveActiveAssignment(1, 1, assignments);
+      const result = resolveActiveAssignment(1, 1, '2024-01-15', assignments);
       
       expect(result.status).toBe('found');
       expect(result.assignment).toEqual(assignments[1]);
+    });
+    
+    test('ignore les affectations en dehors de la date (PHASE 1.1.3)', () => {
+      // Timestamps Grist en secondes
+      const assignments = [
+        { id: 1, tache: 1, membre: 1, actif: true, dateDebut: 1704067200, dateFin: 1705276800 }, // Fin le 15/01/2024 à 00:00
+        { id: 2, tache: 1, membre: 1, actif: true, dateDebut: 1705622400, dateFin: 1706745600 }  // Début le 19/01/2024 à 00:00
+      ];
+      
+      // Date = 17/01/2024 (entre les deux affectations)
+      const result = resolveActiveAssignment(1, 1, '2024-01-17', assignments);
+      
+      expect(result.status).toBe('missing');
+      expect(result.assignment).toBeNull();
+    });
+    
+    test('trouve l\'affectation qui couvre la date (PHASE 1.1.3)', () => {
+      // Timestamps Grist en secondes
+      const assignments = [
+        { id: 1, tache: 1, membre: 1, actif: true, dateDebut: 1704067200, dateFin: 1705363200 }, // Fin le 16/01/2024
+        { id: 2, tache: 1, membre: 1, actif: true, dateDebut: 1705449600, dateFin: 1706745600 }  // Début le 18/01/2024
+      ];
+      
+      // Date = 10/01/2024, seule la première affectation couvre
+      const result = resolveActiveAssignment(1, 1, '2024-01-10', assignments);
+      
+      expect(result.status).toBe('found');
+      expect(result.assignment).toEqual(assignments[0]);
     });
   });
   
@@ -389,21 +629,19 @@ describe('CRA Time Entry Controller', () => {
       expect(result.fields.affectation).toBe(5);
     });
     
-    test('crée nouvelle ligne sans affectation', () => {
+    test('bloque création sans affectation (PHASE 1.1.4)', () => {
       const result = determineEntryAction(null, 3, null, null, false);
       
-      expect(result.action).toBe('create');
-      expect(result.fields.heures).toBe(3);
-      expect(result.fields.affectation).toBeUndefined();
+      expect(result.action).toBe('blocked');
+      expect(result.reason).toBe('MISSING_ACTIVE_ASSIGNMENT');
     });
     
-    test('crée nouvelle ligne avec feuille', () => {
+    test('bloque création avec feuille mais sans affectation (PHASE 1.1.4)', () => {
       const currentSheet = { id: 50 };
       const result = determineEntryAction(null, 3, null, currentSheet, false);
       
-      expect(result.action).toBe('create');
-      expect(result.fields.heures).toBe(3);
-      expect(result.fields.feuille).toBe(50);
+      expect(result.action).toBe('blocked');
+      expect(result.reason).toBe('MISSING_ACTIVE_ASSIGNMENT');
     });
     
     test('retourne none si heures <= 0 et pas de ligne', () => {
