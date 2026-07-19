@@ -1385,10 +1385,20 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
         }
         
         // =========================================================================
-        // PHASE 4 : Nettoyage sûr des capacités (optionnel)
+        // PHASE 4 : Nettoyage sûr des capacités obsolètes
         // =========================================================================
-        // Cette phase sera implémentée ultérieurement
-        log('PHASE 4 : Nettoyage des capacités (skip pour l\'instant)');
+        log('PHASE 4 : Nettoyage des capacités obsolètes');
+        
+        var cleanupActions = await buildCapacityCleanupActions(memberId, historyCutoffDate);
+        
+        if (cleanupActions.length > 0) {
+          log('Nettoyage de ' + cleanupActions.length + ' capacités obsolètes');
+          await grist.docApi.applyUserActions(cleanupActions);
+          phases.capacityCleanup.actionsExecuted = cleanupActions.length;
+          log('Phase 4 terminée : ' + cleanupActions.length + ' capacités supprimées');
+        } else {
+          log('Phase 4 : aucune capacité à nettoyer');
+        }
         
         // =========================================================================
         // Résultat final
@@ -1416,6 +1426,132 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
           phases: phases
         };
       }
+    }
+    
+    /**
+     * Construit les actions de nettoyage des capacités obsolètes
+     * @param {number} memberId - ID du membre
+     * @param {string} historyCutoffDate - Date de coupure historique
+     * @returns {Promise<Array>} Actions de suppression
+     */
+    async function buildCapacityCleanupActions(memberId, historyCutoffDate) {
+      // Charger les données nécessaires
+      var tables = await Promise.all([
+        grist.docApi.fetchTable('TaskAssignments'),
+        grist.docApi.fetchTable('TimeEntries'),
+        grist.docApi.fetchTable('MemberDailyCapacities')
+      ]);
+      
+      var assignmentsTable = tables[0];
+      var timeEntriesTable = tables[1];
+      var capacitiesTable = tables[2];
+      
+      // Filtrer les affectations actives du membre
+      var assignments = [];
+      if (assignmentsTable.id) {
+        for (var i = 0; i < assignmentsTable.id.length; i++) {
+          if (assignmentsTable.membre[i] === memberId && assignmentsTable.actif[i] !== false) {
+            assignments.push({
+              id: assignmentsTable.id[i],
+              tache: assignmentsTable.tache[i],
+              membre: assignmentsTable.membre[i],
+              dateDebut: assignmentsTable.dateDebut[i],
+              dateFin: assignmentsTable.dateFin[i]
+            });
+          }
+        }
+      }
+      
+      // Filtrer les TimeEntries du membre
+      var timeEntries = [];
+      if (timeEntriesTable.id) {
+        for (var j = 0; j < timeEntriesTable.id.length; j++) {
+          if (timeEntriesTable.membre[j] === memberId) {
+            timeEntries.push({
+              id: timeEntriesTable.id[j],
+              affectation: timeEntriesTable.affectation[j],
+              date: timeEntriesTable.date[j],
+              capaciteJour: timeEntriesTable.capaciteJour[j]
+            });
+          }
+        }
+      }
+      
+      // Filtrer les capacités du membre
+      var capacities = [];
+      if (capacitiesTable.id) {
+        for (var k = 0; k < capacitiesTable.id.length; k++) {
+          if (capacitiesTable.membre[k] === memberId) {
+            capacities.push({
+              id: capacitiesTable.id[k],
+              membre: capacitiesTable.membre[k],
+              date: capacitiesTable.date[k],
+              source: capacitiesTable.source[k]
+            });
+          }
+        }
+      }
+      
+      // Construire l'ensemble des dates utiles
+      var usefulDates = new Set();
+      
+      // Dates des affectations actives
+      assignments.forEach(function(assignment) {
+        var start = gristDateToIso(assignment.dateDebut);
+        var end = gristDateToIso(assignment.dateFin);
+        
+        if (start && end) {
+          var dates = generateDateRange(start, end);
+          dates.forEach(function(date) {
+            usefulDates.add(date);
+          });
+        }
+      });
+      
+      // Dates des TimeEntries
+      timeEntries.forEach(function(entry) {
+        var date = gristDateToIso(entry.date);
+        if (date) {
+          usefulDates.add(date);
+        }
+      });
+      
+      // IDs de capacité référencés par les TimeEntries
+      var referencedCapacityIds = new Set();
+      timeEntries.forEach(function(entry) {
+        var capId = Number(entry.capaciteJour);
+        if (capId) {
+          referencedCapacityIds.add(capId);
+        }
+      });
+      
+      // Filtrer les capacités supprimables
+      var cleanupActions = [];
+      
+      capacities.forEach(function(capacity) {
+        var date = gristDateToIso(capacity.date);
+        var source = String(capacity.source || '').toLowerCase();
+        
+        // Critères de suppression :
+        // 1. source = 'calcul' (pas manuel, pas Lucca)
+        // 2. date >= historyCutoffDate (pas historique)
+        // 3. date absente des dates utiles
+        // 4. ID absent des capacités référencées
+        var isCalculated = source === 'calcul';
+        var isNotHistorical = date && date >= historyCutoffDate;
+        var isNotUseful = date && !usefulDates.has(date);
+        var isNotReferenced = !referencedCapacityIds.has(Number(capacity.id));
+        
+        if (isCalculated && isNotHistorical && isNotUseful && isNotReferenced) {
+          cleanupActions.push([
+            'RemoveRecord',
+            'MemberDailyCapacities',
+            capacity.id
+          ]);
+        }
+      });
+      
+      return cleanupActions;
     }
     
     /**

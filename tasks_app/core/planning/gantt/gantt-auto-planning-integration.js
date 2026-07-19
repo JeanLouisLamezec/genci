@@ -228,25 +228,16 @@
                     if (!preview.canCommit) {
                         log('Preview non committable pour membre ' + memberId + ' : ' + preview.code);
                         
-                        // Essayer de committer les capacités même si le planning est bloqué
-                        if (preview.capacityActions && preview.capacityActions.length > 0) {
-                            try {
-                                log('Commit des capacités uniquement pour membre ' + memberId);
-                                var capacityCommitResult = await orchestrator.commitCapacityActions(preview);
-                                if (capacityCommitResult.success) {
-                                    log('Capacités enregistrées pour membre ' + memberId);
-                                }
-                            } catch (capError) {
-                                log('Erreur commit capacités: ' + capError.message);
-                            }
-                        }
+                        // IMPORTANT : Ne PAS committer les capacités quand le preview est bloqué
+                        // Les capacités seront créées lors d'un futur preview committable
+                        log('Aucune capacité écrite pour membre ' + memberId + ' (preview bloqué)');
                         
                         results.push({
                             memberId: memberId,
                             status: 'blocked',
                             code: preview.code,
                             diagnostics: preview.diagnostics || [],
-                            actionCount: (preview.timeEntryActions || []).length
+                            actionCount: 0
                         });
                         blockedMemberIds.push(memberId);
                         continue;
