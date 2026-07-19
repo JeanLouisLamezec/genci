@@ -246,15 +246,10 @@
                     // Vérifier si des actions sont nécessaires
                     var actionCount = (preview.timeEntryActions || []).length + (preview.capacityActions || []).length;
                     
+                    // Même avec actionCount === 0, on commit pour permettre le nettoyage des capacités obsolètes
+                    // La phase 4 sera exécutée et peut supprimer des capacités même sans autres actions
                     if (actionCount === 0) {
-                        log('Planning déjà conforme pour membre ' + memberId);
-                        results.push({
-                            memberId: memberId,
-                            status: 'already-conformant',
-                            code: preview.code,
-                            actionCount: 0
-                        });
-                        continue;
+                        log('Planning apparemment conforme pour membre ' + memberId + ', mais commit pour nettoyage éventuel');
                     }
 
                     // Commit de la planification
@@ -267,16 +262,26 @@
                     }
 
                     var commitResult = await orchestrator.commitMember(memberId, preview);
+                    var executedActions = commitResult.totalActionsExecuted || 0;
 
                     if (commitResult.success) {
-                        var executedActions = commitResult.totalActionsExecuted || 0;
-                        log('Commit réussi pour membre ' + memberId + ' : ' + executedActions + ' actions');
-                        results.push({
-                            memberId: memberId,
-                            status: 'committed',
-                            actionCount: executedActions
-                        });
-                        committedMemberIds.push(memberId);
+                        if (executedActions === 0) {
+                            log('Planning déjà conforme pour membre ' + memberId + ' (0 action)');
+                            results.push({
+                                memberId: memberId,
+                                status: 'already-conformant',
+                                code: preview.code,
+                                actionCount: 0
+                            });
+                        } else {
+                            log('Commit réussi pour membre ' + memberId + ' : ' + executedActions + ' actions');
+                            results.push({
+                                memberId: memberId,
+                                status: 'committed',
+                                actionCount: executedActions
+                            });
+                            committedMemberIds.push(memberId);
+                        }
                     } else {
                         log('Commit échoué pour membre ' + memberId + ' : ' + commitResult.code);
                         results.push({

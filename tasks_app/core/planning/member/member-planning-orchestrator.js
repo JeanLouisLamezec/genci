@@ -1624,7 +1624,7 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
         results.push({
           memberId: memberId,
           success: commitResult.success,
-          actionsExecuted: commitResult.actionsExecuted
+          actionsExecuted: commitResult.totalActionsExecuted || 0
         });
       }
       
