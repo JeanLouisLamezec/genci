@@ -3508,29 +3508,8 @@ function isIndispo(dayMs, indispos) {
 }
 
 // Capacité par jour (en heures) pour une personne donnée
-function dayCapacityForPerson(dayMs, personId) {
-  const person = S.team.find(t => t.id === personId);
-  const baseHeures = (person && person.capaciteHebdo) ? person.capaciteHebdo : S.hoursPerDay;
-  const baseParJour = baseHeures / 5;  // réparti sur 5 jours (Lun-Ven)
-  
-  const indispos = parseIndisposFor(personId);
-  const ind = isIndispo(dayMs, indispos);
-  
-  if (ind.isIndispo) {
-    // Si dispo partielle (%), on réduit la capacité
-    if (ind.dispo != null && ind.dispo > 0 && ind.dispo < 100) {
-      return baseParJour * (ind.dispo / 100);
-    }
-    // Indispo totale
-    return 0;
-  }
-  return baseParJour;
-}
-
-// Capacité par jour (en heures) pour moi (legacy)
-function dayCapacity(dayMs) {
-  return dayCapacityForPerson(dayMs, S.me);
-}
+// Utilise la version canonique définie plus haut (MemberDailyCapacities)
+// Note: parseIndisposFor() et isIndispo() sont conservés uniquement pour l'affichage visuel des indisponibilités
 
 // ---- Demo -----------------------------------------------------------------
 function loadDemo() {
@@ -3739,8 +3718,9 @@ async function setCell(taskId, dayMs, personId, qtyStr) {
   const hours = qtyToHours(qtyStr);
   const cap = dayCapacityForPerson(dayMs, personId);
   
-  // Bloquer la saisie si le jour est en indisponibilité totale
-  if (cap === 0) {
+  // CORRECTION : Bloquer uniquement les saisies positives sur jour indisponible
+  // Autoriser la remise à zéro (hours = 0) même si capacité = 0
+  if (cap === 0 && hours > 0) {
     toast('Impossible de saisir du temps sur un jour en congé/indisponibilité');
     render();
     return;
@@ -3781,8 +3761,7 @@ async function setCell(taskId, dayMs, personId, qtyStr) {
     f.membre === personId && sameDay(gristToMs(f.semaine), S.weekStart)
   );
   
-  // Résoudre l'entrée éditable
-  const dayIso = CRAController.localDayKeyFromMs(dayMs);
+  // Résoudre l'entrée éditable (dayIso déjà déclaré plus haut)
   const entryResult = CRAController.resolveEditableCellEntry(
     S.entries, taskId, dayIso, personId, activeAssignment
   );
@@ -3853,19 +3832,43 @@ async function setCell(taskId, dayMs, personId, qtyStr) {
         ...actionResult.fields
       };
       
-      // PHASE 1.1.5 : Ajouter référence capacité si disponible
-      const capacityResult = CRAController.dailyCapacityForPersonAndDate(
-        personId,
-        dayMs,
-        S.dailyCapacities || [],
-        S.team || [],
-        S.disponibilites || []
-      );
+    // PHASE 1.1.5 : Ajouter référence capacité si disponible
+    const capacityResult = CRAController.dailyCapacityForPersonAndDate(
+      personId,
+      dayMs,
+      S.dailyCapacities || [],
+      S.team || [],
+      S.disponibilites || []
+    );
+    
+    // BUG 5 : Rattacher capaciteJour (référence à MemberDailyCapacities)
+    // et distinguer capaciteTheorique vs capaciteDisponible
+    if (capacityResult.source !== 'none') {
+      // Trouver la ligne complète de capacité pour obtenir son ID
+      const dayKey = CRAController.localDayKeyFromMs(dayMs);
+      const capacityLine = (S.dailyCapacities || []).find(cap => {
+        const capDate = CRAController.gristDateKey(cap.date);
+        return cap.membre === personId && capDate === dayKey;
+      });
       
-      if (capacityResult.capacity > 0) {
-        fieldsToCreate.capaciteTheorique = capacityResult.capacity;
-        fieldsToCreate.capaciteDisponible = capacityResult.capacity;
+      if (capacityLine && capacityLine.id) {
+        fieldsToCreate.capaciteJour = capacityLine.id;
       }
+      
+      // Utiliser les vraies valeurs de la capacité
+      fieldsToCreate.capaciteTheorique = capacityResult.capacity;
+      fieldsToCreate.capaciteDisponible = capacityResult.capacity;
+      
+      // Si on a trouvé une ligne avec capaciteDisponible différent
+      if (capacityLine) {
+        if (typeof capacityLine.capaciteDisponible === 'number') {
+          fieldsToCreate.capaciteDisponible = capacityLine.capaciteDisponible;
+        }
+        if (typeof capacityLine.capaciteTheorique === 'number') {
+          fieldsToCreate.capaciteTheorique = capacityLine.capaciteTheorique;
+        }
+      }
+    }
       
       const r = await grist.docApi.applyUserActions([
         ['AddRecord', 'TimeEntries', null, fieldsToCreate]
@@ -4396,6 +4399,7 @@ function buildCraIndexes() {
     // PHASE 3 : Nouvelle clé : affectation|date (ou tache|date en fallback)
     entriesByAssignmentDate: new Map(),
     entriesByTaskDate: new Map(),  // Fallback pour données legacy
+    entriesByPersonWeek: new Map(),  // URGENT 3 : Initialiser (manquait)
     assignmentsByPersonTask: new Map(),
     dailyCapacityByPersonDate: new Map(),
     feuillesByPersonWeek: new Map()

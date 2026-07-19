@@ -47,21 +47,28 @@
  * @returns {{ status: 'found' | 'missing' | 'ambiguous', assignment: null | object, assignments: Array }}
  */
 function resolveActiveAssignment(taskId, personId, dateIso, assignments) {
-  const dateMs = new Date(dateIso + 'T12:00:00').getTime(); // Milieu de journée pour éviter fuseaux
+  // PHASE 1.1.3 - CORRECTION BORNES INCLUSIVES
+  // Utiliser gristDateKey pour comparer des dates civiles (YYYY-MM-DD)
+  // et non des timestamps avec fuseaux horaires
   
   const activeAssignments = (assignments || []).filter(a => {
     // Vérifier actif
     if (a.actif === false) return false;
     
-    // Vérifier dates de couverture
+    // Vérifier dates de couverture avec bornes INCLUSIVES
+    // Une affectation qui finit le 15 janvier couvre le 15 janvier toute la journée
     if (a.dateDebut != null) {
-      const debutMs = typeof a.dateDebut === 'number' ? a.dateDebut * 1000 : 0;
-      if (dateMs < debutMs) return false; // Date avant le début
+      const assignmentStart = gristDateKey(a.dateDebut);
+      if (assignmentStart && dateIso < assignmentStart) {
+        return false; // Date avant le début
+      }
     }
     
     if (a.dateFin != null) {
-      const finMs = typeof a.dateFin === 'number' ? a.dateFin * 1000 : 0;
-      if (dateMs > finMs) return false; // Date après la fin
+      const assignmentEnd = gristDateKey(a.dateFin);
+      if (assignmentEnd && dateIso > assignmentEnd) {
+        return false; // Date après la fin (fin inclusive)
+      }
     }
     
     // Vérifier tâche et membre

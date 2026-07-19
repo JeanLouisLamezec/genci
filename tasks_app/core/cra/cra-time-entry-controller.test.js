@@ -349,8 +349,34 @@ describe('CRA Time Entry Controller', () => {
         { id: 2, tache: 1, membre: 1, actif: true, dateDebut: 1705449600, dateFin: 1706745600 }  // Début le 18/01/2024
       ];
       
-      // Date = 10/01/2024, seule la première affectation couvre
+      // Date = 10/01/2024 (1704844800), seule la première affectation couvre
       const result = resolveActiveAssignment(1, 1, '2024-01-10', assignments);
+      
+      expect(result.status).toBe('found');
+      expect(result.assignment).toEqual(assignments[0]);
+    });
+    
+    test('inclut exactement la date de début (PHASE 1.1.3 - bornes inclusives)', () => {
+      // Affectation du 10/01 au 20/01
+      const assignments = [
+        { id: 1, tache: 1, membre: 1, actif: true, dateDebut: 1704844800, dateFin: 1705708800 }
+      ];
+      
+      // Date = 10/01 (premier jour) - DOIT ÊTRE INCLUSE
+      const result = resolveActiveAssignment(1, 1, '2024-01-10', assignments);
+      
+      expect(result.status).toBe('found');
+      expect(result.assignment).toEqual(assignments[0]);
+    });
+    
+    test('inclut exactement la date de fin (PHASE 1.1.3 - bornes inclusives)', () => {
+      // Affectation du 10/01 au 20/01
+      const assignments = [
+        { id: 1, tache: 1, membre: 1, actif: true, dateDebut: 1704844800, dateFin: 1705708800 }
+      ];
+      
+      // Date = 20/01 (dernier jour) - DOIT ÊTRE INCLUSE
+      const result = resolveActiveAssignment(1, 1, '2024-01-20', assignments);
       
       expect(result.status).toBe('found');
       expect(result.assignment).toEqual(assignments[0]);
