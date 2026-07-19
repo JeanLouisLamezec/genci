@@ -557,11 +557,20 @@ function normalizeCraSnapshot(raw, currentUser) {
   
   const dailyCapacities = columnarToRows(raw.dailyCapacities);
   
+  // 1.2.1 - SÉPARATION IDENTITÉ : Distinguer utilisateur connecté et personne affichée
   const meUserId = currentUser ? currentUser.userId : null;
-  let me = team.find(t => t.gristUserId && t.gristUserId === meUserId);
-  const meId = me ? me.id : (team[0] ? team[0].id : null);
-  const meRow = team.find(t => t.id === meId);
-  const meName = meRow ? meRow.nom : '';
+  let matchedUser = team.find(t => t.gristUserId && t.gristUserId === meUserId);
+  
+  // currentUserMemberId : l'utilisateur connecté (immuable, ne change pas avec les filtres)
+  // Si identification échoue, reste null (pas de fallback silencieux vers team[0])
+  const currentUserMemberId = matchedUser ? matchedUser.id : null;
+  
+  // selectedPersonId : la personne actuellement affichée (peut changer avec filtres)
+  // Initialisée à currentUserMemberId si disponible, sinon null
+  const selectedPersonId = currentUserMemberId || null;
+  
+  const matchedUserRow = matchedUser ? team.find(t => t.id === matchedUser.id) : null;
+  const currentUserMemberName = matchedUserRow ? matchedUserRow.nom : '';
   
   return {
     team,
@@ -574,9 +583,14 @@ function normalizeCraSnapshot(raw, currentUser) {
     disponibilites,
     assignments,
     dailyCapacities,
-    meUserId,
-    me: meId,
-    meName,
+    // NOUVEAU : Séparation identité
+    currentUserMemberId,     // Utilisateur connecté (immuable)
+    currentUserMemberName,   // Nom de l'utilisateur connecté
+    selectedPersonId,        // Personne actuellement affichée (change avec filtres)
+    // LEGACY : Pour compatibilité temporaire (sera supprimé)
+    me: currentUserMemberId, // Alias vers currentUserMemberId
+    meName: currentUserMemberName,
+    // État
     mesGeres: [],
     visiblePersonIds: team.map(m => m.id),
     hasTable: true,

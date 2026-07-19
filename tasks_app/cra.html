@@ -3574,9 +3574,27 @@ function updateSubmitBtn() {
   const firstPersonId = S.visiblePersonIds[0];
   const st = myStatutForPerson(firstPersonId);
   
-  if (st === 'valide') { sb.textContent = 'Semaine validee'; sb.disabled = true; sb.className = 'btn ghost'; sb.onclick = null; }
-  else if (st === 'soumis') { sb.textContent = 'Retirer (soumise)'; sb.disabled = false; sb.className = 'btn ghost'; sb.onclick = withdrawWeekForPerson.bind(null, firstPersonId); }
-  else { sb.textContent = 'Soumettre la semaine' + (st === 'rejete' ? ' (rejetee)' : ''); sb.disabled = false; sb.className = 'btn'; sb.onclick = submitWeekForPerson.bind(null, firstPersonId); }
+  // 1.2.2 - Utiliser normalizeSheetStatus pour comparer
+  const status = normalizeSheetStatus(st);
+  
+  if (status === 'valide') { 
+    sb.textContent = 'Semaine validee'; 
+    sb.disabled = true; 
+    sb.className = 'btn ghost'; 
+    sb.onclick = null; 
+  }
+  else if (status === 'soumis') { 
+    sb.textContent = 'Retirer (soumise)'; 
+    sb.disabled = false; 
+    sb.className = 'btn ghost'; 
+    sb.onclick = withdrawWeekForPerson.bind(null, firstPersonId); 
+  }
+  else { 
+    sb.textContent = 'Soumettre la semaine' + (status === 'rejete' ? ' (rejetee)' : ''); 
+    sb.disabled = false; 
+    sb.className = 'btn'; 
+    sb.onclick = submitWeekForPerson.bind(null, firstPersonId); 
+  }
 }
 
 function renderSaisie() {
@@ -3598,7 +3616,9 @@ function renderSaisie() {
     
     const indispos = parseIndisposFor(personId);
     const st = myStatutForPerson(personId);
-    const isLocked = ['soumis', 'valide'].includes(st);
+    // 1.2.2 - Utiliser normalizeSheetStatus pour le verrouillage
+    const status = normalizeSheetStatus(st);
+    const isLocked = ['soumis', 'valide'].includes(status);
     
     // En-tête de section
     html += '<div class="person-section" style="margin-bottom:24px;padding:16px;background:var(--card-bg);border:1px solid var(--border);border-radius:8px;page-break-inside:avoid">'
@@ -3690,17 +3710,27 @@ function renderSaisie() {
 
 function renderValider() {
   const main = document.getElementById('main');
-  const subs = S.feuilles.filter(f => S.mesGeres.includes(f.membre)).sort((a, b) => (a.statut === 'soumis' ? 0 : 1) - (b.statut === 'soumis' ? 0 : 1));
+  // 1.2.2 - Utiliser normalizeSheetStatus pour comparer
+  const subs = S.feuilles.filter(f => {
+    const status = normalizeSheetStatus(f.statut);
+    return S.mesGeres.includes(f.membre) && status === 'soumis';
+  }).sort((a, b) => {
+    const statusA = normalizeSheetStatus(a.statut);
+    const statusB = normalizeSheetStatus(b.statut);
+    return (statusA === 'soumis' ? 0 : 1) - (statusB === 'soumis' ? 0 : 1);
+  });
+  
   if (!subs.length) { main.innerHTML = '<div class="empty-cta">Aucune feuille de ton equipe pour l\'instant.</div>'; return; }
   let html = '<table class="grid"><thead><tr><th class="left">Agent</th><th class="left">Semaine</th><th class="total">Total</th><th class="left">Statut</th><th class="left">Action</th></tr></thead><tbody>';
   for (const f of subs) {
     const p = S.team.find(t => t.id === f.membre), wk = gristToMs(f.semaine);
-    const act = f.statut === 'soumis'
+    const status = normalizeSheetStatus(f.statut);
+    const act = status === 'soumis'
       ? '<button class="btn" onclick="validerFeuille(' + f.id + ')">Valider</button> <button class="btn ghost" onclick="rejeterFeuille(' + f.id + ')">Rejeter</button>' : '';
     html += '<tr><td class="tcell">' + esc(p ? p.nom : '?') + '</td>'
       + '<td class="tcell">' + new Date(wk).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' }) + '</td>'
       + '<td class="total">' + (fmtQty(weekTotalFor(f.membre, wk)) || '0') + '</td>'
-      + '<td class="tcell"><span class="fbadge ' + f.statut + '">' + f.statut + '</span></td>'
+      + '<td class="tcell"><span class="fbadge ' + status + '">' + status + '</span></td>'
       + '<td class="tcell">' + act + '</td></tr>';
   }
   html += '</tbody></table>';
@@ -3901,12 +3931,33 @@ document.getElementById('tabSeg').querySelectorAll('button').forEach(b => b.oncl
 document.getElementById('exportBtn').onclick = () => exportCSV();
 
 // ---- Workflow : soumission / validation par le chef (via l'annuaire) ------
-function myStatutForPerson(personId) { 
-  const f = S.feuilles.find(x => x.membre === personId && sameDay(gristToMs(x.semaine), S.weekStart)); 
-  return f ? f.statut : 'brouillon'; 
+
+/**
+ * 1.2.2 - Normalise un statut de feuille (supporte français et anglais)
+ * @param {string} status - Statut brut (soumis/submitted, valide/validated, etc.)
+ * @returns {string} Statut normalisé (brouillon/soumis/valide/rejete)
+ */
+function normalizeSheetStatus(status) {
+  const value = String(status || '').trim().toLowerCase();
+  
+  // Aliases anglais -> français
+  const aliases = {
+    'draft': 'brouillon',
+    'submitted': 'soumis',
+    'validated': 'valide',
+    'rejected': 'rejete'
+  };
+  
+  return aliases[value] || value || 'brouillon';
 }
 
-function myStatut() { return myStatutForPerson(S.me); }
+function myStatutForPerson(personId) { 
+  const f = S.feuilles.find(x => x.membre === personId && sameDay(gristToMs(x.semaine), S.weekStart)); 
+  return f ? normalizeSheetStatus(f.statut) : 'brouillon'; 
+}
+
+// 1.2.1 - Utiliser selectedPersonId au lieu de S.me pour l'affichage
+function myStatut() { return myStatutForPerson(S.selectedPersonId); }
 
 function isLocked() { return ['soumis', 'valide'].includes(myStatut()); }
 function weekTotalFor(membre, wkMs) { let h = 0; for (let i = 0; i < 7; i++) { const d = wkMs + i * DAY; for (const e of S.entries) if (e.membre === membre && sameDay(gristToMs(e.date), d)) h += Number(e.heures) || 0; } return h; }
@@ -4099,15 +4150,33 @@ async function withdrawWeekForPerson(personId) {
   }
 }
 
-async function submitWeek() { await submitWeekForPerson(S.me); }
-async function withdrawWeek() { await withdrawWeekForPerson(S.me); }
+async function submitWeek() { 
+  // 1.2.1 - Utiliser selectedPersonId pour la soumission (personne affichée)
+  await submitWeekForPerson(S.selectedPersonId); 
+}
+
+async function withdrawWeek() { 
+  await withdrawWeekForPerson(S.selectedPersonId); 
+}
+
 window.validerFeuille = async (id) => {
   const f = S.feuilles.find(x => x.id === id);
   if (!f) return;
   
+  // 1.2.1 - UTILISER currentUserMemberId pour validePar (identité réelle)
+  // Pas S.me qui peut être modifié par les filtres
+  if (!S.currentUserMemberId) {
+    toast('Utilisateur non identifié - validation impossible');
+    return;
+  }
+  
   try {
     await grist.docApi.applyUserActions([
-      ['UpdateRecord', 'Feuilles', id, { statut: 'valide', validePar: S.me, dateValidation: Math.floor(Date.now() / 1000) }]
+      ['UpdateRecord', 'Feuilles', id, { 
+        statut: 'valide', 
+        validePar: S.currentUserMemberId, 
+        dateValidation: Math.floor(Date.now() / 1000) 
+      }]
     ]);
     
     // Recharger après succès
@@ -4305,16 +4374,20 @@ function ensureFilterManager() {
         S.visiblePersonIds = [S.team[0].id];
       }
       
-      // Mettre à jour S.me
+      // 1.2.1 - MODIFICATION IDENTITÉ : Ne change QUE selectedPersonId
+      // currentUserMemberId reste immuable (ne change jamais ici)
       if (S.visiblePersonIds.length === 1) {
-        S.me = S.visiblePersonIds[0];
-        const meRow = S.team.find(t => t.id === S.me);
-        S.meName = meRow ? meRow.nom : '';
-      } else if (!S.visiblePersonIds.includes(S.me)) {
-        S.me = S.visiblePersonIds[0];
-        const meRow = S.team.find(t => t.id === S.me);
-        S.meName = meRow ? meRow.nom : '';
+        S.selectedPersonId = S.visiblePersonIds[0];
+        const selectedRow = S.team.find(t => t.id === S.selectedPersonId);
+        S.meName = selectedRow ? selectedRow.nom : S.currentUserMemberName;
+      } else if (!S.visiblePersonIds.includes(S.selectedPersonId)) {
+        S.selectedPersonId = S.visiblePersonIds[0];
+        const selectedRow = S.team.find(t => t.id === S.selectedPersonId);
+        S.meName = selectedRow ? selectedRow.nom : S.currentUserMemberName;
       }
+      
+      // Mettre à jour S.me pour compatibilité temporaire
+      S.me = S.selectedPersonId;
       
       render();
     },
@@ -4612,6 +4685,17 @@ async function initGrist() {
         // PHASE 3 : Application atomique avec initialisation défensive
         Object.assign(S, normalized);
         
+        // 1.2.1 - SÉPARATION IDENTITÉ : S.me devient selectedPersonId
+        // currentUserMemberId reste immuable (ne change jamais avec les filtres)
+        // selectedPersonId peut être modifié par les filtres
+        if (!S.selectedPersonId && S.currentUserMemberId) {
+          S.selectedPersonId = S.currentUserMemberId;
+        }
+        
+        // Pour compatibilité temporaire, S.me pointe vers selectedPersonId
+        S.me = S.selectedPersonId;
+        S.meName = S.currentUserMemberName || '';
+        
         // PHASE 3 : Initialiser la semaine courante SI non définie
         // Ceci garantit que la semaine n'est jamais undefined ou null
         if (!S.weekStart || typeof S.weekStart !== 'number') {
@@ -4619,18 +4703,23 @@ async function initGrist() {
           console.info('[CRA]', {
             phase: 'snapshot',
             weekStartInitialized: new Date(S.weekStart).toISOString(),
-            reason: 'week-was-missing'
+            reason: 'week-was-missing',
+            currentUserMemberId: S.currentUserMemberId,
+            selectedPersonId: S.selectedPersonId
           });
         } else {
           console.info('[CRA]', {
             phase: 'snapshot',
             weekStart: new Date(S.weekStart).toISOString(),
-            entryCount: S.entries.length
+            entryCount: S.entries.length,
+            currentUserMemberId: S.currentUserMemberId,
+            selectedPersonId: S.selectedPersonId
           });
         }
         
         // Calculer "qui je gere" après chaque snapshot
-        S.mesGeres = S.me ? computeMesGeres(S.me) : [];
+        // Basé sur currentUserMemberId (identité réelle), pas selectedPersonId
+        S.mesGeres = S.currentUserMemberId ? computeMesGeres(S.currentUserMemberId) : [];
         
         // PHASE 3 : Reconstruire les index (utilise maintenant affectation+date)
         buildCraIndexes();
