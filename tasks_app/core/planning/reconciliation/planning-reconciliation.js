@@ -170,7 +170,7 @@ function reconcileDailyEntries(existingEntries, desiredPlan, options = {}) {
     if (!desiredItems || desiredItems.length === 0) {
       // Aucune entrée désirée pour cette clé
       const plannedCentiHours = toCentiHours(primaryEntry.plannedHours || 0);
-      const actualCentiHours = toCentiHours(primaryEntry.actualHours || 0);
+      const actualCentiHours = primaryEntry.actualHours === null || primaryEntry.actualHours === undefined || primaryEntry.actualHours === '' ? 0 : toCentiHours(primaryEntry.actualHours);
       const hasDescription = !!(primaryEntry.description && primaryEntry.description.trim());
       const hasImputation = !!(primaryEntry.imputation && primaryEntry.imputation.trim());
       const hasFeuille = !!(primaryEntry.feuille && primaryEntry.feuille !== null && primaryEntry.feuille !== undefined);

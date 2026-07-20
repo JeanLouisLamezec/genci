@@ -112,7 +112,7 @@ function normalizeTimeEntry(rawEntry, feuillesById) {
     
     // Heures
     plannedHours: Number(rawEntry.heuresPrevues) || 0,
-    actualHours: Number(rawEntry.heures) || 0,
+    actualHours: rawEntry.heures === null || rawEntry.heures === undefined || rawEntry.heures === '' ? null : Number(rawEntry.heures),
     
     // Capacité
     baseCapacityHours: Number(rawEntry.capaciteTheorique) || 0,

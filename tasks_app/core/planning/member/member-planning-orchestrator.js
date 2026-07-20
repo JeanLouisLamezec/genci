@@ -556,7 +556,7 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
       return timeEntries.filter(function(entry) {
         var isSubmitted = entry.sheetStatus === 'submitted';
         var isValidated = entry.sheetStatus === 'validated';
-        var hasActualHours = entry.actualHours > 0;
+        var hasActualHours = entry.heures !== null && entry.heures !== undefined && entry.heures !== '' && Number.isFinite(Number(entry.heures));
         var isBeforeCutoff = historyCutoffDate && entry.date && entry.date < historyCutoffDate;
         
         // Feuille soumise ou validée
@@ -564,7 +564,7 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
           return true;
         }
         
-        // Heures réalisées > 0
+        // Heures réalisées explicites (null ≠ 0)
         if (hasActualHours) {
           return true;
         }
@@ -673,7 +673,7 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
         
         // Feuille validée : protéger max(heuresPrevues, heures)
         if (entry.sheetStatus === 'validated') {
-          protectedHoursByDate[entry.date] += Math.max(entry.plannedHours, entry.actualHours || 0);
+          protectedHoursByDate[entry.date] += Math.max(entry.plannedHours, entry.actualHours === null || entry.actualHours === undefined || entry.actualHours === '' ? 0 : entry.actualHours);
         }
         // Feuille soumise : protéger heuresPrevues
         else if (entry.sheetStatus === 'submitted') {
@@ -681,7 +681,7 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
         }
         // Ligne avec réalisé explicite : protéger max(heuresPrevues, heures)
         else if (hasRealise) {
-          protectedHoursByDate[entry.date] += Math.max(entry.plannedHours, entry.actualHours || 0);
+          protectedHoursByDate[entry.date] += Math.max(entry.plannedHours, entry.actualHours === null || entry.actualHours === undefined || entry.actualHours === '' ? 0 : entry.actualHours);
         }
         // Historique avant replanFromDate ou ligne sans réalisé : protéger heuresPrevues
         else {
@@ -1382,7 +1382,7 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
         
         // Réconciliation avec les vraies capacités
         var refreshedEntriesForReconciliation = refreshedData.timeEntries.filter(function(e) {
-          var hasActualHours = Number(e.actualHours || 0) > 0;
+          var hasActualHours = e.heures !== null && e.heures !== undefined && e.heures !== '' && Number.isFinite(Number(e.heures));
           var isSubmitted = e.sheetStatus === 'submitted';
           var isValidated = e.sheetStatus === 'validated';
           var hasFeuille = e.feuille != null && e.feuille !== '';

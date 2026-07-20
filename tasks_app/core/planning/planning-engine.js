@@ -324,7 +324,7 @@ function buildAssignmentPlan(input) {
     }
     
     if (entry.sheetStatus === 'validated') {
-      validatedActualCentiHours += toCentiHours(entry.actualHours || 0);
+      validatedActualCentiHours += entry.actualHours === null || entry.actualHours === undefined || entry.actualHours === '' ? 0 : toCentiHours(entry.actualHours);
       validatedActualEntries.push(entry);
     }
   }

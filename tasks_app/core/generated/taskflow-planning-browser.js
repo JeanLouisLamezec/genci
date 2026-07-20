@@ -358,7 +358,7 @@ function buildAssignmentPlan(input) {
     }
     
     if (entry.sheetStatus === 'validated') {
-      validatedActualCentiHours += toCentiHours(entry.actualHours || 0);
+      validatedActualCentiHours += entry.actualHours === null || entry.actualHours === undefined || entry.actualHours === '' ? 0 : toCentiHours(entry.actualHours);
       validatedActualEntries.push(entry);
     }
   }
@@ -933,7 +933,7 @@ function reconcileDailyEntries(existingEntries, desiredPlan, options = {}) {
     if (!desiredItems || desiredItems.length === 0) {
       // Aucune entrée désirée pour cette clé
       const plannedCentiHours = toCentiHours(primaryEntry.plannedHours || 0);
-      const actualCentiHours = toCentiHours(primaryEntry.actualHours || 0);
+      const actualCentiHours = primaryEntry.actualHours === null || primaryEntry.actualHours === undefined || primaryEntry.actualHours === '' ? 0 : toCentiHours(primaryEntry.actualHours);
       const hasDescription = !!(primaryEntry.description && primaryEntry.description.trim());
       const hasImputation = !!(primaryEntry.imputation && primaryEntry.imputation.trim());
       const hasFeuille = !!(primaryEntry.feuille && primaryEntry.feuille !== null && primaryEntry.feuille !== undefined);
@@ -2360,8 +2360,8 @@ async function loadAssignmentContext(grist, assignmentId, options = {}) {
           taskId: e.tache,
           memberId: e.membre,
           date: gristDateToIso(e.date),
-          plannedHours: e.heuresPrevues || 0,
-          actualHours: e.heures || 0,
+          plannedHours: Number(e.heuresPrevues) || 0,
+          actualHours: e.heures === null || e.heures === undefined || e.heures === '' ? null : Number(e.heures),
           sheetStatus,
           description: e.description || null,
           imputation: e.imputation || null,
@@ -2555,16 +2555,16 @@ async function loadAssignmentContext(grist, assignmentId, options = {}) {
         taskId: e.tache,
         memberId: e.membre,
         date: dateStr,
-        plannedHours: e.heuresPrevues || 0,
-        actualHours: e.heures || 0,
+        plannedHours: Number(e.heuresPrevues) || 0,
+        actualHours: e.heures === null || e.heures === undefined || e.heures === '' ? null : Number(e.heures),
         sheetStatus,
         description: e.description || null,
         imputation: e.imputation || null,
         feuille: e.feuille || null,
         capaciteJour: e.capaciteJour || null,
         capacityRecordId: e.capaciteJour || null,
-        baseCapacityHours: Number(e.capaciteTheorique || 0),
-        availableCapacityHours: Number(e.capaciteDisponible || 0),
+        baseCapacityHours: Number(e.capaciteTheorique) || 0,
+        availableCapacityHours: Number(e.capaciteDisponible) || 0,
         revisionPlan: Number(e.revisionPlan || 0)
       };
     });
@@ -2880,7 +2880,7 @@ async function reconcileAssignmentPlan(grist, assignmentId, options = {}) {
       
       // Pour les lignes futures mutables
       const hasPlannedHours = entry.plannedHours > 0;
-      const hasActualHours = entry.actualHours > 0;
+      const hasActualHours = entry.actualHours !== null && entry.actualHours !== undefined && entry.actualHours !== '' && Number.isFinite(Number(entry.actualHours));
       const hasDescription = !!(entry.description && entry.description.trim());
       const hasImputation = !!(entry.imputation && entry.imputation.trim());
       const hasFeuille = !!(entry.feuille && entry.feuille !== null && entry.feuille !== undefined);
@@ -3218,7 +3218,7 @@ function diffToGristActions(diff, assignment, capacities = [], existingEntriesMa
         membre: assignment.memberId,
         date: isoToGristDate(date),
         heuresPrevues: create.plannedHours,
-        heures: 0,
+        heures: null,
         capaciteTheorique: create.baseCapacityHours || cap.baseCapacityHours || 0,
         capaciteDisponible: create.availableCapacityHours || cap.availableCapacityHours || 0,
         capaciteJour: create.capacityRecordId || null,
@@ -3968,7 +3968,7 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
       return timeEntries.filter(function(entry) {
         var isSubmitted = entry.sheetStatus === 'submitted';
         var isValidated = entry.sheetStatus === 'validated';
-        var hasActualHours = entry.actualHours > 0;
+        var hasActualHours = entry.heures !== null && entry.heures !== undefined && entry.heures !== '' && Number.isFinite(Number(entry.heures));
         var isBeforeCutoff = historyCutoffDate && entry.date && entry.date < historyCutoffDate;
         
         // Feuille soumise ou validée
@@ -3976,7 +3976,7 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
           return true;
         }
         
-        // Heures réalisées > 0
+        // Heures réalisées explicites (null ≠ 0)
         if (hasActualHours) {
           return true;
         }
@@ -4085,7 +4085,7 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
         
         // Feuille validée : protéger max(heuresPrevues, heures)
         if (entry.sheetStatus === 'validated') {
-          protectedHoursByDate[entry.date] += Math.max(entry.plannedHours, entry.actualHours || 0);
+          protectedHoursByDate[entry.date] += Math.max(entry.plannedHours, entry.actualHours === null || entry.actualHours === undefined || entry.actualHours === '' ? 0 : entry.actualHours);
         }
         // Feuille soumise : protéger heuresPrevues
         else if (entry.sheetStatus === 'submitted') {
@@ -4093,7 +4093,7 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
         }
         // Ligne avec réalisé explicite : protéger max(heuresPrevues, heures)
         else if (hasRealise) {
-          protectedHoursByDate[entry.date] += Math.max(entry.plannedHours, entry.actualHours || 0);
+          protectedHoursByDate[entry.date] += Math.max(entry.plannedHours, entry.actualHours === null || entry.actualHours === undefined || entry.actualHours === '' ? 0 : entry.actualHours);
         }
         // Historique avant replanFromDate ou ligne sans réalisé : protéger heuresPrevues
         else {
@@ -4794,7 +4794,7 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
         
         // Réconciliation avec les vraies capacités
         var refreshedEntriesForReconciliation = refreshedData.timeEntries.filter(function(e) {
-          var hasActualHours = Number(e.actualHours || 0) > 0;
+          var hasActualHours = e.heures !== null && e.heures !== undefined && e.heures !== '' && Number.isFinite(Number(e.heures));
           var isSubmitted = e.sheetStatus === 'submitted';
           var isValidated = e.sheetStatus === 'validated';
           var hasFeuille = e.feuille != null && e.feuille !== '';

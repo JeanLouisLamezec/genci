@@ -392,9 +392,9 @@ describe('Lot 2 Corrections - revisionPlan', () => {
             affectation: 1,
             tache: 1,
             membre: 1,
-            date: 1719792000,
+            date: 1719878400, // Future
             heuresPrevues: 5,
-            heures: 0,
+            heures: null,  // CONTRAT: null = proposition (matérialisable)
             revisionPlan: 1
           }
         ],
@@ -559,7 +559,7 @@ describe('Lot 2 Corrections - Affectations inactives', () => {
             membre: 1,
             date: 1719878400, // Future
             heuresPrevues: 0,
-            heures: 0,
+            heures: null,  // CONTRAT: null = proposition vide (supprimable)
             revisionPlan: 1
           }
         ],
@@ -841,7 +841,7 @@ describe('Lot 2 Corrections - Affectations inactives', () => {
             membre: 1,
             date: 1719878400, // Future
             heuresPrevues: 5,
-            heures: 0,
+            heures: null,  // CONTRAT: null = proposition (matérialisable ou supprimable)
             revisionPlan: 1
           }
         ],
@@ -858,11 +858,11 @@ describe('Lot 2 Corrections - Affectations inactives', () => {
     expect(result1.actionsExecuted).toBe(1);
     expect(result1.actions[0][3].heuresPrevues).toBe(0);
     
-    // Seconde exécution - devrait supprimer la ligne devenue vide
+    // Seconde exécution - devrait supprimer la ligne devenue vide (heures=null, heuresPrevues=0)
     const result2 = await reconcileAssignmentPlan(mockGrist2, 1, { dryRun: true, replanFromDate: '2024-07-01' });
     
     expect(result2.success).toBe(true);
-    // La ligne est maintenant vide, donc elle devrait être supprimée
+    // La ligne est maintenant vide (heures=null, heuresPrevues=0), donc elle devrait être supprimée
     expect(result2.actions.length).toBe(1);
     expect(result2.actions[0][0]).toBe('RemoveRecord');
     

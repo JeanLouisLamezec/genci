@@ -144,12 +144,13 @@ describe('Member Planning Orchestrator - Commit et actions Grist', function() {
     var friday = new Date(Date.UTC(2026, 6, 24)).getTime() / 1000;
     
     // Après un premier commit, les TimeEntries ont capaciteJour renseigné
+    // CONTRAT: heures = null (proposition, pas de réalisé explicite)
     var timeEntriesAfterCommit = [
-      { id: 1, affectation: 1, tache: 1, membre: 1, date: monday, heuresPrevues: 7, heures: 0, capaciteTheorique: 7, capaciteDisponible: 7, capaciteJour: 1, revisionPlan: 1 },
-      { id: 2, affectation: 1, tache: 1, membre: 1, date: monday + 86400, heuresPrevues: 7, heures: 0, capaciteTheorique: 7, capaciteDisponible: 7, capaciteJour: 2, revisionPlan: 1 },
-      { id: 3, affectation: 1, tache: 1, membre: 1, date: monday + 2 * 86400, heuresPrevues: 7, heures: 0, capaciteTheorique: 7, capaciteDisponible: 7, capaciteJour: 3, revisionPlan: 1 },
-      { id: 4, affectation: 1, tache: 1, membre: 1, date: monday + 3 * 86400, heuresPrevues: 7, heures: 0, capaciteTheorique: 7, capaciteDisponible: 7, capaciteJour: 4, revisionPlan: 1 },
-      { id: 5, affectation: 1, tache: 1, membre: 1, date: monday + 4 * 86400, heuresPrevues: 7, heures: 0, capaciteTheorique: 7, capaciteDisponible: 7, capaciteJour: 5, revisionPlan: 1 }
+      { id: 1, affectation: 1, tache: 1, membre: 1, date: monday, heuresPrevues: 7, heures: null, capaciteTheorique: 7, capaciteDisponible: 7, capaciteJour: 1, revisionPlan: 1 },
+      { id: 2, affectation: 1, tache: 1, membre: 1, date: monday + 86400, heuresPrevues: 7, heures: null, capaciteTheorique: 7, capaciteDisponible: 7, capaciteJour: 2, revisionPlan: 1 },
+      { id: 3, affectation: 1, tache: 1, membre: 1, date: monday + 2 * 86400, heuresPrevues: 7, heures: null, capaciteTheorique: 7, capaciteDisponible: 7, capaciteJour: 3, revisionPlan: 1 },
+      { id: 4, affectation: 1, tache: 1, membre: 1, date: monday + 3 * 86400, heuresPrevues: 7, heures: null, capaciteTheorique: 7, capaciteDisponible: 7, capaciteJour: 4, revisionPlan: 1 },
+      { id: 5, affectation: 1, tache: 1, membre: 1, date: monday + 4 * 86400, heuresPrevues: 7, heures: null, capaciteTheorique: 7, capaciteDisponible: 7, capaciteJour: 5, revisionPlan: 1 }
     ];
     
     var mockGrist = createMockGristWithData({

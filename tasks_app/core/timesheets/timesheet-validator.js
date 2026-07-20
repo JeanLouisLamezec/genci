@@ -209,7 +209,7 @@ function validateTimesheet(input) {
     const dateEntries = entriesByDate.get(date);
     
     const totalCentiHours = dateEntries.reduce((sum, entry) => {
-      return sum + toCentiHours(entry.actualHours || 0);
+      return sum + (entry.actualHours === null || entry.actualHours === undefined || entry.actualHours === '' ? 0 : toCentiHours(entry.actualHours));
     }, 0);
     
     const totalHours = toHours(totalCentiHours);

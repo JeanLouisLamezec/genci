@@ -489,8 +489,8 @@ async function loadAssignmentContext(grist, assignmentId, options = {}) {
           taskId: e.tache,
           memberId: e.membre,
           date: gristDateToIso(e.date),
-          plannedHours: e.heuresPrevues || 0,
-          actualHours: e.heures || 0,
+          plannedHours: Number(e.heuresPrevues) || 0,
+          actualHours: e.heures === null || e.heures === undefined || e.heures === '' ? null : Number(e.heures),
           sheetStatus,
           description: e.description || null,
           imputation: e.imputation || null,
@@ -684,16 +684,16 @@ async function loadAssignmentContext(grist, assignmentId, options = {}) {
         taskId: e.tache,
         memberId: e.membre,
         date: dateStr,
-        plannedHours: e.heuresPrevues || 0,
-        actualHours: e.heures || 0,
+        plannedHours: Number(e.heuresPrevues) || 0,
+        actualHours: e.heures === null || e.heures === undefined || e.heures === '' ? null : Number(e.heures),
         sheetStatus,
         description: e.description || null,
         imputation: e.imputation || null,
         feuille: e.feuille || null,
         capaciteJour: e.capaciteJour || null,
         capacityRecordId: e.capaciteJour || null,
-        baseCapacityHours: Number(e.capaciteTheorique || 0),
-        availableCapacityHours: Number(e.capaciteDisponible || 0),
+        baseCapacityHours: Number(e.capaciteTheorique) || 0,
+        availableCapacityHours: Number(e.capaciteDisponible) || 0,
         revisionPlan: Number(e.revisionPlan || 0)
       };
     });
@@ -1009,7 +1009,7 @@ async function reconcileAssignmentPlan(grist, assignmentId, options = {}) {
       
       // Pour les lignes futures mutables
       const hasPlannedHours = entry.plannedHours > 0;
-      const hasActualHours = entry.actualHours > 0;
+      const hasActualHours = entry.actualHours !== null && entry.actualHours !== undefined && entry.actualHours !== '' && Number.isFinite(Number(entry.actualHours));
       const hasDescription = !!(entry.description && entry.description.trim());
       const hasImputation = !!(entry.imputation && entry.imputation.trim());
       const hasFeuille = !!(entry.feuille && entry.feuille !== null && entry.feuille !== undefined);
@@ -1347,7 +1347,7 @@ function diffToGristActions(diff, assignment, capacities = [], existingEntriesMa
         membre: assignment.memberId,
         date: isoToGristDate(date),
         heuresPrevues: create.plannedHours,
-        heures: 0,
+        heures: null,
         capaciteTheorique: create.baseCapacityHours || cap.baseCapacityHours || 0,
         capaciteDisponible: create.availableCapacityHours || cap.availableCapacityHours || 0,
         capaciteJour: create.capacityRecordId || null,
