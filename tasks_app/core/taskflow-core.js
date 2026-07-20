@@ -556,6 +556,111 @@ const TF = (function () {
         document.body.style.paddingTop = (prev + h) + 'px';
     }
 
+    // ========================================================================
+    // FAST PATH — Lecture rapide de l'état du schéma via TaskFlow_Meta
+    // ========================================================================
+    
+    // Lit TaskFlow_Meta et retourne un état rapide pour décider du fast path
+    async function readSchemaFastState(grist, expectedVersion) {
+        var result = {
+            ready: false,
+            meta: null,
+            reason: null,
+            error: null
+        };
+        
+        try {
+            var raw = await grist.docApi.fetchTable('TaskFlow_Meta');
+            var rows = columnarToRows(raw);
+            
+            if (rows.length === 0) {
+                result.reason = 'META_EMPTY';
+                return result;
+            }
+            
+            if (rows.length > 1) {
+                result.reason = 'META_DUPLICATE';
+                result.meta = rows;
+                return result;
+            }
+            
+            var meta = rows[0];
+            result.meta = meta;
+            
+            var schemaVersion = Number(meta.schemaVersion || 0);
+            var installationStatus = String(meta.installationStatus || '').toLowerCase();
+            var lastError = meta.lastError;
+            
+            var versionMatch = expectedVersion == null || schemaVersion === Number(expectedVersion);
+            var statusReady = installationStatus === 'ready' || installationStatus === 'migrated';
+            var noError = !lastError || lastError === '' || lastError === 'null';
+            
+            result.ready = versionMatch && statusReady && noError;
+            result.reason = result.ready ? 'SCHEMA_META_READY' : 'SCHEMA_META_STALE';
+            
+            return result;
+            
+        } catch (e) {
+            result.reason = 'META_UNAVAILABLE';
+            result.error = e.message || String(e);
+            return result;
+        }
+    }
+    
+    // Écrit ou met à jour TaskFlow_Meta avec le statut 'ready'
+    async function writeSchemaReady(grist, options) {
+        options = options || {};
+        
+        var record = {
+            schemaVersion: options.schemaVersion || 3,
+            installationStatus: 'ready',
+            lastError: null,
+            lastMigrationAt: Math.floor(Date.now() / 1000)
+        };
+        
+        if (options.installedBy) {
+            record.installedBy = options.installedBy;
+        }
+        
+        if (options.lastMigration) {
+            record.lastMigration = options.lastMigration;
+        }
+        
+        try {
+            var raw = await grist.docApi.fetchTable('TaskFlow_Meta');
+            var rows = columnarToRows(raw);
+            
+            if (rows.length === 0) {
+                await grist.docApi.applyUserActions([
+                    ['AddRecord', 'TaskFlow_Meta', null, record]
+                ]);
+                return { success: true, action: 'created' };
+            }
+            
+            if (rows.length > 1) {
+                return { 
+                    success: false, 
+                    error: 'META_DUPLICATE',
+                    count: rows.length,
+                    reason: 'TaskFlow_Meta contient ' + rows.length + ' lignes (1 attendue)'
+                };
+            }
+            
+            var existingId = rows[0].id;
+            await grist.docApi.applyUserActions([
+                ['UpdateRecord', 'TaskFlow_Meta', existingId, record]
+            ]);
+            
+            return { success: true, action: 'updated', id: existingId };
+            
+        } catch (e) {
+            return { 
+                success: false, 
+                error: e.message || String(e)
+            };
+        }
+    }
+
     return {
         DEFAULT_STATUSES: DEFAULT_STATUSES,
         columnarToRows: columnarToRows,
@@ -580,13 +685,15 @@ const TF = (function () {
         safeApply: safeApply,
         guardWrites: guardWrites,
         readOnlyBanner: readOnlyBanner,
-        // Helpers pour le schema
-        tableRowId: tableRowId,
-        isRefType: isRefType,
-        getRefTarget: getRefTarget,
-        isFormulaColumn: isFormulaColumn,
-        waitForTablesMetadata: waitForTablesMetadata,
-        delay: delay
+    // Helpers pour le schema
+    tableRowId: tableRowId,
+    isRefType: isRefType,
+    getRefTarget: getRefTarget,
+    isFormulaColumn: isFormulaColumn,
+    waitForTablesMetadata: waitForTablesMetadata,
+    delay: delay,
+    readSchemaFastState: readSchemaFastState,
+    writeSchemaReady: writeSchemaReady
     };
 })();
 

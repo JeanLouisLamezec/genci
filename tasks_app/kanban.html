@@ -1228,6 +1228,111 @@ const TF = (function () {
         document.body.style.paddingTop = (prev + h) + 'px';
     }
 
+    // ========================================================================
+    // FAST PATH — Lecture rapide de l'état du schéma via TaskFlow_Meta
+    // ========================================================================
+    
+    // Lit TaskFlow_Meta et retourne un état rapide pour décider du fast path
+    async function readSchemaFastState(grist, expectedVersion) {
+        var result = {
+            ready: false,
+            meta: null,
+            reason: null,
+            error: null
+        };
+        
+        try {
+            var raw = await grist.docApi.fetchTable('TaskFlow_Meta');
+            var rows = columnarToRows(raw);
+            
+            if (rows.length === 0) {
+                result.reason = 'META_EMPTY';
+                return result;
+            }
+            
+            if (rows.length > 1) {
+                result.reason = 'META_DUPLICATE';
+                result.meta = rows;
+                return result;
+            }
+            
+            var meta = rows[0];
+            result.meta = meta;
+            
+            var schemaVersion = Number(meta.schemaVersion || 0);
+            var installationStatus = String(meta.installationStatus || '').toLowerCase();
+            var lastError = meta.lastError;
+            
+            var versionMatch = expectedVersion == null || schemaVersion === Number(expectedVersion);
+            var statusReady = installationStatus === 'ready' || installationStatus === 'migrated';
+            var noError = !lastError || lastError === '' || lastError === 'null';
+            
+            result.ready = versionMatch && statusReady && noError;
+            result.reason = result.ready ? 'SCHEMA_META_READY' : 'SCHEMA_META_STALE';
+            
+            return result;
+            
+        } catch (e) {
+            result.reason = 'META_UNAVAILABLE';
+            result.error = e.message || String(e);
+            return result;
+        }
+    }
+    
+    // Écrit ou met à jour TaskFlow_Meta avec le statut 'ready'
+    async function writeSchemaReady(grist, options) {
+        options = options || {};
+        
+        var record = {
+            schemaVersion: options.schemaVersion || 3,
+            installationStatus: 'ready',
+            lastError: null,
+            lastMigrationAt: Math.floor(Date.now() / 1000)
+        };
+        
+        if (options.installedBy) {
+            record.installedBy = options.installedBy;
+        }
+        
+        if (options.lastMigration) {
+            record.lastMigration = options.lastMigration;
+        }
+        
+        try {
+            var raw = await grist.docApi.fetchTable('TaskFlow_Meta');
+            var rows = columnarToRows(raw);
+            
+            if (rows.length === 0) {
+                await grist.docApi.applyUserActions([
+                    ['AddRecord', 'TaskFlow_Meta', null, record]
+                ]);
+                return { success: true, action: 'created' };
+            }
+            
+            if (rows.length > 1) {
+                return { 
+                    success: false, 
+                    error: 'META_DUPLICATE',
+                    count: rows.length,
+                    reason: 'TaskFlow_Meta contient ' + rows.length + ' lignes (1 attendue)'
+                };
+            }
+            
+            var existingId = rows[0].id;
+            await grist.docApi.applyUserActions([
+                ['UpdateRecord', 'TaskFlow_Meta', existingId, record]
+            ]);
+            
+            return { success: true, action: 'updated', id: existingId };
+            
+        } catch (e) {
+            return { 
+                success: false, 
+                error: e.message || String(e)
+            };
+        }
+    }
+
     return {
         DEFAULT_STATUSES: DEFAULT_STATUSES,
         columnarToRows: columnarToRows,
@@ -1252,13 +1357,15 @@ const TF = (function () {
         safeApply: safeApply,
         guardWrites: guardWrites,
         readOnlyBanner: readOnlyBanner,
-        // Helpers pour le schema
-        tableRowId: tableRowId,
-        isRefType: isRefType,
-        getRefTarget: getRefTarget,
-        isFormulaColumn: isFormulaColumn,
-        waitForTablesMetadata: waitForTablesMetadata,
-        delay: delay
+    // Helpers pour le schema
+    tableRowId: tableRowId,
+    isRefType: isRefType,
+    getRefTarget: getRefTarget,
+    isFormulaColumn: isFormulaColumn,
+    waitForTablesMetadata: waitForTablesMetadata,
+    delay: delay,
+    readSchemaFastState: readSchemaFastState,
+    writeSchemaReady: writeSchemaReady
     };
 })();
 
@@ -2948,6 +3055,38 @@ if (typeof globalThis !== 'undefined') {
                     result.success = true;
                 }
                 
+                // ====================================================================
+                // ÉCRITURE DU MARQUEUR 'ready' DANS TaskFlow_Meta (SEULEMENT SI SUCCÈS)
+                // ====================================================================
+                if (result.success && TF && TF.writeSchemaReady) {
+                    try {
+                        log('Écriture de TaskFlow_Meta avec statut ready...');
+                        
+                        var writeResult = await TF.writeSchemaReady(grist, {
+                            schemaVersion: SCHEMA.version,
+                            installedBy: 'TaskFlowBootstrap',
+                            lastMigration: result.phases.migrations ? result.phases.migrations.finalVersion : null
+                        });
+                        
+                        if (writeResult.success) {
+                            log('TaskFlow_Meta écrit avec succès: ' + writeResult.action);
+                        } else {
+                            log('Attention: échec écriture TaskFlow_Meta:', writeResult.error);
+                            result.warnings.push({
+                                phase: 'meta-write',
+                                error: writeResult.error
+                            });
+                        }
+                    } catch (writeError) {
+                        log('Erreur lors de l\'écriture de TaskFlow_Meta:', writeError);
+                        result.warnings.push({
+                            phase: 'meta-write',
+                            error: writeError.message || String(writeError)
+                        });
+                        // Ne pas considérer comme échec total, c'est un métadata
+                    }
+                }
+                
                 // Afficher le détail de la validation
                 console.info(
                     '[GENCI validation]',
@@ -4376,77 +4515,148 @@ if $projet and $projet.responsable:
         let entites = [];
         let programmes = [];
         async function loadAllData() { 
-          try { const _raw = await grist.docApi.fetchTable('Tasks'); TASK_COLS = new Set(Object.keys(_raw || {})); tasks = convertGristToRecords(_raw); } catch (e) { tasks = []; } 
-          try { const _araw = await grist.docApi.fetchTable('Actions'); ACTION_COLS = new Set(Object.keys(_araw || {})); actions = convertGristToRecords(_araw); } catch (e) { actions = []; ACTION_COLS = new Set(); } 
-          try { 
-            const teamRaw = await grist.docApi.fetchTable('Team'); 
-            console.log('[DIAG assignee] Team raw:', teamRaw);
-            team = convertGristToRecords(teamRaw); 
-            console.log('[DIAG assignee] Team converted:', team);
-            console.log('[DIAG assignee] Team members:', team.map(m => ({ id: m.id, nom: m.nom, actif: m.actif })));
-          } catch (e) { 
-            console.error('[DIAG assignee] Team fetch error:', e);
-            team = []; 
-          } 
-          try { projects = convertGristToRecords(await grist.docApi.fetchTable('Projects')); } catch (e) { projects = []; } 
-          try { entites = convertGristToRecords(await grist.docApi.fetchTable('Entites')); } catch (e) { entites = []; }
-          try { programmes = convertGristToRecords(await grist.docApi.fetchTable('Programmes')); } catch (e) { programmes = []; }
-          try { 
-            kanbanSteps = convertGristToRecords(await grist.docApi.fetchTable('KanbanSteps')); 
-            console.log('[DIAG kanban steps] rawKanbanSteps:', kanbanSteps);
-            const activeKanbanSteps = kanbanSteps.filter(s => s.actif !== false);
-            console.log('[DIAG kanban steps] activeKanbanSteps:', activeKanbanSteps);
-          } catch (e) { 
-            console.error('[DIAG kanban steps] KanbanSteps fetch error:', e);
-            kanbanSteps = []; 
-          }
-          console.log('[DIAG kanban steps] actionsStatuses:', actions.map(a => a.statut));
-          gristReady = true; 
-          rebuildChildrenCache(); 
-          // Si des étapes Kanban existent, les utiliser pour configurer les statuts
-          if (kanbanSteps && kanbanSteps.length > 0) {
-            const stepList = kanbanSteps
-              .filter(s => s.actif !== false)
-              .sort((a, b) => (a.ordre || 0) - (b.ordre || 0))
-              .map(s => ({ value: s.valeur || s.nom, label: s.nom, fillColor: s.couleur || '#94a3b8', textColor: '#ffffff' }));
-            if (stepList.length) {
-              statusCfg = TF.buildStatusConfig(stepList, 'kanban');
-              console.log('[DIAG kanban steps] statusCfg from KanbanSteps:', statusCfg);
+            const loadStart = Date.now();
+            const PERF_DEBUG = new URLSearchParams(location.search).get('debugPerf') === '1';
+            
+            try {
+                const fetchStart = Date.now();
+                
+                const [
+                    tasksRaw,
+                    actionsRaw,
+                    teamRaw,
+                    projectsRaw,
+                    entitesRaw,
+                    programmesRaw,
+                    kanbanStepsRaw
+                ] = await Promise.all([
+                    grist.docApi.fetchTable('Tasks'),
+                    grist.docApi.fetchTable('Actions'),
+                    grist.docApi.fetchTable('Team'),
+                    grist.docApi.fetchTable('Projects'),
+                    grist.docApi.fetchTable('Entites'),
+                    grist.docApi.fetchTable('Programmes'),
+                    grist.docApi.fetchTable('KanbanSteps')
+                ]);
+                
+                if (PERF_DEBUG) {
+                    console.info('[Kanban perf]', {
+                        phase: 'fetch-tables',
+                        durationMs: Date.now() - fetchStart,
+                        tableCount: 7
+                    });
+                }
+                
+                TASK_COLS = new Set(Object.keys(tasksRaw || {}));
+                tasks = convertGristToRecords(tasksRaw);
+                
+                const _araw = actionsRaw;
+                ACTION_COLS = new Set(Object.keys(_araw || {}));
+                actions = convertGristToRecords(_araw);
+                
+                console.log('[DIAG assignee] Team raw:', teamRaw);
+                team = convertGristToRecords(teamRaw);
+                console.log('[DIAG assignee] Team converted:', team);
+                console.log('[DIAG assignee] Team members:', team.map(m => ({ id: m.id, nom: m.nom, actif: m.actif })));
+                
+                projects = convertGristToRecords(projectsRaw);
+                entites = convertGristToRecords(entitesRaw);
+                programmes = convertGristToRecords(programmesRaw);
+                
+                kanbanSteps = convertGristToRecords(kanbanStepsRaw);
+                console.log('[DIAG kanban steps] rawKanbanSteps:', kanbanSteps);
+                const activeKanbanSteps = kanbanSteps.filter(s => s.actif !== false);
+                console.log('[DIAG kanban steps] activeKanbanSteps:', activeKanbanSteps);
+                
+            } catch (e) {
+                console.error('[Kanban] Error loading tables:', e);
+                tasks = [];
+                actions = [];
+                ACTION_COLS = new Set();
+                team = [];
+                projects = [];
+                entites = [];
+                programmes = [];
+                kanbanSteps = [];
             }
-          } else {
-            try { 
-              statusCfg = await TF.loadStatusConfig(grist, 'Actions', 'statut', actions.map(a => a && a.statut)); 
-              console.log('[DIAG kanban steps] statusCfg from loadStatusConfig:', statusCfg);
-            } catch (e) { 
-              console.error('[DIAG kanban steps] loadStatusConfig error:', e);
+            
+            gristReady = true;
+            rebuildChildrenCache();
+            
+            if (kanbanSteps && kanbanSteps.length > 0) {
+                const stepList = kanbanSteps
+                    .filter(s => s.actif !== false)
+                    .sort((a, b) => (a.ordre || 0) - (b.ordre || 0))
+                    .map(s => ({ value: s.valeur || s.nom, label: s.nom, fillColor: s.couleur || '#94a3b8', textColor: '#ffffff' }));
+                if (stepList.length) {
+                    statusCfg = TF.buildStatusConfig(stepList, 'kanban');
+                    console.log('[DIAG kanban steps] statusCfg from KanbanSteps:', statusCfg);
+                }
             }
-          }
-          console.log('[DIAG columns] groupBy:', groupBy);
-          console.log('[DIAG columns] statusSource:', statusCfg && statusCfg.source);
-          console.log('[DIAG columns] statusValues:', statusCfg && statusCfg.values);
-          console.log('[DIAG columns] statusList:', statusCfg && statusCfg.list);
-          initKanbanFilterManager();
-          // Mettre à jour les données du FilterManager après initialisation
-          if (filterManager) {
-            filterManager.setData({
-              team: team,
-              entites: entites,
-              projects: projects,
-              programmes: programmes,
-              tasks: tasks,
-              actions: actions
-            });
-            // Mettre à jour la config avec les filtres courants
-            filterManager.setWidgetConfig({
-              workLevel: workLevel,
-              showSubtasks: showSubtasks,
-              searchQuery: searchQuery,
-              _assigneeFilter: filters.assignee,
-              _teamFilter: filters.team
-            });
-          }
-          updateFilterMenus(); 
-          render(); 
+            
+            if (!statusCfg || !statusCfg.list || !statusCfg.list.length) {
+                const distinctStatuses = [...new Set(
+                    actions
+                        .map(a => a && a.statut)
+                        .filter(Boolean)
+                )];
+                
+                statusCfg = distinctStatuses.length
+                    ? TF.buildStatusConfig(
+                        distinctStatuses.map(value => ({
+                            value: value,
+                            label: value
+                        })),
+                        'data'
+                      )
+                    : TF.buildStatusConfig(TF.DEFAULT_STATUSES, 'default');
+                
+                console.log('[DIAG kanban steps] statusCfg from data/default:', statusCfg);
+            }
+            
+            console.log('[DIAG columns] groupBy:', groupBy);
+            console.log('[DIAG columns] statusSource:', statusCfg && statusCfg.source);
+            console.log('[DIAG columns] statusValues:', statusCfg && statusCfg.values);
+            console.log('[DIAG columns] statusList:', statusCfg && statusCfg.list);
+            
+            initKanbanFilterManager();
+            
+            if (filterManager) {
+                filterManager.setData({
+                    team: team,
+                    entites: entites,
+                    projects: projects,
+                    programmes: programmes,
+                    tasks: tasks,
+                    actions: actions
+                });
+                filterManager.setWidgetConfig({
+                    workLevel: workLevel,
+                    showSubtasks: showSubtasks,
+                    searchQuery: searchQuery,
+                    _assigneeFilter: filters.assignee,
+                    _teamFilter: filters.team
+                });
+            }
+            
+            updateFilterMenus();
+            render();
+            
+            const totalLoadDuration = Date.now() - loadStart;
+            if (PERF_DEBUG) {
+                console.info('[Kanban perf]', {
+                    phase: 'load-complete',
+                    durationMs: totalLoadDuration,
+                    fetchCount: 7,
+                    records: {
+                        tasks: tasks.length,
+                        actions: actions.length,
+                        team: team.length,
+                        projects: projects.length,
+                        kanbanSteps: kanbanSteps.length
+                    }
+                });
+            }
         }
 
         // ═══════════════════════════════════════════════════════════════════════
@@ -5741,12 +5951,13 @@ if $projet and $projet.responsable:
         // INIT
         // ═══════════════════════════════════════════════════════════════════════
         async function initGrist() {
+            const PERF_DEBUG = new URLSearchParams(location.search).get('debugPerf') === '1';
+            const perfMark = Date.now();
+            
             console.log('[Kanban] ===== initGrist START =====');
-            // Retirer la bannière démo si elle existe (Grist est disponible)
             const existingBadge = document.querySelector('.demo-badge');
             if (existingBadge) existingBadge.remove();
             
-            // Phase 1 : tenter grist.ready — si Grist absent, basculer en démo
             try {
                 console.log('[Kanban] Calling grist.ready({ requiredAccess: "full" })...');
                 await grist.ready({ requiredAccess: 'full' });
@@ -5757,113 +5968,192 @@ if $projet and $projet.responsable:
                 useDemoMode();
                 return;
             }
-            // Grist est prêt, on peut initialiser
+            
             gristReady = true;
             console.log('[Kanban] ✓ gristReady = true');
-            // #7 respect des droits : bandeau lecture seule + garde transverse sur toutes les ecritures.
             TF.readOnlyBanner();
             TF.guardWrites(grist, {
                 onReadOnly: () => showToast('Lecture seule : modification non autorisee', 'error'),
                 onDenied: () => { showToast('Modification refusee par vos droits', 'error'); loadAllData(); }
             });
-            // Phase 2 : Vérifier si le schéma GENCI existe déjà avec inspection COMPLÈTE
+            
+            const SCHEMA_VERSION = typeof TASKFLOW_SCHEMA !== 'undefined' ? TASKFLOW_SCHEMA.version : 3;
             let schemaState = {
                 ready: false,
                 incomplete: false,
                 corrupted: false,
                 readOnlyIncomplete: false,
                 inspectionError: false,
-                inspection: null
+                inspection: null,
+                fastPath: false,
+                metaUnavailable: false
             };
             
+            let fastStateReason = null;
+            const fastPathStart = Date.now();
+            
             try {
-                console.log('[Kanban] Performing comprehensive schema inspection...');
-                
-                // Utiliser l'inspection complète du schéma
-                if (TaskFlowBootstrap && TaskFlowBootstrap.inspectGenciSchema) {
-                    var inspection = await TaskFlowBootstrap.inspectGenciSchema(grist, [
-                        'Team', 'Programmes', 'Entites', 'Projects', 'Tasks', 'Actions'
-                    ]);
+                if (TF && TF.readSchemaFastState) {
+                    console.log('[Kanban] Fast path: reading TaskFlow_Meta...');
+                    const fastState = await TF.readSchemaFastState(grist, SCHEMA_VERSION);
+                    fastStateReason = fastState.reason;
                     
-                    schemaState.inspection = inspection;
-                    
-                    if (inspection.ready && !inspection.corrupted) {
-                        schemaState.ready = true;
-                        console.log('[Kanban] ✓ Schema READY - all tables and columns present');
-                    } else if (inspection.corrupted) {
-                        schemaState.corrupted = true;
-                        schemaState.incomplete = true;
-                        console.error('[Kanban] ✗ Schema CORRUPTED - duplicate columns detected:', inspection.duplicateColumns);
-                    } else {
-                        schemaState.incomplete = true;
-                        console.warn('[Kanban] ✗ Schema INCOMPLETE:', {
-                            missingTables: inspection.missingTables,
-                            missingColumns: inspection.missingColumns,
-                            invalidTypes: inspection.invalidColumnTypes.length,
-                            duplicateColumns: inspection.duplicateColumns.length
+                    if (PERF_DEBUG) {
+                        console.info('[Kanban perf]', {
+                            phase: 'schema-fast-path',
+                            ready: fastState.ready,
+                            reason: fastState.reason,
+                            durationMs: Date.now() - fastPathStart
                         });
                     }
                     
-                    // Vérifier si en lecture seule avec schéma incomplet
-                    if (TF.isReadOnly() && !inspection.ready) {
-                        schemaState.readOnlyIncomplete = true;
-                        console.warn('[Kanban] ✗ Schema READ_ONLY_INCOMPLETE');
+                    if (fastState.ready) {
+                        schemaState.fastPath = true;
+                        schemaState.ready = true;
+                        console.log('[Kanban] ✓ FAST PATH: schema ready (v' + SCHEMA_VERSION + ')');
+                    } else {
+                        console.log('[Kanban] Fast path unavailable:', fastState.reason);
+                        
+                        if (fastState.reason === 'META_DUPLICATE') {
+                            schemaState.corrupted = true;
+                            schemaState.incomplete = true;
+                            console.error('[Kanban] ✗ TaskFlow_Meta en doublon');
+                        } else if (fastState.reason === 'META_EMPTY' || fastState.reason === 'SCHEMA_META_STALE') {
+                            schemaState.incomplete = true;
+                            console.warn('[Kanban] ✗ Schema needs initialization or migration');
+                        } else if (fastState.reason === 'META_UNAVAILABLE') {
+                            schemaState.metaUnavailable = true;
+                            schemaState.incomplete = true;
+                            console.warn('[Kanban] ✗ TaskFlow_Meta absent (document legacy possible)');
+                        }
                     }
                 } else {
-                    // Fallback pour compatibilité
-                    console.warn('[Kanban] inspectGenciSchema not available, using fallback');
-                    const tables = await grist.docApi.listTables();
-                    const essentialTables = ['Team', 'Projects', 'Tasks'];
-                    const allExist = essentialTables.every(t => tables.includes(t));
-                    
-                    if (allExist) {
-                        const tasksData = await grist.docApi.fetchTable('Tasks');
-                        if (tasksData && tasksData.statut !== undefined) {
-                            schemaState.ready = true;
-                            console.log('[Kanban] ✓ Schema READY (fallback check)');
-                        } else {
-                            schemaState.incomplete = true;
-                        }
-                    } else {
-                        schemaState.incomplete = true;
-                    }
+                    console.warn('[Kanban] TF.readSchemaFastState not available, using fallback');
+                    schemaState.incomplete = true;
                 }
             } catch (e) {
-                console.error('[Kanban] ✗ Schema inspection ERROR:', e?.message);
+                console.error('[Kanban] ✗ Fast path ERROR:', e?.message);
                 schemaState.inspectionError = true;
                 schemaState.incomplete = true;
             }
             
-            // Décider de l'action en fonction de l'état du schéma
+            if (!schemaState.fastPath && !schemaState.corrupted && !schemaState.inspectionError) {
+                try {
+                    console.log('[Kanban] Slow path: performing comprehensive schema inspection...');
+                    
+                    if (TaskFlowBootstrap && TaskFlowBootstrap.inspectGenciSchema) {
+                        var inspection = await TaskFlowBootstrap.inspectGenciSchema(grist, [
+                            'Team', 'Programmes', 'Entites', 'Projects', 'Tasks', 'Actions'
+                        ]);
+                        
+                        schemaState.inspection = inspection;
+                        
+                        if (inspection.ready && !inspection.corrupted) {
+                            schemaState.ready = true;
+                            console.log('[Kanban] ✓ Schema READY - all tables and columns present');
+                            
+                            if (
+                                fastStateReason === 'META_EMPTY' &&
+                                TF &&
+                                TF.writeSchemaReady
+                            ) {
+                                const writeResult = await TF.writeSchemaReady(grist, {
+                                    schemaVersion: SCHEMA_VERSION,
+                                    installedBy: 'KanbanFastPathBackfill',
+                                    lastMigration: 'meta-backfill'
+                                });
+                                
+                                if (!writeResult.success) {
+                                    console.warn(
+                                        '[Kanban] Unable to persist schema ready state',
+                                        writeResult
+                                    );
+                                } else {
+                                    console.info(
+                                        '[Kanban] TaskFlow_Meta backfilled',
+                                        writeResult.action
+                                    );
+                                }
+                            }
+                        } else if (inspection.corrupted) {
+                            schemaState.corrupted = true;
+                            schemaState.incomplete = true;
+                            console.error('[Kanban] ✗ Schema CORRUPTED - duplicate columns detected:', inspection.duplicateColumns);
+                        } else {
+                            schemaState.incomplete = true;
+                            console.warn('[Kanban] ✗ Schema INCOMPLETE:', {
+                                missingTables: inspection.missingTables,
+                                missingColumns: inspection.missingColumns,
+                                invalidTypes: inspection.invalidColumnTypes.length,
+                                duplicateColumns: inspection.duplicateColumns.length
+                            });
+                        }
+                        
+                        if (TF.isReadOnly() && !inspection.ready) {
+                            schemaState.readOnlyIncomplete = true;
+                            console.warn('[Kanban] ✗ Schema READ_ONLY_INCOMPLETE');
+                        }
+                    } else {
+                        console.warn('[Kanban] inspectGenciSchema not available, using fallback');
+                        const tables = await grist.docApi.listTables();
+                        const essentialTables = ['Team', 'Projects', 'Tasks'];
+                        const allExist = essentialTables.every(t => tables.includes(t));
+                        
+                        if (allExist) {
+                            const tasksData = await grist.docApi.fetchTable('Tasks');
+                            if (tasksData && tasksData.statut !== undefined) {
+                                schemaState.ready = true;
+                                console.log('[Kanban] ✓ Schema READY (fallback check)');
+                            } else {
+                                schemaState.incomplete = true;
+                            }
+                        } else {
+                            schemaState.incomplete = true;
+                        }
+                    }
+                } catch (e) {
+                    console.error('[Kanban] ✗ Schema inspection ERROR:', e?.message);
+                    schemaState.inspectionError = true;
+                    schemaState.incomplete = true;
+                }
+            }
+            
             if (schemaState.ready) {
-                // État READY : charger normalement, aucune mutation
                 console.log('[Kanban] → Schema ready, loading data normally...');
             } else if (schemaState.readOnlyIncomplete) {
-                // État READ_ONLY_INCOMPLETE : afficher diagnostic, aucune action possible
                 console.error('[Kanban] → Schema incomplete and read-only, showing diagnostic...');
                 showSchemaDiagnostic(schemaState.inspection, true);
             } else if (schemaState.corrupted) {
-                // État CORRUPTED : afficher les duplications, bloquer toute installation
                 console.error('[Kanban] → Schema corrupted, blocking installation...');
                 showSchemaDiagnostic(schemaState.inspection, false);
             } else if (schemaState.inspectionError) {
-                // État INSPECTION_ERROR : afficher l'erreur, ne pas lancer de réparation automatique
                 console.error('[Kanban] → Schema inspection error, showing error...');
                 showToast('Erreur inspection schéma: voir console', 'error');
             } else {
-                // État INCOMPLETE : afficher panneau administratif
                 console.warn('[Kanban] → Schema incomplete, showing admin panel...');
                 showSchemaDiagnostic(schemaState.inspection, false);
             }
-            try { CRA_ACTIVE = (await grist.docApi.listTables()).includes('TimeEntries'); } catch (e) {}
+            
+            CRA_ACTIVE = schemaState.ready;
+            
             console.log('[Kanban] → Calling loadAllData()...');
             try { await loadAllData(); console.log('[Kanban] ✓ loadAllData() complete'); } catch (e) { console.error('[Kanban] ✗ loadAllData error:', e); showToast('Chargement: ' + (e?.message || e), 'error'); }
-            console.log('[Kanban] ===== initGrist END =====');
+            
+            const totalDuration = Date.now() - perfMark;
+            if (PERF_DEBUG) {
+                console.info('[Kanban perf]', {
+                    phase: 'load-complete',
+                    durationMs: totalDuration,
+                    fastPath: schemaState.fastPath
+                });
+            }
+            
+            console.log('[Kanban] ===== initGrist END (' + totalDuration + 'ms) =====');
+            
             try {
                 grist.onRecords(async () => await loadAllData());
                 grist.onRecord((rec) => { 
                     if (rec?.id && rec.id !== selectedTaskId && rec.id !== selectedActionId) { 
-                        // NOUVEAU: gère aussi les Actions
                         if (actions.some(a => a.id === rec.id)) {
                             selectedActionId = rec.id; 
                         } else {
@@ -5875,7 +6165,6 @@ if $projet and $projet.responsable:
                 grist.onOptions((options, interaction) => {
                     if (options?.filters && interaction?.source !== 'self') {
                         const f = options.filters;
-                        // Appliquer les filtres via FilterManager
                         if (filterManager) {
                           const newFilters = {
                             assignee: Array.isArray(f.assignee) ? f.assignee.map(String) : [],
@@ -5884,9 +6173,7 @@ if $projet and $projet.responsable:
                             task: Array.isArray(f.task) ? f.task.map(String) : []
                           };
                           filterManager.setState(newFilters);
-                          // Le setState va appeler onChange qui mettra à jour la config et re-render
                         } else {
-                          // Fallback si FilterManager pas encore initialisé
                           filters.project = Array.isArray(f.project) ? f.project.map(String) : [];
                           filters.assignee = Array.isArray(f.assignee) ? f.assignee.map(String) : [];
                           filters.team = Array.isArray(f.team) ? f.team.map(String) : [];

@@ -1268,6 +1268,38 @@
                     result.success = true;
                 }
                 
+                // ====================================================================
+                // ÉCRITURE DU MARQUEUR 'ready' DANS TaskFlow_Meta (SEULEMENT SI SUCCÈS)
+                // ====================================================================
+                if (result.success && TF && TF.writeSchemaReady) {
+                    try {
+                        log('Écriture de TaskFlow_Meta avec statut ready...');
+                        
+                        var writeResult = await TF.writeSchemaReady(grist, {
+                            schemaVersion: SCHEMA.version,
+                            installedBy: 'TaskFlowBootstrap',
+                            lastMigration: result.phases.migrations ? result.phases.migrations.finalVersion : null
+                        });
+                        
+                        if (writeResult.success) {
+                            log('TaskFlow_Meta écrit avec succès: ' + writeResult.action);
+                        } else {
+                            log('Attention: échec écriture TaskFlow_Meta:', writeResult.error);
+                            result.warnings.push({
+                                phase: 'meta-write',
+                                error: writeResult.error
+                            });
+                        }
+                    } catch (writeError) {
+                        log('Erreur lors de l\'écriture de TaskFlow_Meta:', writeError);
+                        result.warnings.push({
+                            phase: 'meta-write',
+                            error: writeError.message || String(writeError)
+                        });
+                        // Ne pas considérer comme échec total, c'est un métadata
+                    }
+                }
+                
                 // Afficher le détail de la validation
                 console.info(
                     '[GENCI validation]',
