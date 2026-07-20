@@ -325,8 +325,9 @@ describe('FilterManager - Synchronisation UI', () => {
       assignee: [1]
     });
     
-    expect(fm.filters.programme).toEqual([1, 2]);
-    expect(fm.filters.assignee).toEqual([1]);
+    // Les IDs sont normalisés en chaînes
+    expect(fm.filters.programme).toEqual(['1', '2']);
+    expect(fm.filters.assignee).toEqual(['1']);
   });
 });
 
@@ -392,7 +393,284 @@ describe('FilterManager - setData', () => {
     
     fm.setData(newData);
     
-    // Vérifier que l'UI a été reconstruite
-    expect(fm.ui.programme.checkboxContainer.innerHTML).toContain('Nouveau Programme');
+  // Vérifier que l'UI a été reconstruite
+  expect(fm.ui.programme.checkboxContainer.innerHTML).toContain('Nouveau Programme');
+});
+
+// Import normalizeFilters pour les tests
+const { normalizeFilters } = require('./filter-manager.js');
+
+// ============================================================================
+// TESTS: normalizeFilters
+// ============================================================================
+describe('normalizeFilters - Fonction pure', () => {
+  
+  test('doit retourner un objet vide avec 5 clés pour input null/undefined', () => {
+    expect(normalizeFilters(null)).toEqual({
+      assignee: [], team: [], project: [], programme: [], task: []
+    });
+    expect(normalizeFilters(undefined)).toEqual({
+      assignee: [], team: [], project: [], programme: [], task: []
+    });
+    expect(normalizeFilters({})).toEqual({
+      assignee: [], team: [], project: [], programme: [], task: []
+    });
   });
+
+  test('doit convertir les nombres en chaînes', () => {
+    const input = { assignee: [1, 2, 3], team: [4], project: [5] };
+    const result = normalizeFilters(input);
+    expect(result.assignee).toEqual(['1', '2', '3']);
+    expect(result.team).toEqual(['4']);
+    expect(result.project).toEqual(['5']);
+  });
+
+  test('doit gérer un mélange de nombres et chaînes', () => {
+    const input = { assignee: [1, '2', 3, '4'], project: ['5', 6] };
+    const result = normalizeFilters(input);
+    expect(result.assignee).toEqual(['1', '2', '3', '4']);
+    expect(result.project).toEqual(['5', '6']);
+  });
+
+  test('doit éliminer les doublons', () => {
+    const input = { assignee: [1, '1', 2, '2', 1], project: ['5', 5, '5'] };
+    const result = normalizeFilters(input);
+    expect(result.assignee).toEqual(['1', '2']);
+    expect(result.project).toEqual(['5']);
+  });
+
+  test('doit éliminer null, undefined et chaînes vides', () => {
+    const input = { assignee: [1, null, '2', undefined, '', 3], team: [null] };
+    const result = normalizeFilters(input);
+    expect(result.assignee).toEqual(['1', '2', '3']);
+    expect(result.team).toEqual([]);
+  });
+
+  test('doit conserver les 5 clés même si absentes de l input', () => {
+    const input = { assignee: [1], custom: [999] };
+    const result = normalizeFilters(input);
+    expect(result).toHaveProperty('assignee');
+    expect(result).toHaveProperty('team');
+    expect(result).toHaveProperty('project');
+    expect(result).toHaveProperty('programme');
+    expect(result).toHaveProperty('task');
+    expect(result.custom).toBeUndefined();
+  });
+
+  test('doit être immuable (ne pas modifier l entrée)', () => {
+    const input = { assignee: [1, 2], project: [3] };
+    const inputCopy = JSON.parse(JSON.stringify(input));
+    normalizeFilters(input);
+    expect(input).toEqual(inputCopy);
+  });
+
+  test('doit filtrer programme et task', () => {
+    const input = { 
+      programme: [1, '2', 3], 
+      task: ['10', 11],
+      assignee: [5]
+    };
+    const result = normalizeFilters(input);
+    expect(result.programme).toEqual(['1', '2', '3']);
+    expect(result.task).toEqual(['10', '11']);
+    expect(result.assignee).toEqual(['5']);
+  });
+});
+
+// ============================================================================
+// TESTS: removeValue
+// ============================================================================
+describe('FilterManager - removeValue', () => {
+  
+  test('doit retirer une valeur existante', () => {
+    const fm = createFilterManager({
+      initialFilters: { assignee: ['1', '2', '3'], team: [], project: [], programme: [], task: [] }
+    });
+    
+    const removed = fm.removeValue('assignee', '2');
+    
+    expect(removed).toBe(true);
+    expect(fm.filters.assignee).toEqual(['1', '3']);
+  });
+
+  test('doit retirer une valeur même si l ID est un nombre', () => {
+    const fm = createFilterManager({
+      initialFilters: { assignee: ['1', '2', '3'], team: [], project: [], programme: [], task: [] }
+    });
+    
+    const removed = fm.removeValue('assignee', 2);
+    
+    expect(removed).toBe(true);
+    expect(fm.filters.assignee).toEqual(['1', '3']);
+  });
+
+  test('doit retourner false si la valeur est absente', () => {
+    const fm = createFilterManager({
+      initialFilters: { assignee: ['1', '3'], team: [], project: [], programme: [], task: [] }
+    });
+    
+    const removed = fm.removeValue('assignee', '2');
+    
+    expect(removed).toBe(false);
+    expect(fm.filters.assignee).toEqual(['1', '3']); // Inchangé
+  });
+
+  test('ne doit JAMAIS ajouter une valeur absente (pas de toggle)', () => {
+    const fm = createFilterManager({
+      initialFilters: { assignee: ['1', '3'], team: [], project: [], programme: [], task: [] }
+    });
+    
+    fm.removeValue('assignee', '999');
+    
+    expect(fm.filters.assignee).toEqual(['1', '3']); // Doit rester inchangé
+  });
+
+  test('doit fonctionner avec programme', () => {
+    const fm = createFilterManager({
+      initialFilters: { assignee: [], team: [], project: [], programme: ['1', '2', '3'], task: [] }
+    });
+    
+    fm.removeValue('programme', '2');
+    
+    expect(fm.filters.programme).toEqual(['1', '3']);
+  });
+
+  test('doit fonctionner avec task', () => {
+    const fm = createFilterManager({
+      initialFilters: { assignee: [], team: [], project: [], programme: [], task: ['10', '20'] }
+    });
+    
+    fm.removeValue('task', '10');
+    
+    expect(fm.filters.task).toEqual(['20']);
+  });
+});
+
+// ============================================================================
+// TESTS: Origine des changements (local vs external)
+// ============================================================================
+describe('FilterManager - Origine des changements', () => {
+  
+  test('changement local doit appeler onChange avec origin="local"', () => {
+    let lastOrigin = null;
+    const fm = createFilterManager({
+      onChange: (filters, origin) => { lastOrigin = origin; }
+    });
+    
+    fm.setState({ assignee: ['1'] }, { origin: 'local', broadcast: false });
+    expect(lastOrigin).toBe('local');
+  });
+
+  test('changement externe doit appeler onChange avec origin="external"', () => {
+    let lastOrigin = null;
+    const fm = createFilterManager({
+      onChange: (filters, origin) => { lastOrigin = origin; }
+    });
+    
+    fm.applyExternalFilters({ assignee: ['1', '2'] });
+    expect(lastOrigin).toBe('external');
+  });
+
+  test('changement externe ne doit PAS appeler onBroadcast', () => {
+    let broadcastCalled = false;
+    const fm = createFilterManager({
+      onBroadcast: () => { broadcastCalled = true; }
+    });
+    
+    fm.applyExternalFilters({ assignee: ['1', '2'] });
+    expect(broadcastCalled).toBe(false);
+  });
+
+  test('setState avec origin="external" ne doit pas diffuser', () => {
+    let broadcastCalled = false;
+    const fm = createFilterManager({
+      onBroadcast: () => { broadcastCalled = true; }
+    });
+    
+    fm.setState({ assignee: ['1'] }, { origin: 'external', broadcast: false });
+    expect(broadcastCalled).toBe(false);
+  });
+});
+
+// ============================================================================
+// TESTS: Intégration - Synchronisation entre widgets
+// ============================================================================
+describe('Integration - Synchronisation de filtres', () => {
+  
+  test('scénario complet: Widget A -> Grist -> Widget B', () => {
+    // Widget A
+    let broadcastFromA = null;
+    const widgetA = createFilterManager({
+      onBroadcast: (filters) => { broadcastFromA = filters; }
+    });
+    
+    // Widget A applique un filtre local
+    widgetA.setState({ programme: ['1', '2'], project: ['5'] }, { origin: 'local' });
+    
+    // Vérifier que la diffusion contient les IDs en chaînes
+    expect(broadcastFromA).not.toBeNull();
+    expect(broadcastFromA.programme).toEqual(['1', '2']);
+    expect(broadcastFromA.project).toEqual(['5']);
+    
+    // Widget B reçoit les filtres
+    const widgetB = createFilterManager();
+    widgetB.applyExternalFilters(broadcastFromA);
+    
+    // Vérifier que Widget B a les mêmes filtres
+    expect(widgetB.filters.programme).toEqual(['1', '2']);
+    expect(widgetB.filters.project).toEqual(['5']);
+  });
+
+  test('Widget B ne doit pas rediffuser après réception externe', () => {
+    let broadcastCount = 0;
+    const widgetB = createFilterManager({
+      onBroadcast: () => { broadcastCount++; }
+    });
+    
+    // Réception d'un filtre externe
+    widgetB.applyExternalFilters({ programme: ['1'], assignee: ['3'] });
+    
+    // Aucune diffusion ne doit avoir eu lieu
+    expect(broadcastCount).toBe(0);
+  });
+
+  test('Effacer tout doit aboutir à 5 tableaux vides', () => {
+    const fm = createFilterManager({
+      initialFilters: { 
+        assignee: ['1', '2'], 
+        team: ['3'], 
+        project: ['4'], 
+        programme: ['5'], 
+        task: ['6'] 
+      }
+    });
+    
+    fm.clearAll();
+    
+    expect(fm.filters).toEqual({
+      assignee: [],
+      team: [],
+      project: [],
+      programme: [],
+      task: []
+    });
+  });
+
+  test('removeFilterChip scénario: suppression depuis les chips', () => {
+    const fm = createFilterManager({
+      initialFilters: { 
+        assignee: ['1'], 
+        programme: ['10', '20'], 
+        project: ['5'] 
+      }
+    });
+    
+    // Simulation de removeFilterChip('programme', '10')
+    fm.removeValue('programme', '10');
+    
+    expect(fm.filters.programme).toEqual(['20']);
+    expect(fm.filters.assignee).toEqual(['1']); // Inchangé
+    expect(fm.filters.project).toEqual(['5']); // Inchangé
+  });
+});
 });

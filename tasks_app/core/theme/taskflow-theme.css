@@ -1,0 +1,159 @@
+/* ============================================================================
+ * taskflow-theme.css — Couche de tokens TaskFlow mutualisée
+ * ----------------------------------------------------------------------------
+ * Ce fichier définit les tokens CSS fonctionnels basés sur les variables
+ * injectées par Grist. Il doit être importé en premier dans chaque widget.
+ * 
+ * Grist injecte :
+ *   - --grist-theme-bg-default, --grist-theme-bg-secondary, etc.
+ *   - data-grist-appearance="light" | "dark"
+ *   - data-grist-theme="GristLight" | "GristDark" | "HighContrastLight"
+ *   - data-grist-widget="true"
+ * ============================================================================ */
+
+/* ========== TOKENS FONCTIONNELS TASKFLOW ========== */
+:root {
+  /* Backgrounds */
+  --tf-bg: var(--grist-theme-bg-default, #ffffff);
+  --tf-surface: var(--grist-theme-bg-secondary, #f7f7f7);
+  --tf-surface-hover: var(--grist-theme-bg-tertiary, #eeeeee);
+  --tf-surface-2: var(--grist-theme-bg-secondary, #f5f5f5);
+  --tf-surface-3: var(--grist-theme-bg-tertiary, #eeeeee);
+
+  /* Text */
+  --tf-text: var(--grist-theme-body, #262633);
+  --tf-text-strong: var(--grist-theme-emphasis, var(--tf-text));
+  --tf-text-muted: var(--grist-theme-secondary, #717178);
+  --tf-text-light: var(--grist-theme-tertiary, #94949f);
+
+  /* Borders & Decoration */
+  --tf-border: var(--grist-theme-decoration, #d9d9d9);
+  --tf-border-soft: var(--grist-theme-decoration-secondary, #e8e8e8);
+  --tf-border-dark: var(--grist-theme-decoration-hover, #c0c0c0);
+
+  /* Primary / Accent */
+  --tf-primary: var(--grist-theme-primary, #16b378);
+  --tf-primary-hover: var(--grist-theme-primary-muted, #009058);
+  --tf-primary-light: var(--grist-theme-token-selection-opaque, #dcf4eb);
+  --tf-primary-soft: var(--grist-theme-token-selection, rgba(22, 179, 120, 0.1));
+
+  /* Semantic colors */
+  --tf-success: var(--grist-theme-success, #16b378);
+  --tf-success-light: var(--grist-theme-success-bg, #dcf4eb);
+  --tf-warning: var(--grist-theme-warning, #dd962c);
+  --tf-warning-light: var(--grist-theme-warning-bg, #fdf3e3);
+  --tf-danger: var(--grist-theme-error, #d0021b);
+  --tf-danger-light: var(--grist-theme-error-bg, #fde3e7);
+  --tf-info: var(--grist-theme-info, #3b82f6);
+  --tf-info-light: var(--grist-theme-info-bg, #e3effd);
+
+  /* Layout */
+  --tf-radius: var(--grist-theme-radius, 8px);
+  --tf-radius-lg: 12px;
+  --tf-shadow: var(--grist-theme-shadow, 0 2px 8px rgba(0, 0, 0, 0.08));
+  --tf-shadow-lg: var(--grist-theme-shadow-lg, 0 8px 24px rgba(0, 0, 0, 0.12));
+
+  /* Focus & Accessibility */
+  --tf-focus-ring: var(--grist-theme-focus, 0 0 0 2px var(--tf-bg), 0 0 0 4px var(--tf-primary));
+}
+
+/* ========== ALIAS DE COMPATIBILITÉ ========== */
+/* Pour migration progressive sans réécrire tous les widgets */
+:root {
+  --bg: var(--tf-bg);
+  --card-bg: var(--tf-surface);
+  --surface: var(--tf-surface);
+  --surface-2: var(--tf-surface-2);
+  --surface-3: var(--tf-surface-3);
+  --text: var(--tf-text);
+  --text-muted: var(--tf-text-muted);
+  --text-light: var(--tf-text-light);
+  --border: var(--tf-border);
+  --border-dark: var(--tf-border-dark);
+  --primary: var(--tf-primary);
+  --primary-light: var(--tf-primary-light);
+  --primary-dark: var(--tf-primary-hover);
+  --success: var(--tf-success);
+  --warning: var(--tf-warning);
+  --danger: var(--tf-danger);
+  --info: var(--tf-info);
+  --radius: var(--tf-radius);
+  --shadow: var(--tf-shadow);
+}
+
+/* ========== HIGH CONTRAST LIGHT ========== */
+/* Renforcement spécifique pour le thème High Contrast de Grist */
+:root[data-grist-theme="HighContrastLight"] {
+  --tf-border: #000000;
+  --tf-border-soft: #333333;
+  --tf-text-muted: #333333;
+  --tf-focus-ring: 0 0 0 2px #000000, 0 0 0 4px var(--tf-primary);
+}
+
+/* ========== FORCED COLORS (Windows High Contrast) ========== */
+@media (forced-colors: active) {
+  button,
+  input,
+  select,
+  textarea,
+  .filter-btn,
+  .filter-panel,
+  .task-card,
+  .btn,
+  .form-input,
+  .form-select {
+    forced-color-adjust: auto;
+  }
+
+  /* S'assurer que les bordures de focus sont visibles */
+  :focus-visible {
+    outline: 2px solid CanvasText;
+    outline-offset: 2px;
+  }
+}
+
+/* ========== FALLBACK HORS GRIST ========== */
+/* Prefers-color-scheme utilisé UNIQUEMENT comme fallback hors Grist */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-grist-widget="true"]) {
+    --tf-bg: #0f172a;
+    --tf-surface: #1e293b;
+    --tf-surface-2: #243044;
+    --tf-surface-3: #2c3a52;
+    --tf-text: #e2e8f0;
+    --tf-text-muted: #94a3b8;
+    --tf-text-light: #64748b;
+    --tf-border: #334155;
+    --tf-border-soft: #475569;
+    --tf-primary: #6366f1;
+    --tf-primary-light: #312e81;
+    --tf-success: #10b981;
+    --tf-warning: #f59e0b;
+    --tf-danger: #ef4444;
+  }
+}
+
+/* ========== UTILITAIRES DE THÈME ========== */
+
+/* Classe utilitaire pour les éléments interactifs */
+.tf-interactive {
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.tf-interactive:hover {
+  background-color: var(--tf-surface-hover);
+}
+
+/* Classe utilitaire pour les états de focus */
+.tf-focusable:focus-visible {
+  outline: var(--tf-focus-ring);
+  outline-offset: 2px;
+}
+
+/* Classe utilitaire pour les surfaces */
+.tf-surface {
+  background-color: var(--tf-surface);
+  border: 1px solid var(--tf-border);
+}
+
+/* Fin du fichier */

@@ -11,8 +11,10 @@
     <script src="core/planning/gantt/gantt-task-assignment-integration.js"></script>
     <script src="core/planning/gantt/gantt-auto-planning-integration.js"></script>
     <script src="core/generated/taskflow-planning-browser.js"></script>
+    <link rel="stylesheet" href="core/theme/taskflow-theme.css">
     <link rel="stylesheet" href="core/filters/filter-styles.css">
     <style>
+        /* Couleurs spécifiques au Gantt (priorité, barres) */
         :root {
             /* Primary */
             --primary: #3e5de7; --primary-dark: #2845c1; --primary-light: #dce6ff;
@@ -21,14 +23,9 @@
             --warning: #f59e0b; --warning-light: #fef3c7;
             --danger: #ef4444; --danger-light: #fee2e2;
             --info: #3b82f6; --info-light: #dbeafe;
-            /* Backgrounds */
-            --bg: #f8fafc; --card-bg: #ffffff;
-            /* Text */
-            --text: #1e293b; --text-muted: #64748b; --text-light: #94a3b8;
-            /* Borders */
-            --border: #e2e8f0; --border-dark: #cbd5e1;
-            /* Shadows */
-            --shadow: 0 1px 3px rgba(0,0,0,0.1); --shadow-lg: 0 10px 40px rgba(0,0,0,0.15);
+            /* Layout */
+            --row-height: 44px; --task-list-width: 260px; --cell-width: 34px; --panel-width: 400px;
+        }
             /* Layout */
             --row-height: 44px; --task-list-width: 260px; --cell-width: 34px; --panel-width: 400px;
         }
@@ -568,24 +565,6 @@
                      border-radius: 18px 18px 0 0; box-shadow: 0 -12px 40px rgba(0,0,0,.18); }
             .panel.open { transform: translateY(0); }
             .gantt-wrapper.panel-open { margin-right: 0; }
-        }
-
-        /* ═════ Dark / Light automatique (selon le navigateur) ═════ */
-        @media (prefers-color-scheme: dark) {
-            :root {
-                --primary:#7b8cff; --primary-dark:#6878f5; --primary-light:#22306e;
-                --success:#3fcf8e; --success-light:#0f2e22;
-                --warning:#f5b454; --warning-light:#3a2c14;
-                --danger:#ff6168; --danger-light:#3a1c22;
-                --info:#7b9cff; --info-light:#16264a;
-                --bg:#0f1626; --card-bg:#18223a;
-                --text:#dde3ef; --text-muted:#9aa6bd; --text-light:#6c788f;
-                --border:#283145; --border-dark:#3a455c;
-                --shadow:0 1px 2px rgba(0,0,0,0.4); --shadow-lg:0 24px 60px -16px rgba(0,0,0,0.7);
-                --p-50:#1a2150; --p-100:#22306e; --surface-2:#161f33; --warn-ink:#f5b454;
-            }
-            .demo-badge { color: #1f2738; }
-            .toast { background: #060a14; }
         }
     </style>
 </head>
@@ -4192,15 +4171,17 @@ if (typeof globalThis !== 'undefined') {
         }
         
         function broadcastFilters() {
-            if (gristReady && typeof grist !== 'undefined' && grist.setOption) {
+            if (gristReady && typeof grist !== 'undefined' && grist.setOptions) {
                 try { 
-                  grist.setOption('filters', { 
-                    project: filters.project, 
-                    assignee: filters.assignee,
-                    team: filters.team,
-                    task: filters.task
-                  }); 
-                } catch (e) { console.log('setOption not available'); }
+                  const normalizedFilters = {
+                    assignee: filters.assignee.map(String),
+                    team: filters.team.map(String),
+                    project: filters.project.map(String),
+                    programme: filters.programme.map(String),
+                    task: filters.task.map(String)
+                  };
+                  grist.setOptions({ filters: normalizedFilters }); 
+                } catch (e) { console.log('setOptions error:', e); }
             }
         }
         
@@ -4239,7 +4220,11 @@ if (typeof globalThis !== 'undefined') {
             ov.innerHTML = '<div class="tf-gskel">'+rows+'</div>';
             ov.style.display = "flex";
         }
-        function clearAllGanttFilters() { filters = { project: [], assignee: [], priority: [] }; updateFilterUI(); broadcastFilters(); render(); }
+        function clearAllGanttFilters() { 
+          filters = { assignee: [], team: [], project: [], programme: [], task: [] }; 
+          if (filterManager) filterManager.clearAll();
+          else { updateFilterUI(); broadcastFilters(); render(); }
+        }
         function updateGanttOverlay() {
             const ov = document.getElementById("ganttOverlay"); if (!ov) return;
             
@@ -6239,22 +6224,25 @@ if (typeof globalThis !== 'undefined') {
                     }
                 });
                 grist.onOptions((options, interaction) => {
-                    if (options?.filters && interaction?.source !== 'self') {
+                    if (options?.filters) {
                         const f = options.filters;
-                        // Appliquer les filtres via FilterManager
+                        // Appliquer les filtres via FilterManager (toujours, même si source='self')
+                        // Le FilterManager ne re-diffuse pas les changements externes
                         if (filterManager) {
                           const newFilters = {
                             assignee: Array.isArray(f.assignee) ? f.assignee.map(String) : [],
                             team: Array.isArray(f.team) ? f.team.map(String) : [],
                             project: Array.isArray(f.project) ? f.project.map(String) : [],
+                            programme: Array.isArray(f.programme) ? f.programme.map(String) : [],
                             task: Array.isArray(f.task) ? f.task.map(String) : []
                           };
-                          filterManager.setState(newFilters);
+                          filterManager.applyExternalFilters(newFilters);
                         } else {
                           // Fallback
                           filters.project = Array.isArray(f.project) ? f.project.map(String) : [];
                           filters.assignee = Array.isArray(f.assignee) ? f.assignee.map(String) : [];
                           filters.team = Array.isArray(f.team) ? f.team.map(String) : [];
+                          filters.programme = Array.isArray(f.programme) ? f.programme.map(String) : [];
                           filters.task = Array.isArray(f.task) ? f.task.map(String) : [];
                           updateFilterUI();
                           render();
