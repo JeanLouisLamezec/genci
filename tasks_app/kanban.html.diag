@@ -1307,7 +1307,7 @@ if (typeof globalThis !== 'undefined') {
     }
 
     // Version courante du schéma
-    var SCHEMA_VERSION = 3;
+    var SCHEMA_VERSION = 1;
 
     // Ordre de création des tables (important pour les dépendances)
     var TABLE_ORDER = [
@@ -1317,13 +1317,11 @@ if (typeof globalThis !== 'undefined') {
         'Competences',
         'Projects',
         'Tasks',
-        'TaskAssignments',
         'Actions',
         'KanbanSteps',
         'Disponibilites',
-        'MemberDailyCapacities',
-        'Feuilles',
         'TimeEntries',
+        'Feuilles',
         'TaskFlow_Meta'
     ];
 
@@ -1445,23 +1443,6 @@ if (typeof globalThis !== 'undefined') {
         },
 
         // =========================================================================
-        // TaskAssignments — Affectations d'un membre à une tâche
-        // =========================================================================
-        TaskAssignments: {
-            label: 'Affectations',
-            columns: [
-                { id: 'tache',            opts: refColumn('Tasks') },
-                { id: 'membre',           opts: refColumn('Team') },
-                { id: 'heuresAllouees',   opts: dataColumn('Numeric') },
-                { id: 'dateDebut',        opts: dataColumn('Date') },
-                { id: 'dateFin',          opts: dataColumn('Date') },
-                { id: 'modeRepartition',  opts: dataColumn('Choice') },
-                { id: 'actif',            opts: dataColumn('Bool') },
-                { id: 'commentaire',      opts: dataColumn('Text') }
-            ]
-        },
-
-        // =========================================================================
         // Actions — Actions secondaires
         // =========================================================================
         Actions: {
@@ -1513,21 +1494,17 @@ if (typeof globalThis !== 'undefined') {
         },
 
         // =========================================================================
-        // MemberDailyCapacities — Capacité quotidienne par membre (table unique)
+        // TimeEntries — Feuille de temps (réalisé)
         // =========================================================================
-        MemberDailyCapacities: {
-            label: 'Capacités quotidiennes',
+        TimeEntries: {
+            label: 'Temps passé',
             columns: [
-                { id: 'membre',             opts: refColumn('Team') },
-                { id: 'date',               opts: dataColumn('Date') },
-                { id: 'capaciteTheorique',  opts: dataColumn('Numeric') },
-                { id: 'disponibiliteRatio', opts: dataColumn('Numeric') },
-                { id: 'capaciteDisponible', opts: dataColumn('Numeric') },
-                { id: 'absenceHeures',      opts: dataColumn('Numeric') },
-                { id: 'source',             opts: dataColumn('Choice') },
-                { id: 'revision',           opts: dataColumn('Int') },
-                { id: 'sourceUpdatedAt',    opts: dataColumn('DateTime') },
-                { id: 'commentaire',        opts: dataColumn('Text') }
+                { id: 'membre',           opts: refColumn('Team') },
+                { id: 'tache',            opts: refColumn('Tasks') },
+                { id: 'date',             opts: dataColumn('Date') },
+                { id: 'heures',           opts: dataColumn('Numeric') },
+                { id: 'imputation',       opts: dataColumn('Text') },
+                { id: 'description',      opts: dataColumn('Text') }
             ]
         },
 
@@ -1543,30 +1520,6 @@ if (typeof globalThis !== 'undefined') {
                 { id: 'validePar',        opts: refColumn('Team') },
                 { id: 'dateValidation',   opts: dataColumn('Date') },
                 { id: 'motifRejet',       opts: dataColumn('Text') }
-            ]
-        },
-
-        // =========================================================================
-        // TimeEntries — Feuille de temps (réalisé)
-        // =========================================================================
-        TimeEntries: {
-            label: 'Temps passé',
-            columns: [
-                { id: 'membre',           opts: refColumn('Team') },
-                { id: 'tache',            opts: refColumn('Tasks') },
-                { id: 'date',             opts: dataColumn('Date') },
-                { id: 'heures',           opts: dataColumn('Numeric') },
-                { id: 'imputation',       opts: dataColumn('Text') },
-                { id: 'description',      opts: dataColumn('Text') },
-                // Nouvelles colonnes v2 pour le plan de charge
-                { id: 'affectation',      opts: refColumn('TaskAssignments') },
-                { id: 'heuresPrevues',    opts: dataColumn('Numeric') },
-                { id: 'capaciteTheorique', opts: dataColumn('Numeric') },
-                { id: 'capaciteDisponible', opts: dataColumn('Numeric') },
-                { id: 'feuille',          opts: refColumn('Feuilles') },
-                { id: 'revisionPlan',     opts: dataColumn('Int') },
-                // Nouvelle colonne v3 : référence à la capacité quotidienne unique
-                { id: 'capaciteJour',     opts: refColumn('MemberDailyCapacities') }
             ]
         },
 
@@ -1618,23 +1571,13 @@ if (typeof globalThis !== 'undefined') {
         // TimeEntries refs
         { table: 'TimeEntries', column: 'membre', targetTable: 'Team', visibleColumn: 'nom' },
         { table: 'TimeEntries', column: 'tache', targetTable: 'Tasks', visibleColumn: 'titre' },
-        { table: 'TimeEntries', column: 'affectation', targetTable: 'TaskAssignments', visibleColumn: 'tache' },
-        { table: 'TimeEntries', column: 'feuille', targetTable: 'Feuilles', visibleColumn: 'semaine' },
-        { table: 'TimeEntries', column: 'capaciteJour', targetTable: 'MemberDailyCapacities', visibleColumn: 'date' },
-        
-        // TaskAssignments refs
-        { table: 'TaskAssignments', column: 'tache', targetTable: 'Tasks', visibleColumn: 'titre' },
-        { table: 'TaskAssignments', column: 'membre', targetTable: 'Team', visibleColumn: 'nom' },
         
         // Feuilles refs
         { table: 'Feuilles', column: 'membre', targetTable: 'Team', visibleColumn: 'nom' },
         { table: 'Feuilles', column: 'validePar', targetTable: 'Team', visibleColumn: 'nom' },
         
         // Disponibilites refs
-        { table: 'Disponibilites', column: 'membre', targetTable: 'Team', visibleColumn: 'nom' },
-        
-        // MemberDailyCapacities refs
-        { table: 'MemberDailyCapacities', column: 'membre', targetTable: 'Team', visibleColumn: 'nom' }
+        { table: 'Disponibilites', column: 'membre', targetTable: 'Team', visibleColumn: 'nom' }
     ];
 
     // Statuts par défaut pour les colonnes Choice
@@ -1715,24 +1658,36 @@ if (typeof globalThis !== 'undefined') {
     var bootstrapComplete = false;
     var maxRetries = 3;
 
-    // Spécifications d'affichage des références (dérivé automatiquement de SCHEMA.referenceDisplays)
-    var GENCI_REF_DISPLAY_SPECS = [];
-    
-    // Initialiser GENCI_REF_DISPLAY_SPECS à partir du schéma
-    function initializeRefDisplaySpecs() {
-        if (SCHEMA && SCHEMA.referenceDisplays) {
-            GENCI_REF_DISPLAY_SPECS = SCHEMA.referenceDisplays.map(function(ref) {
-                return {
-                    table: ref.table,
-                    column: ref.column,
-                    visibleColId: ref.visibleColumn
-                };
-            });
-        }
-    }
-    
-    // Appeler l'initialisation
-    initializeRefDisplaySpecs();
+    // Spécifications d'affichage des références (source unique)
+    var GENCI_REF_DISPLAY_SPECS = [
+        { table: 'Tasks', column: 'projet', visibleColId: 'nom' },
+        { table: 'Tasks', column: 'assignees', visibleColId: 'nom' },
+        { table: 'Tasks', column: 'dependDe', visibleColId: 'titre' },
+        { table: 'Tasks', column: 'parentTask', visibleColId: 'titre' },
+
+        { table: 'Projects', column: 'responsable', visibleColId: 'nom' },
+        { table: 'Projects', column: 'programme', visibleColId: 'nom' },
+
+        { table: 'Programmes', column: 'responsable', visibleColId: 'nom' },
+
+        { table: 'Entites', column: 'parent', visibleColId: 'nom' },
+        { table: 'Entites', column: 'chef', visibleColId: 'nom' },
+
+        { table: 'Team', column: 'entite', visibleColId: 'nom' },
+        { table: 'Team', column: 'responsable', visibleColId: 'nom' },
+        { table: 'Team', column: 'competences', visibleColId: 'nom' },
+
+        { table: 'Actions', column: 'task', visibleColId: 'titre' },
+        { table: 'Actions', column: 'assignee', visibleColId: 'nom' },
+
+        { table: 'TimeEntries', column: 'membre', visibleColId: 'nom' },
+        { table: 'TimeEntries', column: 'tache', visibleColId: 'titre' },
+
+        { table: 'Feuilles', column: 'membre', visibleColId: 'nom' },
+        { table: 'Feuilles', column: 'validePar', visibleColId: 'nom' },
+
+        { table: 'Disponibilites', column: 'membre', visibleColId: 'nom' }
+    ];
 
     // Helper : convertit un tableau colonnaire Grist en tableau d'objets
     function columnarToRows(data) {
@@ -1766,27 +1721,6 @@ if (typeof globalThis !== 'undefined') {
     // Helper : délai
     function delay(ms) {
         return new Promise(function (resolve) { setTimeout(resolve, ms); });
-    }
-
-    // Helper : attente conditionnelle avec backoff borné (TODO 13)
-    async function waitUntil(predicate, options) {
-        var opts = options || {};
-        var attempts = opts.attempts || 6;
-        var initialDelay = opts.initialDelay || 50;
-        var maxDelay = opts.maxDelay || 300;
-        
-        for (var i = 0; i < attempts; i++) {
-            var result = await predicate();
-            if (result) {
-                return { success: true, attempts: i + 1 };
-            }
-            if (i < attempts - 1) {
-                var delayMs = Math.min(initialDelay * Math.pow(2, i), maxDelay);
-                await delay(delayMs);
-            }
-        }
-        
-        return { success: false, attempts: attempts };
     }
 
     // Helper : vérifie si un type est Ref ou RefList
@@ -1825,14 +1759,8 @@ if (typeof globalThis !== 'undefined') {
     }
 
     async function loadSchemaMetadata(grist) {
-        // TODO 14 : Paralléliser les lectures indépendantes
-        var results = await Promise.all([
-            grist.docApi.fetchTable('_grist_Tables'),
-            grist.docApi.fetchTable('_grist_Tables_column')
-        ]);
-        
-        var tablesData = results[0];
-        var columnsData = results[1];
+        var tablesData = await grist.docApi.fetchTable('_grist_Tables');
+        var columnsData = await grist.docApi.fetchTable('_grist_Tables_column');
         
         var tables = columnarToRows(tablesData);
         var columns = columnarToRows(columnsData);
@@ -2006,34 +1934,32 @@ if (typeof globalThis !== 'undefined') {
     // ========================================================================
     
     async function syncMetadata(grist, expectedTables) {
-        log('[GENCI sync] Attente stabilisation métadonnées...');
+        log('[GENCI sync] Attente stabilisation métadonnées (3 tentatives)...');
         
         var lastMetadata = null;
         
-        // Utiliser waitUntil pour une attente conditionnelle (TODO 13)
-        var result = await waitUntil(function() {
-            return loadSchemaMetadata(grist).then(function(metadata) {
-                lastMetadata = metadata;
-                var missing = expectedTables.filter(function(tableId) {
-                    return !metadata.tableById[tableId];
-                });
-                return missing.length === 0;
+        for (var attempt = 0; attempt < 3; attempt++) {
+            lastMetadata = await loadSchemaMetadata(grist);
+            
+            var missing = expectedTables.filter(function(tableId) {
+                return !lastMetadata.tableById[tableId];
             });
-        }, { attempts: 6, initialDelay: 50, maxDelay: 200 });
-        
-        if (result.success) {
-            log('[GENCI sync] Métadonnées stabilisées (' + result.attempts + ' tentatives)');
-            return lastMetadata;
+            
+            if (missing.length === 0) {
+                log('[GENCI sync] Métadonnées stabilisées');
+                return lastMetadata;
+            }
+            
+            if (attempt < 2) {
+                await delay(150);
+            }
         }
         
-        // Échec après 6 tentatives
-        var missing = expectedTables.filter(function(tableId) {
-            return !lastMetadata.tableById[tableId];
-        });
-        
         throw new Error(
-            'Tables absentes après ' + result.attempts + ' tentatives: ' +
-            missing.join(', ')
+            'Tables absentes après création: ' +
+            expectedTables.filter(function(tableId) {
+                return !lastMetadata.tableById[tableId];
+            }).join(', ')
         );
     }
 
@@ -2061,62 +1987,9 @@ if (typeof globalThis !== 'undefined') {
         } catch (e) {
             var msg = e.message || String(e);
             
-            // ==========================================================================
-            // GESTION DES ERREURS "already exists" — INTERDICTION DE RELANCER AVEUGLEMENT
-            // ==========================================================================
-            // Après une erreur indiquant que la colonne existe déjà :
-            // 1. Relire les métadonnées
-            // 2. Vérifier si la colonne canonique existe
-            // 3. Vérifier son type
-            // 4. Si elle existe avec le bon type → succès concurrent
-            // 5. Si elle existe avec un mauvais type → conflit structuré
-            // 6. JAMAIS relancer immédiatement AddColumn avec le même identifiant
-            // ==========================================================================
-            var isAlreadyExistsError = 
-                msg.indexOf('already exists') !== -1 ||
-                msg.indexOf('duplicate') !== -1 ||
-                msg.indexOf('column exists') !== -1;
-            
-            if (isAlreadyExistsError) {
-                log('[GENCI refs] Erreur "already exists" détectée, relecture des métadonnées...');
-                
-                try {
-                    // Recharger les métadonnées pour vérifier l'état réel
-                    var freshMetadata = await loadSchemaMetadata(grist);
-                    var key = tableId + '.' + normalized.id;
-                    var existingCol = freshMetadata.columnByKey[key];
-                    
-                    if (existingCol) {
-                        // La colonne existe, vérifier son type
-                        var expectedType = normalized.type;
-                        var actualType = existingCol.type;
-                        
-                        if (actualType === expectedType) {
-                            // Succès concurrent : un autre acteur a créé la colonne
-                            log('[GENCI refs] Colonne déjà créée par un autre acteur (type correct)');
-                            return true; // Considérer comme succès
-                        } else {
-                            // Conflit de type : la colonne existe avec un type incorrect
-                            log('[GENCI refs] Conflit de type : attendu=' + expectedType + ', actuel=' + actualType);
-                            throw new Error(
-                                'COLUMN_TYPE_CONFLICT: ' + key + 
-                                ' (expected: ' + expectedType + ', actual: ' + actualType + ')'
-                            );
-                        }
-                    } else {
-                        // Colonne toujours absente après erreur "already exists"
-                        // C'est incohérent, ne pas réessayer immédiatement
-                        log('[GENCI refs] Erreur incohérente : colonne absente après erreur "already exists"');
-                        throw e; // Propager l'erreur originale
-                    }
-                } catch (metadataError) {
-                    log('[GENCI refs] Erreur lors de la relecture des métadonnées:', metadataError);
-                    throw e; // Propager l'erreur originale
-                }
-            }
-            
-            // Erreurs transitoires autres que "already exists" : retry avec délai progressif
+            // Erreurs transitoires : retry avec délai progressif
             var isTransientError = 
+                msg.indexOf('already exists') !== -1 ||
                 msg.indexOf('NoneType') !== -1 ||
                 msg.indexOf('table_id') !== -1 ||
                 msg.indexOf('table not found') !== -1 ||
@@ -2491,9 +2364,7 @@ if (typeof globalThis !== 'undefined') {
             invalidColumnTypes: [],
             invalidRefTargets: [],
             invalidVisibleColumns: [],
-            missingFormulaColumns: [],
-            duplicateColumns: [],
-            corrupted: false
+            missingFormulaColumns: []
         };
         
         try {
@@ -2593,58 +2464,6 @@ if (typeof globalThis !== 'undefined') {
                         }
                     }
                 }
-            }
-            
-            // ====================================================================
-            // DETECTION DES COLONNES DUPLIQUEES (CORRUPTION)
-            // ====================================================================
-            // Pour chaque table du schéma, vérifier les colonnes qui correspondent
-            // au pattern ^<canonical>[0-9]+$ pour détecter les duplications
-            for (var tableIdx = 0; tableIdx < SCHEMA.tableOrder.length; tableIdx++) {
-                var tableId = SCHEMA.tableOrder[tableIdx];
-                var tableDef = SCHEMA.tables[tableId];
-                
-                if (!tableDef || !metadata.tableById[tableId]) {
-                    continue;
-                }
-                
-                // Obtenir toutes les colonnes de cette table depuis les métadonnées
-                var tableColumns = metadata.columns.filter(function(col) {
-                    var parentTable = metadata.tables.find(function(t) { 
-                        return t.id === col.parentId; 
-                    });
-                    return parentTable && parentTable.tableId === tableId;
-                });
-                
-                // Pour chaque colonne canonique du schéma
-                for (var colIdx = 0; colIdx < tableDef.columns.length; colIdx++) {
-                    var canonicalCol = tableDef.columns[colIdx];
-                    var canonicalId = canonicalCol.id;
-                    
-                    // Échapper l'identifiant canonique pour la RegExp
-                    var escapedCanonical = canonicalId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-                    var duplicatePattern = new RegExp('^' + escapedCanonical + '[0-9]+$');
-                    
-                    // Trouver les duplications
-                    var duplicates = tableColumns.filter(function(col) {
-                        return duplicatePattern.test(col.colId);
-                    }).map(function(col) {
-                        return col.colId;
-                    });
-                    
-                    if (duplicates.length > 0) {
-                        result.duplicateColumns.push({
-                            table: tableId,
-                            canonicalColumn: canonicalId,
-                            duplicates: duplicates
-                        });
-                    }
-                }
-            }
-            
-            // Marquer comme corrompu si des duplications sont trouvées
-            if (result.duplicateColumns.length > 0) {
-                result.corrupted = true;
             }
             
         } catch (e) {
@@ -2808,33 +2627,10 @@ if (typeof globalThis !== 'undefined') {
             try {
                 log('Démarrage initialisation...');
                 
-                // Phase 0 : Exécuter les migrations puis inspection
-                log('Phase 0: Migrations...');
+                // Phase 0 : Migration et inspection
+                log('Phase 0: Migration...');
                 var migrationLog = await migrateLegacyTables(grist);
                 globalLog = globalLog.concat(migrationLog);
-                
-                // Exécuter les migrations versionnées si TaskFlowMigrations est disponible
-                if (global.TaskFlowMigrations) {
-                    try {
-                        var currentVersion = await global.TaskFlowMigrations.getCurrentVersion(grist);
-                        log('Version actuelle du schéma: v' + currentVersion);
-                        
-                        var migrationResult = await global.TaskFlowMigrations.runMigrations(grist, currentVersion);
-                        
-                        if (migrationResult.success) {
-                            log('Migrations appliquées: ' + migrationResult.applied + ' migrations, version finale: v' + migrationResult.finalVersion);
-                            globalLog.push('Migrations: v' + currentVersion + ' → v' + migrationResult.finalVersion);
-                            result.phases.migrations = migrationResult;
-                        } else {
-                            result.warnings.push({ phase: 'migrations', message: 'Certaines migrations ont échoué' });
-                        }
-                    } catch (migrationError) {
-                        log('Erreur lors des migrations: ' + (migrationError.message || migrationError));
-                        result.warnings.push({ phase: 'migrations', error: migrationError.message || String(migrationError) });
-                        // Continuer malgré tout, le schéma déclaratif réparera
-                    }
-                }
-                
                 result.phases.migration = migrationLog;
                 
                 // Phase 1 : Création des tables (sans Ref)
@@ -3025,16 +2821,17 @@ if (typeof globalThis !== 'undefined') {
  * - Non destructive (ne supprime jamais de données)
  * - Testable indépendamment
  * 
- * Version 1: Schéma de base
- * Version 2: TaskAssignments + extension quotidienne de TimeEntries
- * Version 3: MemberDailyCapacities + TimeEntries.capaciteJour
+ * Pour ajouter une migration :
+ * 1. Incrémenter SCHEMA_VERSION dans taskflow-schema.js
+ * 2. Ajouter une nouvelle entrée dans MIGRATIONS
+ * 3. Implémenter la fonction de migration
+ * 4. Tester sur un document de test
  * ============================================================================ */
 
 (function (global) {
     'use strict';
 
     var SCHEMA = global.TASKFLOW_SCHEMA;
-    var DEFAULT_WEEKLY_CAPACITY = 35;
 
     // Helper : délai
     function delay(ms) {
@@ -3070,285 +2867,48 @@ if (typeof globalThis !== 'undefined') {
         return rows;
     }
 
-    // Helper : obtenir docApi normalisé
-    function getDocApi(grist) {
-        var docApi = grist && (grist.docApi || grist);
-        if (!docApi || typeof docApi.fetchTable !== 'function' || typeof docApi.applyUserActions !== 'function') {
-            throw new Error('INVALID_GRIST_DOC_API: grist.docApi doit exposer fetchTable et applyUserActions');
-        }
-        return docApi;
-    }
-
-    // Helper : charger les métadonnées
-    async function loadMigrationMetadata(grist) {
-        var docApi = getDocApi(grist);
-        var tablesData = await docApi.fetchTable('_grist_Tables');
-        var columnsData = await docApi.fetchTable('_grist_Tables_column');
-        
-        var tables = columnarToRows(tablesData);
-        var columns = columnarToRows(columnsData);
-        
-        var tableById = {};
-        for (var i = 0; i < tables.length; i++) {
-            tableById[tables[i].id] = tables[i].tableId;
-        }
-        
-        var columnsByKey = {};
-        for (var j = 0; j < columns.length; j++) {
-            var col = columns[j];
-            var tableId = tableById[col.parentId];
-            if (tableId) {
-                var key = tableId + '.' + col.colId;
-                columnsByKey[key] = {
-                    tableId: tableId,
-                    colId: col.colId,
-                    type: col.type,
-                    isFormula: col.isFormula,
-                    parentId: col.parentId
-                };
-            }
-        }
-        
-        var tablesByName = {};
-        for (var k = 0; k < tables.length; k++) {
-            tablesByName[tables[k].tableId] = tables[k];
-        }
-        
-        return {
-            tablesById: tableById,
-            tablesByName: tablesByName,
-            columnsByKey: columnsByKey
-        };
-    }
-
     // ========================================================================
-    // MIGRATION V1 → V2 — Planning daily assignments
+    // MIGRATION V1 → V2 (exemple placeholder)
     // ========================================================================
+    // Cette migration est un exemple. À remplacer par la première vraie
+    // migration lors de l'évolution du schéma.
     
     async function migrateToV2(grist, metadata) {
-        log('Migration v1 → v2: planning-daily-assignments-v2');
+        log('Migration v1 → v2: Exemple (pas d\'action réelle)');
         
-        var docApi = getDocApi(grist);
-        var actions = [];
-        var existingTables = metadata.tablesByName || {};
-        var existingColumns = metadata.columnsByKey || {};
+        // Exemple : ajouter une colonne optionnelle
+        // await grist.docApi.applyUserActions([
+        //     ['AddColumn', 'Tasks', 'nouvelleColonne', { type: 'Text', isFormula: false }]
+        // ]);
         
-        // 1. Créer TaskAssignments si elle n'existe pas
-        if (!existingTables['TaskAssignments']) {
-            log('Création de la table TaskAssignments');
-            actions.push(['AddTable', 'TaskAssignments', [
-                { id: 'tache', type: 'Ref:Tasks', isFormula: false },
-                { id: 'membre', type: 'Ref:Team', isFormula: false },
-                { id: 'heuresAllouees', type: 'Numeric', isFormula: false },
-                { id: 'dateDebut', type: 'Date', isFormula: false },
-                { id: 'dateFin', type: 'Date', isFormula: false },
-                { id: 'modeRepartition', type: 'Choice', isFormula: false },
-                { id: 'actif', type: 'Bool', isFormula: false },
-                { id: 'commentaire', type: 'Text', isFormula: false }
-            ]]);
-            // Marquer les colonnes comme créées pour éviter de les recréer
-            existingTables['TaskAssignments'] = { id: null };
-            existingColumns['TaskAssignments.tache'] = { type: 'Ref:Tasks' };
-            existingColumns['TaskAssignments.membre'] = { type: 'Ref:Team' };
-            existingColumns['TaskAssignments.heuresAllouees'] = { type: 'Numeric' };
-            existingColumns['TaskAssignments.dateDebut'] = { type: 'Date' };
-            existingColumns['TaskAssignments.dateFin'] = { type: 'Date' };
-            existingColumns['TaskAssignments.modeRepartition'] = { type: 'Choice' };
-            existingColumns['TaskAssignments.actif'] = { type: 'Bool' };
-            existingColumns['TaskAssignments.commentaire'] = { type: 'Text' };
-        } else {
-            log('TaskAssignments existe déjà');
-        }
-        
-        // 2. Vérifier et ajouter les colonnes manquantes de TaskAssignments
-        var taskAssignmentsCols = [
-            { id: 'tache', type: 'Ref:Tasks' },
-            { id: 'membre', type: 'Ref:Team' },
-            { id: 'heuresAllouees', type: 'Numeric' },
-            { id: 'dateDebut', type: 'Date' },
-            { id: 'dateFin', type: 'Date' },
-            { id: 'modeRepartition', type: 'Choice' },
-            { id: 'actif', type: 'Bool' },
-            { id: 'commentaire', type: 'Text' }
-        ];
-        for (var i = 0; i < taskAssignmentsCols.length; i++) {
-            var colDef = taskAssignmentsCols[i];
-            var key = 'TaskAssignments.' + colDef.id;
-            if (!existingColumns[key]) {
-                log('Ajout de la colonne TaskAssignments.' + colDef.id);
-                actions.push(['AddColumn', 'TaskAssignments', colDef.id, {
-                    type: colDef.type,
-                    isFormula: false
-                }]);
-                existingColumns[key] = { type: colDef.type };
-            } else {
-                log('TaskAssignments.' + colDef.id + ' existe déjà');
-            }
-        }
-        
-        // 3. Ajouter les colonnes v2 manquantes à TimeEntries
-        var timeEntriesCols = [
-            { id: 'affectation', type: 'Ref:TaskAssignments' },
-            { id: 'heuresPrevues', type: 'Numeric' },
-            { id: 'capaciteTheorique', type: 'Numeric' },
-            { id: 'capaciteDisponible', type: 'Numeric' },
-            { id: 'feuille', type: 'Ref:Feuilles' },
-            { id: 'revisionPlan', type: 'Int' }
-        ];
-        
-        for (var j = 0; j < timeEntriesCols.length; j++) {
-            var colDef = timeEntriesCols[j];
-            var key = 'TimeEntries.' + colDef.id;
-            if (!existingColumns[key]) {
-                log('Ajout de la colonne TimeEntries.' + colDef.id);
-                actions.push(['AddColumn', 'TimeEntries', colDef.id, {
-                    type: colDef.type,
-                    isFormula: false
-                }]);
-                existingColumns[key] = { type: colDef.type };
-            } else {
-                log('TimeEntries.' + colDef.id + ' existe déjà');
-            }
-        }
-        
-        // Appliquer les actions si nécessaire
-        if (actions.length > 0) {
-            await docApi.applyUserActions(actions);
-            log('Migration v2 appliquée avec succès: ' + actions.length + ' actions');
-            
-            // Relire les métadonnées après écriture
-            metadata = await loadMigrationMetadata(grist);
-        } else {
-            log('Aucune action nécessaire, migration déjà appliquée');
-        }
-        
-        return { 
-            success: true, 
-            message: 'Migration v2 appliquée',
-            actionsExecuted: actions.length,
-            metadata: metadata
-        };
+        return { success: true, message: 'Migration v2 appliquée' };
     }
 
     // ========================================================================
-    // MIGRATION V2 → V3 — Member daily capacities
+    // MIGRATION V2 → V3 (exemple placeholder)
     // ========================================================================
     
     async function migrateToV3(grist, metadata) {
-        log('Migration v2 → v3: member-daily-capacities-v3');
-        
-        var docApi = getDocApi(grist);
-        var actions = [];
-        var existingTables = metadata.tablesByName || {};
-        var existingColumns = metadata.columnsByKey || {};
-        
-        // 1. Créer MemberDailyCapacities si elle n'existe pas
-        if (!existingTables['MemberDailyCapacities']) {
-            log('Création de la table MemberDailyCapacities');
-            actions.push(['AddTable', 'MemberDailyCapacities', [
-                { id: 'membre', type: 'Ref:Team', isFormula: false },
-                { id: 'date', type: 'Date', isFormula: false },
-                { id: 'capaciteTheorique', type: 'Numeric', isFormula: false },
-                { id: 'disponibiliteRatio', type: 'Numeric', isFormula: false },
-                { id: 'capaciteDisponible', type: 'Numeric', isFormula: false },
-                { id: 'absenceHeures', type: 'Numeric', isFormula: false },
-                { id: 'source', type: 'Choice', isFormula: false },
-                { id: 'revision', type: 'Int', isFormula: false },
-                { id: 'sourceUpdatedAt', type: 'DateTime', isFormula: false },
-                { id: 'commentaire', type: 'Text', isFormula: false }
-            ]]);
-            // Marquer les colonnes comme créées pour éviter de les recréer
-            existingTables['MemberDailyCapacities'] = { id: null };
-            existingColumns['MemberDailyCapacities.membre'] = { type: 'Ref:Team' };
-            existingColumns['MemberDailyCapacities.date'] = { type: 'Date' };
-            existingColumns['MemberDailyCapacities.capaciteTheorique'] = { type: 'Numeric' };
-            existingColumns['MemberDailyCapacities.disponibiliteRatio'] = { type: 'Numeric' };
-            existingColumns['MemberDailyCapacities.capaciteDisponible'] = { type: 'Numeric' };
-            existingColumns['MemberDailyCapacities.absenceHeures'] = { type: 'Numeric' };
-            existingColumns['MemberDailyCapacities.source'] = { type: 'Choice' };
-            existingColumns['MemberDailyCapacities.revision'] = { type: 'Int' };
-            existingColumns['MemberDailyCapacities.sourceUpdatedAt'] = { type: 'DateTime' };
-            existingColumns['MemberDailyCapacities.commentaire'] = { type: 'Text' };
-        } else {
-            log('MemberDailyCapacities existe déjà');
-        }
-        
-        // 2. Vérifier et ajouter les colonnes manquantes de MemberDailyCapacities
-        var memberDailyCapCols = [
-            { id: 'membre', type: 'Ref:Team' },
-            { id: 'date', type: 'Date' },
-            { id: 'capaciteTheorique', type: 'Numeric' },
-            { id: 'disponibiliteRatio', type: 'Numeric' },
-            { id: 'capaciteDisponible', type: 'Numeric' },
-            { id: 'absenceHeures', type: 'Numeric' },
-            { id: 'source', type: 'Choice' },
-            { id: 'revision', type: 'Int' },
-            { id: 'sourceUpdatedAt', type: 'DateTime' },
-            { id: 'commentaire', type: 'Text' }
-        ];
-        
-        for (var i = 0; i < memberDailyCapCols.length; i++) {
-            var colDef = memberDailyCapCols[i];
-            var key = 'MemberDailyCapacities.' + colDef.id;
-            if (!existingColumns[key]) {
-                log('Ajout de la colonne MemberDailyCapacities.' + colDef.id);
-                actions.push(['AddColumn', 'MemberDailyCapacities', colDef.id, {
-                    type: colDef.type,
-                    isFormula: false
-                }]);
-                existingColumns[key] = { type: colDef.type };
-            } else {
-                log('MemberDailyCapacities.' + colDef.id + ' existe déjà');
-            }
-        }
-        
-        // 3. Ajouter TimeEntries.capaciteJour
-        var key = 'TimeEntries.capaciteJour';
-        if (!existingColumns[key]) {
-            log('Ajout de la colonne TimeEntries.capaciteJour');
-            actions.push(['AddColumn', 'TimeEntries', 'capaciteJour', {
-                type: 'Ref:MemberDailyCapacities',
-                isFormula: false
-            }]);
-            existingColumns[key] = { type: 'Ref:MemberDailyCapacities' };
-        } else {
-            log('TimeEntries.capaciteJour existe déjà');
-        }
-        
-        // Appliquer les actions si nécessaire
-        if (actions.length > 0) {
-            await docApi.applyUserActions(actions);
-            log('Migration v3 appliquée avec succès: ' + actions.length + ' actions');
-            
-            // Relire les métadonnées après écriture
-            metadata = await loadMigrationMetadata(grist);
-        } else {
-            log('Aucune action nécessaire, migration déjà appliquée');
-        }
-        
-        return { 
-            success: true, 
-            message: 'Migration v3 appliquée',
-            actionsExecuted: actions.length,
-            metadata: metadata
-        };
+        log('Migration v2 → v3: Exemple (pas d\'action réelle)');
+        return { success: true, message: 'Migration v3 appliquée' };
     }
 
     // ========================================================================
     // LISTE DES MIGRATIONS
     // ========================================================================
+    // Ordre croissant de version. Chaque migration fait passer de N à N+1.
     
     var MIGRATIONS = [
         {
             version: 2,
-            name: 'planning-daily-assignments-v2',
-            description: 'Création de TaskAssignments et extension de TimeEntries',
+            name: 'example-migration-v2',
+            description: 'Exemple de migration (à remplacer)',
             run: migrateToV2
         },
         {
             version: 3,
-            name: 'member-daily-capacities-v3',
-            description: 'Création de MemberDailyCapacities et TimeEntries.capaciteJour',
+            name: 'example-migration-v3',
+            description: 'Exemple de migration (à remplacer)',
             run: migrateToV3
         }
     ];
@@ -3359,9 +2919,8 @@ if (typeof globalThis !== 'undefined') {
 
     // Lit la version actuelle installée
     async function getCurrentVersion(grist) {
-        var docApi = getDocApi(grist);
         try {
-            var meta = await docApi.fetchTable('TaskFlow_Meta');
+            var meta = await grist.docApi.fetchTable('TaskFlow_Meta');
             var rows = columnarToRows(meta);
             if (rows && rows.length > 0) {
                 return rows[0].schemaVersion || 1;
@@ -3375,22 +2934,16 @@ if (typeof globalThis !== 'undefined') {
     // Calcule les migrations à appliquer
     function getPendingMigrations(currentVersion) {
         var pending = [];
-        var targetVersion = SCHEMA ? SCHEMA.version : 3;
-        
         for (var i = 0; i < MIGRATIONS.length; i++) {
-            var migration = MIGRATIONS[i];
-            if (migration.version > currentVersion && migration.version <= targetVersion) {
-                pending.push(migration);
+            if (MIGRATIONS[i].version > currentVersion) {
+                pending.push(MIGRATIONS[i]);
             }
         }
         return pending;
     }
 
     // Exécute toutes les migrations en attente
-    async function runMigrations(grist, currentVersion, options) {
-        options = options || {};
-        var nowUnixSeconds = options.nowUnixSeconds || Math.floor(Date.now() / 1000);
-        
+    async function runMigrations(grist, currentVersion) {
         var pending = getPendingMigrations(currentVersion);
         
         if (pending.length === 0) {
@@ -3398,8 +2951,7 @@ if (typeof globalThis !== 'undefined') {
             return {
                 success: true,
                 applied: 0,
-                message: 'Schéma à jour',
-                finalVersion: currentVersion
+                message: 'Schéma à jour'
             };
         }
         
@@ -3407,8 +2959,6 @@ if (typeof globalThis !== 'undefined') {
         
         var results = [];
         var metadata = null;
-        var lastSuccessfulVersion = currentVersion;
-        var docApi = getDocApi(grist);
         
         for (var i = 0; i < pending.length; i++) {
             var migration = pending[i];
@@ -3418,9 +2968,10 @@ if (typeof globalThis !== 'undefined') {
                 
                 // Relit les métadonnées avant chaque migration
                 try {
-                    metadata = await loadMigrationMetadata(grist);
+                    metadata = await grist.docApi.fetchTable('_grist_Tables_column');
+                    metadata = columnarToRows(metadata);
                 } catch (e) {
-                    metadata = { tablesByName: {}, columnsByKey: {} };
+                    metadata = {};
                 }
                 
                 // Exécute la migration
@@ -3437,13 +2988,7 @@ if (typeof globalThis !== 'undefined') {
                     message: result.message
                 });
                 
-                // Met à jour la version courante après succès
-                lastSuccessfulVersion = migration.version;
-                
-                // Mettre à jour TaskFlow_Meta
-                await updateSchemaVersion(grist, lastSuccessfulVersion, migration.name, nowUnixSeconds);
-                
-                log('Migration appliquée: ' + migration.name + ' - version mise à jour: ' + lastSuccessfulVersion);
+                log('Migration appliquée: ' + migration.name);
                 
                 // Petit délai entre les migrations
                 await delay(100);
@@ -3458,13 +3003,6 @@ if (typeof globalThis !== 'undefined') {
                     error: e.message || String(e)
                 });
                 
-                // Met à jour les métadonnées avec l'erreur
-                try {
-                    await updateMigrationError(grist, migration.name, e.message || String(e), nowUnixSeconds);
-                } catch (updateError) {
-                    log('Erreur lors de la mise à jour de l\'erreur: ' + updateError);
-                }
-                
                 // Arrête au premier échec
                 throw new Error('Migration échouée à v' + migration.version + ': ' + (e.message || e));
             }
@@ -3473,70 +3011,8 @@ if (typeof globalThis !== 'undefined') {
         return {
             success: true,
             applied: pending.length,
-            results: results,
-            finalVersion: lastSuccessfulVersion
+            results: results
         };
-    }
-    
-    // Met à jour la version du schéma dans TaskFlow_Meta
-    async function updateSchemaVersion(grist, version, migrationName, nowUnixSeconds) {
-        var docApi = getDocApi(grist);
-        nowUnixSeconds = nowUnixSeconds || Math.floor(Date.now() / 1000);
-        
-        try {
-            var meta = await docApi.fetchTable('TaskFlow_Meta');
-            var rows = columnarToRows(meta);
-            
-            if (rows && rows.length > 0) {
-                // Mettre à jour l'enregistrement existant
-                var rowId = meta.id ? meta.id[0] : rows[0].id;
-                await docApi.applyUserActions([
-                    ['UpdateRecord', 'TaskFlow_Meta', rowId, {
-                        schemaVersion: version,
-                        lastMigration: migrationName,
-                        lastMigrationAt: nowUnixSeconds,
-                        lastError: null
-                    }]
-                ]);
-            } else {
-                // Créer un nouvel enregistrement
-                await docApi.applyUserActions([
-                    ['AddRecord', 'TaskFlow_Meta', null, {
-                        schemaVersion: version,
-                        lastMigration: migrationName,
-                        lastMigrationAt: nowUnixSeconds,
-                        installationStatus: 'migrated'
-                    }]
-                ]);
-            }
-        } catch (e) {
-            log('Erreur lors de la mise à jour de TaskFlow_Meta: ' + (e.message || e));
-            throw e; // Propager l'erreur pour que la migration échoue
-        }
-    }
-    
-    // Met à jour l'erreur de migration dans TaskFlow_Meta
-    async function updateMigrationError(grist, migrationName, errorMessage, nowUnixSeconds) {
-        var docApi = getDocApi(grist);
-        nowUnixSeconds = nowUnixSeconds || Math.floor(Date.now() / 1000);
-        
-        try {
-            var meta = await docApi.fetchTable('TaskFlow_Meta');
-            var rows = columnarToRows(meta);
-            
-            if (rows && rows.length > 0) {
-                var rowId = meta.id ? meta.id[0] : rows[0].id;
-                await docApi.applyUserActions([
-                    ['UpdateRecord', 'TaskFlow_Meta', rowId, {
-                        lastError: errorMessage,
-                        lastMigration: migrationName,
-                        lastMigrationAt: nowUnixSeconds
-                    }]
-                ]);
-            }
-        } catch (e) {
-            log('Erreur lors de la mise à jour de l\'erreur: ' + (e.message || e));
-        }
     }
 
     // Export public
@@ -3544,16 +3020,8 @@ if (typeof globalThis !== 'undefined') {
         getCurrentVersion: getCurrentVersion,
         getPendingMigrations: getPendingMigrations,
         runMigrations: runMigrations,
-        MIGRATIONS: MIGRATIONS,
-        updateSchemaVersion: updateSchemaVersion,
-        updateMigrationError: updateMigrationError,
-        loadMigrationMetadata: loadMigrationMetadata
+        MIGRATIONS: MIGRATIONS
     };
-    
-    // Export CommonJS pour Jest
-    if (typeof module !== 'undefined' && module.exports) {
-        module.exports = global.TaskFlowMigrations;
-    }
 
 })(typeof window !== 'undefined' ? window : (typeof global !== 'undefined' ? global : this));
 
@@ -3671,9 +3139,6 @@ if (typeof globalThis !== 'undefined') {
         function updateActionField(field, value, noSave = false, noRender = false) {
             const data = panelState.editData;
             if (!data) return;
-            
-            console.log('[DIAG assignee] updateActionField called:', { field, value, valueIsObject: typeof value === 'object', editDataBefore: structuredClone(data) });
-            
             if (field === 'dateDebut' || field === 'dateEcheance') {
                 value = value ? dateToGrist(parseInputDate(value)) : null;
             }
@@ -3682,9 +3147,6 @@ if (typeof globalThis !== 'undefined') {
                 data.dateDebut = value;
             }
             data[field] = value;
-            
-            console.log('[DIAG assignee] updateActionField after assignment:', { field, value, editDataAfter: structuredClone(data) });
-            
             syncLocalAction();
             // Ne re-render que si nécessaire (pas pendant la saisie texte)
             if (!noRender) renderPanelAction();
@@ -3793,15 +3255,7 @@ if (typeof globalThis !== 'undefined') {
         // sweet spot : ne jamais ecrire une colonne absente du schema (ex. charges/dateCloture si le Plan n'a jamais ete ouvert). Fail-open si TASK_COLS pas encore peuple.
         function pruneTaskRecord(rec) { if (TASK_COLS.size) { for (const k in rec) if (!TASK_COLS.has(k)) delete rec[k]; } return rec; }
         let ACTION_COLS = new Set();
-        function pruneActionRecord(rec) {
-          if (ACTION_COLS.size) {
-            // S'assurer que les colonnes critiques sont toujours préservées
-            ACTION_COLS.add('assignee');
-            ACTION_COLS.add('task');
-            for (const k in rec) if (!ACTION_COLS.has(k)) delete rec[k];
-          }
-          return rec;
-        }
+        function pruneActionRecord(rec) { if (ACTION_COLS.size) { for (const k in rec) if (!ACTION_COLS.has(k)) delete rec[k]; } return rec; }
         async function ensureSchema() {
             let created = 0;
             const tablesCreated = [];
@@ -4001,127 +3455,70 @@ if $projet and $projet.responsable:
         // ═══════════════════════════════════════════════════════════════════════
         // SCHEMA GENCI ETENDU — Wrapper vers TaskFlowBootstrap.ensureGenciSchema
         // Utilise le module bootstrap pour une initialisation multipasse robuste.
-        // ATTENTION : Cette fonction ne doit être appelée que par action explicite
-        // via le bouton administratif du Kanban, JAMAIS automatiquement.
         // ═══════════════════════════════════════════════════════════════════════
         
-        // Single-flight guard pour éviter les installations concurrentes
-        var schemaInstallPromise = null;
-        
         async function initGenciSchema(btn) {
-            if (TF.isReadOnly()) { 
-                showToast('Lecture seule : action impossible', 'error'); 
-                return Promise.reject(new Error('READ_ONLY'));
-            }
-            if (!gristReady) { 
-                showToast('Grist pas prêt, réessayez', 'error'); 
-                return Promise.reject(new Error('GRIST_NOT_READY'));
-            }
-            
-            // Single-flight : réutiliser la même Promise si une installation est en cours
-            if (schemaInstallPromise) {
-                console.log('[Kanban] Schema installation already in progress, reusing promise');
-                return schemaInstallPromise;
-            }
-            
-            // Désactiver le bouton pendant l'opération
-            var originalBtnState = null;
+            if (TF.isReadOnly()) { showToast('Lecture seule : action impossible', 'error'); return; }
+            if (!gristReady) { showToast('Grist pas prêt, réessayez', 'error'); return; }
             if (btn) {
-                originalBtnState = {
-                    opacity: btn.style.opacity,
-                    pointerEvents: btn.style.pointerEvents,
-                    disabled: btn.disabled
-                };
                 btn.style.opacity = '0.5';
                 btn.style.pointerEvents = 'none';
-                btn.disabled = true;
             }
             
             showToast('Initialisation du schéma GENCI…', 'info');
             
-            // Démarrer l'installation avec single-flight guard
-            schemaInstallPromise = (async function() {
-                try {
-                    // Utiliser le nouveau bootstrap multipasse
-                    var result = await TaskFlowBootstrap.ensureGenciSchema(grist, {
-                        formulasMap: GENCI_DERIVED_FORMULAS,
-                        defaultChoices: {
-                            'Entites.niveau': ['direction', 'service', 'equipe'],
-                            'Team.role': ['membre', 'chef', 'chef_de_projet'],
-                            'Feuilles.statut': ['brouillon', 'soumis', 'valide', 'rejete'],
-                            'Disponibilites.type': ['conge', 'maladie', 'ferie', 'formation', 'temps_partiel', 'autre'],
-                            'Competences.categorie': ['technique', 'fonctionnel', 'transverse']
-                        },
-                        seedDemo: false  // Seed de démo désactivé par défaut
-                    });
-                    
-                    if (result.success) {
-                        var msg = 'Schéma GENCI prêt';
-                        if (result.duration) msg += ' (' + Math.round(result.duration) + 'ms)';
-                        if (result.phases && result.phases.tables && result.phases.tables.created.length > 0) {
-                            msg += ' — ' + result.phases.tables.created.length + ' tables';
-                        }
-                        showToast(msg, 'success');
-                        
-                        if (result.log && result.log.length > 0) {
-                            console.log('[GENCI] Initialization log:', result.log);
-                        }
-                        if (result.warnings && result.warnings.length > 0) {
-                            console.warn('[GENCI] Warnings:', result.warnings);
-                        }
-                        if (result.errors && result.errors.length > 0) {
-                            console.error('[GENCI] Errors:', JSON.stringify(result.errors, null, 2));
-                        }
-                        
-                        // IMPORTANT : Réinspecter le schéma après installation
-                        // Ne jamais considérer l'installation réussie sans validation finale
-                        console.log('[Kanban] Re-inspecting schema after installation...');
-                        var postInspection = await TaskFlowBootstrap.inspectGenciSchema(grist, [
-                            'Team', 'Programmes', 'Entites', 'Projects', 'Tasks', 'Actions'
-                        ]);
-                        
-                        if (!postInspection.ready) {
-                            console.error('[Kanban] Schema still incomplete after installation:', {
-                                missingTables: postInspection.missingTables,
-                                missingColumns: postInspection.missingColumns,
-                                corrupted: postInspection.corrupted,
-                                duplicateColumns: postInspection.duplicateColumns
-                            });
-                            result.success = false;
-                            result.postInspection = postInspection;
-                            throw new Error('Schema still incomplete after installation');
-                        }
-                        
-                        console.log('[Kanban] ✓ Schema validated successfully after installation');
-                    } else {
-                        var errorMsg = 'Échec initialisation GENCI';
-                        if (result.errors && result.errors.length > 0) {
-                            console.error('[GENCI] Errors:', JSON.stringify(result.errors, null, 2));
-                            errorMsg += ' — voir console';
-                        }
-                        showToast(errorMsg, 'error');
+            try {
+                // Utiliser le nouveau bootstrap multipasse
+                var result = await TaskFlowBootstrap.ensureGenciSchema(grist, {
+                    formulasMap: GENCI_DERIVED_FORMULAS,
+                    defaultChoices: {
+                        'Entites.niveau': ['direction', 'service', 'equipe'],
+                        'Team.role': ['membre', 'chef', 'chef_de_projet'],
+                        'Feuilles.statut': ['brouillon', 'soumis', 'valide', 'rejete'],
+                        'Disponibilites.type': ['conge', 'maladie', 'ferie', 'formation', 'temps_partiel', 'autre'],
+                        'Competences.categorie': ['technique', 'fonctionnel', 'transverse']
+                    },
+                    seedDemo: false  // Seed de démo désactivé par défaut
+                });
+                
+                if (result.success) {
+                    var msg = 'Schéma GENCI prêt';
+                    if (result.duration) msg += ' (' + Math.round(result.duration) + 'ms)';
+                    if (result.phases && result.phases.tables && result.phases.tables.created.length > 0) {
+                        msg += ' — ' + result.phases.tables.created.length + ' tables';
                     }
+                    showToast(msg, 'success');
                     
-                    return result;
-                    
-                } catch (e) {
-                    console.error('[GENCI] Initialization error:', e);
-                    showToast('Échec initialisation: ' + (e.message || e), 'error');
-                    throw e;
-                } finally {
-                    // Nettoyer le single-flight guard
-                    schemaInstallPromise = null;
-                    
-                    // Réactiver le bouton
-                    if (btn && originalBtnState) {
-                        btn.style.opacity = originalBtnState.opacity;
-                        btn.style.pointerEvents = originalBtnState.pointerEvents;
-                        btn.disabled = originalBtnState.disabled;
+                    if (result.log && result.log.length > 0) {
+                        console.log('[GENCI] Initialization log:', result.log);
                     }
+                    if (result.warnings && result.warnings.length > 0) {
+                        console.warn('[GENCI] Warnings:', result.warnings);
+                    }
+                    if (result.errors && result.errors.length > 0) {
+                        console.error('[GENCI] Errors:', JSON.stringify(result.errors, null, 2));
+                    }
+                } else {
+                    var errorMsg = 'Échec initialisation GENCI';
+                    if (result.errors && result.errors.length > 0) {
+                        console.error('[GENCI] Errors:', JSON.stringify(result.errors, null, 2));
+                        errorMsg += ' — voir console';
+                    }
+                    showToast(errorMsg, 'error');
                 }
-            })();
-            
-            return schemaInstallPromise;
+                
+                return result;
+                
+            } catch (e) {
+                console.error('[GENCI] Initialization error:', e);
+                showToast('Échec initialisation: ' + (e.message || e), 'error');
+                throw e;
+            } finally {
+                if (btn) {
+                    btn.style.opacity = '';
+                    btn.style.pointerEvents = '';
+                }
+            }
         }
 
         // ═══════════════════════════════════════════════════════════════════════
@@ -4146,145 +3543,6 @@ if $projet and $projet.responsable:
             } catch (e) {
                 console.error('initKanbanSteps error:', e);
             }
-        }
-
-        // ========================================================================
-        // DIAGNOSTIC DE SCHÉMA — Interface administrative
-        // ========================================================================
-        
-        /**
-         * Affiche un panneau de diagnostic lorsque le schéma est incomplet ou corrompu.
-         * @param {Object} inspection - Résultat de inspectGenciSchema
-         * @param {boolean} readOnly - Si true, le document est en lecture seule
-         */
-        function showSchemaDiagnostic(inspection, readOnly) {
-            if (!inspection) {
-                showToast('Schéma : erreur d\'inspection', 'error');
-                return;
-            }
-            
-            // Déterminer le message principal
-            var title, message, showInstallButton;
-            
-            if (inspection.corrupted) {
-                title = '⚠️ Schéma TaskFlow corrompu';
-                message = '<p>Le schéma contient des colonnes dupliquées, probablement créées par une concurrence entre widgets.</p>';
-                message += '<p><strong>Aucune installation automatique ne sera tentée.</strong></p>';
-                
-                if (inspection.duplicateColumns && inspection.duplicateColumns.length > 0) {
-                    message += '<div style="background:#fef2f2;border:1px solid #ef4444;border-radius:8px;padding:12px;margin:12px 0;font-size:0.85rem">';
-                    message += '<strong>Colonnes dupliquées détectées :</strong><ul style="margin:8px 0 0 20px">';
-                    inspection.duplicateColumns.forEach(function(dup) {
-                        message += '<li><strong>' + dup.table + '.' + dup.canonicalColumn + '</strong> → ' + dup.duplicates.join(', ') + '</li>';
-                    });
-                    message += '</ul></div>';
-                }
-                
-                message += '<p style="margin-top:12px;font-size:0.85rem;color:#64748b">Un nettoyage manuel ou un nouveau document sera nécessaire pour résoudre cette corruption.</p>';
-                showInstallButton = false;
-                
-            } else if (readOnly) {
-                title = '🔒 Schéma incomplet (lecture seule)';
-                message = '<p>Le schéma TaskFlow est incomplet, mais le document est en lecture seule.</p>';
-                
-                if (inspection.missingTables && inspection.missingTables.length > 0) {
-                    message += '<div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:12px;margin:12px 0;font-size:0.85rem">';
-                    message += '<strong>Tables manquantes :</strong> ' + inspection.missingTables.join(', ');
-                    message += '</div>';
-                }
-                
-                if (inspection.missingColumns && inspection.missingColumns.length > 0) {
-                    message += '<div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:12px;margin:12px 0;font-size:0.85rem">';
-                    message += '<strong>Colonnes manquantes :</strong><ul style="margin:8px 0 0 20px">';
-                    inspection.missingColumns.slice(0, 10).forEach(function(col) {
-                        message += '<li>' + col + '</li>';
-                    });
-                    if (inspection.missingColumns.length > 10) {
-                        message += '<li>… et ' + (inspection.missingColumns.length - 10) + ' autres</li>';
-                    }
-                    message += '</ul></div>';
-                }
-                
-                message += '<p style="margin-top:12px;font-size:0.85rem;color:#64748b">Ouvrez le document avec des droits d\'écriture, puis utilisez le Kanban pour initialiser le schéma.</p>';
-                showInstallButton = false;
-                
-            } else {
-                title = '⚙️ Schéma TaskFlow incomplet';
-                message = '<p>Le schéma TaskFlow n\'est pas entièrement installé.</p>';
-                
-                if (inspection.missingTables && inspection.missingTables.length > 0) {
-                    message += '<div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:12px;margin:12px 0;font-size:0.85rem">';
-                    message += '<strong>Tables manquantes :</strong> ' + inspection.missingTables.join(', ');
-                    message += '</div>';
-                }
-                
-                if (inspection.missingColumns && inspection.missingColumns.length > 0) {
-                    message += '<div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:12px;margin:12px 0;font-size:0.85rem">';
-                    message += '<strong>Colonnes manquantes :</strong><ul style="margin:8px 0 0 20px">';
-                    inspection.missingColumns.slice(0, 10).forEach(function(col) {
-                        message += '<li>' + col + '</li>';
-                    });
-                    if (inspection.missingColumns.length > 10) {
-                        message += '<li>… et ' + (inspection.missingColumns.length - 10) + ' autres</li>';
-                    }
-                    message += '</ul></div>';
-                }
-                
-                showInstallButton = true;
-            }
-            
-            // Créer le panneau de diagnostic
-            var panelHtml = '<div style="position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#fff;border:1px solid #e2e8f0;border-radius:12px;box-shadow:0 20px 60px rgba(0,0,0,0.3);z-index:10000;max-width:600px;width:90vw;max-height:80vh;overflow:auto">';
-            panelHtml += '<div style="padding:20px;border-bottom:1px solid #e2e8f0">';
-            panelHtml += '<h2 style="margin:0;font-size:1.25rem;color:#1e293b">' + title + '</h2>';
-            panelHtml += '</div>';
-            panelHtml += '<div style="padding:20px;font-size:0.9rem;line-height:1.6;color:#334155">';
-            panelHtml += message;
-            panelHtml += '</div>';
-            
-            if (showInstallButton && !readOnly) {
-                panelHtml += '<div style="padding:16px 20px;border-top:1px solid #e2e8f0;display:flex;justify-content:flex-end;gap:12px;background:#f8fafc">';
-                panelHtml += '<button onclick="this.closest(\'.schema-diagnostic-panel\').remove()" style="padding:10px 20px;border:1px solid #e2e8f0;background:#fff;color:#64748b;border-radius:8px;cursor:pointer;font-size:0.9rem">Plus tard</button>';
-                panelHtml += '<button id="btnInstallSchema" onclick="installSchemaFromDiagnostic()" style="padding:10px 20px;border:none;background:#3e5de7;color:#fff;border-radius:8px;cursor:pointer;font-size:0.9rem;font-weight:600">Initialiser / mettre à niveau le schéma TaskFlow</button>';
-                panelHtml += '</div>';
-            } else {
-                panelHtml += '<div style="padding:16px 20px;border-top:1px solid #e2e8f0;display:flex;justify-content:flex-end;background:#f8fafc">';
-                panelHtml += '<button onclick="this.closest(\'.schema-diagnostic-panel\').remove()" style="padding:10px 20px;border:1px solid #e2e8f0;background:#fff;color:#64748b;border-radius:8px;cursor:pointer;font-size:0.9rem">Fermer</button>';
-                panelHtml += '</div>';
-            }
-            
-            panelHtml += '</div>';
-            
-            // Overlay
-            var overlayHtml = '<div class="schema-diagnostic-overlay" style="position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999" onclick="this.nextElementSibling.remove()"></div>';
-            
-            // Ajouter au DOM
-            var container = document.createElement('div');
-            container.className = 'schema-diagnostic-panel';
-            container.innerHTML = overlayHtml + panelHtml;
-            document.body.appendChild(container);
-        }
-        
-        /**
-         * Fonction appelée par le bouton d'installation du diagnostic
-         */
-        function installSchemaFromDiagnostic() {
-            var btn = document.getElementById('btnInstallSchema');
-            if (!btn || btn.disabled) return;
-            
-            // Fermer le diagnostic
-            var panel = btn.closest('.schema-diagnostic-panel');
-            if (panel) panel.remove();
-            
-            // Lancer l'installation
-            initGenciSchema(btn).then(function(result) {
-                if (result && result.success) {
-                    // Recharger les données après succès
-                    loadAllData();
-                }
-            }).catch(function(e) {
-                console.error('[Diagnostic] Installation failed:', e);
-            });
         }
 
         // Sauvegarder une nouvelle étape
@@ -4378,29 +3636,11 @@ if $projet and $projet.responsable:
         async function loadAllData() { 
           try { const _raw = await grist.docApi.fetchTable('Tasks'); TASK_COLS = new Set(Object.keys(_raw || {})); tasks = convertGristToRecords(_raw); } catch (e) { tasks = []; } 
           try { const _araw = await grist.docApi.fetchTable('Actions'); ACTION_COLS = new Set(Object.keys(_araw || {})); actions = convertGristToRecords(_araw); } catch (e) { actions = []; ACTION_COLS = new Set(); } 
-          try { 
-            const teamRaw = await grist.docApi.fetchTable('Team'); 
-            console.log('[DIAG assignee] Team raw:', teamRaw);
-            team = convertGristToRecords(teamRaw); 
-            console.log('[DIAG assignee] Team converted:', team);
-            console.log('[DIAG assignee] Team members:', team.map(m => ({ id: m.id, nom: m.nom, actif: m.actif })));
-          } catch (e) { 
-            console.error('[DIAG assignee] Team fetch error:', e);
-            team = []; 
-          } 
+          try { team = convertGristToRecords(await grist.docApi.fetchTable('Team')); } catch (e) { team = []; } 
           try { projects = convertGristToRecords(await grist.docApi.fetchTable('Projects')); } catch (e) { projects = []; } 
           try { entites = convertGristToRecords(await grist.docApi.fetchTable('Entites')); } catch (e) { entites = []; }
           try { programmes = convertGristToRecords(await grist.docApi.fetchTable('Programmes')); } catch (e) { programmes = []; }
-          try { 
-            kanbanSteps = convertGristToRecords(await grist.docApi.fetchTable('KanbanSteps')); 
-            console.log('[DIAG kanban steps] rawKanbanSteps:', kanbanSteps);
-            const activeKanbanSteps = kanbanSteps.filter(s => s.actif !== false);
-            console.log('[DIAG kanban steps] activeKanbanSteps:', activeKanbanSteps);
-          } catch (e) { 
-            console.error('[DIAG kanban steps] KanbanSteps fetch error:', e);
-            kanbanSteps = []; 
-          }
-          console.log('[DIAG kanban steps] actionsStatuses:', actions.map(a => a.statut));
+          try { kanbanSteps = convertGristToRecords(await grist.docApi.fetchTable('KanbanSteps')); } catch (e) { kanbanSteps = []; }
           gristReady = true; 
           rebuildChildrenCache(); 
           // Si des étapes Kanban existent, les utiliser pour configurer les statuts
@@ -4411,20 +3651,10 @@ if $projet and $projet.responsable:
               .map(s => ({ value: s.valeur || s.nom, label: s.nom, fillColor: s.couleur || '#94a3b8', textColor: '#ffffff' }));
             if (stepList.length) {
               statusCfg = TF.buildStatusConfig(stepList, 'kanban');
-              console.log('[DIAG kanban steps] statusCfg from KanbanSteps:', statusCfg);
             }
           } else {
-            try { 
-              statusCfg = await TF.loadStatusConfig(grist, 'Actions', 'statut', actions.map(a => a && a.statut)); 
-              console.log('[DIAG kanban steps] statusCfg from loadStatusConfig:', statusCfg);
-            } catch (e) { 
-              console.error('[DIAG kanban steps] loadStatusConfig error:', e);
-            }
+            try { statusCfg = await TF.loadStatusConfig(grist, 'Actions', 'statut', actions.map(a => a && a.statut)); } catch (e) {}
           }
-          console.log('[DIAG columns] groupBy:', groupBy);
-          console.log('[DIAG columns] statusSource:', statusCfg && statusCfg.source);
-          console.log('[DIAG columns] statusValues:', statusCfg && statusCfg.values);
-          console.log('[DIAG columns] statusList:', statusCfg && statusCfg.list);
           initKanbanFilterManager();
           // Mettre à jour les données du FilterManager après initialisation
           if (filterManager) {
@@ -5069,7 +4299,6 @@ if $projet and $projet.responsable:
         function renderActionCard(a) {  // NOUVEAU: carte pour Action
             const p = a.priorite || '3';
             const assignee = a.assignee;
-            console.log('[DIAG assignee] renderActionCard:', { actionId: a.id, assigneeRaw: assignee, assigneeType: typeof assignee });
             const taskObj = a.task ? tasks.find(tk => tk.id === a.task) : null;
             const projectName = taskObj ? getProjectName(taskObj.projet) : null;
             const projectColor = taskObj ? getProjectColor(taskObj.projet) : '#94a3b8';
@@ -5092,12 +4321,6 @@ if $projet and $projet.responsable:
             }
             // Pas de dueHtml pour les Actions (pas de deadline obligatoire)
             const taskTitle = a.task ? (tasks.find(t => t.id === a.task)?.titre || 'Tâche #'+a.task) : 'Sans tâche';
-            
-            // Trouver le membre assigné
-            const assigneeId = assignee;
-            const member = team.find(m => Number(m.id) === Number(assigneeId));
-            console.log('[DIAG assignee] renderActionCard member lookup:', { assigneeId, member, teamLength: team.length });
-            
             return `<div class="task-card p${p} ${TF.isTerminal(statusCfg, a.statut) ? 'done' : ''} ${a.id === selectedActionId ? 'selected' : ''}" data-id="${a.id}" style="border-left-color:${barColor}" onclick="openActionPanel(${a.id})">
                 <div class="card-header">
                     <span class="card-title">${escapeHtml(a.titre) || 'Sans titre'}</span>
@@ -5633,15 +4856,7 @@ if $projet and $projet.responsable:
                 couleur: data.couleur || null,
                 ordre: data.ordre || 0
             };
-            console.log('[DIAG assignee] update record:', record);
-            try { 
-                const result = await grist.docApi.applyUserActions([['UpdateRecord', 'Actions', panelState.actionId, record]]);
-                console.log('[DIAG assignee] update result:', result);
-                showSaveIndicator(); 
-            } catch (e) { 
-                console.error('[DIAG assignee] update error:', e);
-                showToast('Erreur sauvegarde', 'error'); 
-            }
+            try { await grist.docApi.applyUserActions([['UpdateRecord', 'Actions', panelState.actionId, record]]); showSaveIndicator(); } catch (e) { showToast('Erreur sauvegarde', 'error'); }
         }
 
         async function createTask() {
@@ -5659,13 +4874,6 @@ if $projet and $projet.responsable:
             const data = panelState.editData;
             if (!data || !data.titre?.trim()) { showToast('Titre requis', 'error'); return; }
             if (data.dateDebut && data.dateEcheance && data.dateDebut > data.dateEcheance) { showToast('La date de début ne peut pas dépasser la date de fin', 'error'); return; }
-            
-            console.log('[DIAG assignee] create before prune:', {
-                dataAssignee: data.assignee,
-                dataTask: data.task,
-                recordBefore: structuredClone(data),
-                ACTION_COLS: Array.from(ACTION_COLS)
-            });
             
             // Vérifier que la table Actions existe
             if (gristReady) {
@@ -5693,29 +4901,9 @@ if $projet and $projet.responsable:
                 couleur: data.couleur || null,
                 ordre: data.ordre || 0
             };
-            
-            console.log('[DIAG assignee] create record before prune:', record);
-            const prunedRecord = pruneActionRecord({ ...record });
-            console.log('[DIAG assignee] create after prune:', prunedRecord);
-            
             if (gristReady) {
-                try { 
-                    const result = await grist.docApi.applyUserActions([['AddRecord', 'Actions', null, prunedRecord]]);
-                    console.log('[DIAG assignee] create result:', result);
-                    showToast('Créée', 'success'); 
-                    await loadAllData(); 
-                    closePanel(); 
-                } catch (e) { 
-                    console.error('createAction error:', e); 
-                    showToast('Erreur création: ' + (e?.message || e), 'error'); 
-                }
-            } else { 
-                record.id = Date.now(); 
-                actions.push(record); 
-                showToast('Créée', 'success'); 
-                render(); 
-                closePanel(); 
-            }
+                try { await grist.docApi.applyUserActions([['AddRecord', 'Actions', null, pruneActionRecord(record)]]); showToast('Créée', 'success'); await loadAllData(); closePanel(); } catch (e) { console.error('createAction error:', e); showToast('Erreur création: ' + (e?.message || e), 'error'); }
+            } else { record.id = Date.now(); actions.push(record); showToast('Créée', 'success'); render(); closePanel(); }
         }
 
         async function confirmDelete() {
@@ -5766,52 +4954,27 @@ if $projet and $projet.responsable:
                 onReadOnly: () => showToast('Lecture seule : modification non autorisee', 'error'),
                 onDenied: () => { showToast('Modification refusee par vos droits', 'error'); loadAllData(); }
             });
-            // Phase 2 : Vérifier si le schéma GENCI existe déjà avec inspection COMPLÈTE
-            let schemaState = {
-                ready: false,
-                incomplete: false,
-                corrupted: false,
-                readOnlyIncomplete: false,
-                inspectionError: false,
-                inspection: null
-            };
-            
+            // Phase 2 : Vérifier si le schéma GENCI existe déjà avec inspection complète
+            let schemaInitialized = false;
             try {
-                console.log('[Kanban] Performing comprehensive schema inspection...');
+                console.log('[Kanban] Checking if schema exists...');
                 
                 // Utiliser l'inspection complète du schéma
                 if (TaskFlowBootstrap && TaskFlowBootstrap.inspectGenciSchema) {
-                    var inspection = await TaskFlowBootstrap.inspectGenciSchema(grist, [
-                        'Team', 'Programmes', 'Entites', 'Projects', 'Tasks', 'Actions'
-                    ]);
+                    var inspection = await TaskFlowBootstrap.inspectGenciSchema(grist, ['Team', 'Programmes', 'Entites', 'Projects', 'Tasks', 'Actions']);
                     
-                    schemaState.inspection = inspection;
-                    
-                    if (inspection.ready && !inspection.corrupted) {
-                        schemaState.ready = true;
-                        console.log('[Kanban] ✓ Schema READY - all tables and columns present');
-                    } else if (inspection.corrupted) {
-                        schemaState.corrupted = true;
-                        schemaState.incomplete = true;
-                        console.error('[Kanban] ✗ Schema CORRUPTED - duplicate columns detected:', inspection.duplicateColumns);
+                    if (inspection.ready) {
+                        schemaInitialized = true;
+                        console.log('[Kanban] ✓ Schéma GENCI déjà initialisé et valide');
                     } else {
-                        schemaState.incomplete = true;
-                        console.warn('[Kanban] ✗ Schema INCOMPLETE:', {
+                        console.log('[Kanban] ✗ Schéma incomplet:', {
                             missingTables: inspection.missingTables,
                             missingColumns: inspection.missingColumns,
-                            invalidTypes: inspection.invalidColumnTypes.length,
-                            duplicateColumns: inspection.duplicateColumns.length
+                            invalidTypes: inspection.invalidColumnTypes.length
                         });
-                    }
-                    
-                    // Vérifier si en lecture seule avec schéma incomplet
-                    if (TF.isReadOnly() && !inspection.ready) {
-                        schemaState.readOnlyIncomplete = true;
-                        console.warn('[Kanban] ✗ Schema READ_ONLY_INCOMPLETE');
                     }
                 } else {
                     // Fallback pour compatibilité
-                    console.warn('[Kanban] inspectGenciSchema not available, using fallback');
                     const tables = await grist.docApi.listTables();
                     const essentialTables = ['Team', 'Projects', 'Tasks'];
                     const allExist = essentialTables.every(t => tables.includes(t));
@@ -5819,41 +4982,39 @@ if $projet and $projet.responsable:
                     if (allExist) {
                         const tasksData = await grist.docApi.fetchTable('Tasks');
                         if (tasksData && tasksData.statut !== undefined) {
-                            schemaState.ready = true;
-                            console.log('[Kanban] ✓ Schema READY (fallback check)');
-                        } else {
-                            schemaState.incomplete = true;
+                            schemaInitialized = true;
+                            console.log('[Kanban] ✓ Schéma GENCI déjà initialisé (fallback)');
                         }
-                    } else {
-                        schemaState.incomplete = true;
                     }
                 }
             } catch (e) {
-                console.error('[Kanban] ✗ Schema inspection ERROR:', e?.message);
-                schemaState.inspectionError = true;
-                schemaState.incomplete = true;
+                console.warn('[Kanban] ✗ Erreur vérification schéma:', e?.message);
+                schemaInitialized = false;
             }
-            
-            // Décider de l'action en fonction de l'état du schéma
-            if (schemaState.ready) {
-                // État READY : charger normalement, aucune mutation
-                console.log('[Kanban] → Schema ready, loading data normally...');
-            } else if (schemaState.readOnlyIncomplete) {
-                // État READ_ONLY_INCOMPLETE : afficher diagnostic, aucune action possible
-                console.error('[Kanban] → Schema incomplete and read-only, showing diagnostic...');
-                showSchemaDiagnostic(schemaState.inspection, true);
-            } else if (schemaState.corrupted) {
-                // État CORRUPTED : afficher les duplications, bloquer toute installation
-                console.error('[Kanban] → Schema corrupted, blocking installation...');
-                showSchemaDiagnostic(schemaState.inspection, false);
-            } else if (schemaState.inspectionError) {
-                // État INSPECTION_ERROR : afficher l'erreur, ne pas lancer de réparation automatique
-                console.error('[Kanban] → Schema inspection error, showing error...');
-                showToast('Erreur inspection schéma: voir console', 'error');
+            // Initialiser TOUT le schéma GENCI seulement si nécessaire
+            if (!TF.isReadOnly() && !schemaInitialized) {
+                console.log('[Kanban] → Initializing GENCI schema...');
+                showToast('Initialisation du schéma GENCI…', 'info');
+                try {
+                    var schemaResult = await initGenciSchema(null); // null = pas d'événement bouton
+                    
+                    // Vérifier le résultat réel
+                    if (!schemaResult || schemaResult.success !== true) {
+                        console.error(
+                            '[Kanban] ✗ GENCI schema initialization failed',
+                            schemaResult && schemaResult.errors
+                        );
+                        throw new Error('Le schéma GENCI reste incomplet après initialisation');
+                    }
+                    
+                    console.log('[Kanban] ✓ GENCI schema initialization complete');
+                } catch (e) {
+                    console.error('[Kanban] ✗ initGenciSchema error:', e);
+                    showToast('Schéma GENCI: ' + (e?.message || e), 'error');
+                }
             } else {
-                // État INCOMPLETE : afficher panneau administratif
-                console.warn('[Kanban] → Schema incomplete, showing admin panel...');
-                showSchemaDiagnostic(schemaState.inspection, false);
+                if (TF.isReadOnly()) console.log('[Kanban] → Lecture seule, skip schema init');
+                if (schemaInitialized) console.log('[Kanban] → Schema already initialized, skip init');
             }
             try { CRA_ACTIVE = (await grist.docApi.listTables()).includes('TimeEntries'); } catch (e) {}
             console.log('[Kanban] → Calling loadAllData()...');

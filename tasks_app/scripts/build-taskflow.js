@@ -77,9 +77,33 @@ ${END_MARKER}`;
     return true;
 }
 
+// Build du bundle navigateur
+function buildPlanningBrowser() {
+  const buildScript = path.join(__dirname, 'build-planning-browser.js');
+  if (!fs.existsSync(buildScript)) {
+    throw new Error(
+      'Script de build navigateur manquant : ' + buildScript
+    );
+  }
+  
+  const buildModule = require(buildScript);
+  if (buildModule && typeof buildModule.build === 'function') {
+    buildModule.build();
+  }
+  
+  // Vérifier que le bundle a été généré
+  const bundlePath = path.join(ROOT_DIR, 'core', 'generated', 'taskflow-planning-browser.js');
+  if (!fs.existsSync(bundlePath)) {
+    throw new Error('Bundle navigateur non généré : ' + bundlePath);
+  }
+}
+
 // Main
 function main() {
     console.log('🔨 Build TaskFlow...\n');
+    
+    // Build du bundle navigateur en premier
+    buildPlanningBrowser();
     
     // Lit les fichiers core
     console.log('📄 Lecture des fichiers core...');

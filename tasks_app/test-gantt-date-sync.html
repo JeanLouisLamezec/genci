@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tests Intégration Date Sync - TaskFlow</title>
+    <style>
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            max-width: 900px;
+            margin: 40px auto;
+            padding: 20px;
+            background: #f8fafc;
+        }
+        h1 {
+            color: #3e5de7;
+            margin-bottom: 10px;
+        }
+        .subtitle {
+            color: #64748b;
+            margin-bottom: 30px;
+        }
+        .test-suite {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        .test-result {
+            padding: 12px;
+            margin: 8px 0;
+            border-radius: 6px;
+            font-family: 'Monaco', 'Consolas', monospace;
+            font-size: 0.85rem;
+        }
+        .test-result.passed {
+            background: #d1fae5;
+            color: #065f46;
+            border-left: 4px solid #10b981;
+        }
+        .test-result.failed {
+            background: #fee2e2;
+            color: #991b1b;
+            border-left: 4px solid #ef4444;
+        }
+        .test-result.error {
+            background: #fef3c7;
+            color: #92400e;
+            border-left: 4px solid #f59e0b;
+        }
+        .summary {
+            margin-top: 30px;
+            padding: 20px;
+            background: #1e293b;
+            color: white;
+            border-radius: 8px;
+        }
+        .summary h2 {
+            margin-top: 0;
+            font-size: 1.2rem;
+        }
+        .summary-stats {
+            display: flex;
+            gap: 30px;
+            font-size: 1.5rem;
+            font-weight: 600;
+        }
+        .stat-passed { color: #10b981; }
+        .stat-failed { color: #ef4444; }
+        #runButton {
+            background: #3e5de7;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            margin-bottom: 20px;
+        }
+        #runButton:hover {
+            background: #2845c1;
+        }
+        #runButton:disabled {
+            background: #cbd5e1;
+            cursor: not-allowed;
+        }
+        .log-container {
+            margin-top: 20px;
+            background: #1e293b;
+            color: #e2e8f0;
+            padding: 15px;
+            border-radius: 6px;
+            font-family: 'Monaco', 'Consolas', monospace;
+            font-size: 0.8rem;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        .log-entry {
+            margin: 4px 0;
+            padding: 2px 0;
+        }
+        .log-entry.info { color: #60a5fa; }
+        .log-entry.warn { color: #fbbf24; }
+        .log-entry.error { color: #f87171; }
+    </style>
+</head>
+<body>
+    <h1>🧪 Tests d'Intégration — Date Sync Gantt → TaskAssignments</h1>
+    <p class="subtitle">Vérification de la synchronisation des dates vers TaskAssignments</p>
+
+    <button id="runButton" onclick="runTests()">Exécuter les tests</button>
+
+    <div class="test-suite" id="testResults">
+        <h3>Résultats des tests</h3>
+        <div id="results"></div>
+    </div>
+
+    <div class="summary" id="summary" style="display: none;">
+        <h2>Résumé</h2>
+        <div class="summary-stats">
+            <span class="stat-passed">✓ <span id="passedCount">0</span></span>
+            <span class="stat-failed">✗ <span id="failedCount">0</span></span>
+            <span>Total: <span id="totalCount">0</span></span>
+        </div>
+    </div>
+
+    <div class="log-container" id="logContainer">
+        <div class="log-entry info">En attente d'exécution des tests...</div>
+    </div>
+
+    <script src="https://docs.getgrist.com/grist-plugin-api.js"></script>
+    <script src="core/planning/task_assignment/task-assignment-service.js"></script>
+    <script src="core/planning/gantt/gantt-task-assignment-integration.js"></script>
+    <script src="core/planning/gantt/gantt-date-sync-integration.test.js"></script>
+
+    <script>
+        var testResults = [];
+        var logs = [];
+
+        var originalLog = console.log;
+        var originalInfo = console.info;
+        var originalWarn = console.warn;
+        var originalError = console.error;
+
+        function log(message, type) {
+            logs.push({ message: message, type: type || 'info', time: new Date().toLocaleTimeString() });
+            updateLogs();
+        }
+
+        console.log = function() {
+            var args = Array.prototype.slice.call(arguments);
+            log(args.join(' '), 'info');
+            originalLog.apply(console, args);
+        };
+
+        console.info = function() {
+            var args = Array.prototype.slice.call(arguments);
+            log(args.join(' '), 'info');
+            originalInfo.apply(console, args);
+        };
+
+        console.warn = function() {
+            var args = Array.prototype.slice.call(arguments);
+            log(args.join(' '), 'warn');
+            originalWarn.apply(console, args);
+        };
+
+        console.error = function() {
+            var args = Array.prototype.slice.call(arguments);
+            log(args.join(' '), 'error');
+            originalError.apply(console, args);
+        };
+
+        function updateLogs() {
+            var container = document.getElementById('logContainer');
+            container.innerHTML = logs.map(function(l) {
+                return '<div class="log-entry ' + l.type + '">[' + l.time + '] ' + l.message + '</div>';
+            }).join('');
+            container.scrollTop = container.scrollHeight;
+        }
+
+        function addResult(name, passed, message) {
+            testResults.push({ name: name, passed: passed, message: message });
+            
+            var resultsDiv = document.getElementById('results');
+            var resultDiv = document.createElement('div');
+            resultDiv.className = 'test-result ' + (passed ? 'passed' : 'failed');
+            resultDiv.innerHTML = '<strong>' + (passed ? '✓' : '✗') + ' ' + name + '</strong><br>' + (message || '');
+            resultsDiv.appendChild(resultDiv);
+        }
+
+        function updateSummary() {
+            var passed = testResults.filter(function(r) { return r.passed; }).length;
+            var failed = testResults.filter(function(r) { return !r.passed; }).length;
+            var total = testResults.length;
+
+            document.getElementById('passedCount').textContent = passed;
+            document.getElementById('failedCount').textContent = failed;
+            document.getElementById('totalCount').textContent = total;
+            document.getElementById('summary').style.display = 'block';
+        }
+
+        async function runTests() {
+            var button = document.getElementById('runButton');
+            button.disabled = true;
+            button.textContent = 'Tests en cours...';
+            testResults = [];
+            logs = [];
+            document.getElementById('results').innerHTML = '';
+            document.getElementById('summary').style.display = 'none';
+
+            log('Démarrage des tests d\'intégration...', 'info');
+
+            try {
+                if (!global.createGanttAssignmentIntegration) {
+                    throw new Error('Gantt Assignment Integration non chargée');
+                }
+
+                var results = await GanttDateSyncIntegrationTests.runAllTests();
+
+                addResult('Test 1: Date début uniquement', results.passed > 0, 'Voir logs');
+                addResult('Test 2: Date fin uniquement', results.passed > 1, 'Voir logs');
+                addResult('Test 3: Deux dates', results.passed > 2, 'Voir logs');
+                addResult('Test 4: Titre uniquement', results.passed > 3, 'Voir logs');
+                addResult('Test 5: Postcondition échouée', results.passed > 4, 'Voir logs');
+
+                updateSummary();
+
+                log('Tests terminés: ' + results.passed + '/' + results.total + ' réussis', 'info');
+
+            } catch (e) {
+                addResult('Exécution des tests', false, e.message + '<br>' + e.stack);
+                log('Erreur: ' + e.message, 'error');
+            }
+
+            button.disabled = false;
+            button.textContent = 'Exécuter les tests';
+        }
+
+        if (typeof global !== 'undefined') {
+            global.GanttDateSyncIntegrationTests = GanttDateSyncIntegrationTests;
+        }
+    </script>
+</body>
+</html>
