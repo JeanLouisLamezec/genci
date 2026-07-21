@@ -6,6 +6,8 @@
 <title>TaskFlow - Feuille de temps</title>
 <script src="https://docs.getgrist.com/grist-plugin-api.js"></script>
 <script src="core/filters/filter-manager.js"></script>
+<script src="core/cra/cra-person-filter.js"></script>
+<script src="core/cra/cra-filter-adapter.js"></script>
 <script src="core/cra/cra-time-entry-controller.js"></script>
 <script src="core/cra/cra-data-loader.js"></script>
 <link rel="stylesheet" href="core/theme/taskflow-theme.css">
@@ -3195,6 +3197,7 @@ const S = {
   filterManager: null,      // FilterManager pour les filtres inter-widgets
   filters: { assignee: [], team: [], project: [], programme: [] },  // filtres actifs
   visiblePersonIds: [],     // Personnes affichees (apres filtres)
+  isEmptyDueToFilter: false,  // true si visiblePersonIds est vide a cause d'un filtre
   dirtyByPerson: {},        // Modifications par personne {personId: [entries]}
   assignments: [],          // TaskAssignments
   dailyCapacities: []       // MemberDailyCapacities
@@ -3725,19 +3728,16 @@ function gridTasksForPerson(personId) {
     ids.add(id);
   }
   
-  // Appliquer le filtre par projet
-  let tasks = [...ids].map(id => {
+  // Construire la liste des tâches candidates
+  let candidateTasks = [...ids].map(id => {
     if (S.indexes && S.indexes.taskById) {
       return S.indexes.taskById.get(id);
     }
     return S.tasks.find(t => t.id === id);
   }).filter(Boolean);
   
-  if (S.filters.project && S.filters.project.length > 0) {
-    tasks = tasks.filter(t => S.filters.project.includes(String(t.projet)));
-  }
-  
-  return tasks;
+  // Appliquer les filtres project, programme, task
+  return S.filterSync.filterCraTasks(candidateTasks, S.filters, S.projects);
 }
 
 // taches de la grille = pour toutes les personnes visibles
@@ -3922,7 +3922,14 @@ function renderSaisie() {
   const weekDaysArr = weekDays();
   
   if (S.visiblePersonIds.length === 0) {
-    main.innerHTML = '<div class="empty-cta">Aucune personne à afficher avec les filtres actuels</div>';
+    if (S.isEmptyDueToFilter) {
+      main.innerHTML = '<div class="empty-cta">' +
+        '<div style="font-size:1.05rem;font-weight:600;margin-bottom:8px;color:var(--text)">Aucune personne ne correspond aux filtres sélectionnés</div>' +
+        '<div style="margin-top:16px"><button class="btn ghost" onclick="S.filterManager.clearAll()">Effacer les filtres</button></div>' +
+        '</div>';
+    } else {
+      main.innerHTML = '<div class="empty-cta">Aucune personne dans l\'équipe</div>';
+    }
     return;
   }
   
@@ -4691,7 +4698,21 @@ function ensureFilterManager() {
     return S.filterManager;
   }
   
-  // Initialiser le FilterManager
+  if (!globalThis.CraPersonFilter) {
+    throw new Error('CraPersonFilter indisponible : vérifiez le chargement du script');
+  }
+  
+  if (!globalThis.CraFilterAdapter) {
+    throw new Error('CraFilterAdapter indisponible : vérifiez le chargement du script');
+  }
+  
+  const sync = CraFilterAdapter.createCraFilterSynchronizer(S, grist, {
+    onStateApplied: function() {
+      render();
+    }
+  });
+  S.filterSync = sync;
+  
   S.filterManager = new FilterManager({
     data: {
       team: S.team || [],
@@ -4701,56 +4722,15 @@ function ensureFilterManager() {
       programmes: S.programmes || []
     },
     initialFilters: S.filters || { assignee: [], team: [], project: [], programme: [] },
-    onChange: (filters) => {
-      S.filters = filters;
-      
-      // Calculer les personnes visibles selon les filtres
-      S.visiblePersonIds = (S.team || []).filter(m => {
-        if (!filters.assignee.length && !filters.team.length) {
-          return true;
-        }
-        if (filters.assignee.length && !filters.assignee.includes(Number(m.id))) {
-          return false;
-        }
-        if (filters.team.length && !filters.team.includes(Number(m.entite))) {
-          return false;
-        }
-        return true;
-      }).map(m => m.id);
-      
-      // Si aucune personne visible, afficher au moins la première
-      if (S.visiblePersonIds.length === 0 && S.team.length > 0) {
-        S.visiblePersonIds = [S.team[0].id];
-      }
-      
-      // 1.2.1 - MODIFICATION IDENTITÉ : Ne change QUE selectedPersonId
-      // currentUserMemberId reste immuable (ne change jamais ici)
-      if (S.visiblePersonIds.length === 1) {
-        S.selectedPersonId = S.visiblePersonIds[0];
-        const selectedRow = S.team.find(t => t.id === S.selectedPersonId);
-        S.meName = selectedRow ? selectedRow.nom : S.currentUserMemberName;
-      } else if (!S.visiblePersonIds.includes(S.selectedPersonId)) {
-        S.selectedPersonId = S.visiblePersonIds[0];
-        const selectedRow = S.team.find(t => t.id === S.selectedPersonId);
-        S.meName = selectedRow ? selectedRow.nom : S.currentUserMemberName;
-      }
-      
-      // Mettre à jour S.me pour compatibilité temporaire
-      S.me = S.selectedPersonId;
-      
-      render();
+    onChange: (filters, origin) => {
+      sync.applyCraFilterState(filters, {
+        origin: origin || 'local'
+      });
     },
     onBroadcast: (filters) => {
-      try {
-        const normalizedFilters = {
-          assignee: filters.assignee.map(String),
-          team: filters.team.map(String),
-          project: filters.project.map(String),
-          programme: filters.programme.map(String),
-          task: filters.task.map(String)
-        };
-        grist.setOptions({ filters: normalizedFilters });
-      } catch (e) {}
+      sync.broadcastCraFilters(filters).catch(error => {
+        console.error('[CRA filters] Broadcast', error);
+      });
     },
     effCharges: (t) => {
       try {
@@ -4761,7 +4741,6 @@ function ensureFilterManager() {
     theme: 'light'
   });
   
-  // Initialiser l'UI avec les conteneurs
   const containers = {
     assignee: document.getElementById('filterPersonContainer'),
     team: document.getElementById('filterTeamContainer'),
@@ -4788,6 +4767,28 @@ function updateFilterManagerData() {
     tasks: S.tasks,
     programmes: S.programmes || []
   });
+  
+  const current = S.filterSync.normalizeCraFilters(manager.getState());
+  S.filters = current;
+  
+  const peopleResult = CraPersonFilter.applyPersonFilters({
+    team: S.team,
+    filters: current,
+    currentPersonId: S.selectedPersonId,
+    previousVisibleIds: S.visiblePersonIds,
+    currentUserMemberId: S.currentUserMemberId
+  });
+  
+  S.visiblePersonIds = peopleResult.visiblePersonIds;
+  S.selectedPersonId = peopleResult.selectedPersonId;
+  S.isEmptyDueToFilter = peopleResult.isEmptyDueToFilter;
+  
+  // Appliquer les options reçues avant l'initialisation
+  if (pendingCraOptions) {
+    const options = pendingCraOptions;
+    pendingCraOptions = null;
+    S.filterSync.applyExternalOptions(options);
+  }
 }
 
 /**
@@ -4954,24 +4955,18 @@ function showCraError(error) {
  * Enregistre les listeners Grist une seule fois (TODO 7, 12)
  */
 let craGristListenersRegistered = false;
+let pendingCraOptions = null;
 
 /**
  * Applique les options externes (filtres partagés via grist.onOptions)
  */
 function applyExternalOptions(options) {
-  const filters = options && options.filters;
-
-  if (!filters) {
+  if (!S.filterSync || !S.filterManager) {
+    pendingCraOptions = options;
     return;
   }
-
-  const manager = ensureFilterManager();
-
-  if (typeof manager.applyExternalFilters === 'function') {
-    manager.applyExternalFilters(filters);
-  } else if (typeof manager.setState === 'function') {
-    manager.setState(filters);
-  }
+  
+  S.filterSync.applyExternalOptions(options);
 }
 
 function registerGristListenersOnce() {

@@ -478,6 +478,40 @@ describe('normalizeFilters - Fonction pure', () => {
 });
 
 // ============================================================================
+// TEST: Contrat de type - IDs en chaînes
+// ============================================================================
+describe('FilterManager - Contrat de type (IDs en chaînes)', () => {
+  
+  test('le filtre assignee expose des IDs en chaînes', () => {
+    const fm = createFilterManager({
+      initialFilters: { assignee: [2] }
+    });
+    
+    expect(fm.getState().assignee).toEqual(['2']);
+  });
+  
+  test('le filtre team expose des IDs en chaînes', () => {
+    const fm = createFilterManager({
+      initialFilters: { team: [10] }
+    });
+    
+    expect(fm.getState().team).toEqual(['10']);
+  });
+  
+  test('applyExternalFilters normalise les IDs en chaînes', () => {
+    const fm = createFilterManager();
+    
+    fm.applyExternalFilters({
+      assignee: [1, 2],
+      team: [10, '20']
+    });
+    
+    expect(fm.filters.assignee).toEqual(['1', '2']);
+    expect(fm.filters.team).toEqual(['10', '20']);
+  });
+});
+
+// ============================================================================
 // TESTS: removeValue
 // ============================================================================
 describe('FilterManager - removeValue', () => {
