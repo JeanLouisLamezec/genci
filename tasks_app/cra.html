@@ -4580,17 +4580,23 @@ async function handleCraExportDownload() {
   }
   
   craExportUi.busy = true;
+  
   const downloadBtn = document.getElementById('craExportDownloadBtn');
   const startInput = document.getElementById('craExportStartDate');
   const endInput = document.getElementById('craExportEndDate');
   const formatRadios = document.querySelectorAll('input[name="craExportFormat"]');
   const errorEl = document.getElementById('craExportError');
   
+  let result;
+  
   downloadBtn.disabled = true;
   downloadBtn.textContent = 'Préparation...';
   startInput.disabled = true;
   endInput.disabled = true;
-  formatRadios.forEach(r => r.disabled = true);
+  formatRadios.forEach(radio => {
+    radio.disabled = true;
+  });
+  
   errorEl.textContent = '';
   errorEl.hidden = true;
   
@@ -4605,22 +4611,26 @@ async function handleCraExportDownload() {
     }
     
     const orchestrator = getCraExportOrchestrator();
-    const result = orchestrator.download(request, getCraExportDependencies());
+    result = orchestrator.download(request, getCraExportDependencies());
+  } catch (error) {
+    console.error('Export error:', error);
     
-    toast('Téléchargement lancé : ' + result.filename);
-    closeCraExportModal();
-  } catch (e) {
-    console.error('Export error:', e);
-    errorEl.textContent = 'Erreur export : ' + (e.message || e);
+    errorEl.textContent = 'Erreur export : ' + (error.message || error);
     errorEl.hidden = false;
+    return;
   } finally {
     craExportUi.busy = false;
     downloadBtn.disabled = false;
     downloadBtn.textContent = 'Télécharger';
     startInput.disabled = false;
     endInput.disabled = false;
-    formatRadios.forEach(r => r.disabled = false);
+    formatRadios.forEach(radio => {
+      radio.disabled = false;
+    });
   }
+  
+  toast('Téléchargement lancé : ' + result.filename);
+  closeCraExportModal();
 }
 
 function openCraExportModal() {
