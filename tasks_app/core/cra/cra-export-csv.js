@@ -15,16 +15,17 @@
  * @module core/cra/cra-export-csv
  */
 
-'use strict';
+(function(global) {
+  'use strict';
 
-// ============================================================================
-// CONFIGURATION
-// ============================================================================
+  // ============================================================================
+  // CONFIGURATION
+  // ============================================================================
 
-/**
- * Formats de date acceptés pour validation
- */
-const DATE_ISO_REGEX = /^\d{4}-\d{2}-\d{2}$/;
+  /**
+   * Formats de date acceptés pour validation
+   */
+  const DATE_ISO_REGEX = /^\d{4}-\d{2}-\d{2}$/;
 
 /**
  * Caractères interdits dans les noms de fichier
@@ -617,11 +618,13 @@ const CraExportCsv = {
 };
 
 // Export navigateur
-if (typeof globalThis !== 'undefined') {
-  globalThis.CraExportCsv = CraExportCsv;
+if (typeof global !== 'undefined' && global) {
+  global.CraExportCsv = CraExportCsv;
 }
 
 // Export CommonJS (Node/Jest)
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = CraExportCsv;
 }
+
+})(typeof globalThis !== 'undefined' ? globalThis : this);

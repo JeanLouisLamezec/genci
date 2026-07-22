@@ -13,16 +13,17 @@
  * @module core/cra/cra-export-model
  */
 
-'use strict';
+(function(global) {
+  'use strict';
 
-// ============================================================================
-// CONFIGURATION
-// ============================================================================
+  // ============================================================================
+  // CONFIGURATION
+  // ============================================================================
 
-/**
- * Formats de date acceptés pour validation
- */
-const DATE_ISO_REGEX = /^\d{4}-\d{2}-\d{2}$/;
+  /**
+   * Formats de date acceptés pour validation
+   */
+  const DATE_ISO_REGEX = /^\d{4}-\d{2}-\d{2}$/;
 
 // ============================================================================
 // RÉSOLUTION DE CRAController
@@ -882,11 +883,13 @@ const CraExportModel = {
 };
 
 // Export navigateur
-if (typeof globalThis !== 'undefined') {
-  globalThis.CraExportModel = CraExportModel;
+if (typeof global !== 'undefined' && global) {
+  global.CraExportModel = CraExportModel;
 }
 
 // Export CommonJS (Node/Jest)
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = CraExportModel;
 }
+
+})(typeof globalThis !== 'undefined' ? globalThis : this);

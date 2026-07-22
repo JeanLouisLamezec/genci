@@ -10,6 +10,10 @@
 <script src="core/cra/cra-filter-adapter.js"></script>
 <script src="core/cra/cra-time-entry-controller.js"></script>
 <script src="core/cra/cra-data-loader.js"></script>
+<script src="core/cra/cra-export-model.js"></script>
+<script src="core/cra/cra-export-pdf.js"></script>
+<script src="core/cra/cra-export-csv.js"></script>
+<script src="core/cra/cra-export-orchestrator.js"></script>
 <link rel="stylesheet" href="core/theme/taskflow-theme.css">
 <link rel="stylesheet" href="core/filters/filter-styles.css">
 <style>
@@ -95,6 +99,37 @@ tfoot td.left { text-align: left; color: var(--text-muted); font-weight: 600; }
 .cbtn:disabled { opacity: .5; cursor: default; }
 .planned-indicator { font-size: .7rem; color: var(--text-muted); margin-top: 3px; text-align: center; }
 .planned-indicator strong { color: var(--primary); }
+/* CRA Export Modal */
+.cra-export-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.5); display: none; align-items: center; justify-content: center; z-index: 100; }
+.cra-export-overlay.open { display: flex; }
+.cra-export-dialog { background: var(--card-bg); border: 1px solid var(--border); border-radius: 14px; width: min(560px,92vw); max-height: 88vh; overflow: auto; padding: 22px 24px; box-shadow: 0 12px 40px rgba(0,0,0,.4); }
+.cra-export-dialog h2 { font-size: 1.05rem; margin-bottom: 6px; }
+.cra-export-sub { font-size: .82rem; color: var(--text-muted); margin-bottom: 14px; line-height: 1.45; }
+.cra-export-formats { display: flex; flex-direction: column; gap: 10px; margin: 16px 0; }
+.cra-export-format { display: flex; align-items: center; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; cursor: pointer; background: var(--bg); transition: border-color .15s, background .15s; }
+.cra-export-format:hover { border-color: var(--primary); background: color-mix(in srgb, var(--primary) 6%, var(--bg)); }
+.cra-export-format.selected { border-color: var(--primary); background: color-mix(in srgb, var(--primary) 10%, var(--bg)); }
+.cra-export-format input[type="radio"] { width: 18px; height: 18px; margin: 0; }
+.cra-export-format label { flex: 1; cursor: pointer; }
+.cra-export-format-title { font-size: .88rem; font-weight: 600; color: var(--text); display: block; }
+.cra-export-format-desc { font-size: .72rem; color: var(--text-muted); display: block; margin-top: 2px; }
+.cra-export-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 16px 0; }
+.cra-export-field label { font-size: .78rem; font-weight: 600; color: var(--text-muted); display: block; margin-bottom: 4px; }
+.cra-export-field input { width: 100%; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: .8rem; font-family: inherit; background: var(--card-bg); color: var(--text); }
+.cra-export-field input:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.cra-export-summary { background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 12px; margin: 16px 0; font-size: .78rem; }
+.cra-export-summary h4 { font-size: .8rem; font-weight: 700; margin-bottom: 8px; color: var(--text); }
+.cra-export-summary .stat { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid var(--border); }
+.cra-export-summary .stat:last-child { border-bottom: none; }
+.cra-export-summary .stat strong { color: var(--text); }
+.cra-export-summary .stat span { color: var(--text-muted); }
+.cra-export-error { background: color-mix(in srgb, var(--over) 16%, var(--bg)); border: 1px solid var(--over); border-radius: 10px; padding: 12px; margin: 16px 0; font-size: .78rem; color: var(--over); }
+.cra-export-error:empty { display: none; }
+.cra-export-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; margin-top: 16px; }
+.cra-export-button { border: 1px solid var(--border); background: var(--bg); color: var(--text); border-radius: 8px; padding: 8px 14px; font-size: .8rem; font-weight: 600; cursor: pointer; font-family: inherit; }
+.cra-export-button.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
+.cra-export-button:disabled { opacity: .5; cursor: default; }
+.cra-export-button:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 </style>
 </head>
 <body>
@@ -131,16 +166,54 @@ tfoot td.left { text-align: left; color: var(--text-muted); font-weight: 600; }
     <button data-u="demi">&frac12;j</button>
   </div>
   <button class="btn" id="submitBtn">Soumettre la semaine</button>
-  <button class="btn ghost" id="exportBtn" title="Export Excel (CSV)">Export</button>
+  <button class="btn ghost" id="exportBtn" title="Exporter en PDF ou CSV">Export</button>
 </div>
 
 <div class="main" id="main"><div class="empty-cta">Chargement...</div></div>
 
 <div class="legend">
   <span id="lgUnit"></span>
-  <span style="margin-left:auto">Saisie du realise par jour - validation par le chef (annuaire) - export Excel</span>
+  <span style="margin-left:auto">Saisie du realise par jour - validation par le chef (annuaire) - export PDF/CSV</span>
 </div>
 <div class="toast" id="toast"></div>
+
+<!-- CRA Export Modal -->
+<div class="cra-export-overlay" id="craExportOverlay" role="dialog" aria-modal="true" aria-labelledby="craExportTitle" aria-hidden="true">
+  <div class="cra-export-dialog">
+    <h2 id="craExportTitle">Exporter les feuilles de temps</h2>
+    <p class="cra-export-sub">Choisissez le format et la période à exporter</p>
+    
+    <div class="cra-export-formats" id="craExportFormats" role="radiogroup" aria-label="Format d'export"></div>
+    
+    <div class="cra-export-fields">
+      <div class="cra-export-field">
+        <label for="craExportStartDate">Date de début</label>
+        <input type="date" id="craExportStartDate">
+      </div>
+      <div class="cra-export-field">
+        <label for="craExportEndDate">Date de fin</label>
+        <input type="date" id="craExportEndDate">
+      </div>
+    </div>
+    
+    <div class="cra-export-summary" id="craExportSummary" aria-live="polite" style="display:none">
+      <h4>Aperçu</h4>
+      <div class="stat"><span>Période</span><strong id="craExportSummaryPeriod"></strong></div>
+      <div class="stat"><span>Personnes sélectionnées</span><strong id="craExportSummarySelected"></strong></div>
+      <div class="stat"><span>Personnes avec données</span><strong id="craExportSummaryExported"></strong></div>
+      <div class="stat"><span>Lignes à exporter</span><strong id="craExportSummaryRows"></strong></div>
+      <div class="stat"><span>Temps total</span><strong id="craExportSummaryTotal"></strong></div>
+      <div class="stat"><span>Nom du fichier</span><strong id="craExportSummaryFilename"></strong></div>
+    </div>
+    
+    <div class="cra-export-error" id="craExportError" role="alert" hidden></div>
+    
+    <div class="cra-export-actions">
+      <button class="cra-export-button" id="craExportCancelBtn">Annuler</button>
+      <button class="cra-export-button primary" id="craExportDownloadBtn" disabled>Télécharger</button>
+    </div>
+  </div>
+</div>
 
 <script>
 // <taskflow-core> -- GENERE par scripts/build-taskflow.js, NE PAS EDITER ICI
@@ -3184,7 +3257,7 @@ const S = {
   me: null,                 // id Team du connecte (pour soumission)
   meName: '',               // nom du connecte
   meUserId: null,           // userId Grist
-  team: [], tasks: [], projects: [], entries: [],
+  team: [], tasks: [], projects: [], entries: [], programmes: [],
   weekStart: 0,             // ms, lundi
   unit: 'heures',           // heures | jours | demi
   hoursPerDay: 7,
@@ -4261,7 +4334,418 @@ document.getElementById('unitSeg').querySelectorAll('button').forEach(b => b.onc
   b.classList.add('active'); S.unit = b.dataset.u; render();
 });
 document.getElementById('tabSeg').querySelectorAll('button').forEach(b => b.onclick = () => { S.tab = b.dataset.t; render(); });
-document.getElementById('exportBtn').onclick = () => exportCSV();
+
+// ---- CRA Export ----
+let craPdfMakeLoadingPromise = null;
+const craExportUi = {
+  open: false,
+  busy: false,
+  format: 'pdf',
+  prepared: null,
+  lastFocusedElement: null
+};
+
+function craExportLocalIsoFromMs(ms) {
+  const date = new Date(ms);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return year + '-' + month + '-' + day;
+}
+
+function formatCraExportSummaryMinutes(value) {
+  const minutes = Math.max(0, Math.round(Number(value) || 0));
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+  return remainder ? hours + 'h' + String(remainder).padStart(2, '0') : hours + 'h';
+}
+
+function getCraExportDefaultWeekStart() {
+  const displayedWeekStart = Number(S.weekStart);
+  
+  if (
+    Number.isFinite(displayedWeekStart) &&
+    displayedWeekStart > 0
+  ) {
+    return mondayOf(displayedWeekStart);
+  }
+  
+  return mondayOf(Date.now());
+}
+
+function getCraExportDependencies() {
+  const model = globalThis.CraExportModel;
+  const pdf = globalThis.CraExportPdf;
+  const csv = globalThis.CraExportCsv;
+  
+  if (!model) {
+    throw new Error('Module CraExportModel non chargé.');
+  }
+  
+  if (!pdf) {
+    throw new Error('Module CraExportPdf non chargé.');
+  }
+  
+  if (!csv) {
+    throw new Error('Module CraExportCsv non chargé.');
+  }
+  
+  return {
+    model: model,
+    pdf: pdf,
+    csv: csv
+  };
+}
+
+function getCraExportOrchestrator() {
+  const orchestrator = globalThis.CraExportOrchestrator;
+  
+  if (!orchestrator) {
+    throw new Error('Module CraExportOrchestrator non chargé.');
+  }
+  
+  return orchestrator;
+}
+
+async function ensureCraPdfMakeLoaded() {
+  if (globalThis.pdfMake && typeof globalThis.pdfMake.createPdf === 'function') {
+    return globalThis.pdfMake;
+  }
+  
+  if (craPdfMakeLoadingPromise) {
+    return craPdfMakeLoadingPromise;
+  }
+  
+  craPdfMakeLoadingPromise = (async () => {
+    try {
+      let script = document.querySelector('script[src*="pdfmake.min.js"]');
+      
+      if (!script) {
+        script = document.createElement('script');
+        script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.2.7/pdfmake.min.js';
+        document.head.appendChild(script);
+      }
+      
+      await new Promise((resolve, reject) => {
+        if (script.readyState === 'loaded' || script.readyState === 'complete') {
+          resolve();
+        } else {
+          script.onload = resolve;
+          script.onerror = () => reject(new Error('Chargement pdfmake échoué'));
+        }
+      });
+      
+      let vfsScript = document.querySelector('script[src*="vfs_fonts.js"]');
+      if (!vfsScript) {
+        vfsScript = document.createElement('script');
+        vfsScript.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.2.7/vfs_fonts.min.js';
+        document.head.appendChild(vfsScript);
+        
+        await new Promise((resolve, reject) => {
+          if (vfsScript.readyState === 'loaded' || vfsScript.readyState === 'complete') {
+            resolve();
+          } else {
+            vfsScript.onload = resolve;
+            vfsScript.onerror = () => reject(new Error('Chargement vfs_fonts échoué'));
+          }
+        });
+      }
+      
+      if (globalThis.pdfMake && typeof globalThis.pdfMake.createPdf === 'function') {
+        return globalThis.pdfMake;
+      }
+      
+      throw new Error('pdfmake.createPdf indisponible après chargement');
+    } catch (e) {
+      craPdfMakeLoadingPromise = null;
+      throw e;
+    }
+  })();
+  
+  return craPdfMakeLoadingPromise;
+}
+
+function renderCraExportFormatOptions() {
+  const container = document.getElementById('craExportFormats');
+  const orchestrator = getCraExportOrchestrator();
+  const formatOptions = orchestrator.getFormatOptions();
+  
+  container.innerHTML = '';
+  
+  formatOptions.forEach((opt, index) => {
+    const div = document.createElement('div');
+    div.className = 'cra-export-format' + (index === 0 ? ' selected' : '');
+    div.dataset.format = opt.id;
+    
+    const radio = document.createElement('input');
+    radio.type = 'radio';
+    radio.name = 'craExportFormat';
+    radio.id = 'craExportFormat' + opt.id;
+    radio.value = opt.id;
+    radio.checked = index === 0;
+    
+    const label = document.createElement('label');
+    label.htmlFor = 'craExportFormat' + opt.id;
+    
+    const title = document.createElement('span');
+    title.className = 'cra-export-format-title';
+    title.textContent = opt.label;
+    
+    const desc = document.createElement('span');
+    desc.className = 'cra-export-format-desc';
+    desc.textContent = opt.description;
+    
+    label.appendChild(title);
+    label.appendChild(desc);
+    div.appendChild(radio);
+    div.appendChild(label);
+    container.appendChild(div);
+  });
+}
+
+function updateCraExportPreview() {
+  const startInput = document.getElementById('craExportStartDate');
+  const endInput = document.getElementById('craExportEndDate');
+  const summary = document.getElementById('craExportSummary');
+  const downloadBtn = document.getElementById('craExportDownloadBtn');
+  const errorEl = document.getElementById('craExportError');
+  
+  if (!craExportUi.format || !startInput.value || !endInput.value) {
+    summary.style.display = 'none';
+    downloadBtn.disabled = true;
+    return;
+  }
+  
+  try {
+    const request = buildCraExportRequest();
+    const orchestrator = getCraExportOrchestrator();
+    const prepared = orchestrator.prepareExport(request, getCraExportDependencies());
+    
+    craExportUi.prepared = prepared;
+    
+    document.getElementById('craExportSummaryPeriod').textContent = 
+      prepared.summary.startDateIso + ' → ' + prepared.summary.endDateIso;
+    document.getElementById('craExportSummarySelected').textContent = 
+      prepared.summary.selectedPersonCount;
+    document.getElementById('craExportSummaryExported').textContent = 
+      prepared.summary.exportedPersonCount;
+    document.getElementById('craExportSummaryRows').textContent = 
+      prepared.summary.rowCount;
+    document.getElementById('craExportSummaryTotal').textContent = 
+      formatCraExportSummaryMinutes(prepared.summary.totalMinutes);
+    document.getElementById('craExportSummaryFilename').textContent = 
+      prepared.filename;
+    
+    summary.style.display = 'block';
+    downloadBtn.disabled = false;
+    errorEl.textContent = '';
+    errorEl.hidden = true;
+  } catch (e) {
+    console.warn('Export preview error:', e);
+    summary.style.display = 'none';
+    downloadBtn.disabled = true;
+    errorEl.textContent = 'Aperçu indisponible : ' + (e.message || e);
+    errorEl.hidden = false;
+  }
+}
+
+function buildCraExportRequest() {
+  const personIds = Array.isArray(S.visiblePersonIds)
+    ? S.visiblePersonIds.slice()
+    : [];
+  
+  const filters = CraFilterAdapter.normalizeCraFilters(S.filters || {});
+  
+  const data = {
+    entries: Array.isArray(S.entries) ? S.entries.slice() : [],
+    team: Array.isArray(S.team) ? S.team.slice() : [],
+    tasks: Array.isArray(S.tasks) ? S.tasks.slice() : [],
+    projects: Array.isArray(S.projects) ? S.projects.slice() : [],
+    programmes: Array.isArray(S.programmes) ? S.programmes.slice() : []
+  };
+  
+  return {
+    format: craExportUi.format,
+    startDateIso: document.getElementById('craExportStartDate').value,
+    endDateIso: document.getElementById('craExportEndDate').value,
+    personIds: personIds,
+    filters: filters,
+    data: data
+  };
+}
+
+async function handleCraExportDownload() {
+  if (craExportUi.busy || !craExportUi.prepared) {
+    return;
+  }
+  
+  craExportUi.busy = true;
+  const downloadBtn = document.getElementById('craExportDownloadBtn');
+  const startInput = document.getElementById('craExportStartDate');
+  const endInput = document.getElementById('craExportEndDate');
+  const formatRadios = document.querySelectorAll('input[name="craExportFormat"]');
+  const errorEl = document.getElementById('craExportError');
+  
+  downloadBtn.disabled = true;
+  downloadBtn.textContent = 'Préparation...';
+  startInput.disabled = true;
+  endInput.disabled = true;
+  formatRadios.forEach(r => r.disabled = true);
+  errorEl.textContent = '';
+  errorEl.hidden = true;
+  
+  try {
+    const request = buildCraExportRequest();
+    
+    if (craExportUi.format === 'pdf') {
+      const pdfMake = await ensureCraPdfMakeLoaded();
+      request.pdfOptions = { pdfMake: pdfMake };
+    } else {
+      request.csvOptions = { includeBom: true };
+    }
+    
+    const orchestrator = getCraExportOrchestrator();
+    const result = orchestrator.download(request, getCraExportDependencies());
+    
+    toast('Téléchargement lancé : ' + result.filename);
+    closeCraExportModal();
+  } catch (e) {
+    console.error('Export error:', e);
+    errorEl.textContent = 'Erreur export : ' + (e.message || e);
+    errorEl.hidden = false;
+  } finally {
+    craExportUi.busy = false;
+    downloadBtn.disabled = false;
+    downloadBtn.textContent = 'Télécharger';
+    startInput.disabled = false;
+    endInput.disabled = false;
+    formatRadios.forEach(r => r.disabled = false);
+  }
+}
+
+function openCraExportModal() {
+  if (craExportUi.open || craExportUi.busy) {
+    return;
+  }
+  
+  if (!S.hasTable) {
+    toast('Feuille de temps non activée');
+    return;
+  }
+  
+  if (!Array.isArray(S.visiblePersonIds)) {
+    toast('Personnes indisponibles');
+    return;
+  }
+  
+  if (S.visiblePersonIds.length === 0) {
+    toast('Aucune personne à exporter');
+    return;
+  }
+  
+  try {
+    getCraExportOrchestrator();
+    getCraExportDependencies();
+  } catch (e) {
+    toast('Export indisponible : ' + (e.message || e));
+    return;
+  }
+  
+  const overlay = document.getElementById('craExportOverlay');
+  const startInput = document.getElementById('craExportStartDate');
+  const endInput = document.getElementById('craExportEndDate');
+  const summary = document.getElementById('craExportSummary');
+  const downloadBtn = document.getElementById('craExportDownloadBtn');
+  const errorEl = document.getElementById('craExportError');
+  
+  craExportUi.lastFocusedElement = document.activeElement;
+  craExportUi.format = 'pdf';
+  craExportUi.prepared = null;
+  craExportUi.open = true;
+  
+  renderCraExportFormatOptions();
+  
+  const defaultWeekStart = getCraExportDefaultWeekStart();
+  startInput.value = craExportLocalIsoFromMs(defaultWeekStart);
+  endInput.value = craExportLocalIsoFromMs(defaultWeekStart + 6 * DAY);
+  
+  summary.style.display = 'none';
+  downloadBtn.disabled = true;
+  errorEl.textContent = '';
+  errorEl.hidden = true;
+  
+  overlay.setAttribute('aria-hidden', 'false');
+  overlay.classList.add('open');
+  
+  const filterPanel = document.getElementById('filterPanel');
+  if (filterPanel && filterPanel.style.display === 'block') {
+    filterPanel.style.display = 'none';
+  }
+  
+  const firstRadio = document.querySelector('input[name="craExportFormat"]');
+  if (firstRadio) {
+    firstRadio.focus();
+  }
+  
+  updateCraExportPreview();
+}
+
+function closeCraExportModal() {
+  if (craExportUi.busy) {
+    return;
+  }
+  
+  const overlay = document.getElementById('craExportOverlay');
+  
+  overlay.setAttribute('aria-hidden', 'true');
+  overlay.classList.remove('open');
+  
+  craExportUi.open = false;
+  
+  if (craExportUi.lastFocusedElement) {
+    craExportUi.lastFocusedElement.focus();
+    craExportUi.lastFocusedElement = null;
+  }
+}
+
+document.getElementById('exportBtn').onclick = openCraExportModal;
+document.getElementById('craExportCancelBtn').onclick = closeCraExportModal;
+document.getElementById('craExportDownloadBtn').onclick = handleCraExportDownload;
+
+document.getElementById('craExportFormats').addEventListener('click', (e) => {
+  const formatDiv = e.target.closest('.cra-export-format');
+  if (!formatDiv) return;
+  
+  const format = formatDiv.dataset.format;
+  craExportUi.format = format;
+  
+  document.querySelectorAll('.cra-export-format').forEach(div => {
+    div.classList.toggle('selected', div.dataset.format === format);
+  });
+  
+  const radio = formatDiv.querySelector('input[type="radio"]');
+  if (radio) {
+    radio.checked = true;
+    radio.focus();
+  }
+  
+  updateCraExportPreview();
+});
+
+document.getElementById('craExportStartDate').onchange = updateCraExportPreview;
+document.getElementById('craExportEndDate').onchange = updateCraExportPreview;
+
+document.getElementById('craExportOverlay').onclick = (e) => {
+  if (e.target.id === 'craExportOverlay' && !craExportUi.busy) {
+    closeCraExportModal();
+  }
+};
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && craExportUi.open && !craExportUi.busy) {
+    closeCraExportModal();
+  }
+});
 
 // ---- Workflow : soumission / validation par le chef (via l'annuaire) ------
 

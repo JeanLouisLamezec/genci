@@ -19,15 +19,16 @@
  * @module core/cra/cra-export-orchestrator
  */
 
-'use strict';
+(function(global) {
+  'use strict';
 
-// ============================================================================
-// CONFIGURATION
-// ============================================================================
+  // ============================================================================
+  // CONFIGURATION
+  // ============================================================================
 
-/**
- * Formats d'export autorisés
- */
+  /**
+   * Formats d'export autorisés
+   */
 const ALLOWED_FORMATS = ['pdf', 'csv'];
 
 // ============================================================================
@@ -584,11 +585,13 @@ const CraExportOrchestrator = {
 };
 
 // Export navigateur
-if (typeof globalThis !== 'undefined') {
-  globalThis.CraExportOrchestrator = CraExportOrchestrator;
+if (typeof global !== 'undefined' && global) {
+  global.CraExportOrchestrator = CraExportOrchestrator;
 }
 
 // Export CommonJS (Node/Jest)
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = CraExportOrchestrator;
 }
+
+})(typeof globalThis !== 'undefined' ? globalThis : this);
