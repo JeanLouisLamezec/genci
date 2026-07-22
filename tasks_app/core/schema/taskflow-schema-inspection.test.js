@@ -7,6 +7,188 @@
  * 3. Ne pas signaler les colonnes légitimes finissant par un chiffre
  */
 
+describe('TaskFlow Schema v4', () => {
+    
+    // Charger le schéma
+    require('./taskflow-schema.js');
+    const SCHEMA = global.TASKFLOW_SCHEMA;
+    
+    test('TASKFLOW_SCHEMA.version === 4', () => {
+        expect(SCHEMA.version).toBe(4);
+    });
+    
+    test('Feuilles a les nouvelles colonnes v4', () => {
+        const feuillesTable = SCHEMA.tables.Feuilles;
+        expect(feuillesTable).toBeDefined();
+        
+        const columnIds = feuillesTable.columns.map(c => c.id);
+        expect(columnIds).toContain('responsableValidation');
+        expect(columnIds).toContain('soumisPar');
+        expect(columnIds).toContain('dateSoumission');
+        expect(columnIds).toContain('revisionValidation');
+        expect(columnIds).toContain('motifCorrection');
+        
+        // Vérifier que les anciennes colonnes sont toujours là
+        expect(columnIds).toContain('membre');
+        expect(columnIds).toContain('semaine');
+        expect(columnIds).toContain('statut');
+        expect(columnIds).toContain('validePar');
+        expect(columnIds).toContain('dateValidation');
+        expect(columnIds).toContain('motifRejet');
+    });
+    
+    test('TimeEntries a les nouvelles formules v4', () => {
+        const timeEntriesTable = SCHEMA.tables.TimeEntries;
+        expect(timeEntriesTable).toBeDefined();
+        
+        const statutFeuilleCol = timeEntriesTable.columns.find(c => c.id === 'statutFeuille');
+        const responsableValidationCol = timeEntriesTable.columns.find(c => c.id === 'responsableValidation');
+        const semaineFeuilleCol = timeEntriesTable.columns.find(c => c.id === 'semaineFeuille');
+        
+        expect(statutFeuilleCol).toBeDefined();
+        expect(statutFeuilleCol.opts.isFormula).toBe(true);
+        expect(statutFeuilleCol.opts.type).toBe('Text');
+        
+        expect(responsableValidationCol).toBeDefined();
+        expect(responsableValidationCol.opts.isFormula).toBe(true);
+        expect(responsableValidationCol.opts.type).toBe('Ref:Team');
+        
+        expect(semaineFeuilleCol).toBeDefined();
+        expect(semaineFeuilleCol.opts.isFormula).toBe(true);
+        expect(semaineFeuilleCol.opts.type).toBe('Date');
+    });
+    
+    test('TaskFlow_Meta a les nouvelles colonnes ACL v4', () => {
+        const metaTable = SCHEMA.tables.TaskFlow_Meta;
+        expect(metaTable).toBeDefined();
+        
+        const columnIds = metaTable.columns.map(c => c.id);
+        expect(columnIds).toContain('aclVersion');
+        expect(columnIds).toContain('aclStatus');
+        expect(columnIds).toContain('lastAclMigration');
+        expect(columnIds).toContain('lastAclMigrationAt');
+        expect(columnIds).toContain('lastAclError');
+        
+        // Vérifier que les anciennes colonnes sont toujours là
+        expect(columnIds).toContain('schemaVersion');
+        expect(columnIds).toContain('installationStatus');
+        expect(columnIds).toContain('lastMigration');
+        expect(columnIds).toContain('lastMigrationAt');
+        expect(columnIds).toContain('lastError');
+        expect(columnIds).toContain('installedBy');
+    });
+    
+    test('TASKFLOW_SCHEMA.formulas contient les formules centralisées', () => {
+        expect(SCHEMA.formulas).toBeDefined();
+        expect(SCHEMA.formulas.Entites).toBeDefined();
+        expect(SCHEMA.formulas.Entites.ancetres).toBeDefined();
+        
+        expect(SCHEMA.formulas.Team).toBeDefined();
+        expect(SCHEMA.formulas.Team.chaine_chefs).toBeDefined();
+        expect(SCHEMA.formulas.Team.agents_geres).toBeDefined();
+        
+        expect(SCHEMA.formulas.Tasks).toBeDefined();
+        expect(SCHEMA.formulas.Tasks.editorsEmails).toBeDefined();
+        
+        expect(SCHEMA.formulas.TimeEntries).toBeDefined();
+        expect(SCHEMA.formulas.TimeEntries.statutFeuille).toBeDefined();
+        expect(SCHEMA.formulas.TimeEntries.responsableValidation).toBeDefined();
+        expect(SCHEMA.formulas.TimeEntries.semaineFeuille).toBeDefined();
+    });
+    
+    test('TASKFLOW_SCHEMA.defaultChoices contient les choix centralisés', () => {
+        expect(SCHEMA.defaultChoices).toBeDefined();
+        expect(SCHEMA.defaultChoices['Entites.niveau']).toBeDefined();
+        expect(SCHEMA.defaultChoices['Team.role']).toBeDefined();
+        expect(SCHEMA.defaultChoices['Feuilles.statut']).toBeDefined();
+        expect(SCHEMA.defaultChoices['Disponibilites.type']).toBeDefined();
+        expect(SCHEMA.defaultChoices['Competences.categorie']).toBeDefined();
+        
+        // Vérifier que correction_manager est dans Feuilles.statut
+        const feuillesStatut = SCHEMA.defaultChoices['Feuilles.statut'];
+        expect(feuillesStatut).toContain('correction_manager');
+    });
+    
+    test('referenceDisplays contient les nouvelles références v4', () => {
+        const refDisplays = SCHEMA.referenceDisplays;
+        expect(refDisplays).toBeDefined();
+        
+        // Nouvelles références TimeEntries
+        const teResponsableValidation = refDisplays.find(
+            r => r.table === 'TimeEntries' && r.column === 'responsableValidation'
+        );
+        expect(teResponsableValidation).toBeDefined();
+        expect(teResponsableValidation.targetTable).toBe('Team');
+        expect(teResponsableValidation.visibleColumn).toBe('nom');
+        
+        // Nouvelles références Feuilles
+        const feuillesResponsableValidation = refDisplays.find(
+            r => r.table === 'Feuilles' && r.column === 'responsableValidation'
+        );
+        expect(feuillesResponsableValidation).toBeDefined();
+        expect(feuillesResponsableValidation.targetTable).toBe('Team');
+        expect(feuillesResponsableValidation.visibleColumn).toBe('nom');
+        
+        const feuillesSoumisPar = refDisplays.find(
+            r => r.table === 'Feuilles' && r.column === 'soumisPar'
+        );
+        expect(feuillesSoumisPar).toBeDefined();
+        expect(feuillesSoumisPar.targetTable).toBe('Team');
+        expect(feuillesSoumisPar.visibleColumn).toBe('nom');
+    });
+    
+    test('Tasks.editorsEmails est déclaré comme colonne formulée', () => {
+        const tasksTable = SCHEMA.tables.Tasks;
+        const editorsEmailsCol = tasksTable.columns.find(c => c.id === 'editorsEmails');
+        
+        expect(editorsEmailsCol).toBeDefined();
+        expect(editorsEmailsCol.opts.isFormula).toBe(true);
+        expect(editorsEmailsCol.opts.type).toBe('Text');
+    });
+    
+    test('Tasks.editorsEmails a la formule historique exacte', () => {
+        const editorsEmailsFormula = SCHEMA.formulas.Tasks.editorsEmails;
+        
+        // La formule doit contenir les éléments clés
+        expect(editorsEmailsFormula).toContain('emails = set()');
+        expect(editorsEmailsFormula).toContain('for a in $assignees:');
+        expect(editorsEmailsFormula).toContain('emails.add(a.email)');
+        expect(editorsEmailsFormula).toContain('if $projet and $projet.responsable:');
+        expect(editorsEmailsFormula).toContain("','.join(sorted(e for e in emails if e))");
+        
+        // Vérifier que la formule ne contient pas d'erreur de syntaxe
+        expect(editorsEmailsFormula).not.toContain('","\'');
+        
+        // La formule complète attendue
+        const expectedFormula = "emails = set()\nfor a in $assignees:\n    emails.add(a.email)\nif $projet and $projet.responsable:\n    emails.add($projet.responsable.email)\n    for c in $projet.responsable.chaine_chefs:\n        emails.add(c.email)\n',' + ','.join(sorted(e for e in emails if e)) + ','";
+        
+        expect(editorsEmailsFormula).toBe(expectedFormula);
+    });
+    
+    test('Toutes les formules centralisées ont des valeurs non vides', () => {
+        expect(SCHEMA.formulas.Entites.ancetres).toBeTruthy();
+        expect(SCHEMA.formulas.Team.chaine_chefs).toBeTruthy();
+        expect(SCHEMA.formulas.Team.agents_geres).toBeTruthy();
+        expect(SCHEMA.formulas.Tasks.editorsEmails).toBeTruthy();
+        expect(SCHEMA.formulas.TimeEntries.statutFeuille).toBeTruthy();
+        expect(SCHEMA.formulas.TimeEntries.responsableValidation).toBeTruthy();
+        expect(SCHEMA.formulas.TimeEntries.semaineFeuille).toBeTruthy();
+    });
+    
+    test('Les formules TimeEntries correspondent aux déclarations', () => {
+        const timeEntriesTable = SCHEMA.tables.TimeEntries;
+        
+        const statutFeuilleCol = timeEntriesTable.columns.find(c => c.id === 'statutFeuille');
+        expect(statutFeuilleCol.opts.formula).toBe(SCHEMA.formulas.TimeEntries.statutFeuille);
+        
+        const responsableValidationCol = timeEntriesTable.columns.find(c => c.id === 'responsableValidation');
+        expect(responsableValidationCol.opts.formula).toBe(SCHEMA.formulas.TimeEntries.responsableValidation);
+        
+        const semaineFeuilleCol = timeEntriesTable.columns.find(c => c.id === 'semaineFeuille');
+        expect(semaineFeuilleCol.opts.formula).toBe(SCHEMA.formulas.TimeEntries.semaineFeuille);
+    });
+});
+
 describe('TaskFlow Schema Inspection - Duplicate Detection', () => {
     
     function createMockGristWithDuplicates() {

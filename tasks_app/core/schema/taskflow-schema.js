@@ -37,7 +37,7 @@
     }
 
     // Version courante du schéma
-    var SCHEMA_VERSION = 3;
+    var SCHEMA_VERSION = 4;
 
     // Ordre de création des tables (important pour les dépendances)
     var TABLE_ORDER = [
@@ -170,7 +170,9 @@
                 { id: 'parentTask',       opts: refColumn('Tasks') },
                 // Plan de charge (opt-in mais défini ici)
                 { id: 'charges',          opts: dataColumn('Text') },
-                { id: 'dateCloture',      opts: dataColumn('Date') }
+                { id: 'dateCloture',      opts: dataColumn('Date') },
+                // Formule pour les ACL
+                { id: 'editorsEmails',    opts: { type: 'Text', isFormula: true, formula: '' } }
             ]
         },
 
@@ -272,7 +274,13 @@
                 { id: 'statut',           opts: dataColumn('Choice') },
                 { id: 'validePar',        opts: refColumn('Team') },
                 { id: 'dateValidation',   opts: dataColumn('Date') },
-                { id: 'motifRejet',       opts: dataColumn('Text') }
+                { id: 'motifRejet',       opts: dataColumn('Text') },
+                // Nouvelles colonnes v4 pour le workflow de validation
+                { id: 'responsableValidation', opts: refColumn('Team') },
+                { id: 'soumisPar',        opts: refColumn('Team') },
+                { id: 'dateSoumission',   opts: dataColumn('DateTime') },
+                { id: 'revisionValidation', opts: dataColumn('Int') },
+                { id: 'motifCorrection',  opts: dataColumn('Text') }
             ]
         },
 
@@ -296,7 +304,11 @@
                 { id: 'feuille',          opts: refColumn('Feuilles') },
                 { id: 'revisionPlan',     opts: dataColumn('Int') },
                 // Nouvelle colonne v3 : référence à la capacité quotidienne unique
-                { id: 'capaciteJour',     opts: refColumn('MemberDailyCapacities') }
+                { id: 'capaciteJour',     opts: refColumn('MemberDailyCapacities') },
+                // Nouvelles colonnes formulées v4 pour les ACL
+                { id: 'statutFeuille',          opts: { type: 'Text', isFormula: true, formula: '$feuille.statut if $feuille else ""' } },
+                { id: 'responsableValidation',  opts: { type: 'Ref:Team', isFormula: true, formula: '$feuille.responsableValidation if $feuille else None' } },
+                { id: 'semaineFeuille',         opts: { type: 'Date', isFormula: true, formula: '$feuille.semaine if $feuille else None' } }
             ]
         },
 
@@ -311,7 +323,13 @@
                 { id: 'lastMigration',    opts: dataColumn('Text') },
                 { id: 'lastMigrationAt',  opts: dataColumn('DateTime') },
                 { id: 'lastError',        opts: dataColumn('Text') },
-                { id: 'installedBy',      opts: dataColumn('Text') }
+                { id: 'installedBy',      opts: dataColumn('Text') },
+                // Nouvelles colonnes v4 pour séparer les ACL du schéma métier
+                { id: 'aclVersion',       opts: dataColumn('Int') },
+                { id: 'aclStatus',        opts: dataColumn('Choice') },
+                { id: 'lastAclMigration', opts: dataColumn('Text') },
+                { id: 'lastAclMigrationAt', opts: dataColumn('DateTime') },
+                { id: 'lastAclError',     opts: dataColumn('Text') }
             ]
         }
     };
@@ -351,6 +369,8 @@
         { table: 'TimeEntries', column: 'affectation', targetTable: 'TaskAssignments', visibleColumn: 'tache' },
         { table: 'TimeEntries', column: 'feuille', targetTable: 'Feuilles', visibleColumn: 'semaine' },
         { table: 'TimeEntries', column: 'capaciteJour', targetTable: 'MemberDailyCapacities', visibleColumn: 'date' },
+        // Nouvelles références v4
+        { table: 'TimeEntries', column: 'responsableValidation', targetTable: 'Team', visibleColumn: 'nom' },
         
         // TaskAssignments refs
         { table: 'TaskAssignments', column: 'tache', targetTable: 'Tasks', visibleColumn: 'titre' },
@@ -359,6 +379,9 @@
         // Feuilles refs
         { table: 'Feuilles', column: 'membre', targetTable: 'Team', visibleColumn: 'nom' },
         { table: 'Feuilles', column: 'validePar', targetTable: 'Team', visibleColumn: 'nom' },
+        // Nouvelles références v4
+        { table: 'Feuilles', column: 'responsableValidation', targetTable: 'Team', visibleColumn: 'nom' },
+        { table: 'Feuilles', column: 'soumisPar', targetTable: 'Team', visibleColumn: 'nom' },
         
         // Disponibilites refs
         { table: 'Disponibilites', column: 'membre', targetTable: 'Team', visibleColumn: 'nom' },
@@ -390,6 +413,38 @@
         { value: '4', label: 'Basse',  fillColor: '#64748b', textColor: '#ffffff' }
     ];
 
+    // ========================================================================
+    // FORMULES CENTRALISÉES — Source unique pour toutes les formules TaskFlow
+    // ========================================================================
+    var FORMULAS = {
+        Entites: {
+            ancetres: 'res, cur, seen = [], $parent, set()\nwhile cur and cur.id not in seen:\n    seen.add(cur.id); res.append(cur); cur = cur.parent\nres'
+        },
+        Team: {
+            chaine_chefs: 'chefs, e, seen = [], $entite, set()\nwhile e and e.id not in seen:\n    seen.add(e.id)\n    if e.chef: chefs.append(e.chef)\n    e = e.parent\nchefs',
+            agents_geres: '[a for a in Team.lookupRecords() if $id in [c.id for c in a.chaine_chefs]]'
+        },
+        Tasks: {
+            editorsEmails: "emails = set()\nfor a in $assignees:\n    emails.add(a.email)\nif $projet and $projet.responsable:\n    emails.add($projet.responsable.email)\n    for c in $projet.responsable.chaine_chefs:\n        emails.add(c.email)\n',' + ','.join(sorted(e for e in emails if e)) + ','"
+        },
+        TimeEntries: {
+            statutFeuille: '$feuille.statut if $feuille else ""',
+            responsableValidation: '$feuille.responsableValidation if $feuille else None',
+            semaineFeuille: '$feuille.semaine if $feuille else None'
+        }
+    };
+
+    // ========================================================================
+    // CHOIX PAR DÉFAUT CENTRALISÉS — Source unique pour les colonnes Choice
+    // ========================================================================
+    var DEFAULT_CHOICES = {
+        'Entites.niveau': ['direction', 'service', 'equipe'],
+        'Team.role': ['membre', 'chef', 'chef_de_projet'],
+        'Feuilles.statut': ['brouillon', 'soumis', 'valide', 'rejete', 'correction_manager'],
+        'Disponibilites.type': ['conge', 'maladie', 'ferie', 'formation', 'temps_partiel', 'autre'],
+        'Competences.categorie': ['technique', 'fonctionnel', 'transverse']
+    };
+
     // Export public
     global.TASKFLOW_SCHEMA = {
         version: SCHEMA_VERSION,
@@ -399,6 +454,9 @@
         defaultStatuses: DEFAULT_STATUSES,
         defaultTaskTypes: DEFAULT_TASK_TYPES,
         defaultPriorities: DEFAULT_PRIORITIES,
+        // Nouvelles propriétés v4 : formules et choix centralisés
+        formulas: FORMULAS,
+        defaultChoices: DEFAULT_CHOICES,
         // Helpers exportés
         dataColumn: dataColumn,
         refColumn: refColumn,

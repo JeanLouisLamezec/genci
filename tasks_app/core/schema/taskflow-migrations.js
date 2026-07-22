@@ -10,6 +10,7 @@
  * Version 1: Schéma de base
  * Version 2: TaskAssignments + extension quotidienne de TimeEntries
  * Version 3: MemberDailyCapacities + TimeEntries.capaciteJour
+ * Version 4: Fondation du workflow de validation des feuilles de temps
  * ============================================================================ */
 
 (function (global) {
@@ -86,6 +87,7 @@
                     colId: col.colId,
                     type: col.type,
                     isFormula: col.isFormula,
+                    formula: col.formula || '',
                     parentId: col.parentId
                 };
             }
@@ -317,6 +319,189 @@
     }
 
     // ========================================================================
+    // MIGRATION V3 → V4 — Fondation du workflow de validation
+    // ========================================================================
+    
+    async function migrateToV4(grist, metadata) {
+        log('Migration v3 → v4: timesheet-validation-foundation-v4');
+        
+        var docApi = getDocApi(grist);
+        var actions = [];
+        var existingTables = metadata.tablesByName || {};
+        var existingColumns = metadata.columnsByKey || {};
+        var errors = [];
+        
+        // 1. Ajouter les colonnes simples manquantes de Feuilles
+        var feuillesCols = [
+            { id: 'responsableValidation', type: 'Ref:Team' },
+            { id: 'soumisPar', type: 'Ref:Team' },
+            { id: 'dateSoumission', type: 'DateTime' },
+            { id: 'revisionValidation', type: 'Int' },
+            { id: 'motifCorrection', type: 'Text' }
+        ];
+        
+        for (var i = 0; i < feuillesCols.length; i++) {
+            var colDef = feuillesCols[i];
+            var key = 'Feuilles.' + colDef.id;
+            if (!existingColumns[key]) {
+                log('Ajout de la colonne Feuilles.' + colDef.id);
+                actions.push(['AddColumn', 'Feuilles', colDef.id, {
+                    type: colDef.type,
+                    isFormula: false
+                }]);
+                existingColumns[key] = { type: colDef.type };
+            } else {
+                // Vérifier le type
+                var existingCol = existingColumns[key];
+                if (existingCol.type !== colDef.type) {
+                    errors.push({
+                        column: key,
+                        expectedType: colDef.type,
+                        actualType: existingCol.type,
+                        issue: 'TYPE_MISMATCH'
+                    });
+                }
+                log('Feuilles.' + colDef.id + ' existe déjà (type: ' + existingCol.type + ')');
+            }
+        }
+        
+        // 2. Ajouter les colonnes simples de TaskFlow_Meta pour les ACL
+        var metaCols = [
+            { id: 'aclVersion', type: 'Int' },
+            { id: 'aclStatus', type: 'Choice' },
+            { id: 'lastAclMigration', type: 'Text' },
+            { id: 'lastAclMigrationAt', type: 'DateTime' },
+            { id: 'lastAclError', type: 'Text' }
+        ];
+        
+        for (var j = 0; j < metaCols.length; j++) {
+            var colDef = metaCols[j];
+            var key = 'TaskFlow_Meta.' + colDef.id;
+            if (!existingColumns[key]) {
+                log('Ajout de la colonne TaskFlow_Meta.' + colDef.id);
+                actions.push(['AddColumn', 'TaskFlow_Meta', colDef.id, {
+                    type: colDef.type,
+                    isFormula: false
+                }]);
+                existingColumns[key] = { type: colDef.type };
+            } else {
+                var existingCol = existingColumns[key];
+                if (existingCol.type !== colDef.type) {
+                    errors.push({
+                        column: key,
+                        expectedType: colDef.type,
+                        actualType: existingCol.type,
+                        issue: 'TYPE_MISMATCH'
+                    });
+                }
+                log('TaskFlow_Meta.' + colDef.id + ' existe déjà (type: ' + existingCol.type + ')');
+            }
+        }
+        
+        // 3. Ajouter les colonnes formulées de TimeEntries
+        var timeEntriesFormulaCols = [
+            { 
+                id: 'statutFeuille', 
+                type: 'Text', 
+                formula: '$feuille.statut if $feuille else ""' 
+            },
+            { 
+                id: 'responsableValidation', 
+                type: 'Ref:Team', 
+                formula: '$feuille.responsableValidation if $feuille else None' 
+            },
+            { 
+                id: 'semaineFeuille', 
+                type: 'Date', 
+                formula: '$feuille.semaine if $feuille else None' 
+            }
+        ];
+        
+        for (var k = 0; k < timeEntriesFormulaCols.length; k++) {
+            var colDef = timeEntriesFormulaCols[k];
+            var key = 'TimeEntries.' + colDef.id;
+            if (!existingColumns[key]) {
+                log('Ajout de la colonne formulée TimeEntries.' + colDef.id);
+                actions.push(['AddColumn', 'TimeEntries', colDef.id, {
+                    type: colDef.type,
+                    isFormula: true,
+                    formula: colDef.formula
+                }]);
+                existingColumns[key] = { 
+                    type: colDef.type,
+                    isFormula: true,
+                    formula: colDef.formula
+                };
+            } else {
+                var existingCol = existingColumns[key];
+                
+                // Vérifier isFormula
+                if (!existingCol.isFormula) {
+                    errors.push({
+                        column: key,
+                        expectedFormula: true,
+                        actualFormula: existingCol.isFormula,
+                        issue: 'NOT_A_FORMULA'
+                    });
+                }
+                
+                // Vérifier le type
+                if (existingCol.type !== colDef.type) {
+                    errors.push({
+                        column: key,
+                        expectedType: colDef.type,
+                        actualType: existingCol.type,
+                        issue: 'TYPE_MISMATCH'
+                    });
+                }
+                
+                // Vérifier la formule (seulement si isFormula=true)
+                if (existingCol.isFormula && existingCol.formula !== colDef.formula) {
+                    // Formule différente : pourrait être une personnalisation
+                    // On ne bloque pas, mais on logue
+                    log('TimeEntries.' + colDef.id + ' a une formule personnalisée');
+                }
+                
+                log('TimeEntries.' + colDef.id + ' existe déjà (type: ' + existingCol.type + ', isFormula: ' + existingCol.isFormula + ')');
+            }
+        }
+        
+        // Si des erreurs critiques, échouer la migration
+        if (errors.length > 0) {
+            var criticalErrors = errors.filter(function(e) { 
+                return e.issue === 'TYPE_MISMATCH' || e.issue === 'NOT_A_FORMULA'; 
+            });
+            
+            if (criticalErrors.length > 0) {
+                log('Migration v4 échouée: conflits critiques détectés', criticalErrors);
+                throw new Error(
+                    'Migration v4 bloquée: ' + criticalErrors.length + ' conflit(s) critique(s). ' +
+                    'Colonnes incompatibles détectées. Détails: ' + JSON.stringify(criticalErrors)
+                );
+            }
+        }
+        
+        // Appliquer les actions si nécessaire
+        if (actions.length > 0) {
+            await docApi.applyUserActions(actions);
+            log('Migration v4 appliquée avec succès: ' + actions.length + ' actions');
+            
+            // Relire les métadonnées après écriture
+            metadata = await loadMigrationMetadata(grist);
+        } else {
+            log('Aucune action nécessaire, migration déjà appliquée');
+        }
+        
+        return { 
+            success: true, 
+            message: 'Migration v4 appliquée',
+            actionsExecuted: actions.length,
+            metadata: metadata,
+            warnings: errors.length > 0 ? errors : undefined
+        };
+    }
+
+    // ========================================================================
     // LISTE DES MIGRATIONS
     // ========================================================================
     
@@ -332,6 +517,12 @@
             name: 'member-daily-capacities-v3',
             description: 'Création de MemberDailyCapacities et TimeEntries.capaciteJour',
             run: migrateToV3
+        },
+        {
+            version: 4,
+            name: 'timesheet-validation-foundation-v4',
+            description: 'Fondation du workflow de validation des feuilles de temps',
+            run: migrateToV4
         }
     ];
 

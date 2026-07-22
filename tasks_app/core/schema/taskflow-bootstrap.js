@@ -207,10 +207,17 @@
         
         for (var i = 0; i < columns.length; i++) {
             var col = columns[i];
-            var type = col.type || (col.opts && col.opts.type);
+            var opts = col.opts || col;
+            var type = opts.type;
             
-            // Vérifier si c'est une formule définie
-            if (formulasMap && formulasMap[tableName] && formulasMap[tableName][col.id]) {
+            // Vérifier si c'est une formule définie dans le schéma (isFormula=true)
+            var isFormulaInSchema = Boolean(opts.isFormula);
+            
+            // Vérifier si c'est une formule fournie dans formulasMap
+            var isFormulaInMap = formulasMap && formulasMap[tableName] && formulasMap[tableName][col.id];
+            
+            // Une colonne est formulée si isFormula=true OU si elle est dans formulasMap
+            if (isFormulaInSchema || isFormulaInMap) {
                 formulaCols.push(col);
             } else if (isRefType(type)) {
                 refCols.push(col);
@@ -631,7 +638,7 @@
     
     async function ensureFormulaColumns(grist, formulasMap) {
         var metadata = await loadSchemaMetadata(grist);
-        var result = { added: [], skipped: [], errors: [] };
+        var result = { added: [], skipped: [], errors: [], repaired: [], warnings: [] };
         
         for (var tableName in formulasMap) {
             if (!formulasMap.hasOwnProperty(tableName)) continue;
@@ -651,12 +658,18 @@
                 var key = tableName + '.' + colId;
                 var existingCol = metadata.columnByKey[key];
                 
+                // Retrouver la déclaration de colonne dans le schéma
+                var schemaTable = SCHEMA.tables[tableName];
+                var schemaCol = schemaTable ? schemaTable.columns.find(function(c) { return c.id === colId; }) : null;
+                var declaredType = schemaCol ? (schemaCol.opts?.type || schemaCol.type) : null;
+                
                 if (!existingCol) {
-                    // Colonne manquante : l'ajouter
+                    // Colonne manquante : l'ajouter avec le type déclaré
+                    var targetType = declaredType || 'Any';
                     try {
                         await grist.docApi.applyUserActions([
                             ['AddColumn', tableName, colId, {
-                                type: 'Any',
+                                type: targetType,
                                 isFormula: true,
                                 formula: formula
                             }]
@@ -670,7 +683,79 @@
                         });
                     }
                 } else {
-                    result.skipped.push({ table: tableName, column: colId, reason: 'Déjà existe' });
+                    // Colonne existante : vérifier l'état
+                    var existingFormula = existingCol.formula || '';
+                    var existingIsFormula = existingCol.isFormula || false;
+                    var existingType = existingCol.type;
+                    
+                    // Cas 1 : Formule vide "" → réparer si on a une formule centrale
+                    if (existingIsFormula && existingFormula === '' && formula && formula !== '') {
+                        try {
+                            await grist.docApi.applyUserActions([
+                                ['ModifyColumn', tableName, colId, {
+                                    formula: formula
+                                }]
+                            ]);
+                            result.repaired.push({ key: key, reason: 'formule-vide' });
+                        } catch (e) {
+                            result.errors.push({
+                                table: tableName,
+                                column: colId,
+                                action: 'repair-empty-formula',
+                                error: e.message || String(e)
+                            });
+                        }
+                    }
+                    // Cas 2 : Placeholder [] → réparer
+                    else if (existingIsFormula && existingFormula === '[]' && formula && formula !== '[]') {
+                        try {
+                            await grist.docApi.applyUserActions([
+                                ['ModifyColumn', tableName, colId, {
+                                    formula: formula
+                                }]
+                            ]);
+                            result.repaired.push({ key: key, reason: 'placeholder' });
+                        } catch (e) {
+                            result.errors.push({
+                                table: tableName,
+                                column: colId,
+                                action: 'repair-placeholder',
+                                error: e.message || String(e)
+                            });
+                        }
+                    }
+                    // Cas 3 : isFormula=false mais devrait être true → warning
+                    else if (!existingIsFormula && declaredType) {
+                        result.warnings.push({
+                            table: tableName,
+                            column: colId,
+                            issue: 'should-be-formula',
+                            expectedType: declaredType,
+                            actualType: existingType,
+                            expectedFormula: true,
+                            actualFormula: existingIsFormula
+                        });
+                        result.skipped.push({ table: tableName, column: colId, reason: 'not-a-formula' });
+                    }
+                    // Cas 4 : Type incompatible → warning
+                    else if (existingType !== declaredType && declaredType) {
+                        result.warnings.push({
+                            table: tableName,
+                            column: colId,
+                            issue: 'type-mismatch',
+                            expectedType: declaredType,
+                            actualType: existingType
+                        });
+                        result.skipped.push({ table: tableName, column: colId, reason: 'type-mismatch' });
+                    }
+                    // Cas 5 : Formule personnalisée (différente de celle du schéma) → skipped
+                    else if (existingIsFormula && existingFormula && existingFormula !== formula) {
+                        result.skipped.push({ table: tableName, column: colId, reason: 'custom-formula' });
+                    }
+                    // Cas 6 : Tout est conforme → skipped
+                    else {
+                        result.skipped.push({ table: tableName, column: colId, reason: 'conforme' });
+                    }
                 }
             }
         }
@@ -1106,6 +1191,10 @@
     async function ensureGenciSchema(grist, options) {
         options = options || {};
         
+        // Utiliser les formules et choix centralisés par défaut
+        var formulasMap = options.formulasMap || SCHEMA.formulas || {};
+        var defaultChoices = options.defaultChoices || SCHEMA.defaultChoices || {};
+        
         // Sérialise les appels dans une même iframe
         if (bootstrapPromise) {
             return bootstrapPromise;
@@ -1159,7 +1248,7 @@
                 
                 // Phase 1 : Création des tables (sans Ref)
                 log('Phase 1: Création tables...');
-                var phase1 = await ensureBaseTables(grist, SCHEMA, options.formulasMap || {});
+                var phase1 = await ensureBaseTables(grist, SCHEMA, formulasMap);
                 globalLog.push('Tables créées: ' + phase1.created.join(', '));
                 result.phases.tables = phase1;
                 
@@ -1170,7 +1259,7 @@
                 
                 // Phase 2 : Colonnes Ref
                 log('Phase 2: Colonnes Ref...');
-                var phase2 = await ensureRefColumns(grist, SCHEMA, options.formulasMap || {});
+                var phase2 = await ensureRefColumns(grist, SCHEMA, formulasMap);
                 globalLog.push('Ref ajoutées: ' + phase2.added.join(', '));
                 if (phase2.repaired.length > 0) {
                     globalLog.push('Ref réparées: ' + phase2.repaired.join(', '));
@@ -1197,16 +1286,19 @@
                 await delay(500);
                 
                 // Phase 3 : Formules
-                if (options.formulasMap && Object.keys(options.formulasMap).length > 0) {
+                if (formulasMap && Object.keys(formulasMap).length > 0) {
                     log('Phase 3: Formules...');
-                    var phase3 = await ensureFormulaColumns(grist, options.formulasMap);
+                    var phase3 = await ensureFormulaColumns(grist, formulasMap);
                     globalLog.push('Formules ajoutées: ' + phase3.added.join(', '));
+                    if (phase3.repaired.length > 0) {
+                        globalLog.push('Formules réparées: ' + phase3.repaired.join(', '));
+                    }
                     result.phases.formulas = phase3;
                 }
                 
                 // Phase 4 : Choices
                 log('Phase 4: Choices...');
-                var phase4 = await configureChoiceColumns(grist, options.defaultChoices || {});
+                var phase4 = await configureChoiceColumns(grist, defaultChoices);
                 result.phases.choices = phase4;
                 
                 // Phase 5 : Affichage des références
