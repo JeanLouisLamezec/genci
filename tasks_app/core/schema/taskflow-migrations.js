@@ -11,6 +11,7 @@
  * Version 2: TaskAssignments + extension quotidienne de TimeEntries
  * Version 3: MemberDailyCapacities + TimeEntries.capaciteJour
  * Version 4: Fondation du workflow de validation des feuilles de temps
+ * Version 5: Rattachement des entrées de temps aux feuilles hebdomadaires
  * ============================================================================ */
 
 (function (global) {

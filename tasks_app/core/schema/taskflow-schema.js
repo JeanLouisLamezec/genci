@@ -37,7 +37,7 @@
     }
 
     // Version courante du schéma
-    var SCHEMA_VERSION = 4;
+    var SCHEMA_VERSION = 5;
 
     // Ordre de création des tables (important pour les dépendances)
     var TABLE_ORDER = [
