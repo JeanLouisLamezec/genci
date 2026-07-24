@@ -576,6 +576,11 @@
         if (plan.creates.length > 0) {
             log('Phase A: Création de ' + plan.creates.length + ' feuilles manquantes');
             
+            // Sauvegarder les clés des feuilles créées pour le rapport
+            var createdSheetKeys = plan.creates.map(function(create) {
+                return create.key;
+            });
+            
             var addActions = [];
             for (var i = 0; i < plan.creates.length; i++) {
                 var create = plan.creates[i];
@@ -591,17 +596,23 @@
                 await docApi.applyUserActions(addActions);
                 actionsExecuted += addActions.length;
                 log('Feuilles créées: ' + addActions.length);
+                createdSheets = createdSheetKeys;
             }
             
-            // Relire les feuilles pour obtenir les vrais IDs
+            // Relire TOUTES les tables pour la concurrence (Team, Feuilles, TimeEntries)
+            var newTeamData = await docApi.fetchTable('Team');
             var newSheetsData = await docApi.fetchTable('Feuilles');
+            var newEntriesData = await docApi.fetchTable('TimeEntries');
+            
+            var newTeam = columnarToRows(newTeamData);
             var newSheets = columnarToRows(newSheetsData);
+            var newEntries = columnarToRows(newEntriesData);
             
             // Reconstruire le plan avec les nouvelles données
             var newInspection = backfill.inspect({ 
-                team: team, 
+                team: newTeam, 
                 sheets: newSheets, 
-                entries: entries 
+                entries: newEntries 
             });
             
             // Vérifier qu'il n'y a pas de conflits après création
@@ -613,9 +624,9 @@
             }
             
             var newPlan = backfill.buildPlan({ 
-                team: team, 
+                team: newTeam, 
                 sheets: newSheets, 
-                entries: entries 
+                entries: newEntries 
             }, newInspection);
             
             // Vérifier que la phase A est complète
@@ -625,6 +636,36 @@
             
             // Utiliser le nouveau plan pour la phase B
             plan = newPlan;
+        } else {
+            // Même sans création, relire pour détecter les modifications concurrentes
+            var preTeamData = await docApi.fetchTable('Team');
+            var preSheetsData = await docApi.fetchTable('Feuilles');
+            var preEntriesData = await docApi.fetchTable('TimeEntries');
+            
+            var preTeam = columnarToRows(preTeamData);
+            var preSheets = columnarToRows(preSheetsData);
+            var preEntries = columnarToRows(preEntriesData);
+            
+            var preInspection = backfill.inspect({ 
+                team: preTeam, 
+                sheets: preSheets, 
+                entries: preEntries 
+            });
+            
+            if (preInspection.conflicts.length > 0) {
+                log('Conflits détectés avant phase B', preInspection.conflicts);
+                throw new Error(
+                    'TIMESHEET_BACKFILL_CONFLICT_AFTER_CREATE: ' + preInspection.conflicts.length + ' conflit(s) détectés avant rattachement'
+                );
+            }
+            
+            var prePlan = backfill.buildPlan({ 
+                team: preTeam, 
+                sheets: preSheets, 
+                entries: preEntries 
+            }, preInspection);
+            
+            plan = prePlan;
         }
         
         // Phase B : Rattacher les TimeEntries

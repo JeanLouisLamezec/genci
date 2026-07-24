@@ -712,6 +712,109 @@ describe('TaskFlow Timesheet Backfill - Verify Final State', () => {
         expect(result.valid).toBe(false);
         expect(result.conflicts.some(c => c.code === 'DUPLICATE_SHEETS')).toBe(true);
     });
+
+    test('date d\'entrée invalide', () => {
+        const result = TaskFlowBackfill.verifyFinalState({
+            team: [{ id: 1, nom: 'Alice' }],
+            sheets: [{
+                id: 1,
+                membre: 1,
+                semaine: 1719792000,
+                statut: 'brouillon'
+            }],
+            entries: [{
+                id: 1,
+                membre: 1,
+                date: null,
+                heures: 3.5,
+                feuille: 1
+            }]
+        });
+        
+        expect(result.valid).toBe(false);
+        expect(result.conflicts.some(c => c.code === 'TIME_ENTRY_DATE_INVALID')).toBe(true);
+    });
+
+    test('membre d\'entrée invalide', () => {
+        const result = TaskFlowBackfill.verifyFinalState({
+            team: [{ id: 1, nom: 'Alice' }],
+            sheets: [],
+            entries: [{
+                id: 1,
+                membre: null,
+                date: 1719792000,
+                heures: 3.5
+            }]
+        });
+        
+        expect(result.valid).toBe(false);
+        expect(result.conflicts.some(c => c.code === 'TIME_ENTRY_MEMBER_INVALID')).toBe(true);
+    });
+
+    test('feuille non canonique', () => {
+        // 2024-07-02 est un mardi, pas un lundi
+        const result = TaskFlowBackfill.verifyFinalState({
+            team: [{ id: 1, nom: 'Alice' }],
+            sheets: [{
+                id: 1,
+                membre: 1,
+                semaine: 1719878400, // 2024-07-02 (mardi)
+                statut: 'brouillon'
+            }],
+            entries: []
+        });
+        
+        expect(result.valid).toBe(false);
+        expect(result.conflicts.some(c => c.code === 'SHEET_WEEK_NOT_CANONICAL')).toBe(true);
+    });
+
+    test('feuille avec ID invalide', () => {
+        const result = TaskFlowBackfill.verifyFinalState({
+            team: [{ id: 1, nom: 'Alice' }],
+            sheets: [{
+                id: null,
+                membre: 1,
+                semaine: 1719792000,
+                statut: 'brouillon'
+            }],
+            entries: []
+        });
+        
+        expect(result.valid).toBe(false);
+        expect(result.conflicts.some(c => c.code === 'SHEET_ID_INVALID')).toBe(true);
+    });
+
+    test('entrée avec ID invalide', () => {
+        const result = TaskFlowBackfill.verifyFinalState({
+            team: [{ id: 1, nom: 'Alice' }],
+            sheets: [],
+            entries: [{
+                id: null,
+                membre: 1,
+                date: 1719792000,
+                heures: 3.5
+            }]
+        });
+        
+        expect(result.valid).toBe(false);
+        expect(result.conflicts.some(c => c.code === 'TIME_ENTRY_ID_INVALID')).toBe(true);
+    });
+
+    test('inclut les conflits de l\'inspection initiale', () => {
+        const result = TaskFlowBackfill.verifyFinalState({
+            team: [{ id: 1, nom: 'Alice' }],
+            sheets: [{
+                id: 1,
+                membre: 999, // Membre inexistant
+                semaine: 1719792000,
+                statut: 'brouillon'
+            }],
+            entries: []
+        });
+        
+        expect(result.valid).toBe(false);
+        expect(result.conflicts.some(c => c.code === 'SHEET_MEMBER_INVALID')).toBe(true);
+    });
 });
 
 // Helper pour formater les dates dans les tests

@@ -1396,10 +1396,19 @@
                             return result;
                         }
                         
+                        // Utiliser le nom de la dernière migration appliquée, pas la version numérique
+                        var lastAppliedMigration = null;
+                        if (result.phases.migrations && result.phases.migrations.results) {
+                            var migrationResults = result.phases.migrations.results;
+                            if (migrationResults.length > 0) {
+                                lastAppliedMigration = migrationResults[migrationResults.length - 1].name;
+                            }
+                        }
+                        
                         var writeResult = await TF.writeSchemaReady(grist, {
                             schemaVersion: SCHEMA.version,
                             installedBy: 'TaskFlowBootstrap',
-                            lastMigration: result.phases.migrations ? result.phases.migrations.finalVersion : null
+                            lastMigration: lastAppliedMigration
                         });
                         
                         if (writeResult.success) {

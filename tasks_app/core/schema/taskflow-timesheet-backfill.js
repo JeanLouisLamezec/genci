@@ -657,14 +657,13 @@
             return {
                 key: l.key,
                 entryId: l.entryId,
-                sheetId: l.sheetId
+                sheetId: l.sheetId,
+                pendingCreate: l.pendingCreate
             };
         });
 
-        // Calculer le résumé
-        var entriesToLink = linksToExistingSheets.filter(function(l) {
-            return !l.pendingCreate;
-        }).length;
+        // Calculer le résumé - inclure TOUS les rattachements
+        var entriesToLink = linksToExistingSheets.length;
 
         var sheetsToCreate = creates.length;
 
