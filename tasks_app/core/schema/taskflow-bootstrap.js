@@ -1217,10 +1217,71 @@
             try {
                 log('Démarrage initialisation...');
                 
-                // Phase 0 : Exécuter les migrations puis inspection
-                log('Phase 0: Migrations...');
+                // Phase 0 : Inspection et détection du type de document
+                log('Phase 0: Inspection...');
                 var migrationLog = await migrateLegacyTables(grist);
                 globalLog = globalLog.concat(migrationLog);
+                
+                // Inspection des tables existantes
+                var tablesData = await grist.docApi.fetchTable('_grist_Tables');
+                var tables = columnarToRows(tablesData);
+                var tableIds = tables.map(function(t) { return t.tableId; });
+                
+                var essentialTables = ['Team', 'Feuilles', 'TimeEntries', 'TaskFlow_Meta'];
+                var hasAnyEssentialTable = essentialTables.some(function(tableId) {
+                    return tableIds.indexOf(tableId) !== -1;
+                });
+                
+                var isNewDoc = !hasAnyEssentialTable;
+                
+                if (isNewDoc) {
+                    log('Document véritablement neuf détecté : création des tables avant migrations');
+                    
+                    // Pour un document neuf : créer les tables D'ABORD
+                    log('Phase 1: Création tables (document neuf)...');
+                    var phase1 = await ensureBaseTables(grist, SCHEMA, formulasMap);
+                    globalLog.push('Tables créées: ' + phase1.created.join(', '));
+                    result.phases.tables = phase1;
+                    
+                    // Synchronisation
+                    var allExpectedTables = SCHEMA.tableOrder.slice();
+                    var metadata = await syncMetadata(grist, allExpectedTables);
+                    result.phases.sync = { success: true };
+                    
+                    // Phase 2 : Colonnes Ref
+                    log('Phase 2: Colonnes Ref (document neuf)...');
+                    var phase2 = await ensureRefColumns(grist, SCHEMA, formulasMap);
+                    globalLog.push('Ref ajoutées: ' + phase2.added.join(', '));
+                    if (phase2.repaired.length > 0) {
+                        globalLog.push('Ref réparées: ' + phase2.repaired.join(', '));
+                    }
+                    
+                    if (phase2.errors.length > 0) {
+                        result.errors.push({ phase: 'refs', errors: phase2.errors });
+                        result.success = false;
+                        log('Échec création des colonnes Ref, arrêt du bootstrap');
+                        return result;
+                    }
+                    
+                    result.phases.refs = phase2;
+                    
+                    // Pause stabilisation
+                    await delay(500);
+                    
+                    // Phase 3 : Formules
+                    if (formulasMap && Object.keys(formulasMap).length > 0) {
+                        log('Phase 3: Formules (document neuf)...');
+                        var phase3 = await ensureFormulaColumns(grist, formulasMap);
+                        globalLog.push('Formules ajoutées: ' + phase3.added.join(', '));
+                        if (phase3.repaired.length > 0) {
+                            globalLog.push('Formules réparées: ' + phase3.repaired.join(', '));
+                        }
+                        result.phases.formulas = phase3;
+                    }
+                    
+                    // Maintenant que les tables existent, exécuter les migrations
+                    log('Tables créées, exécution des migrations...');
+                }
                 
                 // Exécuter les migrations versionnées si TaskFlowMigrations est disponible
                 var migrationFailed = false;
@@ -1243,18 +1304,67 @@
                         log('Erreur lors des migrations: ' + (migrationError.message || migrationError));
                         migrationFailed = true;
                         result.errors.push({ phase: 'migrations', error: migrationError.message || String(migrationError) });
-                        // FAIL CLOSED: ne pas continuer avec les phases d'écriture
                     }
                 }
                 
                 result.phases.migration = migrationLog;
                 
-                // Si les migrations ont échoué, arrêter immédiatement
-                if (migrationFailed) {
-                    log('Échec des migrations - arrêt du bootstrap en mode fail closed');
+                // FAIL CLOSED : si les migrations ont échoué ET que ce n'est pas un document neuf, arrêter
+                if (migrationFailed && !isNewDoc) {
+                    log('Échec des migrations sur document existant - arrêt du bootstrap en mode fail closed');
                     result.success = false;
                     bootstrapComplete = false;
                     return result;
+                }
+                
+                // Si c'est un document neuf et que les migrations ont échoué, continuer avec le schéma déclaratif
+                if (migrationFailed && isNewDoc) {
+                    log('Document neuf : migrations échouées mais on continue avec le schéma déclaratif');
+                }
+                
+                // Pour un document neuf, les phases 1-3 ont déjà été exécutées
+                if (!isNewDoc) {
+                    // Phase 1 : Création des tables (sans Ref)
+                    log('Phase 1: Création tables...');
+                    var phase1 = await ensureBaseTables(grist, SCHEMA, formulasMap);
+                    globalLog.push('Tables créées: ' + phase1.created.join(', '));
+                    result.phases.tables = phase1;
+                    
+                    // Synchronisation
+                    var allExpectedTables = SCHEMA.tableOrder.slice();
+                    var metadata = await syncMetadata(grist, allExpectedTables);
+                    result.phases.sync = { success: true };
+                    
+                    // Phase 2 : Colonnes Ref
+                    log('Phase 2: Colonnes Ref...');
+                    var phase2 = await ensureRefColumns(grist, SCHEMA, formulasMap);
+                    globalLog.push('Ref ajoutées: ' + phase2.added.join(', '));
+                    if (phase2.repaired.length > 0) {
+                        globalLog.push('Ref réparées: ' + phase2.repaired.join(', '));
+                    }
+                    
+                    if (phase2.errors.length > 0) {
+                        result.errors.push({ phase: 'refs', errors: phase2.errors });
+                        result.success = false;
+                        log('Échec création des colonnes Ref, arrêt du bootstrap');
+                        return result;
+                    }
+                    
+                    result.phases.refs = phase2;
+                    
+                    // Pause stabilisation avant formules
+                    await delay(500);
+                    
+                    // Phase 3 : Formules
+                    if (formulasMap && Object.keys(formulasMap).length > 0) {
+                        log('Phase 3: Formules...');
+                        var phase3 = await ensureFormulaColumns(grist, formulasMap);
+                        globalLog.push('Formules ajoutées: ' + phase3.added.join(', '));
+                        if (phase3.repaired.length > 0) {
+                            globalLog.push('Formules réparées: ' + phase3.repaired.join(', '));
+                        }
+                        result.phases.formulas = phase3;
+                    }
                 }
                 
                 // Phase 1 : Création des tables (sans Ref)

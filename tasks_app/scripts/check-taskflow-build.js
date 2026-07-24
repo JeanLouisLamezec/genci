@@ -23,8 +23,9 @@ const SCHEMA_DIR = path.join(CORE_DIR, 'schema');
 const SOURCE_FILES = [
     path.join(CORE_DIR, 'taskflow-core.js'),
     path.join(SCHEMA_DIR, 'taskflow-schema.js'),
-    path.join(SCHEMA_DIR, 'taskflow-bootstrap.js'),
-    path.join(SCHEMA_DIR, 'taskflow-migrations.js')
+    path.join(SCHEMA_DIR, 'taskflow-timesheet-backfill.js'),
+    path.join(SCHEMA_DIR, 'taskflow-migrations.js'),
+    path.join(SCHEMA_DIR, 'taskflow-bootstrap.js')
 ];
 
 // Widgets à vérifier
@@ -32,8 +33,10 @@ const WIDGETS = [
     'kanban.html',
     'gantt.html',
     'plan.html',
+    'cra.html',
     'calendar.html',
-    'dashboard.html'
+    'dashboard.html',
+    'orgchart.html'
 ];
 
 // Marqueurs

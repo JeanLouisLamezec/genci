@@ -670,6 +670,25 @@
         
         // Phase B : Rattacher les TimeEntries
         if (plan.links.length > 0) {
+            // Vérifier qu'il n'y a pas de créations restantes ou de liens non résolus
+            var unresolvedLinks = plan.links.filter(function(link) {
+                return backfill.normalizeId(link.sheetId) === null;
+            });
+
+            if (plan.creates.length > 0 || unresolvedLinks.length > 0) {
+                log('Phase B bloquée : créations restantes ou liens non résolus', {
+                    creates: plan.creates.length,
+                    unresolvedLinks: unresolvedLinks.length
+                });
+                throw new Error(
+                    'TIMESHEET_BACKFILL_PHASE_A_INCOMPLETE: ' +
+                    plan.creates.length +
+                    ' feuille(s) restent à créer et ' +
+                    unresolvedLinks.length +
+                    ' lien(s) restent non résolus'
+                );
+            }
+
             log('Phase B: Rattachement de ' + plan.links.length + ' entrées');
             
             var updateActions = [];

@@ -72,7 +72,7 @@
             return null;
         }
 
-        // String ISO YYYY-MM-DD
+        // String ISO YYYY-MM-DD (date civile pure)
         if (typeof value === 'string') {
             if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
                 // Date civile UTC
@@ -85,9 +85,11 @@
             }
             // String avec heure : convertir en utilisant le fuseau
             var dateFromIso = new Date(value);
-            if (!isNaN(dateFromIso.getTime())) {
-                return dateFromIso;
+            if (isNaN(dateFromIso.getTime())) {
+                return null;
             }
+            // Extraire la date civile dans le fuseau
+            return extractCivilDate(dateFromIso, timeZone);
         }
 
         // Nombre (secondes ou millisecondes)
@@ -100,43 +102,51 @@
                 ms = value;
             }
 
-            // Convertir vers la date civile dans le fuseau spécifié
             var date = new Date(ms);
             if (isNaN(date.getTime())) {
                 return null;
             }
 
-            // Utiliser Intl.DateTimeFormat pour obtenir la date civile dans le fuseau
-            var formatter = new Intl.DateTimeFormat('fr-FR', {
-                timeZone: timeZone,
-                year: 'numeric',
-                month: '2-digit',
-                day: '2-digit'
-            });
-
-            var parts = formatter.formatToParts(date);
-            var year, month, day;
-            for (var i = 0; i < parts.length; i++) {
-                var part = parts[i];
-                if (part.type === 'year') {
-                    year = parseInt(part.value, 10);
-                } else if (part.type === 'month') {
-                    month = parseInt(part.value, 10);
-                } else if (part.type === 'day') {
-                    day = parseInt(part.value, 10);
-                }
-            }
-
-            // Retourner minuit UTC de cette date civile
-            return new Date(Date.UTC(year, month - 1, day));
+            return extractCivilDate(date, timeZone);
         }
 
         // Déjà une Date
         if (value instanceof Date) {
-            return value;
+            return extractCivilDate(value, timeZone);
         }
 
         return null;
+    }
+
+    /**
+     * Extrait la date civile (minuit UTC) d'une Date dans un fuseau donné
+     * @param {Date} date - Date à convertir
+     * @param {string} timeZone - Fuseau horaire
+     * @returns {Date} Date à minuit UTC de la date civile
+     */
+    function extractCivilDate(date, timeZone) {
+        var formatter = new Intl.DateTimeFormat('fr-FR', {
+            timeZone: timeZone,
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit'
+        });
+
+        var parts = formatter.formatToParts(date);
+        var year, month, day;
+        for (var i = 0; i < parts.length; i++) {
+            var part = parts[i];
+            if (part.type === 'year') {
+                year = parseInt(part.value, 10);
+            } else if (part.type === 'month') {
+                month = parseInt(part.value, 10);
+            } else if (part.type === 'day') {
+                day = parseInt(part.value, 10);
+            }
+        }
+
+        // Retourner minuit UTC de cette date civile
+        return new Date(Date.UTC(year, month - 1, day));
     }
 
     /**
