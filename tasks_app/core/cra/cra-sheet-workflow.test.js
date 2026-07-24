@@ -496,6 +496,21 @@ describe('CRA Sheet Workflow - Autorisations : Retrait', () => {
       expect(result.code).toBe('SHEET_NOT_FOUND_IN_COLLECTION');
     });
 
+    it('devrait refuser en cas de doublon avec code DUPLICATE_WEEKLY_SHEET', () => {
+      const duplicateSheets = [
+        { id: 1, membre: 2, semaine: 1704672000, statut: 'soumis' },
+        { id: 2, membre: 2, semaine: 1704672000, statut: 'soumis' }
+      ];
+      const context = {
+        actorMemberId: 2,
+        sheet: duplicateSheets[0],
+        sheets: duplicateSheets
+      };
+      const result = workflow.canWithdrawSheet(context);
+      expect(result.can).toBe(false);
+      expect(result.code).toBe('DUPLICATE_WEEKLY_SHEET');
+    });
+
     it('devrait refuser si acteur non identifié', () => {
       const context = {
         actorMemberId: null,
@@ -680,6 +695,113 @@ describe('CRA Sheet Workflow - Autorisations : Rejet', () => {
       const result = workflow.canRejectSheet(context);
       expect(result.can).toBe(false);
       expect(result.code).toBe('NOT_EXPECTED_VALIDATION_MANAGER');
+    });
+  });
+});
+
+describe('CRA Sheet Workflow - Autorisations : Correction manager', () => {
+  const team = [
+    { id: 1, nom: 'Manager', responsable: null },
+    { id: 2, nom: 'Employee', responsable: 1 }
+  ];
+
+  const sheets = [
+    { id: 1, membre: 2, semaine: 1704672000, statut: 'valide', responsableValidation: 1 }
+  ];
+
+  describe('canOpenManagerCorrection', () => {
+    it('devrait autoriser l\'ouverture par le responsable direct avec motif', () => {
+      const context = {
+        actorMemberId: 1,
+        sheet: sheets[0],
+        sheets,
+        correctionReason: 'Erreur de saisie'
+      };
+      const result = workflow.canOpenManagerCorrection(context);
+      expect(result.can).toBe(true);
+      expect(result.code).toBe('OK');
+    });
+
+    it('devrait refuser sans motif', () => {
+      const context = {
+        actorMemberId: 1,
+        sheet: sheets[0],
+        sheets,
+        correctionReason: ''
+      };
+      const result = workflow.canOpenManagerCorrection(context);
+      expect(result.can).toBe(false);
+      expect(result.code).toBe('MISSING_CORRECTION_REASON');
+    });
+
+    it('devrait interdire l\'auto-correction', () => {
+      const context = {
+        actorMemberId: 2,
+        sheet: sheets[0],
+        sheets,
+        correctionReason: 'Erreur'
+      };
+      const result = workflow.canOpenManagerCorrection(context);
+      expect(result.can).toBe(false);
+      expect(result.code).toBe('SELF_CORRECTION_FORBIDDEN');
+    });
+
+    it('devrait refuser un manager indirect', () => {
+      const context = {
+        actorMemberId: 99,
+        sheet: sheets[0],
+        sheets,
+        correctionReason: 'Erreur'
+      };
+      const result = workflow.canOpenManagerCorrection(context);
+      expect(result.can).toBe(false);
+      expect(result.code).toBe('NOT_EXPECTED_VALIDATION_MANAGER');
+    });
+  });
+
+  describe('canManagerEditActual', () => {
+    it('devrait autoriser l\'édition en correction_manager', () => {
+      const context = {
+        actorMemberId: 1,
+        sheet: { id: 1, membre: 2, semaine: 1704672000, statut: 'correction_manager', responsableValidation: 1 },
+        timeEntry: { id: 1, membre: 2, date: 1704672000, feuille: 1, heures: 3 }
+      };
+      const result = workflow.canManagerEditActual(context);
+      expect(result.can).toBe(true);
+      expect(result.code).toBe('OK');
+    });
+
+    it('devrait refuser si feuille sans ID valide', () => {
+      const context = {
+        actorMemberId: 1,
+        sheet: { id: null, membre: 2, semaine: 1704672000, statut: 'correction_manager', responsableValidation: 1 },
+        timeEntry: { id: 1, membre: 2, date: 1704672000, feuille: 1, heures: 3 }
+      };
+      const result = workflow.canManagerEditActual(context);
+      expect(result.can).toBe(false);
+      expect(result.code).toBe('SHEET_ID_INVALID');
+    });
+
+    it('devrait refuser si statut n\'est pas correction_manager', () => {
+      const context = {
+        actorMemberId: 1,
+        sheet: { id: 1, membre: 2, semaine: 1704672000, statut: 'valide', responsableValidation: 1 },
+        timeEntry: { id: 1, membre: 2, date: 1704672000, feuille: 1, heures: 3 }
+      };
+      const result = workflow.canManagerEditActual(context);
+      expect(result.can).toBe(false);
+      expect(result.code).toBe('SHEET_NOT_IN_MANAGER_CORRECTION');
+    });
+
+    it('devrait refuser si timeEntry non rattachée à la feuille', () => {
+      const context = {
+        actorMemberId: 1,
+        sheet: { id: 1, membre: 2, semaine: 1704672000, statut: 'correction_manager', responsableValidation: 1 },
+        timeEntry: { id: 1, membre: 2, date: 1704672000, feuille: 99, heures: 3 }
+      };
+      const result = workflow.canManagerEditActual(context);
+      expect(result.can).toBe(false);
+      expect(result.code).toBe('TIME_ENTRY_SHEET_MISMATCH');
     });
   });
 });
@@ -1055,6 +1177,19 @@ describe('CRA Sheet Workflow - Actions Grist', () => {
       expect(result.actions[0][3].validePar).toBe(1);
       expect(result.actions[0][3].dateValidation).toBe(1704672000);
       expect(result.actions[0][3].revisionValidation).toBe(1);
+    });
+
+    it('devrait utiliser normalizeMemberId pour validePar', () => {
+      const result = workflow.buildRevalidationActions({
+        actorMemberId: '1',
+        sheet: sheets[0],
+        sheets,
+        validationResult: { valid: true },
+        nowUnixSeconds: 1704672000
+      });
+
+      expect(result.allowed).toBe(true);
+      expect(result.actions[0][3].validePar).toBe(1);
     });
 
     it('devrait rejeter sans validationResult', () => {

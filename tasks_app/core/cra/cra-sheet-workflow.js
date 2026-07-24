@@ -823,7 +823,14 @@ function canWithdrawSheet(context) {
 
   const weekStartIso = getWeekStartIso(sheet.semaine);
   const uniquenessCheck = findUniqueSheetForWeek(normalizeMemberId(sheet.membre), weekStartIso, sheets);
-  if (uniquenessCheck.status !== 'found') {
+  if (uniquenessCheck.status === 'duplicate') {
+    return {
+      can: false,
+      reason: 'Plusieurs feuilles existent pour cette personne et cette semaine',
+      code: 'DUPLICATE_WEEKLY_SHEET'
+    };
+  }
+  if (uniquenessCheck.status === 'none') {
     return {
       can: false,
       reason: 'Feuille introuvable ou dupliquée',
@@ -1294,6 +1301,15 @@ function canManagerEditActual(context) {
     };
   }
 
+  const sheetId = normalizeMemberId(sheet.id);
+  if (sheetId === null) {
+    return {
+      can: false,
+      reason: 'Feuille sans ID valide',
+      code: 'SHEET_ID_INVALID'
+    };
+  }
+
   // 3. Statut = correction_manager
   const status = normalizeSheetStatus(sheet.statut);
   if (status !== SHEET_STATUS.MANAGER_CORRECTION) {
@@ -1343,7 +1359,6 @@ function canManagerEditActual(context) {
 
   // 8. TimeEntry rattachée à la feuille
   const entrySheetId = normalizeMemberId(timeEntry.feuille);
-  const sheetId = normalizeMemberId(sheet.id);
   if (entrySheetId !== sheetId) {
     return {
       can: false,
@@ -2104,7 +2119,7 @@ function buildRevalidationActions(params) {
 
   const sheetUpdate = {
     statut: 'valide',
-    validePar: actorMemberId,
+    validePar: normalizeMemberId(actorMemberId),
     dateValidation: timestampCheck.value,
     revisionValidation: nextRevision
   };
