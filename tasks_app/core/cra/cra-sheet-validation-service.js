@@ -1,20 +1,14 @@
 /**
  * CRA Sheet Validation Service - Service transactionnel pour le workflow des feuilles de temps
  *
- * Ce service centralise toutes les transitions du workflow CRA :
- * - soumettre une feuille
- * - retirer une soumission
- * - valider une feuille
- * - rejeter une feuille
- * - ouvrir une correction manager
- * - revalider une feuille après correction
- *
  * CONTRAT DE SÉCURITÉ :
- * 1. Double lecture avant écriture pour détecter les changements concurrents
- * 2. Aucune confiance dans les données fournies par l'appelant
- * 3. Validation fonctionnelle obligatoire avant validation/revalidation
- * 4. Toutes les actions dans un seul applyUserActions()
- * 5. Vérification post-écriture des préconditions
+ * 1. Double lecture systématique avant écriture
+ * 2. TOUTES les décisions sont re-construites depuis le snapshot 2 si changement
+ * 3. La validation fonctionnelle est re-exécutée sur snapshot 2 si changement
+ * 4. L'empreinte inclut : feuille, timeEntries, allMemberWeekEntries, directManagerId
+ * 5. Capacités réelles depuis MemberDailyCapacities
+ * 6. Vérification post-écriture complète avec snapshot 3 (après écriture)
+ * 7. Le champ `after` retourné est TOUJOURS le snapshot 3
  *
  * @module core/cra/cra-sheet-validation-service
  */
@@ -23,10 +17,6 @@
 
 const workflow = require('./cra-sheet-workflow');
 const timesheetValidator = require('../timesheets/timesheet-validator');
-
-// ============================================================================
-// CONSTANTES : CODES D'ERREUR
-// ============================================================================
 
 const SERVICE_ERROR_CODES = {
   GRIST_API_UNAVAILABLE: 'GRIST_API_UNAVAILABLE',
@@ -43,81 +33,43 @@ const SERVICE_ERROR_CODES = {
 };
 
 // ============================================================================
-// HELPERS : VALIDATION DES PARAMÈTRES
+// HELPERS
 // ============================================================================
 
-/**
- * Valide les paramètres communs à toutes les commandes
- * @param {Object} params - Paramètres à valider
- * @returns {{ valid: boolean, code?: string, reason?: string }}
- */
 function validateCommonParams(params) {
   const { grist, sheetId, actorMemberId } = params || {};
 
   if (!grist || !grist.docApi || !grist.docApi.fetchTable || !grist.docApi.applyUserActions) {
-    return {
-      valid: false,
-      code: SERVICE_ERROR_CODES.GRIST_API_UNAVAILABLE,
-      reason: 'API Grist indisponible'
-    };
+    return { valid: false, code: SERVICE_ERROR_CODES.GRIST_API_UNAVAILABLE };
   }
 
-  const sheetIdNum = Number(sheetId);
-  if (!Number.isInteger(sheetIdNum) || sheetIdNum <= 0) {
-    return {
-      valid: false,
-      code: SERVICE_ERROR_CODES.SHEET_ID_INVALID,
-      reason: 'sheetId doit être un entier strictement positif'
-    };
+  const normalizedSheetId = workflow.normalizeMemberId(sheetId);
+  if (normalizedSheetId === null) {
+    return { valid: false, code: SERVICE_ERROR_CODES.SHEET_ID_INVALID };
   }
 
-  const actorIdNum = Number(actorMemberId);
-  if (!Number.isInteger(actorIdNum) || actorIdNum <= 0) {
-    return {
-      valid: false,
-      code: SERVICE_ERROR_CODES.ACTOR_NOT_IDENTIFIED,
-      reason: 'actorMemberId doit être un entier strictement positif'
-    };
+  const normalizedActorId = workflow.normalizeMemberId(actorMemberId);
+  if (normalizedActorId === null) {
+    return { valid: false, code: SERVICE_ERROR_CODES.ACTOR_NOT_IDENTIFIED };
   }
 
-  return { valid: true };
+  return { valid: true, sheetId: normalizedSheetId, actorId: normalizedActorId };
 }
 
-/**
- * Valide un timestamp Unix pour les opérations d'écriture
- * @param {*} nowUnixSeconds - Timestamp à valider
- * @returns {{ valid: boolean, code?: string, value?: number }}
- */
 function validateTimestamp(nowUnixSeconds) {
   const check = workflow.validateUnixTimestamp(nowUnixSeconds);
   if (!check.valid) {
-    return {
-      valid: false,
-      code: 'INVALID_NOW_UNIX_SECONDS',
-      reason: 'Timestamp Unix invalide'
-    };
+    return { valid: false, code: 'INVALID_NOW_UNIX_SECONDS' };
   }
   return { valid: true, value: check.value };
 }
 
-// ============================================================================
-// HELPERS : CONVERSION DES DONNÉES GRIST
-// ============================================================================
-
-/**
- * Convertit les données colonnaires Grist en tableau de lignes
- * @param {Object} columnarData - Données colonnaires
- * @returns {Array} Tableau de lignes
- */
 function columnarToRows(columnarData) {
   if (!columnarData || Array.isArray(columnarData)) return columnarData || [];
-
   const cols = Object.keys(columnarData);
   if (!cols.length) return [];
-
   const n = (columnarData[cols[0]] && columnarData[cols[0]].length) || 0;
   const rows = [];
-
   for (let i = 0; i < n; i++) {
     const rec = {};
     for (const col of cols) {
@@ -125,36 +77,25 @@ function columnarToRows(columnarData) {
     }
     rows.push(rec);
   }
-
   return rows;
 }
 
 // ============================================================================
-// CHARGEMENT DU SNAPSHOT
+// SNAPSHOT
 // ============================================================================
 
-/**
- * Charge un snapshot complet du workflow pour une feuille
- * @param {Object} grist - API Grist
- * @param {number} sheetId - ID de la feuille
- * @returns {Promise<{
- *   team: Array,
- *   sheets: Array,
- *   sheet: Object|null,
- *   timeEntries: Array,
- *   fingerprint: string
- * }>}
- */
 async function loadWorkflowSnapshot(grist, sheetId) {
-  const [teamData, sheetsData, entriesData] = await Promise.all([
+  const [teamData, sheetsData, entriesData, capacitiesData] = await Promise.all([
     grist.docApi.fetchTable('Team'),
     grist.docApi.fetchTable('Feuilles'),
-    grist.docApi.fetchTable('TimeEntries')
+    grist.docApi.fetchTable('TimeEntries'),
+    grist.docApi.fetchTable('MemberDailyCapacities')
   ]);
 
   const team = columnarToRows(teamData);
   const sheets = columnarToRows(sheetsData);
   const allEntries = columnarToRows(entriesData);
+  const allCapacities = columnarToRows(capacitiesData);
 
   const normalizedSheetId = workflow.normalizeMemberId(sheetId);
   const sheet = sheets.find(s => workflow.normalizeMemberId(s.id) === normalizedSheetId) || null;
@@ -165,25 +106,45 @@ async function loadWorkflowSnapshot(grist, sheetId) {
     throw error;
   }
 
-    const sheetMemberId = workflow.normalizeMemberId(sheet.membre);
-    const sheetWeekIso = workflow.getWeekStartIso(sheet.semaine);
+  const sheetMemberId = workflow.normalizeMemberId(sheet.membre);
+  const sheetWeekIso = workflow.getWeekStartIso(sheet.semaine);
 
-    const timeEntries = allEntries.filter(e => {
-      const entrySheetId = workflow.normalizeMemberId(e.feuille);
-      return entrySheetId === normalizedSheetId;
-    });
+  // TimeEntries rattachées à CETTE feuille
+  const timeEntries = allEntries.filter(e => {
+    const entrySheetId = workflow.normalizeMemberId(e.feuille);
+    return entrySheetId === normalizedSheetId;
+  });
 
-    const otherEntries = allEntries.filter(e => {
-      const entryMemberId = workflow.normalizeMemberId(e.membre);
-      const entrySheetId = workflow.normalizeMemberId(e.feuille);
-      const entryWeekIso = workflow.getWeekStartIso(e.date);
+  // TOUTES les entrées du membre pour cette semaine (pour détecter hors scope)
+  const allMemberWeekEntries = allEntries.filter(e => {
+    const entryMemberId = workflow.normalizeMemberId(e.membre);
+    const entryWeekIso = workflow.getWeekStartIso(e.date);
+    return entryMemberId === sheetMemberId && entryWeekIso === sheetWeekIso;
+  });
 
-      return (
-        entryMemberId === sheetMemberId &&
-        entryWeekIso === sheetWeekIso &&
-        (entrySheetId === null || entrySheetId !== normalizedSheetId)
-      );
-    });
+  // Capacités du membre pour cette semaine
+  const weekDates = [];
+  const monday = new Date(sheetWeekIso);
+  for (let i = 0; i < 5; i++) {
+    const date = new Date(monday);
+    date.setUTCDate(date.getUTCDate() + i);
+    weekDates.push(workflow.formatDateUTC(date));
+  }
+
+  const memberCapacities = allCapacities.filter(cap => {
+    const capMemberId = workflow.normalizeMemberId(cap.membre);
+    const capDate = workflow.gristDateToIso(cap.date);
+    return capMemberId === sheetMemberId && weekDates.includes(capDate);
+  }).map(cap => ({
+    id: workflow.normalizeMemberId(cap.id),
+    membre: workflow.normalizeMemberId(cap.membre),
+    date: workflow.gristDateToIso(cap.date),
+    capaciteDisponible: cap.capaciteDisponible,
+    capaciteTheorique: cap.capaciteTheorique
+  }));
+
+  // Manager direct actuel
+  const directManagerId = workflow.getDirectManagerId(sheetMemberId, team);
 
   timeEntries.sort((a, b) => {
     const idA = workflow.normalizeMemberId(a.id) || 0;
@@ -191,25 +152,21 @@ async function loadWorkflowSnapshot(grist, sheetId) {
     return idA - idB;
   });
 
-  const fingerprint = buildFingerprint(sheet, timeEntries);
+  const fingerprint = buildFingerprint(sheet, timeEntries, allMemberWeekEntries, directManagerId, memberCapacities);
 
   return {
     team,
     sheets,
     sheet,
     timeEntries,
-    allMemberWeekEntries: otherEntries,
+    allMemberWeekEntries,
+    memberCapacities,
+    directManagerId,
     fingerprint
   };
 }
 
-/**
- * Construit une empreinte déterministe de l'état
- * @param {Object} sheet - Feuille
- * @param {Array} timeEntries - TimeEntries
- * @returns {string} Empreinte JSON
- */
-function buildFingerprint(sheet, timeEntries) {
+function buildFingerprint(sheet, timeEntries, allMemberWeekEntries, directManagerId, memberCapacities) {
   const sheetData = {
     id: workflow.normalizeMemberId(sheet.id),
     membre: workflow.normalizeMemberId(sheet.membre),
@@ -230,1026 +187,726 @@ function buildFingerprint(sheet, timeEntries) {
     membre: workflow.normalizeMemberId(e.membre),
     date: e.date,
     feuille: workflow.normalizeMemberId(e.feuille),
+    tache: workflow.normalizeMemberId(e.tache),
     heures: e.heures,
     heuresPrevues: e.heuresPrevues
   }));
 
+  // Hash des entrées HORS scope (même membre/semaine mais pas sur cette feuille)
+  const otherEntries = allMemberWeekEntries.filter(e => {
+    const entrySheetId = workflow.normalizeMemberId(e.feuille);
+    return entrySheetId === null || entrySheetId !== workflow.normalizeMemberId(sheet.id);
+  });
+  const otherEntriesHash = otherEntries
+    .map(e => workflow.normalizeMemberId(e.id) || 0)
+    .sort((a, b) => a - b)
+    .join(',');
+
+  // Hash des capacités avec distinction entre null/'' et 0
+  const capacitiesHash = (memberCapacities || [])
+    .map(c => `${c.date}:${capacityFingerprintValue(c.capaciteDisponible)}:${capacityFingerprintValue(c.capaciteTheorique)}`)
+    .sort()
+    .join('|');
+
   return JSON.stringify({
     sheet: sheetData,
-    timeEntries: entriesData
+    timeEntries: entriesData,
+    otherEntriesCount: otherEntries.length,
+    otherEntriesHash,
+    capacitiesHash,
+    directManagerId
   });
+}
+
+function capacityFingerprintValue(value) {
+  const normalized = normalizeCapacityValue(value);
+  return normalized === null ? 'missing' : normalized;
 }
 
 // ============================================================================
 // VALIDATION FONCTIONNELLE
 // ============================================================================
 
-/**
- * Appelle le validateur fonctionnel pour une feuille
- * @param {Object} snapshot - Snapshot du workflow
- * @returns {{ valid: boolean, errors: Array, warnings: Array }}
- */
-function callFunctionalValidator(snapshot) {
-  const { sheet, timeEntries, team } = snapshot;
+async function loadRealCapacities(grist, memberId, weekStartIso) {
+  try {
+    const capacitiesData = await grist.docApi.fetchTable('MemberDailyCapacities');
+    const capacities = columnarToRows(capacitiesData);
 
+    const weekDates = [];
+    const monday = new Date(weekStartIso);
+    for (let i = 0; i < 5; i++) {
+      const date = new Date(monday);
+      date.setUTCDate(date.getUTCDate() + i);
+      weekDates.push(workflow.formatDateUTC(date));
+    }
+
+    const memberCapacities = capacities.filter(cap => {
+      const capMemberId = workflow.normalizeMemberId(cap.membre);
+      const capDate = workflow.gristDateToIso(cap.date);
+      return capMemberId === memberId && weekDates.includes(capDate);
+    });
+
+    return memberCapacities.map(cap => {
+      const available = normalizeCapacityValue(cap.capaciteDisponible);
+      const theoretical = normalizeCapacityValue(cap.capaciteTheorique);
+
+      if (available === null && theoretical === null) {
+        return {
+          date: workflow.gristDateToIso(cap.date),
+          availableCapacityHours: null,
+          error: 'MISSING_CAPACITY'
+        };
+      }
+
+      return {
+        date: workflow.gristDateToIso(cap.date),
+        availableCapacityHours: available !== null ? available : theoretical
+      };
+    });
+  } catch (e) {
+    return [];
+  }
+}
+
+function normalizeCapacityValue(value) {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0) {
+    return null;
+  }
+  return number;
+}
+
+async function callFunctionalValidator(snapshot, grist) {
+  const { sheet, timeEntries, memberCapacities } = snapshot;
   const sheetMemberId = workflow.normalizeMemberId(sheet.membre);
-  const member = team.find(m => workflow.normalizeMemberId(m.id) === sheetMemberId);
-
-  if (!member) {
-    const error = new Error('Membre non trouvé');
-    error.code = SERVICE_ERROR_CODES.TIMESHEET_VALIDATOR_UNAVAILABLE;
-    throw error;
-  }
-
   const weekStartIso = workflow.getWeekStartIso(sheet.semaine);
+
   if (!weekStartIso) {
-    const error = new Error('Semaine invalide');
-    error.code = SERVICE_ERROR_CODES.TIMESHEET_VALIDATION_ERROR;
-    throw error;
+    return { 
+      valid: false, 
+      errors: [{ code: 'WEEK_INVALID', message: 'Semaine invalide' }], 
+      warnings: [],
+      isTechnicalError: false
+    };
   }
 
-  const entries = timeEntries.map(e => ({
-    taskId: workflow.normalizeMemberId(e.tache),
-    date: workflow.gristDateToIso(e.date),
-    actualHours: e.heures
-  })).filter(e => e.date !== null && e.taskId !== null);
+  // Convertir les timeEntries pour le validateur
+  const entries = [];
+  for (const e of timeEntries) {
+    const taskId = workflow.normalizeMemberId(e.tache);
+    const date = workflow.gristDateToIso(e.date);
 
-  const uniqueDates = [...new Set(entries.map(e => e.date).filter(d => d !== null))];
-  const capacities = uniqueDates.map(date => ({
-    date,
-    availableCapacityHours: 35
-  }));
+    // Une entrée sans tâche ou date valide est une erreur bloquante
+    if (taskId === null) {
+      return { 
+        valid: false, 
+        errors: [{ code: 'TASK_ID_INVALID', message: 'TimeEntry sans tâche valide' }], 
+        warnings: [],
+        isTechnicalError: false
+      };
+    }
+    if (date === null) {
+      return { 
+        valid: false, 
+        errors: [{ code: 'DATE_INVALID', message: 'TimeEntry sans date valide' }], 
+        warnings: [],
+        isTechnicalError: false
+      };
+    }
+
+    entries.push({ taskId, date, actualHours: e.heures });
+  }
+
+  // Utiliser les capacités du snapshot (déjà chargées)
+  const capacities = (memberCapacities || []).map(cap => {
+    const available = normalizeCapacityValue(cap.capaciteDisponible);
+    const theoretical = normalizeCapacityValue(cap.capaciteTheorique);
+
+    if (available === null && theoretical === null) {
+      return {
+        date: cap.date,
+        availableCapacityHours: null,
+        error: 'MISSING_CAPACITY'
+      };
+    }
+
+    return {
+      date: cap.date || workflow.gristDateToIso(cap.date),
+      availableCapacityHours: available !== null ? available : theoretical
+    };
+  });
+
+  // Vérifier si des capacités sont manquantes
+  const missingCapacity = capacities.find(c => c.availableCapacityHours === null);
+  if (missingCapacity) {
+    return {
+      valid: false,
+      errors: [{
+        code: 'MISSING_CAPACITY',
+        message: `Capacité manquante pour le ${missingCapacity.date}`,
+        date: missingCapacity.date
+      }],
+      warnings: [],
+      isTechnicalError: false
+    };
+  }
 
   try {
+    if (!timesheetValidator || !timesheetValidator.validateTimesheet) {
+      return {
+        valid: false,
+        errors: [{
+          code: 'TIMESHEET_VALIDATOR_UNAVAILABLE',
+          message: 'Validateur indisponible'
+        }],
+        warnings: [],
+        isTechnicalError: true
+      };
+    }
+
     const result = timesheetValidator.validateTimesheet({
       memberId: sheetMemberId,
       weekStart: weekStartIso,
       entries,
       capacities,
-      options: {
-        allowWeekend: false
-      }
+      options: { allowWeekend: false }
     });
 
-    return {
-      valid: result.valid,
-      errors: result.errors || [],
-      warnings: []
+    return { 
+      valid: result.valid, 
+      errors: result.errors || [], 
+      warnings: [],
+      isTechnicalError: false
     };
   } catch (e) {
-    const error = new Error('Erreur du validateur');
-    error.code = SERVICE_ERROR_CODES.TIMESHEET_VALIDATION_ERROR;
-    error.originalError = e;
-    throw error;
+    return {
+      valid: false,
+      errors: [{
+        code: 'TIMESHEET_VALIDATOR_ERROR',
+        message: e.message || 'Erreur technique du validateur'
+      }],
+      warnings: [],
+      isTechnicalError: true
+    };
   }
 }
 
 // ============================================================================
-// APPLICATION DES ACTIONS
+// APPLICATION
 // ============================================================================
 
-/**
- * Applique des actions Grist de manière transactionnelle
- * @param {Object} grist - API Grist
- * @param {Array} actions - Actions à appliquer
- * @returns {Promise<Array>} Résultats
- */
 async function applyWorkflowActions(grist, actions) {
   if (!actions || actions.length === 0) {
-    const error = new Error('Aucune action à appliquer');
-    error.code = SERVICE_ERROR_CODES.WORKFLOW_APPLY_FAILED;
-    throw error;
+    throw Object.assign(new Error('Aucune action à appliquer'), { code: SERVICE_ERROR_CODES.WORKFLOW_APPLY_FAILED });
   }
-
-  try {
-    const results = await grist.docApi.applyUserActions(actions);
-    return results;
-  } catch (e) {
-    const error = new Error('Échec de l\'application des actions');
-    error.code = SERVICE_ERROR_CODES.WORKFLOW_APPLY_FAILED;
-    error.originalError = e;
-    error.message = e.message || error.message;
-    throw error;
-  }
+  return await grist.docApi.applyUserActions(actions);
 }
 
 // ============================================================================
 // VÉRIFICATION POST-ÉCRITURE
 // ============================================================================
 
-/**
- * Vérifie le résultat d'une transition après écriture
- * @param {Object} grist - API Grist
- * @param {number} sheetId - ID de la feuille
- * @param {string} expectedStatus - Statut attendu
- * @param {Object} expectedFields - Champs attendus
- * @returns {Promise<{ valid: boolean, reason?: string }>}
- */
 async function verifyTransitionResult(grist, sheetId, expectedStatus, expectedFields = {}) {
   const sheetsData = await grist.docApi.fetchTable('Feuilles');
   const sheets = columnarToRows(sheetsData);
-
   const normalizedSheetId = workflow.normalizeMemberId(sheetId);
   const sheet = sheets.find(s => workflow.normalizeMemberId(s.id) === normalizedSheetId);
 
   if (!sheet) {
-    return {
-      valid: false,
-      reason: 'Feuille non trouvée après écriture'
-    };
+    return { valid: false, reason: 'Feuille non trouvée après écriture', actual: null };
   }
 
   const actualStatus = workflow.normalizeSheetStatus(sheet.statut);
   const expectedNormalizedStatus = workflow.normalizeSheetStatus(expectedStatus);
 
   if (actualStatus !== expectedNormalizedStatus) {
-    return {
-      valid: false,
-      reason: `Statut incorrect: attendu ${expectedNormalizedStatus}, obtenu ${actualStatus}`
-    };
+    return { valid: false, reason: `Statut incorrect: attendu ${expectedNormalizedStatus}, obtenu ${actualStatus}`, actual: sheet };
   }
 
   for (const [field, expectedValue] of Object.entries(expectedFields)) {
     const actualValue = sheet[field];
-    const normalizedActual = workflow.normalizeMemberId(actualValue);
-    const normalizedExpected = workflow.normalizeMemberId(expectedValue);
 
-    if (normalizedActual !== normalizedExpected) {
-      return {
-        valid: false,
-        reason: `Champ ${field} incorrect: attendu ${expectedValue}, obtenu ${actualValue}`
-      };
+    if (field === 'revisionValidation') {
+      const actualRev = workflow.normalizeRevision(actualValue);
+      const expectedRev = workflow.normalizeRevision(expectedValue);
+      if (actualRev !== expectedRev) {
+        return { valid: false, reason: `Champ ${field} incorrect: attendu ${expectedValue}, obtenu ${actualValue}`, actual: sheet };
+      }
+    } else if (field === 'dateSoumission' || field === 'dateValidation') {
+      if (actualValue !== expectedValue) {
+        return { valid: false, reason: `Champ ${field} incorrect: attendu ${expectedValue}, obtenu ${actualValue}`, actual: sheet };
+      }
+    } else if (field === 'motifRejet' || field === 'motifCorrection') {
+      if (String(actualValue || '') !== String(expectedValue || '')) {
+        return { valid: false, reason: `Champ ${field} incorrect: attendu "${expectedValue}", obtenu "${actualValue}"`, actual: sheet };
+      }
+    } else {
+      const normalizedActual = workflow.normalizeMemberId(actualValue);
+      const normalizedExpected = workflow.normalizeMemberId(expectedValue);
+      if (normalizedActual !== normalizedExpected) {
+        return { valid: false, reason: `Champ ${field} incorrect: attendu ${expectedValue}, obtenu ${actualValue}`, actual: sheet };
+      }
     }
   }
 
-  return { valid: true };
+  return { valid: true, actual: sheet };
 }
 
 // ============================================================================
-// COMMANDE : SOUMISSION
+// HELPER TRANSACTIONNEL CENTRAL
 // ============================================================================
 
 /**
- * Soumet une feuille de temps
- * @param {Object} params - Paramètres
- * @param {Object} params.grist - API Grist
- * @param {number} params.actorMemberId - ID de l'acteur
- * @param {number} params.sheetId - ID de la feuille
- * @param {number} params.nowUnixSeconds - Timestamp actuel
- * @returns {Promise<Object>} Résultat de la transition
+ * Exécute une transition avec le protocole complet :
+ * snapshot1 → décision1 → validation1 → snapshot2 → comparaison
+ * → (si changement) re-validation2 + re-décision2 → application → snapshot3 → vérification
  */
+async function executeTransition(params) {
+  const {
+    grist,
+    sheetId,
+    actorId,
+    buildDecision,
+    validateFunctional,
+    verifyPostWrite,
+    transitionName,
+    userContext = null
+  } = params;
+
+  try {
+    // === SNAPSHOT 1 ===
+    const snapshot1 = await loadWorkflowSnapshot(grist, sheetId);
+
+    // === VALIDATION 1 (si applicable) ===
+    let validation1 = null;
+    if (validateFunctional) {
+      validation1 = await validateFunctional(snapshot1, grist);
+      
+      // Erreur technique (validateur absent, crash, etc.)
+      if (validation1.isTechnicalError) {
+        return {
+          success: false,
+          code: SERVICE_ERROR_CODES.TIMESHEET_VALIDATOR_UNAVAILABLE,
+          reason: validation1.errors?.[0]?.message || 'Erreur technique du validateur',
+          sheetId,
+          transition: transitionName,
+          diagnostics: { validatorError: validation1.errors }
+        };
+      }
+      
+      if (!validation1.valid) {
+        return {
+          success: false,
+          code: SERVICE_ERROR_CODES.TIMESHEET_VALIDATION_FAILED,
+          reason: 'Validation fonctionnelle échouée',
+          sheetId,
+          transition: transitionName,
+          validation: validation1
+        };
+      }
+    }
+
+    // === DÉCISION 1 ===
+    const decisionContext1 = { ...userContext, validationResult: validation1 };
+    const decision1 = buildDecision(snapshot1, decisionContext1);
+
+    if (!decision1.allowed || !decision1.can) {
+      return {
+        success: false,
+        code: decision1.code,
+        reason: decision1.reason,
+        sheetId,
+        transition: transitionName,
+        actions: decision1.actions || []
+      };
+    }
+
+    // === SNAPSHOT 2 ===
+    const snapshot2 = await loadWorkflowSnapshot(grist, sheetId);
+
+    // === COMPARAISON ET RE-CONSTRUCTION ===
+    let finalDecision = decision1;
+    let finalValidation = validation1;
+
+    if (snapshot1.fingerprint !== snapshot2.fingerprint) {
+      // RE-VALIDATION 2 (si applicable) - AVANT la re-décision
+      if (validateFunctional) {
+        finalValidation = await validateFunctional(snapshot2, grist);
+        
+        // Erreur technique
+        if (finalValidation.isTechnicalError) {
+          return {
+            success: false,
+            code: SERVICE_ERROR_CODES.TIMESHEET_VALIDATOR_UNAVAILABLE,
+            reason: finalValidation.errors?.[0]?.message || 'Erreur technique du validateur',
+            sheetId,
+            transition: transitionName,
+            before: snapshot1,
+            after: snapshot2,
+            diagnostics: { validatorError: finalValidation.errors }
+          };
+        }
+        
+        if (!finalValidation.valid) {
+          return {
+            success: false,
+            code: SERVICE_ERROR_CODES.TIMESHEET_VALIDATION_FAILED,
+            reason: 'Validation fonctionnelle échouée après changement d\'état',
+            sheetId,
+            transition: transitionName,
+            validation: finalValidation,
+            before: snapshot1,
+            after: snapshot2
+          };
+        }
+      }
+
+      // RE-DÉCISION 2 - avec la re-validation
+      const decisionContext2 = { ...userContext, validationResult: finalValidation };
+      finalDecision = buildDecision(snapshot2, decisionContext2);
+
+      if (!finalDecision.allowed || !finalDecision.can) {
+        return {
+          success: false,
+          code: SERVICE_ERROR_CODES.WORKFLOW_STATE_CHANGED,
+          reason: 'État modifié pendant la transaction - transition non autorisée',
+          sheetId,
+          transition: transitionName,
+          before: snapshot1,
+          after: snapshot2
+        };
+      }
+    }
+
+    // === APPLICATION ===
+    await applyWorkflowActions(grist, finalDecision.actions);
+
+    // === SNAPSHOT 3 (POST-ÉCRITURE) ===
+    const snapshot3 = await loadWorkflowSnapshot(grist, sheetId);
+
+    // === VÉRIFICATION ===
+    const verifyResult = await verifyPostWrite(snapshot3, finalDecision, finalValidation, userContext);
+    if (!verifyResult.valid) {
+      return {
+        success: false,
+        code: SERVICE_ERROR_CODES.WORKFLOW_POSTCONDITION_FAILED,
+        reason: verifyResult.reason,
+        sheetId,
+        transition: transitionName,
+        diagnostics: { verificationFailed: true },
+        before: snapshot1,
+        after: snapshot3
+      };
+    }
+
+    // === SUCCÈS ===
+    return {
+      success: true,
+      code: 'OK',
+      sheetId,
+      transition: transitionName,
+      actions: finalDecision.actions,
+      appliedActions: finalDecision.actions.length,
+      before: snapshot1,
+      after: snapshot3,
+      validation: finalValidation,
+      summary: finalDecision.summary || {}
+    };
+  } catch (e) {
+    if (e.code === SERVICE_ERROR_CODES.SHEET_NOT_FOUND) {
+      return { success: false, code: e.code, reason: e.message, sheetId, transition: transitionName };
+    }
+    return {
+      success: false,
+      code: e.code || SERVICE_ERROR_CODES.WORKFLOW_APPLY_FAILED,
+      reason: e.message,
+      sheetId,
+      transition: transitionName,
+      diagnostics: { error: e.message }
+    };
+  }
+}
+
+// ============================================================================
+// COMMANDES
+// ============================================================================
+
 async function submitSheet(params) {
   const { grist, actorMemberId, sheetId, nowUnixSeconds } = params || {};
-
   const validation = validateCommonParams({ grist, sheetId, actorMemberId });
-  if (!validation.valid) {
-    return {
-      success: false,
-      code: validation.code,
-      reason: validation.reason,
-      sheetId,
-      transition: 'submit'
-    };
-  }
+  if (!validation.valid) return { success: false, code: validation.code, sheetId, transition: 'submit' };
 
   const timestampCheck = validateTimestamp(nowUnixSeconds);
-  if (!timestampCheck.valid) {
-    return {
-      success: false,
-      code: timestampCheck.code,
-      reason: timestampCheck.reason,
-      sheetId,
-      transition: 'submit'
-    };
-  }
+  if (!timestampCheck.valid) return { success: false, code: timestampCheck.code, sheetId, transition: 'submit' };
 
-  try {
-    const snapshot1 = await loadWorkflowSnapshot(grist, sheetId);
-    const { team, sheets, sheet, timeEntries } = snapshot1;
+  return executeTransition({
+    grist,
+    sheetId,
+    actorId: validation.actorId,
+    transitionName: 'submit',
+    userContext: { actorMemberId, nowUnixSeconds: timestampCheck.value },
+    buildDecision: (snapshot, context) => {
+      const { actorMemberId, nowUnixSeconds } = context;
 
-    const actorId = workflow.normalizeMemberId(actorMemberId);
-    const sheetMemberId = workflow.normalizeMemberId(sheet.membre);
-
-    if (actorId !== sheetMemberId) {
-      return {
-        success: false,
-        code: 'NOT_SHEET_OWNER',
-        reason: 'Seul le propriétaire de la feuille peut la soumettre',
-        sheetId,
-        transition: 'submit'
-      };
-    }
-
-    if (snapshot1.allMemberWeekEntries && snapshot1.allMemberWeekEntries.length > 0) {
-      return {
-        success: false,
-        code: SERVICE_ERROR_CODES.TIME_ENTRY_SCOPE_INCOMPLETE,
-        reason: 'Entrées hors scope détectées',
-        sheetId,
-        transition: 'submit',
-        diagnostics: { otherEntriesCount: snapshot1.allMemberWeekEntries.length }
-      };
-    }
-
-    const buildResult = workflow.buildSubmissionActions({
-      actorMemberId,
-      sheet,
-      team,
-      sheets,
-      timeEntries,
-      nowUnixSeconds: timestampCheck.value
-    });
-
-    if (!buildResult.allowed || !buildResult.can) {
-      return {
-        success: false,
-        code: buildResult.code,
-        reason: buildResult.reason,
-        sheetId,
-        transition: 'submit',
-        actions: buildResult.actions || []
-      };
-    }
-
-    const snapshot2 = await loadWorkflowSnapshot(grist, sheetId);
-    const fingerprint1 = snapshot1.fingerprint;
-    const fingerprint2 = snapshot2.fingerprint;
-
-    let finalActions = buildResult.actions;
-
-    if (fingerprint1 !== fingerprint2) {
-      const rebuildResult = workflow.buildSubmissionActions({
-        actorMemberId,
-        sheet: snapshot2.sheet,
-        team: snapshot2.team,
-        sheets: snapshot2.sheets,
-        timeEntries: snapshot2.timeEntries,
-        nowUnixSeconds: timestampCheck.value
+      // Vérifier TIME_ENTRY_SCOPE_INCOMPLETE sur CE snapshot
+      const otherEntries = snapshot.allMemberWeekEntries.filter(e => {
+        const entrySheetId = workflow.normalizeMemberId(e.feuille);
+        return entrySheetId === null || entrySheetId !== workflow.normalizeMemberId(snapshot.sheet.id);
       });
 
-      if (!rebuildResult.allowed || !rebuildResult.can) {
+      if (otherEntries.length > 0) {
         return {
-          success: false,
-          code: SERVICE_ERROR_CODES.WORKFLOW_STATE_CHANGED,
-          reason: 'État modifié pendant la transaction',
-          sheetId,
-          transition: 'submit',
-          before: snapshot1,
-          after: snapshot2
+          allowed: false,
+          can: false,
+          code: SERVICE_ERROR_CODES.TIME_ENTRY_SCOPE_INCOMPLETE,
+          reason: 'Entrées hors scope détectées',
+          actions: [],
+          diagnostics: { otherEntriesCount: otherEntries.length }
         };
       }
 
-      finalActions = rebuildResult.actions;
+      return workflow.buildSubmissionActions({
+        actorMemberId,
+        sheet: snapshot.sheet,
+        team: snapshot.team,
+        sheets: snapshot.sheets,
+        timeEntries: snapshot.timeEntries,
+        nowUnixSeconds
+      });
+    },
+    validateFunctional: null,
+    verifyPostWrite: (snapshot, decision, validation, userContext) => {
+      const sheet = snapshot.sheet;
+      if (sheet.dateSoumission == null || sheet.dateSoumission === '') {
+        return { valid: false, reason: 'dateSoumission non renseigné', actual: sheet };
+      }
+
+      const sheetId = workflow.normalizeMemberId(sheet.id);
+
+      // Vérifier qu'aucune entrée du membre/semaine n'est hors scope
+      const outOfScope = snapshot.allMemberWeekEntries.filter(entry => {
+        const entrySheetId = workflow.normalizeMemberId(entry.feuille);
+        return entrySheetId !== sheetId;
+      });
+
+      if (outOfScope.length > 0) {
+        return {
+          valid: false,
+          reason: `${outOfScope.length} entrée(s) hors scope détectée(s) après soumission`,
+          actual: sheet,
+          diagnostics: { outOfScopeCount: outOfScope.length }
+        };
+      }
+
+      // Vérifier que toutes les entrées de la feuille ont des heures explicites
+      const missingActual = snapshot.timeEntries.filter(entry => {
+        return !workflow.hasExplicitActual(entry);
+      });
+
+      if (missingActual.length > 0) {
+        return {
+          valid: false,
+          reason: `${missingActual.length} entrée(s) sans heures explicites`,
+          actual: sheet,
+          diagnostics: { missingActualCount: missingActual.length }
+        };
+      }
+
+      const expectedManagerId = decision.summary?.managerId;
+      const expectedDateSoumission = userContext?.nowUnixSeconds;
+      return verifyTransitionResult(grist, snapshot.sheet.id, 'soumis', {
+        responsableValidation: expectedManagerId,
+        soumisPar: userContext?.actorMemberId,
+        dateSoumission: expectedDateSoumission
+      });
     }
-
-    await applyWorkflowActions(grist, finalActions);
-
-    const verifyResult = await verifyTransitionResult(grist, sheetId, 'soumis', {
-      responsableValidation: workflow.getDirectManagerId(sheetMemberId, snapshot2.team),
-      soumisPar: actorId
-    });
-
-    if (!verifyResult.valid) {
-      return {
-        success: false,
-        code: SERVICE_ERROR_CODES.WORKFLOW_POSTCONDITION_FAILED,
-        reason: verifyResult.reason,
-        sheetId,
-        transition: 'submit',
-        diagnostics: { verificationFailed: true }
-      };
-    }
-
-    return {
-      success: true,
-      code: 'OK',
-      sheetId,
-      transition: 'submit',
-      actions: finalActions,
-      appliedActions: finalActions.length,
-      before: snapshot1,
-      after: snapshot2,
-      summary: buildResult.summary
-    };
-  } catch (e) {
-    if (e.code === SERVICE_ERROR_CODES.SHEET_NOT_FOUND) {
-      return {
-        success: false,
-        code: e.code,
-        reason: e.message,
-        sheetId,
-        transition: 'submit'
-      };
-    }
-
-    return {
-      success: false,
-      code: e.code || SERVICE_ERROR_CODES.WORKFLOW_APPLY_FAILED,
-      reason: e.message,
-      sheetId,
-      transition: 'submit',
-      diagnostics: { error: e.message }
-    };
-  }
+  });
 }
 
-// ============================================================================
-// COMMANDE : RETRAIT
-// ============================================================================
-
-/**
- * Retire une soumission de feuille
- * @param {Object} params - Paramètres
- * @param {Object} params.grist - API Grist
- * @param {number} params.actorMemberId - ID de l'acteur
- * @param {number} params.sheetId - ID de la feuille
- * @returns {Promise<Object>} Résultat de la transition
- */
 async function withdrawSheet(params) {
   const { grist, actorMemberId, sheetId } = params || {};
-
   const validation = validateCommonParams({ grist, sheetId, actorMemberId });
-  if (!validation.valid) {
-    return {
-      success: false,
-      code: validation.code,
-      reason: validation.reason,
-      sheetId,
-      transition: 'withdraw'
-    };
-  }
+  if (!validation.valid) return { success: false, code: validation.code, sheetId, transition: 'withdraw' };
 
-  try {
-    const snapshot1 = await loadWorkflowSnapshot(grist, sheetId);
-    const { sheets, sheet } = snapshot1;
-
-    const buildResult = workflow.buildWithdrawActions({
-      actorMemberId,
-      sheet,
-      sheets
-    });
-
-    if (!buildResult.allowed || !buildResult.can) {
-      return {
-        success: false,
-        code: buildResult.code,
-        reason: buildResult.reason,
-        sheetId,
-        transition: 'withdraw',
-        actions: buildResult.actions || []
-      };
-    }
-
-    const snapshot2 = await loadWorkflowSnapshot(grist, sheetId);
-
-    if (snapshot1.fingerprint !== snapshot2.fingerprint) {
-      const rebuildResult = workflow.buildWithdrawActions({
-        actorMemberId,
-        sheet: snapshot2.sheet,
-        sheets: snapshot2.sheets
+  return executeTransition({
+    grist,
+    sheetId,
+    actorId: validation.actorId,
+    transitionName: 'withdraw',
+    userContext: { actorMemberId },
+    buildDecision: (snapshot, context) => {
+      return workflow.buildWithdrawActions({
+        actorMemberId: context.actorMemberId,
+        sheet: snapshot.sheet,
+        sheets: snapshot.sheets
       });
-
-      if (!rebuildResult.allowed || !rebuildResult.can) {
-        return {
-          success: false,
-          code: SERVICE_ERROR_CODES.WORKFLOW_STATE_CHANGED,
-          reason: 'État modifié pendant la transaction',
-          sheetId,
-          transition: 'withdraw',
-          before: snapshot1,
-          after: snapshot2
-        };
+    },
+    validateFunctional: null,
+    verifyPostWrite: (snapshot, decision) => {
+      const sheet = snapshot.sheet;
+      if (sheet.responsableValidation != null) {
+        return { valid: false, reason: 'responsableValidation non effacé', actual: sheet };
       }
+      if (sheet.soumisPar != null) {
+        return { valid: false, reason: 'soumisPar non effacé', actual: sheet };
+      }
+      if (sheet.dateSoumission != null) {
+        return { valid: false, reason: 'dateSoumission non effacée', actual: sheet };
+      }
+      return verifyTransitionResult(grist, snapshot.sheet.id, 'brouillon');
     }
-
-    await applyWorkflowActions(grist, buildResult.actions);
-
-    const verifyResult = await verifyTransitionResult(grist, sheetId, 'brouillon');
-
-    if (!verifyResult.valid) {
-      return {
-        success: false,
-        code: SERVICE_ERROR_CODES.WORKFLOW_POSTCONDITION_FAILED,
-        reason: verifyResult.reason,
-        sheetId,
-        transition: 'withdraw',
-        diagnostics: { verificationFailed: true }
-      };
-    }
-
-    return {
-      success: true,
-      code: 'OK',
-      sheetId,
-      transition: 'withdraw',
-      actions: buildResult.actions,
-      appliedActions: buildResult.actions.length,
-      before: snapshot1,
-      after: snapshot2,
-      summary: buildResult.summary
-    };
-  } catch (e) {
-    if (e.code === SERVICE_ERROR_CODES.SHEET_NOT_FOUND) {
-      return {
-        success: false,
-        code: e.code,
-        reason: e.message,
-        sheetId,
-        transition: 'withdraw'
-      };
-    }
-
-    return {
-      success: false,
-      code: e.code || SERVICE_ERROR_CODES.WORKFLOW_APPLY_FAILED,
-      reason: e.message,
-      sheetId,
-      transition: 'withdraw',
-      diagnostics: { error: e.message }
-    };
-  }
+  });
 }
 
-// ============================================================================
-// COMMANDE : VALIDATION
-// ============================================================================
-
-/**
- * Valide une feuille de temps
- * @param {Object} params - Paramètres
- * @param {Object} params.grist - API Grist
- * @param {number} params.actorMemberId - ID de l'acteur
- * @param {number} params.sheetId - ID de la feuille
- * @param {number} params.nowUnixSeconds - Timestamp actuel
- * @returns {Promise<Object>} Résultat de la transition
- */
 async function validateSheet(params) {
   const { grist, actorMemberId, sheetId, nowUnixSeconds } = params || {};
-
   const validation = validateCommonParams({ grist, sheetId, actorMemberId });
-  if (!validation.valid) {
-    return {
-      success: false,
-      code: validation.code,
-      reason: validation.reason,
-      sheetId,
-      transition: 'validate'
-    };
-  }
+  if (!validation.valid) return { success: false, code: validation.code, sheetId, transition: 'validate' };
 
   const timestampCheck = validateTimestamp(nowUnixSeconds);
-  if (!timestampCheck.valid) {
-    return {
-      success: false,
-      code: timestampCheck.code,
-      reason: timestampCheck.reason,
-      sheetId,
-      transition: 'validate'
-    };
-  }
+  if (!timestampCheck.valid) return { success: false, code: timestampCheck.code, sheetId, transition: 'validate' };
 
-  try {
-    const snapshot1 = await loadWorkflowSnapshot(grist, sheetId);
-
-    let validationResult;
-    try {
-      validationResult = callFunctionalValidator(snapshot1);
-    } catch (e) {
-      return {
-        success: false,
-        code: e.code || SERVICE_ERROR_CODES.TIMESHEET_VALIDATION_ERROR,
-        reason: e.message,
-        sheetId,
-        transition: 'validate'
-      };
-    }
-
-    if (!validationResult.valid) {
-      return {
-        success: false,
-        code: SERVICE_ERROR_CODES.TIMESHEET_VALIDATION_FAILED,
-        reason: 'Validation fonctionnelle échouée',
-        sheetId,
-        transition: 'validate',
-        validation: validationResult
-      };
-    }
-
-    const buildResult = workflow.buildValidationAction({
-      actorMemberId,
-      sheet: snapshot1.sheet,
-      sheets: snapshot1.sheets,
-      validationResult,
-      nowUnixSeconds: timestampCheck.value
-    });
-
-    if (!buildResult.allowed || !buildResult.can) {
-      return {
-        success: false,
-        code: buildResult.code,
-        reason: buildResult.reason,
-        sheetId,
-        transition: 'validate',
-        actions: buildResult.actions || []
-      };
-    }
-
-    const snapshot2 = await loadWorkflowSnapshot(grist, sheetId);
-
-    if (snapshot1.fingerprint !== snapshot2.fingerprint) {
-      const rebuildResult = workflow.buildValidationAction({
-        actorMemberId,
-        sheet: snapshot2.sheet,
-        sheets: snapshot2.sheets,
-        validationResult,
-        nowUnixSeconds: timestampCheck.value
+  return executeTransition({
+    grist,
+    sheetId,
+    actorId: validation.actorId,
+    transitionName: 'validate',
+    userContext: { actorMemberId, nowUnixSeconds: timestampCheck.value },
+    buildDecision: (snapshot, context) => {
+      return workflow.buildValidationAction({
+        actorMemberId: context.actorMemberId,
+        sheet: snapshot.sheet,
+        sheets: snapshot.sheets,
+        validationResult: context.validationResult,
+        nowUnixSeconds: context.nowUnixSeconds
       });
-
-      if (!rebuildResult.allowed || !rebuildResult.can) {
-        return {
-          success: false,
-          code: SERVICE_ERROR_CODES.WORKFLOW_STATE_CHANGED,
-          reason: 'État modifié pendant la transaction',
-          sheetId,
-          transition: 'validate',
-          before: snapshot1,
-          after: snapshot2
-        };
+    },
+    validateFunctional: callFunctionalValidator,
+    verifyPostWrite: (snapshot, decision, validation, userContext) => {
+      const sheet = snapshot.sheet;
+      if (sheet.dateValidation == null || sheet.dateValidation === '') {
+        return { valid: false, reason: 'dateValidation non renseigné', actual: sheet };
       }
+      const expectedManager = workflow.normalizeMemberId(userContext?.actorMemberId);
+      const expectedRevision = decision.summary?.revision;
+      const expectedDateValidation = userContext?.nowUnixSeconds;
+      return verifyTransitionResult(grist, snapshot.sheet.id, 'valide', {
+        validePar: expectedManager,
+        revisionValidation: expectedRevision,
+        dateValidation: expectedDateValidation
+      });
     }
-
-    await applyWorkflowActions(grist, buildResult.actions);
-
-    const expectedManager = workflow.getExpectedValidationManagerId(snapshot2.sheet);
-    const verifyResult = await verifyTransitionResult(grist, sheetId, 'valide', {
-      validePar: expectedManager
-    });
-
-    if (!verifyResult.valid) {
-      return {
-        success: false,
-        code: SERVICE_ERROR_CODES.WORKFLOW_POSTCONDITION_FAILED,
-        reason: verifyResult.reason,
-        sheetId,
-        transition: 'validate',
-        diagnostics: { verificationFailed: true }
-      };
-    }
-
-    return {
-      success: true,
-      code: 'OK',
-      sheetId,
-      transition: 'validate',
-      actions: buildResult.actions,
-      appliedActions: buildResult.actions.length,
-      before: snapshot1,
-      after: snapshot2,
-      validation: validationResult,
-      summary: buildResult.summary
-    };
-  } catch (e) {
-    if (e.code === SERVICE_ERROR_CODES.SHEET_NOT_FOUND) {
-      return {
-        success: false,
-        code: e.code,
-        reason: e.message,
-        sheetId,
-        transition: 'validate'
-      };
-    }
-
-    return {
-      success: false,
-      code: e.code || SERVICE_ERROR_CODES.WORKFLOW_APPLY_FAILED,
-      reason: e.message,
-      sheetId,
-      transition: 'validate',
-      diagnostics: { error: e.message }
-    };
-  }
+  });
 }
 
-// ============================================================================
-// COMMANDE : REJET
-// ============================================================================
-
-/**
- * Rejette une feuille de temps
- * @param {Object} params - Paramètres
- * @param {Object} params.grist - API Grist
- * @param {number} params.actorMemberId - ID de l'acteur
- * @param {number} params.sheetId - ID de la feuille
- * @param {string} params.rejectReason - Motif de rejet
- * @returns {Promise<Object>} Résultat de la transition
- */
 async function rejectSheet(params) {
   const { grist, actorMemberId, sheetId, rejectReason } = params || {};
-
   const validation = validateCommonParams({ grist, sheetId, actorMemberId });
-  if (!validation.valid) {
-    return {
-      success: false,
-      code: validation.code,
-      reason: validation.reason,
-      sheetId,
-      transition: 'reject'
-    };
-  }
+  if (!validation.valid) return { success: false, code: validation.code, sheetId, transition: 'reject' };
 
   if (!rejectReason || String(rejectReason).trim() === '') {
-    return {
-      success: false,
-      code: 'MISSING_REJECT_REASON',
-      reason: 'Motif de rejet requis',
-      sheetId,
-      transition: 'reject'
-    };
+    return { success: false, code: 'MISSING_REJECT_REASON', sheetId, transition: 'reject' };
   }
 
-  try {
-    const snapshot1 = await loadWorkflowSnapshot(grist, sheetId);
-
-    const buildResult = workflow.buildRejectionAction({
-      actorMemberId,
-      sheet: snapshot1.sheet,
-      sheets: snapshot1.sheets,
-      rejectReason
-    });
-
-    if (!buildResult.allowed || !buildResult.can) {
-      return {
-        success: false,
-        code: buildResult.code,
-        reason: buildResult.reason,
-        sheetId,
-        transition: 'reject',
-        actions: buildResult.actions || []
-      };
-    }
-
-    const snapshot2 = await loadWorkflowSnapshot(grist, sheetId);
-
-    if (snapshot1.fingerprint !== snapshot2.fingerprint) {
-      const rebuildResult = workflow.buildRejectionAction({
-        actorMemberId,
-        sheet: snapshot2.sheet,
-        sheets: snapshot2.sheets,
-        rejectReason
+  return executeTransition({
+    grist,
+    sheetId,
+    actorId: validation.actorId,
+    transitionName: 'reject',
+    userContext: { actorMemberId, rejectReason },
+    buildDecision: (snapshot, context) => {
+      return workflow.buildRejectionAction({
+        actorMemberId: context.actorMemberId,
+        sheet: snapshot.sheet,
+        sheets: snapshot.sheets,
+        rejectReason: context.rejectReason
       });
-
-      if (!rebuildResult.allowed || !rebuildResult.can) {
-        return {
-          success: false,
-          code: SERVICE_ERROR_CODES.WORKFLOW_STATE_CHANGED,
-          reason: 'État modifié pendant la transaction',
-          sheetId,
-          transition: 'reject',
-          before: snapshot1,
-          after: snapshot2
-        };
-      }
+    },
+    validateFunctional: null,
+    verifyPostWrite: (snapshot, decision, validation, userContext) => {
+      const expectedMotifRejet = userContext?.rejectReason?.trim();
+      return verifyTransitionResult(grist, snapshot.sheet.id, 'rejete', {
+        motifRejet: expectedMotifRejet
+      });
     }
-
-    await applyWorkflowActions(grist, buildResult.actions);
-
-    const verifyResult = await verifyTransitionResult(grist, sheetId, 'rejete');
-
-    if (!verifyResult.valid) {
-      return {
-        success: false,
-        code: SERVICE_ERROR_CODES.WORKFLOW_POSTCONDITION_FAILED,
-        reason: verifyResult.reason,
-        sheetId,
-        transition: 'reject',
-        diagnostics: { verificationFailed: true }
-      };
-    }
-
-    return {
-      success: true,
-      code: 'OK',
-      sheetId,
-      transition: 'reject',
-      actions: buildResult.actions,
-      appliedActions: buildResult.actions.length,
-      before: snapshot1,
-      after: snapshot2,
-      summary: buildResult.summary
-    };
-  } catch (e) {
-    if (e.code === SERVICE_ERROR_CODES.SHEET_NOT_FOUND) {
-      return {
-        success: false,
-        code: e.code,
-        reason: e.message,
-        sheetId,
-        transition: 'reject'
-      };
-    }
-
-    return {
-      success: false,
-      code: e.code || SERVICE_ERROR_CODES.WORKFLOW_APPLY_FAILED,
-      reason: e.message,
-      sheetId,
-      transition: 'reject',
-      diagnostics: { error: e.message }
-    };
-  }
+  });
 }
 
-// ============================================================================
-// COMMANDE : CORRECTION MANAGER
-// ============================================================================
-
-/**
- * Ouvre une correction manager
- * @param {Object} params - Paramètres
- * @param {Object} params.grist - API Grist
- * @param {number} params.actorMemberId - ID de l'acteur
- * @param {number} params.sheetId - ID de la feuille
- * @param {string} params.correctionReason - Motif de correction
- * @returns {Promise<Object>} Résultat de la transition
- */
 async function openManagerCorrection(params) {
   const { grist, actorMemberId, sheetId, correctionReason } = params || {};
-
   const validation = validateCommonParams({ grist, sheetId, actorMemberId });
-  if (!validation.valid) {
-    return {
-      success: false,
-      code: validation.code,
-      reason: validation.reason,
-      sheetId,
-      transition: 'open_correction'
-    };
-  }
+  if (!validation.valid) return { success: false, code: validation.code, sheetId, transition: 'open_correction' };
 
   if (!correctionReason || String(correctionReason).trim() === '') {
-    return {
-      success: false,
-      code: 'MISSING_CORRECTION_REASON',
-      reason: 'Motif de correction requis',
-      sheetId,
-      transition: 'open_correction'
-    };
+    return { success: false, code: 'MISSING_CORRECTION_REASON', sheetId, transition: 'open_correction' };
   }
 
-  try {
-    const snapshot1 = await loadWorkflowSnapshot(grist, sheetId);
-
-    const buildResult = workflow.buildOpenManagerCorrectionActions({
-      actorMemberId,
-      sheet: snapshot1.sheet,
-      sheets: snapshot1.sheets,
-      correctionReason
-    });
-
-    if (!buildResult.allowed || !buildResult.can) {
-      return {
-        success: false,
-        code: buildResult.code,
-        reason: buildResult.reason,
-        sheetId,
-        transition: 'open_correction',
-        actions: buildResult.actions || []
-      };
-    }
-
-    const snapshot2 = await loadWorkflowSnapshot(grist, sheetId);
-
-    if (snapshot1.fingerprint !== snapshot2.fingerprint) {
-      const rebuildResult = workflow.buildOpenManagerCorrectionActions({
-        actorMemberId,
-        sheet: snapshot2.sheet,
-        sheets: snapshot2.sheets,
-        correctionReason
+  return executeTransition({
+    grist,
+    sheetId,
+    actorId: validation.actorId,
+    transitionName: 'open_correction',
+    userContext: { actorMemberId, correctionReason },
+    buildDecision: (snapshot, context) => {
+      return workflow.buildOpenManagerCorrectionActions({
+        actorMemberId: context.actorMemberId,
+        sheet: snapshot.sheet,
+        sheets: snapshot.sheets,
+        correctionReason: context.correctionReason
       });
-
-      if (!rebuildResult.allowed || !rebuildResult.can) {
-        return {
-          success: false,
-          code: SERVICE_ERROR_CODES.WORKFLOW_STATE_CHANGED,
-          reason: 'État modifié pendant la transaction',
-          sheetId,
-          transition: 'open_correction',
-          before: snapshot1,
-          after: snapshot2
-        };
-      }
+    },
+    validateFunctional: null,
+    verifyPostWrite: (snapshot, decision, validation, userContext) => {
+      const expectedMotifCorrection = userContext?.correctionReason?.trim();
+      return verifyTransitionResult(grist, snapshot.sheet.id, 'correction_manager', {
+        motifCorrection: expectedMotifCorrection
+      });
     }
-
-    await applyWorkflowActions(grist, buildResult.actions);
-
-    const verifyResult = await verifyTransitionResult(grist, sheetId, 'correction_manager');
-
-    if (!verifyResult.valid) {
-      return {
-        success: false,
-        code: SERVICE_ERROR_CODES.WORKFLOW_POSTCONDITION_FAILED,
-        reason: verifyResult.reason,
-        sheetId,
-        transition: 'open_correction',
-        diagnostics: { verificationFailed: true }
-      };
-    }
-
-    return {
-      success: true,
-      code: 'OK',
-      sheetId,
-      transition: 'open_correction',
-      actions: buildResult.actions,
-      appliedActions: buildResult.actions.length,
-      before: snapshot1,
-      after: snapshot2,
-      summary: buildResult.summary
-    };
-  } catch (e) {
-    if (e.code === SERVICE_ERROR_CODES.SHEET_NOT_FOUND) {
-      return {
-        success: false,
-        code: e.code,
-        reason: e.message,
-        sheetId,
-        transition: 'open_correction'
-      };
-    }
-
-    return {
-      success: false,
-      code: e.code || SERVICE_ERROR_CODES.WORKFLOW_APPLY_FAILED,
-      reason: e.message,
-      sheetId,
-      transition: 'open_correction',
-      diagnostics: { error: e.message }
-    };
-  }
+  });
 }
 
-// ============================================================================
-// COMMANDE : REVALIDATION
-// ============================================================================
-
-/**
- * Revalide une feuille après correction
- * @param {Object} params - Paramètres
- * @param {Object} params.grist - API Grist
- * @param {number} params.actorMemberId - ID de l'acteur
- * @param {number} params.sheetId - ID de la feuille
- * @param {number} params.nowUnixSeconds - Timestamp actuel
- * @returns {Promise<Object>} Résultat de la transition
- */
 async function revalidateSheet(params) {
   const { grist, actorMemberId, sheetId, nowUnixSeconds } = params || {};
-
   const validation = validateCommonParams({ grist, sheetId, actorMemberId });
-  if (!validation.valid) {
-    return {
-      success: false,
-      code: validation.code,
-      reason: validation.reason,
-      sheetId,
-      transition: 'revalidate'
-    };
-  }
+  if (!validation.valid) return { success: false, code: validation.code, sheetId, transition: 'revalidate' };
 
   const timestampCheck = validateTimestamp(nowUnixSeconds);
-  if (!timestampCheck.valid) {
-    return {
-      success: false,
-      code: timestampCheck.code,
-      reason: timestampCheck.reason,
-      sheetId,
-      transition: 'revalidate'
-    };
-  }
+  if (!timestampCheck.valid) return { success: false, code: timestampCheck.code, sheetId, transition: 'revalidate' };
 
-  try {
-    const snapshot1 = await loadWorkflowSnapshot(grist, sheetId);
-
-    let validationResult;
-    try {
-      validationResult = callFunctionalValidator(snapshot1);
-    } catch (e) {
-      return {
-        success: false,
-        code: e.code || SERVICE_ERROR_CODES.TIMESHEET_VALIDATION_ERROR,
-        reason: e.message,
-        sheetId,
-        transition: 'revalidate'
-      };
-    }
-
-    if (!validationResult.valid) {
-      return {
-        success: false,
-        code: SERVICE_ERROR_CODES.TIMESHEET_VALIDATION_FAILED,
-        reason: 'Validation fonctionnelle échouée',
-        sheetId,
-        transition: 'revalidate',
-        validation: validationResult
-      };
-    }
-
-    const buildResult = workflow.buildRevalidationActions({
-      actorMemberId,
-      sheet: snapshot1.sheet,
-      sheets: snapshot1.sheets,
-      validationResult,
-      nowUnixSeconds: timestampCheck.value
-    });
-
-    if (!buildResult.allowed || !buildResult.can) {
-      return {
-        success: false,
-        code: buildResult.code,
-        reason: buildResult.reason,
-        sheetId,
-        transition: 'revalidate',
-        actions: buildResult.actions || []
-      };
-    }
-
-    const snapshot2 = await loadWorkflowSnapshot(grist, sheetId);
-
-    if (snapshot1.fingerprint !== snapshot2.fingerprint) {
-      const rebuildResult = workflow.buildRevalidationActions({
-        actorMemberId,
-        sheet: snapshot2.sheet,
-        sheets: snapshot2.sheets,
-        validationResult,
-        nowUnixSeconds: timestampCheck.value
+  return executeTransition({
+    grist,
+    sheetId,
+    actorId: validation.actorId,
+    transitionName: 'revalidate',
+    userContext: { actorMemberId, nowUnixSeconds: timestampCheck.value },
+    buildDecision: (snapshot, context) => {
+      return workflow.buildRevalidationActions({
+        actorMemberId: context.actorMemberId,
+        sheet: snapshot.sheet,
+        sheets: snapshot.sheets,
+        validationResult: context.validationResult,
+        nowUnixSeconds: context.nowUnixSeconds
       });
-
-      if (!rebuildResult.allowed || !rebuildResult.can) {
-        return {
-          success: false,
-          code: SERVICE_ERROR_CODES.WORKFLOW_STATE_CHANGED,
-          reason: 'État modifié pendant la transaction',
-          sheetId,
-          transition: 'revalidate',
-          before: snapshot1,
-          after: snapshot2
-        };
-      }
+    },
+    validateFunctional: callFunctionalValidator,
+    verifyPostWrite: (snapshot, decision, validation, userContext) => {
+      const expectedManager = workflow.normalizeMemberId(userContext?.actorMemberId);
+      const expectedRevision = decision.summary?.revision;
+      const expectedDateValidation = userContext?.nowUnixSeconds;
+      return verifyTransitionResult(grist, snapshot.sheet.id, 'valide', {
+        validePar: expectedManager,
+        revisionValidation: expectedRevision,
+        dateValidation: expectedDateValidation
+      });
     }
-
-    await applyWorkflowActions(grist, buildResult.actions);
-
-    const expectedManager = workflow.getExpectedValidationManagerId(snapshot2.sheet);
-    const verifyResult = await verifyTransitionResult(grist, sheetId, 'valide', {
-      validePar: expectedManager
-    });
-
-    if (!verifyResult.valid) {
-      return {
-        success: false,
-        code: SERVICE_ERROR_CODES.WORKFLOW_POSTCONDITION_FAILED,
-        reason: verifyResult.reason,
-        sheetId,
-        transition: 'revalidate',
-        diagnostics: { verificationFailed: true }
-      };
-    }
-
-    return {
-      success: true,
-      code: 'OK',
-      sheetId,
-      transition: 'revalidate',
-      actions: buildResult.actions,
-      appliedActions: buildResult.actions.length,
-      before: snapshot1,
-      after: snapshot2,
-      validation: validationResult,
-      summary: buildResult.summary
-    };
-  } catch (e) {
-    if (e.code === SERVICE_ERROR_CODES.SHEET_NOT_FOUND) {
-      return {
-        success: false,
-        code: e.code,
-        reason: e.message,
-        sheetId,
-        transition: 'revalidate'
-      };
-    }
-
-    return {
-      success: false,
-      code: e.code || SERVICE_ERROR_CODES.WORKFLOW_APPLY_FAILED,
-      reason: e.message,
-      sheetId,
-      transition: 'revalidate',
-      diagnostics: { error: e.message }
-    };
-  }
+  });
 }
 
 // ============================================================================
-// EXPORT PUBLIC
+// EXPORT
 // ============================================================================
 
 module.exports = {
@@ -1263,5 +920,6 @@ module.exports = {
   verifyTransitionResult,
   buildFingerprint,
   callFunctionalValidator,
+  executeTransition,
   SERVICE_ERROR_CODES
 };

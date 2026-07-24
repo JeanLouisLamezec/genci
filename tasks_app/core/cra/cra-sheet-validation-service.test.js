@@ -1,7 +1,11 @@
 /**
- * Tests pour CRA Sheet Validation Service
+ * Tests pour CRA Sheet Validation Service - Étape 4 Bis
  *
- * Tests du service transactionnel de workflow CRA
+ * Tests du service transactionnel avec :
+ * - Double lecture systématique
+ * - Re-construction depuis snapshot 2 en cas de changement
+ * - Re-validation fonctionnelle
+ * - Vérification post-écriture complète
  */
 
 'use strict';
@@ -14,7 +18,15 @@ const { createMockGrist } = require('../grist/mock-grist');
 // HELPERS DE TEST
 // ============================================================================
 
-function createBaseData() {
+function createBaseData(options = {}) {
+  const {
+    sheetStatut = 'brouillon',
+    sheetRevision = 0,
+    entryHeures = null,
+    entryHeuresPrevues = 7,
+    entryFeuille = 1
+  } = options;
+
   return {
     Team: [
       { id: 1, nom: 'Manager', responsable: null, email: 'manager@example.com' },
@@ -25,11 +37,11 @@ function createBaseData() {
         id: 1,
         membre: 2,
         semaine: 1704672000,
-        statut: 'brouillon',
-        responsableValidation: null,
-        soumisPar: null,
-        dateSoumission: null,
-        revisionValidation: 0,
+        statut: sheetStatut,
+        responsableValidation: sheetStatut === 'soumis' ? 1 : null,
+        soumisPar: sheetStatut === 'soumis' ? 2 : null,
+        dateSoumission: sheetStatut === 'soumis' ? 1704672000 : null,
+        revisionValidation: sheetRevision,
         validePar: null,
         dateValidation: null,
         motifRejet: '',
@@ -42,10 +54,17 @@ function createBaseData() {
         membre: 2,
         tache: 1,
         date: 1704672000,
-        heures: null,
-        heuresPrevues: 7,
-        feuille: 1
+        heures: entryHeures,
+        heuresPrevues: entryHeuresPrevues,
+        feuille: entryFeuille
       }
+    ],
+    MemberDailyCapacities: [
+      { id: 1, membre: 2, date: 1704672000, capaciteTheorique: 7, capaciteDisponible: 7, revision: 1 },
+      { id: 2, membre: 2, date: 1704758400, capaciteTheorique: 7, capaciteDisponible: 7, revision: 1 },
+      { id: 3, membre: 2, date: 1704844800, capaciteTheorique: 7, capaciteDisponible: 7, revision: 1 },
+      { id: 4, membre: 2, date: 1704931200, capaciteTheorique: 7, capaciteDisponible: 7, revision: 1 },
+      { id: 5, membre: 2, date: 1705017600, capaciteTheorique: 7, capaciteDisponible: 7, revision: 1 }
     ]
   };
 }
@@ -149,9 +168,8 @@ describe('CRA Sheet Validation Service - Soumission', () => {
 
     expect(result.success).toBe(true);
     const sheets = await grist.docApi.fetchTable('Feuilles');
-    const sheet = sheets.id.includes(1) ? sheets : null;
-    const sheetIndex = sheet.id.indexOf(1);
-    expect(sheet.responsableValidation[sheetIndex]).toBe(1);
+    const sheetIndex = sheets.id.indexOf(1);
+    expect(sheets.responsableValidation[sheetIndex]).toBe(1);
   });
 
   it('devrait matérialiser les heures null avec heuresPrevues', async () => {
@@ -172,8 +190,7 @@ describe('CRA Sheet Validation Service - Soumission', () => {
   });
 
   it('devrait conserver les heures explicites', async () => {
-    const data = createBaseData();
-    data.TimeEntries[0].heures = 2;
+    const data = createBaseData({ entryHeures: 2 });
     const grist = createMockGristWithData(data);
 
     const result = await service.submitSheet({
@@ -220,8 +237,7 @@ describe('CRA Sheet Validation Service - Soumission', () => {
   });
 
   it('devrait rejeter si entrée sans feuille', async () => {
-    const data = createBaseData();
-    data.TimeEntries[0].feuille = null;
+    const data = createBaseData({ entryFeuille: null });
     const grist = createMockGristWithData(data);
 
     const result = await service.submitSheet({
@@ -242,11 +258,7 @@ describe('CRA Sheet Validation Service - Soumission', () => {
 
 describe('CRA Sheet Validation Service - Retrait', () => {
   it('devrait retirer une soumission nominalement', async () => {
-    const data = createBaseData();
-    data.Feuilles[0].statut = 'soumis';
-    data.Feuilles[0].responsableValidation = 1;
-    data.Feuilles[0].soumisPar = 2;
-    data.Feuilles[0].dateSoumission = 1704672000;
+    const data = createBaseData({ sheetStatut: 'soumis' });
     const grist = createMockGristWithData(data);
 
     const result = await service.withdrawSheet({
@@ -265,8 +277,7 @@ describe('CRA Sheet Validation Service - Retrait', () => {
   });
 
   it('devrait refuser si feuille validée', async () => {
-    const data = createBaseData();
-    data.Feuilles[0].statut = 'soumis';
+    const data = createBaseData({ sheetStatut: 'soumis' });
     data.Feuilles[0].validePar = 1;
     data.Feuilles[0].dateValidation = 1704672000;
     const grist = createMockGristWithData(data);
@@ -288,11 +299,7 @@ describe('CRA Sheet Validation Service - Retrait', () => {
 
 describe('CRA Sheet Validation Service - Validation', () => {
   it('devrait valider une feuille nominalement', async () => {
-    const data = createBaseData();
-    data.Feuilles[0].statut = 'soumis';
-    data.Feuilles[0].responsableValidation = 1;
-    data.Feuilles[0].soumisPar = 2;
-    data.Feuilles[0].dateSoumission = 1704672000;
+    const data = createBaseData({ sheetStatut: 'soumis' });
     const grist = createMockGristWithData(data);
 
     const result = await service.validateSheet({
@@ -313,9 +320,7 @@ describe('CRA Sheet Validation Service - Validation', () => {
   });
 
   it('devrait appeler le validateur fonctionnel', async () => {
-    const data = createBaseData();
-    data.Feuilles[0].statut = 'soumis';
-    data.Feuilles[0].responsableValidation = 1;
+    const data = createBaseData({ sheetStatut: 'soumis' });
     const grist = createMockGristWithData(data);
 
     const result = await service.validateSheet({
@@ -330,10 +335,7 @@ describe('CRA Sheet Validation Service - Validation', () => {
   });
 
   it('devrait incrémenter la révision', async () => {
-    const data = createBaseData();
-    data.Feuilles[0].statut = 'soumis';
-    data.Feuilles[0].responsableValidation = 1;
-    data.Feuilles[0].revisionValidation = 1;
+    const data = createBaseData({ sheetStatut: 'soumis', sheetRevision: 1 });
     const grist = createMockGristWithData(data);
 
     const result = await service.validateSheet({
@@ -350,10 +352,7 @@ describe('CRA Sheet Validation Service - Validation', () => {
   });
 
   it('devrait refuser avec validation fonctionnelle invalide', async () => {
-    const data = createBaseData();
-    data.Feuilles[0].statut = 'soumis';
-    data.Feuilles[0].responsableValidation = 1;
-    data.TimeEntries[0].heures = 50;
+    const data = createBaseData({ sheetStatut: 'soumis', entryHeures: 50 });
     const grist = createMockGristWithData(data);
 
     const result = await service.validateSheet({
@@ -368,11 +367,7 @@ describe('CRA Sheet Validation Service - Validation', () => {
   });
 
   it('devrait utiliser le manager snapshoté', async () => {
-    const data = createBaseData();
-    data.Feuilles[0].statut = 'soumis';
-    data.Feuilles[0].responsableValidation = 1;
-    data.Team[0].id = 1;
-    data.Team[1].responsable = 1;
+    const data = createBaseData({ sheetStatut: 'soumis' });
     const grist = createMockGristWithData(data);
 
     const result = await service.validateSheet({
@@ -395,9 +390,7 @@ describe('CRA Sheet Validation Service - Validation', () => {
 
 describe('CRA Sheet Validation Service - Rejet', () => {
   it('devrait rejeter une feuille nominalement', async () => {
-    const data = createBaseData();
-    data.Feuilles[0].statut = 'soumis';
-    data.Feuilles[0].responsableValidation = 1;
+    const data = createBaseData({ sheetStatut: 'soumis' });
     const grist = createMockGristWithData(data);
 
     const result = await service.rejectSheet({
@@ -418,9 +411,7 @@ describe('CRA Sheet Validation Service - Rejet', () => {
   });
 
   it('devrait trimmer le motif', async () => {
-    const data = createBaseData();
-    data.Feuilles[0].statut = 'soumis';
-    data.Feuilles[0].responsableValidation = 1;
+    const data = createBaseData({ sheetStatut: 'soumis' });
     const grist = createMockGristWithData(data);
 
     const result = await service.rejectSheet({
@@ -437,8 +428,7 @@ describe('CRA Sheet Validation Service - Rejet', () => {
   });
 
   it('devrait refuser sans motif', async () => {
-    const data = createBaseData();
-    data.Feuilles[0].statut = 'soumis';
+    const data = createBaseData({ sheetStatut: 'soumis' });
     const grist = createMockGristWithData(data);
 
     const result = await service.rejectSheet({
@@ -459,9 +449,7 @@ describe('CRA Sheet Validation Service - Rejet', () => {
 
 describe('CRA Sheet Validation Service - Correction manager', () => {
   it('devrait ouvrir une correction nominalement', async () => {
-    const data = createBaseData();
-    data.Feuilles[0].statut = 'valide';
-    data.Feuilles[0].responsableValidation = 1;
+    const data = createBaseData({ sheetStatut: 'valide' });
     data.Feuilles[0].validePar = 1;
     const grist = createMockGristWithData(data);
 
@@ -483,8 +471,7 @@ describe('CRA Sheet Validation Service - Correction manager', () => {
   });
 
   it('devrait refuser sans motif', async () => {
-    const data = createBaseData();
-    data.Feuilles[0].statut = 'valide';
+    const data = createBaseData({ sheetStatut: 'valide' });
     const grist = createMockGristWithData(data);
 
     const result = await service.openManagerCorrection({
@@ -499,8 +486,7 @@ describe('CRA Sheet Validation Service - Correction manager', () => {
   });
 
   it('devrait refuser si feuille non validée', async () => {
-    const data = createBaseData();
-    data.Feuilles[0].statut = 'brouillon';
+    const data = createBaseData({ sheetStatut: 'brouillon' });
     const grist = createMockGristWithData(data);
 
     const result = await service.openManagerCorrection({
@@ -521,9 +507,7 @@ describe('CRA Sheet Validation Service - Correction manager', () => {
 
 describe('CRA Sheet Validation Service - Revalidation', () => {
   it('devrait revalider une feuille nominalement', async () => {
-    const data = createBaseData();
-    data.Feuilles[0].statut = 'correction_manager';
-    data.Feuilles[0].responsableValidation = 1;
+    const data = createBaseData({ sheetStatut: 'correction_manager' });
     data.Feuilles[0].motifCorrection = 'Erreur corrigée';
     const grist = createMockGristWithData(data);
 
@@ -544,10 +528,7 @@ describe('CRA Sheet Validation Service - Revalidation', () => {
   });
 
   it('devrait incrémenter la révision', async () => {
-    const data = createBaseData();
-    data.Feuilles[0].statut = 'correction_manager';
-    data.Feuilles[0].responsableValidation = 1;
-    data.Feuilles[0].revisionValidation = 1;
+    const data = createBaseData({ sheetStatut: 'correction_manager', sheetRevision: 1 });
     const grist = createMockGristWithData(data);
 
     const result = await service.revalidateSheet({
@@ -564,9 +545,7 @@ describe('CRA Sheet Validation Service - Revalidation', () => {
   });
 
   it('devrait conserver le motifCorrection', async () => {
-    const data = createBaseData();
-    data.Feuilles[0].statut = 'correction_manager';
-    data.Feuilles[0].responsableValidation = 1;
+    const data = createBaseData({ sheetStatut: 'correction_manager' });
     data.Feuilles[0].motifCorrection = 'Erreur corrigée';
     const grist = createMockGristWithData(data);
 
@@ -584,10 +563,7 @@ describe('CRA Sheet Validation Service - Revalidation', () => {
   });
 
   it('devrait requérir la validation fonctionnelle', async () => {
-    const data = createBaseData();
-    data.Feuilles[0].statut = 'correction_manager';
-    data.Feuilles[0].responsableValidation = 1;
-    data.TimeEntries[0].heures = 50;
+    const data = createBaseData({ sheetStatut: 'correction_manager', entryHeures: 50 });
     const grist = createMockGristWithData(data);
 
     const result = await service.revalidateSheet({
@@ -619,8 +595,11 @@ describe('CRA Sheet Validation Service - Empreinte', () => {
       { id: 1, membre: 2, date: 1704672000, feuille: 1, heures: 3, heuresPrevues: 3 }
     ];
 
-    const fingerprint1 = service.buildFingerprint(sheet, timeEntries);
-    const fingerprint2 = service.buildFingerprint(sheet, timeEntries);
+    const allMemberWeekEntries = [];
+    const directManagerId = 1;
+
+    const fingerprint1 = service.buildFingerprint(sheet, timeEntries, allMemberWeekEntries, directManagerId);
+    const fingerprint2 = service.buildFingerprint(sheet, timeEntries, allMemberWeekEntries, directManagerId);
 
     expect(fingerprint1).toBe(fingerprint2);
   });
@@ -641,8 +620,48 @@ describe('CRA Sheet Validation Service - Empreinte', () => {
       { id: 1, membre: 2, date: 1704672000, feuille: 1, heures: 4, heuresPrevues: 3 }
     ];
 
-    const fingerprint1 = service.buildFingerprint(sheet, timeEntries1);
-    const fingerprint2 = service.buildFingerprint(sheet, timeEntries2);
+    const allMemberWeekEntries = [];
+    const directManagerId = 1;
+
+    const fingerprint1 = service.buildFingerprint(sheet, timeEntries1, allMemberWeekEntries, directManagerId);
+    const fingerprint2 = service.buildFingerprint(sheet, timeEntries2, allMemberWeekEntries, directManagerId);
+
+    expect(fingerprint1).not.toBe(fingerprint2);
+  });
+
+  it('devrait changer l\'empreinte si le manager change', () => {
+    const sheet = {
+      id: 1,
+      membre: 2,
+      semaine: 1704672000,
+      statut: 'brouillon'
+    };
+
+    const timeEntries = [];
+    const allMemberWeekEntries = [];
+
+    const fingerprint1 = service.buildFingerprint(sheet, timeEntries, allMemberWeekEntries, 1);
+    const fingerprint2 = service.buildFingerprint(sheet, timeEntries, allMemberWeekEntries, 3);
+
+    expect(fingerprint1).not.toBe(fingerprint2);
+  });
+
+  it('devrait changer l\'empreinte si des entrées hors scope apparaissent', () => {
+    const sheet = {
+      id: 1,
+      membre: 2,
+      semaine: 1704672000,
+      statut: 'brouillon'
+    };
+
+    const timeEntries = [];
+    const allMemberWeekEntries1 = [];
+    const allMemberWeekEntries2 = [
+      { id: 99, membre: 2, date: 1704672000, feuille: null, heures: 3 }
+    ];
+
+    const fingerprint1 = service.buildFingerprint(sheet, timeEntries, allMemberWeekEntries1, 1);
+    const fingerprint2 = service.buildFingerprint(sheet, timeEntries, allMemberWeekEntries2, 1);
 
     expect(fingerprint1).not.toBe(fingerprint2);
   });
@@ -663,6 +682,8 @@ describe('CRA Sheet Validation Service - Load Snapshot', () => {
     expect(snapshot.sheets).toBeDefined();
     expect(snapshot.sheet).toBeDefined();
     expect(snapshot.timeEntries).toBeDefined();
+    expect(snapshot.allMemberWeekEntries).toBeDefined();
+    expect(snapshot.directManagerId).toBe(1);
     expect(snapshot.fingerprint).toBeDefined();
     expect(snapshot.sheet.id).toBe(1);
   });
@@ -674,5 +695,105 @@ describe('CRA Sheet Validation Service - Load Snapshot', () => {
     await expect(service.loadWorkflowSnapshot(grist, 99))
       .rejects
       .toThrow('Feuille non trouvée');
+  });
+});
+
+// ============================================================================
+// TESTS : CONCURRENCE RÉELLE
+// ============================================================================
+
+describe('CRA Sheet Validation Service - Concurrence réelle', () => {
+  it('devrait détecter un changement de révision entre les lectures', async () => {
+    const data = createBaseData({ sheetStatut: 'soumis', sheetRevision: 0 });
+    const grist = createMockGristWithData(data);
+
+    let fetchCallCount = 0;
+    const originalFetchTable = grist.docApi.fetchTable.bind(grist.docApi);
+    grist.docApi.fetchTable = async (tableId) => {
+      fetchCallCount++;
+      const result = await originalFetchTable(tableId);
+      
+      if (fetchCallCount > 3 && tableId === 'Feuilles') {
+        result.revisionValidation = result.revisionValidation.map(() => 5);
+      }
+      
+      return result;
+    };
+
+    const result = await service.validateSheet({
+      grist,
+      actorMemberId: 1,
+      sheetId: 1,
+      nowUnixSeconds: 1704672000
+    });
+
+    expect(result.success).toBe(true);
+    const sheets = await grist.docApi.fetchTable('Feuilles');
+    const sheetIndex = sheets.id.indexOf(1);
+    expect(sheets.revisionValidation[sheetIndex]).toBe(6);
+  });
+
+  it('devrait rejeter si le statut change pendant la transaction', async () => {
+    const data = createBaseData({ sheetStatut: 'soumis' });
+    const grist = createMockGristWithData(data);
+
+    let callCount = 0;
+    const originalFetchTable = grist.docApi.fetchTable.bind(grist.docApi);
+    grist.docApi.fetchTable = async (tableId) => {
+      callCount++;
+      const result = await originalFetchTable(tableId);
+      
+      if (callCount > 3 && tableId === 'Feuilles') {
+        result.statut = result.statut.map(() => 'valide');
+      }
+      
+      return result;
+    };
+
+    const result = await service.withdrawSheet({
+      grist,
+      actorMemberId: 2,
+      sheetId: 1
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.code).toBe('WORKFLOW_STATE_CHANGED');
+  });
+
+  it('devrait rejeter si des entrées hors scope apparaissent', async () => {
+    const data = createBaseData();
+    data.TimeEntries = [
+      { id: 1, membre: 2, tache: 1, date: 1704672000, heures: null, heuresPrevues: 7, feuille: 1 }
+    ];
+    const grist = createMockGristWithData(data);
+
+    let callCount = 0;
+    const originalFetchTable = grist.docApi.fetchTable.bind(grist.docApi);
+    grist.docApi.fetchTable = async (tableId) => {
+      callCount++;
+      const result = await originalFetchTable(tableId);
+      
+      if (callCount > 3 && tableId === 'TimeEntries') {
+        result.id.push(99);
+        result.membre.push(2);
+        result.tache.push(1);
+        result.date.push(1704672000);
+        result.heures.push(null);
+        result.heuresPrevues.push(3);
+        result.feuille.push(null);
+      }
+      
+      return result;
+    };
+
+    const result = await service.submitSheet({
+      grist,
+      actorMemberId: 2,
+      sheetId: 1,
+      nowUnixSeconds: 1704672000
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.code).toBe('TIME_ENTRY_SCOPE_INCOMPLETE');
   });
 });
