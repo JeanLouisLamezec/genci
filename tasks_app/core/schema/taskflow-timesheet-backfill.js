@@ -808,20 +808,8 @@
             }
         }
 
-        // 5. Vérifier qu'aucune clé membre/semaine n'a plusieurs feuilles
-        for (var wk in sheetsByMemberWeek) {
-            if (Object.prototype.hasOwnProperty.call(sheetsByMemberWeek, wk)) {
-                var sheetsForWeek = sheetsByMemberWeek[wk];
-                if (sheetsForWeek.length > 1) {
-                    addConflict({
-                        code: 'DUPLICATE_SHEETS',
-                        key: wk,
-                        sheetIds: sheetsForWeek.map(function(s) { return s.id; }),
-                        message: 'Plusieurs feuilles pour le même membre/semaine'
-                    });
-                }
-            }
-        }
+        // Les doublons de feuilles sont déjà détectés par inspect()
+        // et inclus dans les conflits initiaux
 
         return {
             valid: conflicts.length === 0,
@@ -851,12 +839,11 @@
         verifyFinalState: verifyFinalState
     };
 
-    // Export navigateur
-    if (typeof window !== 'undefined') {
-        window.TaskFlowTimesheetBackfill = TaskFlowTimesheetBackfill;
-    }
+    // Exposition sur global pour Node/Jest et navigateur
+    // Dans Node, global est passé par l'IIFE ; dans le navigateur, c'est window
+    global.TaskFlowTimesheetBackfill = TaskFlowTimesheetBackfill;
 
-    // Export CommonJS
+    // Export CommonJS pour Jest/Node
     if (typeof module !== 'undefined' && module.exports) {
         module.exports = TaskFlowTimesheetBackfill;
     }

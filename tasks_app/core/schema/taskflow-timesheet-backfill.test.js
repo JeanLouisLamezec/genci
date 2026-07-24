@@ -8,6 +8,18 @@
 
 const TaskFlowBackfill = require('./taskflow-timesheet-backfill.js');
 
+describe('TaskFlow Timesheet Backfill - Module Export', () => {
+    test('module est exposé sur global.TaskFlowTimesheetBackfill', () => {
+        // Vérifie que le module est accessible via global (pour Node/Jest)
+        expect(global.TaskFlowTimesheetBackfill).toBeDefined();
+        expect(global.TaskFlowTimesheetBackfill).toBe(TaskFlowBackfill);
+        expect(typeof global.TaskFlowTimesheetBackfill.normalizeId).toBe('function');
+        expect(typeof global.TaskFlowTimesheetBackfill.inspect).toBe('function');
+        expect(typeof global.TaskFlowTimesheetBackfill.buildPlan).toBe('function');
+        expect(typeof global.TaskFlowTimesheetBackfill.verifyFinalState).toBe('function');
+    });
+});
+
 describe('TaskFlow Timesheet Backfill - Helpers', () => {
     
     describe('normalizeId', () => {

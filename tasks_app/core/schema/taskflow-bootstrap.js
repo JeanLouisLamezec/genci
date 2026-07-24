@@ -1405,11 +1405,17 @@
                             }
                         }
                         
-                        var writeResult = await TF.writeSchemaReady(grist, {
+                        // Construire les options conditionnellement pour ne pas effacer lastMigration
+                        var readyOptions = {
                             schemaVersion: SCHEMA.version,
-                            installedBy: 'TaskFlowBootstrap',
-                            lastMigration: lastAppliedMigration
-                        });
+                            installedBy: 'TaskFlowBootstrap'
+                        };
+                        
+                        if (lastAppliedMigration) {
+                            readyOptions.lastMigration = lastAppliedMigration;
+                        }
+                        
+                        var writeResult = await TF.writeSchemaReady(grist, readyOptions);
                         
                         if (writeResult.success) {
                             log('TaskFlow_Meta écrit avec succès: ' + writeResult.action);

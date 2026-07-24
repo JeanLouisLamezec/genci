@@ -736,7 +736,7 @@
             success: true,
             message: 'Migration v5 appliquée',
             actionsExecuted: actionsExecuted,
-            createdSheets: plan.creates.map(function(c) { return c.key; }),
+            createdSheets: createdSheets,
             linkedEntries: linkedEntries,
             preservedLinks: preservedLinks,
             verification: verification,
