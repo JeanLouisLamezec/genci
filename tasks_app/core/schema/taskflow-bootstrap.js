@@ -1223,6 +1223,7 @@
                 globalLog = globalLog.concat(migrationLog);
                 
                 // Exécuter les migrations versionnées si TaskFlowMigrations est disponible
+                var migrationFailed = false;
                 if (global.TaskFlowMigrations) {
                     try {
                         var currentVersion = await global.TaskFlowMigrations.getCurrentVersion(grist);
@@ -1235,16 +1236,26 @@
                             globalLog.push('Migrations: v' + currentVersion + ' → v' + migrationResult.finalVersion);
                             result.phases.migrations = migrationResult;
                         } else {
-                            result.warnings.push({ phase: 'migrations', message: 'Certaines migrations ont échoué' });
+                            migrationFailed = true;
+                            result.errors.push({ phase: 'migrations', message: 'Certaines migrations ont échoué' });
                         }
                     } catch (migrationError) {
                         log('Erreur lors des migrations: ' + (migrationError.message || migrationError));
-                        result.warnings.push({ phase: 'migrations', error: migrationError.message || String(migrationError) });
-                        // Continuer malgré tout, le schéma déclaratif réparera
+                        migrationFailed = true;
+                        result.errors.push({ phase: 'migrations', error: migrationError.message || String(migrationError) });
+                        // FAIL CLOSED: ne pas continuer avec les phases d'écriture
                     }
                 }
                 
                 result.phases.migration = migrationLog;
+                
+                // Si les migrations ont échoué, arrêter immédiatement
+                if (migrationFailed) {
+                    log('Échec des migrations - arrêt du bootstrap en mode fail closed');
+                    result.success = false;
+                    bootstrapComplete = false;
+                    return result;
+                }
                 
                 // Phase 1 : Création des tables (sans Ref)
                 log('Phase 1: Création tables...');
@@ -1366,6 +1377,24 @@
                 if (result.success && TF && TF.writeSchemaReady) {
                     try {
                         log('Écriture de TaskFlow_Meta avec statut ready...');
+                        
+                        // Vérifier que la version dans TaskFlow_Meta correspond à SCHEMA.version
+                        var metaData = await grist.docApi.fetchTable('TaskFlow_Meta');
+                        var metaRows = columnarToRows(metaData);
+                        var metaVersion = metaRows && metaRows.length > 0 ? metaRows[0].schemaVersion : null;
+                        
+                        if (metaVersion !== SCHEMA.version) {
+                            log('Attention: version TaskFlow_Meta (' + metaVersion + ') != SCHEMA.version (' + SCHEMA.version + ')');
+                            result.errors.push({
+                                phase: 'validation',
+                                code: 'SCHEMA_VERSION_NOT_CONFIRMED',
+                                expected: SCHEMA.version,
+                                actual: metaVersion
+                            });
+                            result.success = false;
+                            bootstrapComplete = false;
+                            return result;
+                        }
                         
                         var writeResult = await TF.writeSchemaReady(grist, {
                             schemaVersion: SCHEMA.version,

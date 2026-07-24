@@ -503,6 +503,207 @@
     }
 
     // ========================================================================
+    // MIGRATION V4 → V5 — Rattachement des entrées de temps aux feuilles hebdomadaires
+    // ========================================================================
+    
+    async function migrateToV5(grist, metadata, options) {
+        var opts = options || {};
+        var dryRun = opts.dryRun || false;
+        
+        log('Migration v4 → v5: timesheet-sheet-link-backfill-v5');
+        
+        // Vérifier que le module de backfill est chargé
+        if (!global.TaskFlowTimesheetBackfill) {
+            throw new Error('TIMESHEET_BACKFILL_MODULE_NOT_LOADED: Le module TaskFlowTimesheetBackfill n\'est pas chargé');
+        }
+        
+        var backfill = global.TaskFlowTimesheetBackfill;
+        var docApi = getDocApi(grist);
+        
+        // Vérifier que les tables existent
+        var tablesData = await docApi.fetchTable('_grist_Tables');
+        var tables = columnarToRows(tablesData);
+        var tableIds = tables.map(function(t) { return t.tableId; });
+        
+        var requiredTables = ['Team', 'Feuilles', 'TimeEntries'];
+        var missingTables = requiredTables.filter(function(t) { return tableIds.indexOf(t) === -1; });
+        
+        if (missingTables.length > 0) {
+            throw new Error('TIMESHEET_BACKFILL_TABLE_MISSING: Tables manquantes: ' + missingTables.join(', '));
+        }
+        
+        // Charger les données
+        var teamData = await docApi.fetchTable('Team');
+        var sheetsData = await docApi.fetchTable('Feuilles');
+        var entriesData = await docApi.fetchTable('TimeEntries');
+        
+        var team = columnarToRows(teamData);
+        var sheets = columnarToRows(sheetsData);
+        var entries = columnarToRows(entriesData);
+        
+        log('Données chargées: ' + team.length + ' membres, ' + sheets.length + ' feuilles, ' + entries.length + ' entrées');
+        
+        // Phase 1 : Prévalidation - construire le plan initial
+        var inspection = backfill.inspect({ team: team, sheets: sheets, entries: entries });
+        var plan = backfill.buildPlan({ team: team, sheets: sheets, entries: entries }, inspection);
+        
+        if (!plan.valid) {
+            log('Migration v5 échouée: conflits détectés', plan.conflicts);
+            throw new Error(
+                'TIMESHEET_BACKFILL_CONFLICT: ' + plan.conflicts.length + ' conflit(s) détecté(s). ' +
+                'Codes: ' + plan.conflicts.map(function(c) { return c.code; }).join(', ')
+            );
+        }
+        
+        // Dry run : retourner le plan sans appliquer
+        if (dryRun) {
+            log('Dry run: aucun changement appliqué');
+            return {
+                success: true,
+                dryRun: true,
+                message: 'Prévisualisation de la migration v5',
+                actionsExecuted: 0,
+                plan: plan
+            };
+        }
+        
+        var actionsExecuted = 0;
+        var createdSheets = [];
+        var linkedEntries = [];
+        var preservedLinks = [];
+        
+        // Phase A : Créer les feuilles manquantes
+        if (plan.creates.length > 0) {
+            log('Phase A: Création de ' + plan.creates.length + ' feuilles manquantes');
+            
+            var addActions = [];
+            for (var i = 0; i < plan.creates.length; i++) {
+                var create = plan.creates[i];
+                addActions.push([
+                    'AddRecord',
+                    'Feuilles',
+                    null,
+                    create.values
+                ]);
+            }
+            
+            if (addActions.length > 0) {
+                await docApi.applyUserActions(addActions);
+                actionsExecuted += addActions.length;
+                log('Feuilles créées: ' + addActions.length);
+            }
+            
+            // Relire les feuilles pour obtenir les vrais IDs
+            var newSheetsData = await docApi.fetchTable('Feuilles');
+            var newSheets = columnarToRows(newSheetsData);
+            
+            // Reconstruire le plan avec les nouvelles données
+            var newInspection = backfill.inspect({ 
+                team: team, 
+                sheets: newSheets, 
+                entries: entries 
+            });
+            
+            // Vérifier qu'il n'y a pas de conflits après création
+            if (newInspection.conflicts.length > 0) {
+                log('Conflits détectés après phase A', newInspection.conflicts);
+                throw new Error(
+                    'TIMESHEET_BACKFILL_CONFLICT_AFTER_CREATE: ' + newInspection.conflicts.length + ' conflit(s) après création des feuilles'
+                );
+            }
+            
+            var newPlan = backfill.buildPlan({ 
+                team: team, 
+                sheets: newSheets, 
+                entries: entries 
+            }, newInspection);
+            
+            // Vérifier que la phase A est complète
+            if (newPlan.creates.length > 0) {
+                throw new Error('TIMESHEET_BACKFILL_PHASE_A_INCOMPLETE: Il reste des feuilles à créer après la phase A');
+            }
+            
+            // Utiliser le nouveau plan pour la phase B
+            plan = newPlan;
+        }
+        
+        // Phase B : Rattacher les TimeEntries
+        if (plan.links.length > 0) {
+            log('Phase B: Rattachement de ' + plan.links.length + ' entrées');
+            
+            var updateActions = [];
+            for (var j = 0; j < plan.links.length; j++) {
+                var link = plan.links[j];
+                updateActions.push([
+                    'UpdateRecord',
+                    'TimeEntries',
+                    link.entryId,
+                    {
+                        feuille: link.sheetId
+                    }
+                ]);
+            }
+            
+            if (updateActions.length > 0) {
+                await docApi.applyUserActions(updateActions);
+                actionsExecuted += updateActions.length;
+                log('Entrées rattachées: ' + updateActions.length);
+            }
+        }
+        
+        // Vérification finale
+        log('Vérification finale...');
+        var finalTeamData = await docApi.fetchTable('Team');
+        var finalSheetsData = await docApi.fetchTable('Feuilles');
+        var finalEntriesData = await docApi.fetchTable('TimeEntries');
+        
+        var finalTeam = columnarToRows(finalTeamData);
+        var finalSheets = columnarToRows(finalSheetsData);
+        var finalEntries = columnarToRows(finalEntriesData);
+        
+        var verification = backfill.verifyFinalState({ 
+            team: finalTeam, 
+            sheets: finalSheets, 
+            entries: finalEntries 
+        });
+        
+        if (!verification.valid) {
+            log('Vérification finale échouée', verification.conflicts);
+            throw new Error(
+                'TIMESHEET_BACKFILL_VERIFICATION_FAILED: ' + verification.conflicts.length + ' conflit(s) après migration'
+            );
+        }
+        
+        // Compter les statistiques
+        for (var k = 0; k < plan.links.length; k++) {
+            var link = plan.links[k];
+            if (link.pendingCreate) {
+                linkedEntries.push(link.entryId);
+            } else {
+                // Lien vers feuille existante
+                linkedEntries.push(link.entryId);
+            }
+        }
+        
+        for (var l = 0; l < plan.preservedLinks.length; l++) {
+            preservedLinks.push(plan.preservedLinks[l].entryId);
+        }
+        
+        log('Migration v5 appliquée avec succès');
+        
+        return {
+            success: true,
+            message: 'Migration v5 appliquée',
+            actionsExecuted: actionsExecuted,
+            createdSheets: plan.creates.map(function(c) { return c.key; }),
+            linkedEntries: linkedEntries,
+            preservedLinks: preservedLinks,
+            verification: verification,
+            dryRun: false
+        };
+    }
+
+    // ========================================================================
     // LISTE DES MIGRATIONS
     // ========================================================================
     
@@ -524,6 +725,12 @@
             name: 'timesheet-validation-foundation-v4',
             description: 'Fondation du workflow de validation des feuilles de temps',
             run: migrateToV4
+        },
+        {
+            version: 5,
+            name: 'timesheet-sheet-link-backfill-v5',
+            description: 'Rattachement des entrées de temps aux feuilles hebdomadaires',
+            run: migrateToV5
         }
     ];
 
@@ -564,8 +771,17 @@
     async function runMigrations(grist, currentVersion, options) {
         options = options || {};
         var nowUnixSeconds = options.nowUnixSeconds || Math.floor(Date.now() / 1000);
+        var dryRun = options.dryRun || false;
         
         var pending = getPendingMigrations(currentVersion);
+        
+        // Dry run autorisé uniquement si la seule migration en attente est v5
+        if (dryRun && pending.length > 0) {
+            var hasOnlyV5 = pending.length === 1 && pending[0].version === 5;
+            if (!hasOnlyV5) {
+                throw new Error('DRY_RUN_REQUIRES_SCHEMA_V4: Le dry run n\'est autorisé que pour la migration v5 depuis un schéma v4');
+            }
+        }
         
         if (pending.length === 0) {
             log('Aucune migration en attente');
@@ -598,7 +814,11 @@
                 }
                 
                 // Exécute la migration
-                var result = await migration.run(grist, metadata);
+                var migrationOptions = {
+                    dryRun: dryRun,
+                    nowUnixSeconds: nowUnixSeconds
+                };
+                var result = await migration.run(grist, metadata, migrationOptions);
                 
                 if (!result || !result.success) {
                     throw new Error('Migration échouée: ' + migration.name);
@@ -611,13 +831,17 @@
                     message: result.message
                 });
                 
-                // Met à jour la version courante après succès
-                lastSuccessfulVersion = migration.version;
-                
-                // Mettre à jour TaskFlow_Meta
-                await updateSchemaVersion(grist, lastSuccessfulVersion, migration.name, nowUnixSeconds);
-                
-                log('Migration appliquée: ' + migration.name + ' - version mise à jour: ' + lastSuccessfulVersion);
+                // Met à jour la version courante après succès (seulement si pas dry run)
+                if (!dryRun) {
+                    lastSuccessfulVersion = migration.version;
+                    
+                    // Mettre à jour TaskFlow_Meta
+                    await updateSchemaVersion(grist, lastSuccessfulVersion, migration.name, nowUnixSeconds);
+                    
+                    log('Migration appliquée: ' + migration.name + ' - version mise à jour: ' + lastSuccessfulVersion);
+                } else {
+                    log('Dry run: migration ' + migration.name + ' non appliquée');
+                }
                 
                 // Petit délai entre les migrations
                 await delay(100);
@@ -632,11 +856,13 @@
                     error: e.message || String(e)
                 });
                 
-                // Met à jour les métadonnées avec l'erreur
-                try {
-                    await updateMigrationError(grist, migration.name, e.message || String(e), nowUnixSeconds);
-                } catch (updateError) {
-                    log('Erreur lors de la mise à jour de l\'erreur: ' + updateError);
+                // Met à jour les métadonnées avec l'erreur (seulement si pas dry run)
+                if (!dryRun) {
+                    try {
+                        await updateMigrationError(grist, migration.name, e.message || String(e), nowUnixSeconds);
+                    } catch (updateError) {
+                        log('Erreur lors de la mise à jour de l\'erreur: ' + updateError);
+                    }
                 }
                 
                 // Arrête au premier échec
@@ -648,7 +874,8 @@
             success: true,
             applied: pending.length,
             results: results,
-            finalVersion: lastSuccessfulVersion
+            finalVersion: dryRun ? currentVersion : lastSuccessfulVersion,
+            dryRun: dryRun
         };
     }
     

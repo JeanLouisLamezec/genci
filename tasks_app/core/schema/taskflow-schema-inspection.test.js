@@ -7,14 +7,14 @@
  * 3. Ne pas signaler les colonnes légitimes finissant par un chiffre
  */
 
-describe('TaskFlow Schema v4', () => {
+describe('TaskFlow Schema v5', () => {
     
     // Charger le schéma
     require('./taskflow-schema.js');
     const SCHEMA = global.TASKFLOW_SCHEMA;
     
-    test('TASKFLOW_SCHEMA.version === 4', () => {
-        expect(SCHEMA.version).toBe(4);
+    test('TASKFLOW_SCHEMA.version === 5', () => {
+        expect(SCHEMA.version).toBe(5);
     });
     
     test('Feuilles a les nouvelles colonnes v4', () => {

@@ -3,7 +3,8 @@
  * build-taskflow.js — Script de build pour TaskFlow
  * ----------------------------------------------------------------------------
  * Ce script injecte le code partagé (taskflow-core.js + taskflow-schema.js +
- * taskflow-bootstrap.js + taskflow-migrations.js) dans chaque widget HTML.
+ * taskflow-timesheet-backfill.js + taskflow-migrations.js + taskflow-bootstrap.js)
+ * dans chaque widget HTML.
  * 
  * Usage : npm run build:taskflow
  * ============================================================================ */
@@ -19,8 +20,9 @@ const SCHEMA_DIR = path.join(CORE_DIR, 'schema');
 const FILES_TO_INJECT = [
     path.join(CORE_DIR, 'taskflow-core.js'),
     path.join(SCHEMA_DIR, 'taskflow-schema.js'),
-    path.join(SCHEMA_DIR, 'taskflow-bootstrap.js'),
-    path.join(SCHEMA_DIR, 'taskflow-migrations.js')
+    path.join(SCHEMA_DIR, 'taskflow-timesheet-backfill.js'),
+    path.join(SCHEMA_DIR, 'taskflow-migrations.js'),
+    path.join(SCHEMA_DIR, 'taskflow-bootstrap.js')
 ];
 
 // Widgets à mettre à jour

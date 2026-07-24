@@ -26,37 +26,53 @@
 
     /**
      * Normalise un ID (numérique ou référence Grist)
+     * Seuls sont valides : un nombre entier strictement positif ou une chaîne contenant uniquement un entier strictement positif
      * @param {*} id - ID à normaliser
      * @returns {number|null} ID numérique ou null
      */
     function normalizeId(id) {
-        if (id === null || id === undefined || id === '') {
+        if (
+            id === null ||
+            id === undefined ||
+            id === ''
+        ) {
             return null;
         }
-        if (typeof id === 'number' && Number.isFinite(id)) {
-            return id;
+
+        if (
+            typeof id === 'string' &&
+            !/^[1-9]\d*$/.test(id)
+        ) {
+            return null;
         }
-        if (typeof id === 'string') {
-            var parsed = parseInt(id, 10);
-            if (Number.isFinite(parsed)) {
-                return parsed;
-            }
-        }
-        return null;
+
+        var numeric = Number(id);
+
+        return (
+            Number.isInteger(numeric) &&
+            numeric > 0
+        )
+            ? numeric
+            : null;
     }
 
     /**
      * Normalise une valeur de date Grist vers un objet Date
      * Grist stocke les dates en secondes Unix (pour Date) ou millisecondes
+     * Utilise le fuseau Europe/Paris par défaut pour déterminer la date civile
      * @param {*} value - Valeur Grist (secondes, ms, string ISO, Date)
+     * @param {Object} options - Options dont timeZone (défaut: 'Europe/Paris')
      * @returns {Date|null} Date ou null
      */
-    function normalizeDateValue(value) {
+    function normalizeDateValue(value, options) {
+        var opts = options || {};
+        var timeZone = opts.timeZone || 'Europe/Paris';
+
         if (value === null || value === undefined || value === '') {
             return null;
         }
 
-        // String ISO
+        // String ISO YYYY-MM-DD
         if (typeof value === 'string') {
             if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
                 // Date civile UTC
@@ -67,6 +83,7 @@
                     parseInt(parts[2], 10)
                 ));
             }
+            // String avec heure : convertir en utilisant le fuseau
             var dateFromIso = new Date(value);
             if (!isNaN(dateFromIso.getTime())) {
                 return dateFromIso;
@@ -75,12 +92,43 @@
 
         // Nombre (secondes ou millisecondes)
         if (typeof value === 'number' && Number.isFinite(value)) {
+            var ms;
             // Si < 10^10, c'est des secondes Unix
             if (value < 10000000000) {
-                return new Date(value * 1000);
+                ms = value * 1000;
+            } else {
+                ms = value;
             }
-            // Sinon millisecondes
-            return new Date(value);
+
+            // Convertir vers la date civile dans le fuseau spécifié
+            var date = new Date(ms);
+            if (isNaN(date.getTime())) {
+                return null;
+            }
+
+            // Utiliser Intl.DateTimeFormat pour obtenir la date civile dans le fuseau
+            var formatter = new Intl.DateTimeFormat('fr-FR', {
+                timeZone: timeZone,
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit'
+            });
+
+            var parts = formatter.formatToParts(date);
+            var year, month, day;
+            for (var i = 0; i < parts.length; i++) {
+                var part = parts[i];
+                if (part.type === 'year') {
+                    year = parseInt(part.value, 10);
+                } else if (part.type === 'month') {
+                    month = parseInt(part.value, 10);
+                } else if (part.type === 'day') {
+                    day = parseInt(part.value, 10);
+                }
+            }
+
+            // Retourner minuit UTC de cette date civile
+            return new Date(Date.UTC(year, month - 1, day));
         }
 
         // Déjà une Date
@@ -106,6 +154,18 @@
         return year + '-' + month + '-' + day;
     }
 
+    /**
+     * Convertit une date en secondes Unix pour stockage Grist
+     * @param {Date} date - Date à convertir
+     * @returns {number|null} Secondes Unix ou null
+     */
+    function dateToUnixSeconds(date) {
+        if (!date || isNaN(date.getTime())) {
+            return null;
+        }
+        return Math.floor(date.getTime() / 1000);
+    }
+
     // ========================================================================
     // CALCUL DE LA SEMAINE CIVILE (LUNDI → DIMANCHE)
     // ========================================================================
@@ -115,15 +175,43 @@
      * La semaine commence le lundi et se termine le dimanche
      * Utilise le calendrier UTC pour éviter les problèmes de fuseau horaire
      * @param {Date} date - Date d'entrée
+     * @param {Object} options - Options dont timeZone (défaut: 'Europe/Paris')
      * @returns {Date|null} Lundi de la semaine (minuit UTC) ou null
      */
-    function getWeekStart(date) {
+    function getWeekStart(date, options) {
         if (!date || isNaN(date.getTime())) {
             return null;
         }
 
-        // Obtenir le jour de la semaine (0 = dimanche, 1 = lundi, ..., 6 = dimanche)
-        var dayOfWeek = date.getUTCDay();
+        var opts = options || {};
+        var timeZone = opts.timeZone || 'Europe/Paris';
+
+        // Utiliser Intl.DateTimeFormat pour obtenir la date civile dans le fuseau
+        var formatter = new Intl.DateTimeFormat('fr-FR', {
+            timeZone: timeZone,
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit'
+        });
+
+        var parts = formatter.formatToParts(date);
+        var year, month, day;
+        for (var i = 0; i < parts.length; i++) {
+            var part = parts[i];
+            if (part.type === 'year') {
+                year = parseInt(part.value, 10);
+            } else if (part.type === 'month') {
+                month = parseInt(part.value, 10);
+            } else if (part.type === 'day') {
+                day = parseInt(part.value, 10);
+            }
+        }
+
+        // Créer une date UTC pour la date civile
+        var inputDate = new Date(Date.UTC(year, month - 1, day));
+
+        // Obtenir le jour de la semaine (0 = dimanche, 1 = lundi, ..., 6 = samedi)
+        var dayOfWeek = inputDate.getUTCDay();
 
         // Calculer le décalage vers le lundi
         // Si dimanche (0), on recule de 6 jours
@@ -133,9 +221,9 @@
 
         // Créer une nouvelle Date au lundi à minuit UTC
         var weekStart = new Date(Date.UTC(
-            date.getUTCFullYear(),
-            date.getUTCMonth(),
-            date.getUTCDate() - offset,
+            inputDate.getUTCFullYear(),
+            inputDate.getUTCMonth(),
+            inputDate.getUTCDate() - offset,
             0, 0, 0, 0
         ));
 
@@ -166,9 +254,11 @@
     /**
      * Inspecte les données et produit des diagnostics
      * @param {Object} data - { team, sheets, entries }
+     * @param {Object} options - Options dont timeZone
      * @returns {Object} Diagnostics structurés
      */
-    function inspect(data) {
+    function inspect(data, options) {
+        var opts = options || {};
         var team = data.team || [];
         var sheets = data.sheets || [];
         var entries = data.entries || [];
@@ -186,7 +276,8 @@
             }
         }
 
-        // Inspecter les Feuilles
+        // Indexer les Feuilles
+        var sheetById = {};
         var sheetByKey = {};
         var sheetsByMemberWeek = {};
 
@@ -194,7 +285,7 @@
             var sheet = sheets[j];
             var sheetId = normalizeId(sheet.id);
             var sheetMemberId = normalizeId(sheet.membre);
-            var sheetWeek = normalizeDateValue(sheet.semaine);
+            var sheetWeek = normalizeDateValue(sheet.semaine, opts);
 
             if (sheetId === null) {
                 conflicts.push({
@@ -234,22 +325,36 @@
                 continue;
             }
 
-            var weekStart = getWeekStart(sheetWeek);
+            var weekStart = getWeekStart(sheetWeek, opts);
             var weekKey = formatDateKey(weekStart);
             var sheetWeekKey = formatDateKey(sheetWeek);
 
             // Vérifier que la semaine est un lundi canonique
             if (weekKey !== sheetWeekKey) {
-                warnings.push({
+                conflicts.push({
                     code: 'SHEET_WEEK_NOT_CANONICAL',
                     sheetId: sheetId,
-                    expected: weekKey,
-                    actual: sheetWeekKey,
+                    memberId: sheetMemberId,
+                    actualWeekDate: sheetWeekKey,
+                    expectedWeekStart: weekKey,
                     message: 'Semaine de la feuille n\'est pas un lundi canonique'
                 });
+                // Ne pas indexer cette feuille comme valide
+                continue;
             }
 
             var key = sheetMemberId + ':' + weekKey;
+
+            // Indexer la feuille
+            var normalizedSheet = {
+                row: sheet,
+                id: sheetId,
+                memberId: sheetMemberId,
+                weekStartIso: weekKey,
+                key: key
+            };
+
+            sheetById[sheetId] = normalizedSheet;
 
             // Vérifier les doublons
             if (sheetByKey[key]) {
@@ -262,14 +367,14 @@
                     message: 'Plusieurs feuilles pour le même membre/semaine'
                 });
             } else {
-                sheetByKey[key] = sheet;
+                sheetByKey[key] = normalizedSheet;
             }
 
             // Regrouper par membre/semaine pour analyse
             if (!sheetsByMemberWeek[key]) {
                 sheetsByMemberWeek[key] = [];
             }
-            sheetsByMemberWeek[key].push(sheet);
+            sheetsByMemberWeek[key].push(normalizedSheet);
         }
 
         // Inspecter les TimeEntries
@@ -279,7 +384,7 @@
             var entry = entries[k];
             var entryId = normalizeId(entry.id);
             var entryMemberId = normalizeId(entry.membre);
-            var entryDate = normalizeDateValue(entry.date);
+            var entryDate = normalizeDateValue(entry.date, opts);
             var entrySheetId = normalizeId(entry.feuille);
 
             if (entryId === null) {
@@ -321,7 +426,7 @@
                 continue;
             }
 
-            var entryWeekStart = getWeekStart(entryDate);
+            var entryWeekStart = getWeekStart(entryDate, opts);
             var entryWeekKey = formatDateKey(entryWeekStart);
             var entrySheetKey = entryMemberId + ':' + entryWeekKey;
 
@@ -332,14 +437,8 @@
 
             // Si la TimeEntry a déjà un lien feuille, vérifier la cohérence
             if (entrySheetId !== null) {
-                // Trouver la feuille référencée
-                var referencedSheet = null;
-                for (var key in sheetByKey) {
-                    if (sheetByKey[key].id === entrySheetId) {
-                        referencedSheet = sheetByKey[key];
-                        break;
-                    }
-                }
+                // Trouver la feuille référencée par ID normalisé
+                var referencedSheet = sheetById[entrySheetId];
 
                 if (!referencedSheet) {
                     conflicts.push({
@@ -350,7 +449,7 @@
                     });
                 } else {
                     // Vérifier la cohérence du membre
-                    var refMemberId = normalizeId(referencedSheet.membre);
+                    var refMemberId = referencedSheet.memberId;
                     if (refMemberId !== entryMemberId) {
                         conflicts.push({
                             code: 'TIME_ENTRY_SHEET_MEMBER_MISMATCH',
@@ -363,9 +462,7 @@
                     }
 
                     // Vérifier la cohérence de la semaine
-                    var refWeek = normalizeDateValue(referencedSheet.semaine);
-                    var refWeekStart = getWeekStart(refWeek);
-                    var refWeekKey = formatDateKey(refWeekStart);
+                    var refWeekKey = referencedSheet.weekStartIso;
 
                     if (refWeekKey !== entryWeekKey) {
                         conflicts.push({
@@ -393,6 +490,7 @@
                 conflictCount: conflicts.length,
                 warningCount: warnings.length
             },
+            sheetById: sheetById,
             sheetByKey: sheetByKey,
             sheetsByMemberWeek: sheetsByMemberWeek,
             entriesBySheetKey: entriesBySheetKey,
@@ -408,17 +506,44 @@
      * Construit un plan de backfill à partir des données inspectées
      * @param {Object} data - { team, sheets, entries }
      * @param {Object} inspection - Résultat de inspect(data)
+     * @param {Object} options - Options dont timeZone
      * @returns {Object} Plan déclaratif
      */
-    function buildPlan(data, inspection) {
+    function buildPlan(data, inspection, options) {
+        var opts = options || {};
+
         // Si aucune inspection fournie, la faire
         if (!inspection) {
-            inspection = inspect(data);
+            inspection = inspect(data, opts);
         }
 
-        var conflicts = inspection.conflicts.slice();
+        // FAIL CLOSED : si conflits, retour immédiat sans aucune action
+        if (inspection.conflicts.length > 0) {
+            return {
+                valid: false,
+                creates: [],
+                links: [],
+                preservedLinks: [],
+                conflicts: inspection.conflicts.slice(),
+                warnings: inspection.warnings.slice(),
+                summary: {
+                    teamCount: inspection.summary.teamCount,
+                    sheetCount: inspection.summary.sheetCount,
+                    entryCount: inspection.summary.entryCount,
+                    sheetsToCreate: 0,
+                    entriesToLink: 0,
+                    preservedLinks: 0,
+                    conflicts: inspection.conflicts.length,
+                    warnings: inspection.warnings.length
+                }
+            };
+        }
+
+        var conflicts = [];
         var warnings = inspection.warnings.slice();
+        var sheetById = inspection.sheetById;
         var sheetByKey = inspection.sheetByKey;
+        var sheetsByMemberWeek = inspection.sheetsByMemberWeek;
         var entriesBySheetKey = inspection.entriesBySheetKey;
         var teamById = inspection.teamById;
 
@@ -461,10 +586,9 @@
                 }
             } else {
                 // Cas B — aucune Feuille existante : création nécessaire
-                // Vérifier qu'il n'y a pas de conflit de doublon pour cette clé
                 var hasConflict = conflicts.some(function(c) {
-                    return c.code === 'DUPLICATE_SHEETS' && 
-                           sheetsByMemberWeek[sheetKey] && 
+                    return c.code === 'DUPLICATE_SHEETS' &&
+                           sheetsByMemberWeek[sheetKey] &&
                            sheetsByMemberWeek[sheetKey].length > 1;
                 });
 
@@ -483,14 +607,21 @@
                             parseInt(weekParts[2], 10)
                         ));
 
+                        var weekStartUnixSeconds = dateToUnixSeconds(weekStart);
+
                         var entryIds = entries.map(function(e) { return e.id; });
 
                         creates.push({
                             key: sheetKey,
-                            membre: memberId,
-                            semaine: weekStart,
-                            statut: 'brouillon',
-                            revisionValidation: 0,
+                            memberId: memberId,
+                            weekStartIso: weekStartStr,
+                            weekStartUnixSeconds: weekStartUnixSeconds,
+                            values: {
+                                membre: memberId,
+                                semaine: weekStartUnixSeconds,
+                                statut: 'brouillon',
+                                revisionValidation: 0
+                            },
                             entryIds: entryIds
                         });
 
@@ -521,6 +652,15 @@
             return a.entryId - b.entryId;
         });
 
+        // Construire les liens finaux
+        var links = linksToExistingSheets.map(function(l) {
+            return {
+                key: l.key,
+                entryId: l.entryId,
+                sheetId: l.sheetId
+            };
+        });
+
         // Calculer le résumé
         var entriesToLink = linksToExistingSheets.filter(function(l) {
             return !l.pendingCreate;
@@ -528,13 +668,10 @@
 
         var sheetsToCreate = creates.length;
 
-        // Le plan est valide uniquement s'il n'y a pas de conflits
-        var valid = conflicts.length === 0;
-
         return {
-            valid: valid,
+            valid: true,
             creates: creates,
-            linksToExistingSheets: linksToExistingSheets,
+            links: links,
             preservedLinks: preservedLinks,
             conflicts: conflicts,
             warnings: warnings,
@@ -558,24 +695,65 @@
     /**
      * Vérifie l'état final après application du plan
      * @param {Object} data - { team, sheets, entries } (après modifications)
+     * @param {Object} options - Options dont timeZone
      * @returns {Object} { valid: boolean, conflicts: [] }
      */
-    function verifyFinalState(data) {
-        var inspection = inspect(data);
-        var conflicts = inspection.conflicts.slice();
+    function verifyFinalState(data, options) {
+        var opts = options || {};
+        var inspection = inspect(data, opts);
+        var conflicts = [];
+        var seenConflictKeys = {};
 
-        // Vérifier que chaque TimeEntry valide a une feuille
+        // Helper pour ajouter un conflit sans doublon
+        function addConflict(conflict) {
+            var key = conflict.code + ':' +
+                      (conflict.entryId || conflict.sheetId || '') + ':' +
+                      (conflict.memberId || '') + ':' +
+                      (conflict.weekStart || '');
+
+            if (!seenConflictKeys[key]) {
+                conflicts.push(conflict);
+                seenConflictKeys[key] = true;
+            }
+        }
+
+        // Inclure TOUS les conflits de l'inspection initiale
+        for (var i = 0; i < inspection.conflicts.length; i++) {
+            addConflict(inspection.conflicts[i]);
+        }
+
         var teamById = inspection.teamById;
+        var sheetById = inspection.sheetById;
         var sheetByKey = inspection.sheetByKey;
         var entriesBySheetKey = inspection.entriesBySheetKey;
+        var sheetsByMemberWeek = inspection.sheetsByMemberWeek;
 
+        // 1. Vérifier que chaque Team utilisée existe
+        for (var key in sheetsByMemberWeek) {
+            if (!Object.prototype.hasOwnProperty.call(sheetsByMemberWeek, key)) {
+                continue;
+            }
+            var sheetsForWeek = sheetsByMemberWeek[key];
+            for (var si = 0; si < sheetsForWeek.length; si++) {
+                var sheet = sheetsForWeek[si];
+                if (!teamById[sheet.memberId]) {
+                    addConflict({
+                        code: 'SHEET_MEMBER_NOT_IN_TEAM',
+                        sheetId: sheet.id,
+                        memberId: sheet.memberId,
+                        message: 'Feuille référence un membre absent de Team'
+                    });
+                }
+            }
+        }
+
+        // 2. Vérifier chaque TimeEntry
         for (var sheetKey in entriesBySheetKey) {
             if (!Object.prototype.hasOwnProperty.call(entriesBySheetKey, sheetKey)) {
                 continue;
             }
 
             var entries = entriesBySheetKey[sheetKey];
-            var existingSheet = sheetByKey[sheetKey];
 
             for (var i = 0; i < entries.length; i++) {
                 var entry = entries[i];
@@ -583,32 +761,62 @@
 
                 // Vérifier que la TimeEntry a un lien vers une feuille
                 if (entrySheetId === null || entrySheetId === 0 || entrySheetId === undefined) {
-                    conflicts.push({
+                    addConflict({
                         code: 'TIME_ENTRY_WITHOUT_SHEET',
                         entryId: entry.id,
                         sheetKey: sheetKey,
                         message: 'TimeEntry n\'a pas de lien vers une feuille'
                     });
-                } else if (!existingSheet) {
-                    conflicts.push({
+                    continue;
+                }
+
+                // Vérifier que la feuille référencée existe
+                var referencedSheet = sheetById[entrySheetId];
+                if (!referencedSheet) {
+                    addConflict({
                         code: 'TIME_ENTRY_SHEET_NOT_FOUND',
                         entryId: entry.id,
                         sheetId: entrySheetId,
                         message: 'TimeEntry référence une feuille inexistante'
                     });
+                    continue;
+                }
+
+                // 3. Vérifier que le membre correspond
+                if (referencedSheet.memberId !== normalizeId(entry.membre)) {
+                    addConflict({
+                        code: 'TIME_ENTRY_SHEET_MEMBER_MISMATCH',
+                        entryId: entry.id,
+                        entryMemberId: normalizeId(entry.membre),
+                        sheetMemberId: referencedSheet.memberId,
+                        sheetId: entrySheetId,
+                        message: 'Membre de la TimeEntry différent du membre de la feuille'
+                    });
+                }
+
+                // 4. Vérifier que la semaine correspond
+                if (referencedSheet.weekStartIso !== sheetKey.split(':')[1]) {
+                    var entryWeekKey = sheetKey.split(':')[1];
+                    addConflict({
+                        code: 'TIME_ENTRY_SHEET_WEEK_MISMATCH',
+                        entryId: entry.id,
+                        entryWeek: entryWeekKey,
+                        sheetWeek: referencedSheet.weekStartIso,
+                        sheetId: entrySheetId,
+                        message: 'Semaine de la TimeEntry différente de la semaine de la feuille'
+                    });
                 }
             }
         }
 
-        // Vérifier qu'aucune clé membre/semaine n'a plusieurs feuilles
-        var sheetsByMemberWeek = inspection.sheetsByMemberWeek;
-        for (var key in sheetsByMemberWeek) {
-            if (Object.prototype.hasOwnProperty.call(sheetsByMemberWeek, key)) {
-                var sheetsForWeek = sheetsByMemberWeek[key];
+        // 5. Vérifier qu'aucune clé membre/semaine n'a plusieurs feuilles
+        for (var wk in sheetsByMemberWeek) {
+            if (Object.prototype.hasOwnProperty.call(sheetsByMemberWeek, wk)) {
+                var sheetsForWeek = sheetsByMemberWeek[wk];
                 if (sheetsForWeek.length > 1) {
-                    conflicts.push({
+                    addConflict({
                         code: 'DUPLICATE_SHEETS',
-                        key: key,
+                        key: wk,
                         sheetIds: sheetsForWeek.map(function(s) { return s.id; }),
                         message: 'Plusieurs feuilles pour le même membre/semaine'
                     });
@@ -637,6 +845,8 @@
         normalizeDateValue: normalizeDateValue,
         getWeekStart: getWeekStart,
         buildSheetKey: buildSheetKey,
+        formatDateKey: formatDateKey,
+        dateToUnixSeconds: dateToUnixSeconds,
         inspect: inspect,
         buildPlan: buildPlan,
         verifyFinalState: verifyFinalState

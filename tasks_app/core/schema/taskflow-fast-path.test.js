@@ -174,12 +174,12 @@
 
         await test('Meta version courante + status ready → SCHEMA_META_READY', async function () {
             var grist = createMockGrist({
-                schemaVersion: 3,
+                schemaVersion: 5,
                 installationStatus: 'ready',
                 lastError: null
             });
             
-            var result = await TF.readSchemaFastState(grist, 3);
+            var result = await TF.readSchemaFastState(grist, 5);
             
             assert(result.ready, 'should be ready');
             assertEquals(result.reason, 'SCHEMA_META_READY', 'reason should be SCHEMA_META_READY');
@@ -200,12 +200,12 @@
 
         await test('Statut "migrated" accepté comme ready', async function () {
             var grist = createMockGrist({
-                schemaVersion: 3,
+                schemaVersion: 5,
                 installationStatus: 'migrated',
                 lastError: ''
             });
             
-            var result = await TF.readSchemaFastState(grist, 3);
+            var result = await TF.readSchemaFastState(grist, 5);
             
             assert(result.ready, 'should be ready');
             assertEquals(result.reason, 'SCHEMA_META_READY', 'reason should be SCHEMA_META_READY');
@@ -213,12 +213,12 @@
 
         await test('lastError renseigné → fast path refusé', async function () {
             var grist = createMockGrist({
-                schemaVersion: 3,
+                schemaVersion: 5,
                 installationStatus: 'ready',
                 lastError: 'Previous installation error'
             });
             
-            var result = await TF.readSchemaFastState(grist, 3);
+            var result = await TF.readSchemaFastState(grist, 5);
             
             assert(!result.ready, 'should not be ready');
             assertEquals(result.reason, 'SCHEMA_META_STALE', 'reason should be SCHEMA_META_STALE');
@@ -276,7 +276,7 @@
             });
             
             var result = await TF.writeSchemaReady(grist, {
-                schemaVersion: 3,
+                schemaVersion: 5,
                 installedBy: 'test'
             });
             
@@ -285,25 +285,25 @@
             
             var tables = grist._test.getTables();
             assertEquals(tables['TaskFlow_Meta'].id.length, 1, 'should have 1 row');
-            assertEquals(tables['TaskFlow_Meta'].schemaVersion[0], 3, 'version should be 3');
+            assertEquals(tables['TaskFlow_Meta'].schemaVersion[0], 5, 'version should be 5');
             assertEquals(tables['TaskFlow_Meta'].installationStatus[0], 'ready', 'status should be ready');
         });
 
         await test('Meta présent → mise à jour (updated)', async function () {
             var grist = createMockGrist({
-                schemaVersion: 2,
+                schemaVersion: 4,
                 installationStatus: 'migrated'
             });
             
             var result = await TF.writeSchemaReady(grist, {
-                schemaVersion: 3
+                schemaVersion: 5
             });
             
             assert(result.success, 'should succeed');
             assertEquals(result.action, 'updated', 'action should be updated');
             
             var tables = grist._test.getTables();
-            assertEquals(tables['TaskFlow_Meta'].schemaVersion[0], 3, 'version should be updated to 3');
+            assertEquals(tables['TaskFlow_Meta'].schemaVersion[0], 5, 'version should be updated to 5');
             assertEquals(tables['TaskFlow_Meta'].installationStatus[0], 'ready', 'status should be ready');
         });
 
@@ -311,14 +311,14 @@
             var grist = createMockGrist({
                 metaData: {
                     id: [1, 2],
-                    schemaVersion: [3, 3],
+                    schemaVersion: [5, 5],
                     installationStatus: ['ready', 'ready'],
                     lastError: [null, null]
                 }
             });
             
             var result = await TF.writeSchemaReady(grist, {
-                schemaVersion: 3
+                schemaVersion: 5
             });
             
             assert(!result.success, 'should fail');
@@ -332,7 +332,7 @@
             });
             
             var result = await TF.writeSchemaReady(grist, {
-                schemaVersion: 3
+                schemaVersion: 5
             });
             
             assert(!result.success, 'should fail');
@@ -346,7 +346,7 @@
             
             var before = Math.floor(Date.now() / 1000);
             var result = await TF.writeSchemaReady(grist, {
-                schemaVersion: 3
+                schemaVersion: 5
             });
             var after = Math.floor(Date.now() / 1000);
             
@@ -365,13 +365,13 @@
             });
             
             var writeResult = await TF.writeSchemaReady(grist, {
-                schemaVersion: 3,
+                schemaVersion: 5,
                 installedBy: 'integration-test'
             });
             
             assert(writeResult.success, 'write should succeed');
             
-            var readResult = await TF.readSchemaFastState(grist, 3);
+            var readResult = await TF.readSchemaFastState(grist, 5);
             
             assert(readResult.ready, 'read should be ready');
             assertEquals(readResult.reason, 'SCHEMA_META_READY', 'reason should be SCHEMA_META_READY');
@@ -383,7 +383,7 @@
                 metaData: { id: [], schemaVersion: [], installationStatus: [], lastError: [] }
             });
             
-            var result = await TF.readSchemaFastState(grist, 3);
+            var result = await TF.readSchemaFastState(grist, 5);
             
             assert(!result.ready, 'should not be ready');
             assertEquals(result.reason, 'META_EMPTY', 'should indicate empty meta');
@@ -391,12 +391,12 @@
 
         await test('Simulation chargement ultérieur (Meta ready) → fast path', async function () {
             var grist = createMockGrist({
-                schemaVersion: 3,
+                schemaVersion: 5,
                 installationStatus: 'ready',
                 lastError: null
             });
             
-            var result = await TF.readSchemaFastState(grist, 3);
+            var result = await TF.readSchemaFastState(grist, 5);
             
             assert(result.ready, 'should be ready');
             assertEquals(result.reason, 'SCHEMA_META_READY', 'should indicate ready');

@@ -31,6 +31,34 @@ describe('TaskFlow Timesheet Backfill - Helpers', () => {
             expect(TaskFlowBackfill.normalizeId('abc')).toBe(null);
             expect(TaskFlowBackfill.normalizeId({})).toBe(null);
         });
+
+        test('retourne null pour "12abc"', () => {
+            expect(TaskFlowBackfill.normalizeId('12abc')).toBe(null);
+        });
+
+        test('retourne null pour 0', () => {
+            expect(TaskFlowBackfill.normalizeId(0)).toBe(null);
+        });
+
+        test('retourne null pour -1', () => {
+            expect(TaskFlowBackfill.normalizeId(-1)).toBe(null);
+        });
+
+        test('retourne null pour 1.5', () => {
+            expect(TaskFlowBackfill.normalizeId(1.5)).toBe(null);
+        });
+
+        test('retourne null pour "0"', () => {
+            expect(TaskFlowBackfill.normalizeId('0')).toBe(null);
+        });
+
+        test('retourne null pour "-1"', () => {
+            expect(TaskFlowBackfill.normalizeId('-1')).toBe(null);
+        });
+
+        test('retourne null pour "1.5"', () => {
+            expect(TaskFlowBackfill.normalizeId('1.5')).toBe(null);
+        });
     });
 
     describe('normalizeDateValue', () => {
@@ -62,6 +90,55 @@ describe('TaskFlow Timesheet Backfill - Helpers', () => {
             expect(TaskFlowBackfill.normalizeDateValue(null)).toBe(null);
             expect(TaskFlowBackfill.normalizeDateValue(undefined)).toBe(null);
             expect(TaskFlowBackfill.normalizeDateValue('')).toBe(null);
+        });
+
+        test('cas Europe/Paris: 2026-07-19T22:00:00.000Z → lundi 2026-07-20', () => {
+            // 2026-07-19T22:00:00.000Z est dimanche 22:00 UTC
+            // En Europe/Paris (UTC+2 en été), c'est lundi 20 juillet 00:00
+            // Valeur Grist en secondes : 1784505600 (correspond à 2026-07-20 00:00 UTC)
+            const result = TaskFlowBackfill.normalizeDateValue(1784505600, {
+                timeZone: 'Europe/Paris'
+            });
+            // La date civile en Europe/Paris est le 20 juillet
+            expect(result.getUTCFullYear()).toBe(2026);
+            expect(result.getUTCMonth()).toBe(6); // Juillet (0-indexed)
+            expect(result.getUTCDate()).toBe(20);
+
+            // Vérifier que getWeekStart donne bien le lundi 20 juillet
+            const weekStart = TaskFlowBackfill.getWeekStart(result);
+            expect(formatDateKey(weekStart)).toBe('2026-07-20');
+        });
+
+        test('cas Grist: 2026-07-20T00:00:00.000Z → lundi 2026-07-20', () => {
+            const result = TaskFlowBackfill.normalizeDateValue('2026-07-20T00:00:00.000Z', {
+                timeZone: 'Europe/Paris'
+            });
+            expect(result.getUTCFullYear()).toBe(2026);
+            expect(result.getUTCMonth()).toBe(6);
+            expect(result.getUTCDate()).toBe(20);
+        });
+
+        test('passage à l\'heure d\'été', () => {
+            // 2024-03-31 est un dimanche (passage heure d'été en France : 31 mars 2024 à 2h)
+            const result = TaskFlowBackfill.normalizeDateValue(1711839600, {
+                timeZone: 'Europe/Paris'
+            });
+            expect(result.getUTCDate()).toBe(31);
+        });
+
+        test('passage à l\'heure d\'hiver', () => {
+            // 2024-10-27 est un dimanche (passage heure d'hiver en France : 27 octobre 2024 à 3h)
+            const result = TaskFlowBackfill.normalizeDateValue(1730012400, {
+                timeZone: 'Europe/Paris'
+            });
+            expect(result.getUTCDate()).toBe(27);
+        });
+
+        test('fuseau injecté', () => {
+            const result = TaskFlowBackfill.normalizeDateValue(1719792000, {
+                timeZone: 'America/New_York'
+            });
+            expect(result instanceof Date).toBe(true);
         });
     });
 
@@ -114,6 +191,21 @@ describe('TaskFlow Timesheet Backfill - Helpers', () => {
             const result1 = TaskFlowBackfill.getWeekStart(date1);
             const result2 = TaskFlowBackfill.getWeekStart(date2);
             expect(formatDateKey(result1)).toBe(formatDateKey(result2));
+        });
+
+        test('utilise Europe/Paris par défaut', () => {
+            // 2026-07-19T22:00:00.000Z = lundi 20 juillet 00:00 en Europe/Paris
+            const date = new Date('2026-07-19T22:00:00.000Z');
+            const result = TaskFlowBackfill.getWeekStart(date);
+            expect(formatDateKey(result)).toBe('2026-07-20');
+        });
+
+        test('accepte un fuseau injecté', () => {
+            // 2024-07-01 à 00:00 UTC est le 1er juillet à 20:00 à New York (UTC-4)
+            // Donc le lundi de la semaine à New York est le 24 juin
+            const date = new Date(Date.UTC(2024, 6, 1));
+            const result = TaskFlowBackfill.getWeekStart(date, { timeZone: 'America/New_York' });
+            expect(formatDateKey(result)).toBe('2024-06-24');
         });
     });
 
@@ -225,8 +317,8 @@ describe('TaskFlow Timesheet Backfill - Inspection', () => {
             entries: []
         });
         
-        expect(result.warnings.length).toBe(1);
-        expect(result.warnings[0].code).toBe('SHEET_WEEK_NOT_CANONICAL');
+        expect(result.conflicts.length).toBe(1);
+        expect(result.conflicts[0].code).toBe('SHEET_WEEK_NOT_CANONICAL');
     });
 
     test('doublon de feuilles', () => {
@@ -348,7 +440,7 @@ describe('TaskFlow Timesheet Backfill - Build Plan', () => {
         const plan = TaskFlowBackfill.buildPlan({ team: [], sheets: [], entries: [] });
         expect(plan.valid).toBe(true);
         expect(plan.creates.length).toBe(0);
-        expect(plan.linksToExistingSheets.length).toBe(0);
+        expect(plan.links.length).toBe(0);
         expect(plan.preservedLinks.length).toBe(0);
         expect(plan.conflicts.length).toBe(0);
     });
@@ -368,8 +460,8 @@ describe('TaskFlow Timesheet Backfill - Build Plan', () => {
         expect(plan.valid).toBe(true);
         expect(plan.creates.length).toBe(1);
         expect(plan.creates[0].key).toBe('1:2024-07-01');
-        expect(plan.creates[0].membre).toBe(1);
-        expect(plan.creates[0].statut).toBe('brouillon');
+        expect(plan.creates[0].values.membre).toBe(1);
+        expect(plan.creates[0].values.statut).toBe('brouillon');
         expect(plan.creates[0].entryIds).toContain(1);
     });
 
@@ -387,7 +479,7 @@ describe('TaskFlow Timesheet Backfill - Build Plan', () => {
         expect(plan.valid).toBe(true);
         expect(plan.creates.length).toBe(1);
         expect(plan.creates[0].entryIds.length).toBe(3);
-        expect(plan.linksToExistingSheets.length).toBe(3);
+        expect(plan.links.length).toBe(3);
     });
 
     test('deux membres sur la même semaine → deux feuilles', () => {
@@ -428,9 +520,9 @@ describe('TaskFlow Timesheet Backfill - Build Plan', () => {
         
         expect(plan.valid).toBe(true);
         expect(plan.creates.length).toBe(0);
-        expect(plan.linksToExistingSheets.length).toBe(1);
-        expect(plan.linksToExistingSheets[0].entryId).toBe(1);
-        expect(plan.linksToExistingSheets[0].sheetId).toBe(10);
+        expect(plan.links.length).toBe(1);
+        expect(plan.links[0].entryId).toBe(1);
+        expect(plan.links[0].sheetId).toBe(10);
     });
 
     test('lien existant correct → préservé', () => {
@@ -453,7 +545,7 @@ describe('TaskFlow Timesheet Backfill - Build Plan', () => {
         
         expect(plan.valid).toBe(true);
         expect(plan.creates.length).toBe(0);
-        expect(plan.linksToExistingSheets.length).toBe(0);
+        expect(plan.links.length).toBe(0);
         expect(plan.preservedLinks.length).toBe(1);
         expect(plan.preservedLinks[0].entryId).toBe(1);
         expect(plan.preservedLinks[0].sheetId).toBe(10);
@@ -522,6 +614,48 @@ describe('TaskFlow Timesheet Backfill - Build Plan', () => {
         });
         
         expect(JSON.stringify(entries)).toBe(JSON.stringify(entriesCopy));
+    });
+
+    test('ID feuille "10" et référence 10 sont reconnus comme identiques', () => {
+        const result = TaskFlowBackfill.inspect({
+            team: [{ id: 1, nom: 'Alice' }],
+            sheets: [{
+                id: 10,
+                membre: 1,
+                semaine: 1719792000,
+                statut: 'brouillon'
+            }],
+            entries: [{
+                id: 1,
+                membre: 1,
+                date: 1719792000,
+                heures: 3.5,
+                feuille: "10"
+            }]
+        });
+        
+        expect(result.conflicts.length).toBe(0);
+    });
+
+    test('ID feuille 10 et référence "10" sont reconnus comme identiques', () => {
+        const result = TaskFlowBackfill.inspect({
+            team: [{ id: 1, nom: 'Alice' }],
+            sheets: [{
+                id: "10",
+                membre: 1,
+                semaine: 1719792000,
+                statut: 'brouillon'
+            }],
+            entries: [{
+                id: 1,
+                membre: 1,
+                date: 1719792000,
+                heures: 3.5,
+                feuille: 10
+            }]
+        });
+        
+        expect(result.conflicts.length).toBe(0);
     });
 });
 
