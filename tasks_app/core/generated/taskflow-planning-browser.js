@@ -4765,14 +4765,38 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
     
     /**
      * Génère un fingerprint pour détecter les changements
+     * Version améliorée : inclut les heures allouées, dates, et réalisés
      */
     function generateFingerprint(data, registry) {
       var parts = [
         data.member.capaciteHebdo,
-        data.assignments.length,
-        data.timeEntries.length,
-        data.capacities.length
+        data.assignments.length
       ];
+      
+      // Ajouter les heures allouées et dates pour chaque affectation
+      data.assignments.forEach(function(a) {
+        parts.push(a.id + ':' + a.heuresAllouees + ':' + a.dateDebut + ':' + a.dateFin);
+      });
+      
+      // Ajouter le résumé des TimeEntries (nombre + total heures)
+      var totalPlanned = 0;
+      var totalActual = 0;
+      var actualCount = 0;
+      data.timeEntries.forEach(function(e) {
+        totalPlanned += Number(e.heuresPrevues || 0);
+        if (e.heures !== null && e.heures !== undefined && e.heures !== '') {
+          totalActual += Number(e.heures);
+          actualCount++;
+        }
+      });
+      parts.push(data.timeEntries.length + ':' + totalPlanned + ':' + totalActual + ':' + actualCount);
+      
+      // Ajouter le résumé des capacités
+      var totalCapacity = 0;
+      data.capacities.forEach(function(c) {
+        totalCapacity += Number(c.capaciteDisponible || 0);
+      });
+      parts.push(data.capacities.length + ':' + totalCapacity);
       
       return parts.join('|');
     }
@@ -4923,23 +4947,24 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
         }
         
         // =========================================================================
-        // PHASE 2 : Rechargement et NOUVEAU PREVIEW avec les vrais IDs de capacité
+        // PHASE 2 : Rechargement et NOUVEAU CALCUL INTÉGRAL avec les données fraîches
         // =========================================================================
-        log('PHASE 2 : Rechargement des capacités et NOUVEAU PREVIEW');
+        log('PHASE 2 : Rechargement des données et NOUVEAU CALCUL');
         
-        // Récupérer les données du preview (déjà calculées dans previewMember)
-        var period = preview.capacityPeriod;
-        var assignmentResults = preview.assignmentResults || [];
+        // Recharger TOUTES les données fraîches après écriture des capacités
+        var refreshedData = await loadMemberData(memberId);
         
-        if (!period || !period.dateFrom || !period.dateTo) {
-          log('Erreur : période de capacité absente du preview');
-          return {
-            success: false,
-            code: 'INVALID_PREVIEW_PERIOD',
-            message: 'La période de capacité est absente du preview',
-            phases: phases
-          };
-        }
+        // Filtrer les entrées protégées avec les nouvelles données
+        var refreshedFeuillesById = {};
+        refreshedData.feuilles.forEach(function(f) {
+          refreshedFeuillesById[f.id] = f;
+        });
+        
+        var refreshedProtectedEntries = identifyProtectedEntries(refreshedData.timeEntries, refreshedFeuillesById, {
+          historyCutoffDate: historyCutoffDate
+        });
+        
+        log('Données rechargées : ' + refreshedData.assignments.length + ' affectations, ' + refreshedData.timeEntries.length + ' TimeEntries, ' + refreshedProtectedEntries.length + ' protégées');
         
         // Recharger MemberDailyCapacities pour obtenir les vrais IDs
         var capacitiesTable = await grist.docApi.fetchTable('MemberDailyCapacities');
@@ -4958,24 +4983,7 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
         
         log('Capacités rechargées : ' + Object.keys(capacityIdByDate).length + ' dates indexées');
         
-        // IMPORTANT : Refaire un preview avec les vrais IDs pour corriger les capaciteJour null
-        // On recharge d'abord toutes les données fraîches
-        var refreshedData = await loadMemberData(memberId);
-        
-        // Filtrer les entrées protégées avec les nouvelles données
-        var refreshedFeuillesById = {};
-        refreshedData.feuilles.forEach(function(f) {
-          refreshedFeuillesById[f.id] = f;
-        });
-        
-        var refreshedProtectedEntries = identifyProtectedEntries(refreshedData.timeEntries, refreshedFeuillesById, {
-          historyCutoffDate: historyCutoffDate
-        });
-        
-        // Calculer les heures protégées
-        var refreshedProtectedHoursByDate = calculateProtectedHoursByDate(refreshedProtectedEntries);
-        
-        // Reconstruire le registre avec les vraies capacités
+        // Reconstruire les capacités effectives
         var refreshedCapacities = [];
         if (capacitiesTable.id) {
           for (var capJ = 0; capJ < capacitiesTable.id.length; capJ++) {
@@ -4987,23 +4995,226 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
                   ? formatDateUTC(new Date(capacitiesTable.date[capJ] * 1000))
                   : capacitiesTable.date[capJ],
                 capaciteTheorique: Number(capacitiesTable.capaciteTheorique[capJ] || 0),
-                capaciteDisponible: Number(capacitiesTable.capaciteDisponible[capJ] || 0)
+                disponibiliteRatio: capacitiesTable.disponibiliteRatio[capJ] == null ? 1 : Number(capacitiesTable.disponibiliteRatio[capJ]),
+                capaciteDisponible: Number(capacitiesTable.capaciteDisponible[capJ] || 0),
+                absenceHeures: Number(capacitiesTable.absenceHeures[capJ] || 0),
+                source: capacitiesTable.source[capJ] || 'calcul',
+                revision: Number(capacitiesTable.revision[capJ] || 1)
               });
             }
           }
         }
         
+        // Recalculer la période de capacité avec les données fraîches
+        var refreshedPeriod = calculateCapacityPeriod(refreshedData.assignments, refreshedProtectedEntries, historyCutoffDate);
+        
+        if (!refreshedPeriod || !refreshedPeriod.dateFrom || !refreshedPeriod.dateTo) {
+          log('Erreur : période de capacité invalide après rechargement');
+          return {
+            success: false,
+            code: 'INVALID_PERIOD_AFTER_RELOAD',
+            message: 'La période de capacité est invalide après rechargement',
+            phases: phases
+          };
+        }
+        
+        log('Période recalculée : ' + refreshedPeriod.dateFrom + ' → ' + refreshedPeriod.dateTo);
+        
+        // Calculer les heures protégées par date
+        var refreshedProtectedHoursByDate = calculateProtectedHoursByDate(refreshedProtectedEntries);
+        
+        // Créer le registre de capacité avec les données fraîches
         var refreshedRegistry = createCapacityRegistry({
           memberId: memberId,
           capacities: refreshedCapacities,
           protectedHoursByDate: refreshedProtectedHoursByDate,
-          dateFrom: period.dateFrom,
-          dateTo: period.dateTo
+          dateFrom: refreshedPeriod.dateFrom,
+          dateTo: refreshedPeriod.dateTo
         });
         
-        // Reconstruire le plan désiré avec les vrais IDs de capacité
+        log('Registre recréé : ' + refreshedRegistry.dates.length + ' jours');
+        
+        // =========================================================================
+        // NOUVEAU CALCUL INTÉGRAL DE TOUTES LES AFFECTATIONS
+        // =========================================================================
+        log('NOUVEAU CALCUL : ' + refreshedData.assignments.length + ' affectations');
+        
+        var refreshedAssignmentResults = [];
+        var allDiagnostics = [];
+        var totalAllocated = 0;
+        var totalPlanned = 0;
+        var totalUnplanned = 0;
+        var hasAssignmentFailure = false;
+        
+        for (var i = 0; i < refreshedData.assignments.length; i++) {
+          var assignment = refreshedData.assignments[i];
+          totalAllocated += assignment.heuresAllouees || 0;
+          
+          var task = refreshedData.tasks[assignment.tache];
+          
+          if (!task) {
+            log('Tâche ' + assignment.tache + ' non trouvée après rechargement');
+            refreshedAssignmentResults.push({
+              assignmentId: assignment.id,
+              success: false,
+              error: 'Tâche non trouvée',
+              diagnostics: [{ code: 'TASK_NOT_FOUND', taskId: assignment.tache }],
+              plannedEntries: [],
+              summary: {
+                allocatedHours: assignment.heuresAllouees || 0,
+                unplannedHours: assignment.heuresAllouees || 0
+              }
+            });
+            totalUnplanned += assignment.heuresAllouees || 0;
+            allDiagnostics.push({ code: 'TASK_NOT_FOUND', taskId: assignment.tache, assignmentId: assignment.id });
+            hasAssignmentFailure = true;
+            continue;
+          }
+          
+          // Convertir l'affectation au format domaine
+          var domainAssignment = assignmentToDomain(assignment);
+          
+          // Déterminer la date de début de distribution
+          var distributionStartDate = determineDistributionStartDate(assignment, historyCutoffDate);
+          
+          // Construire le tableau de capacités restantes pour le moteur
+          var capacitiesArray = refreshedRegistry.dates.map(function(date) {
+            var regEntry = refreshedRegistry.getRegistry()[date];
+            return {
+              date: date,
+              baseCapacityHours: regEntry.baseCapacityHours,
+              availableCapacityHours: regEntry.remainingCapacityHours
+            };
+          });
+          
+          // Filtrer les TimeEntries pour cette affectation uniquement
+          var entriesForAssignment = refreshedData.timeEntries.filter(function(e) {
+            return e.assignmentId === assignment.id;
+          });
+          
+          // Appeler le moteur de planification AVEC LES DONNÉES FRAÎCHES
+          var planningResult = PlanningEngine.buildAssignmentPlan({
+            assignment: domainAssignment,
+            capacities: capacitiesArray,
+            existingEntries: entriesForAssignment,
+            replanFromDate: distributionStartDate,
+            precisionHours: 0.01,
+            capacityPolicy: 'cap'
+          });
+          
+          // Vérifier les diagnostics bloquants
+          var hasBlockingDiagnostic = false;
+          for (var j = 0; j < planningResult.diagnostics.length; j++) {
+            if (isBlockingDiagnostic(planningResult.diagnostics[j])) {
+              hasBlockingDiagnostic = true;
+              break;
+            }
+          }
+          
+          if (hasBlockingDiagnostic) {
+            log('Diagnostic bloquant pour affectation ' + assignment.id + ' après rechargement');
+            refreshedAssignmentResults.push({
+              assignmentId: assignment.id,
+              success: false,
+              error: 'Diagnostic bloquant',
+              diagnostics: planningResult.diagnostics,
+              plannedEntries: [],
+              summary: planningResult.summary
+            });
+            totalUnplanned += planningResult.summary.unplannedHours || 0;
+            allDiagnostics = allDiagnostics.concat(planningResult.diagnostics);
+            hasAssignmentFailure = true;
+            continue;
+          }
+          
+          // Réserver les heures dans le registre
+          var plannedEntries = planningResult.desiredPlan || [];
+          var reservationFailed = false;
+          for (var k = 0; k < plannedEntries.length; k++) {
+            var entry = plannedEntries[k];
+            if (!refreshedRegistry.reserveHours(entry.date, entry.plannedHours)) {
+              reservationFailed = true;
+              break;
+            }
+          }
+          
+          if (reservationFailed) {
+            log('Échec réservation pour affectation ' + assignment.id + ' après rechargement');
+            refreshedAssignmentResults.push({
+              assignmentId: assignment.id,
+              success: false,
+              error: 'Capacité insuffisante',
+              diagnostics: [{ code: 'INSUFFICIENT_CAPACITY', assignmentId: assignment.id }],
+              plannedEntries: [],
+              summary: planningResult.summary
+            });
+            totalUnplanned += planningResult.summary.unplannedHours || 0;
+            allDiagnostics = allDiagnostics.concat(planningResult.diagnostics);
+            hasAssignmentFailure = true;
+            continue;
+          }
+          
+          refreshedAssignmentResults.push({
+            assignmentId: assignment.id,
+            success: true,
+            plannedEntries: plannedEntries,
+            diagnostics: planningResult.diagnostics || [],
+            summary: planningResult.summary
+          });
+          
+          allDiagnostics = allDiagnostics.concat(planningResult.diagnostics || []);
+          totalUnplanned += planningResult.summary.unplannedHours || 0;
+        }
+        
+        // Vérifier la postcondition
+        var postconditionCheck = refreshedRegistry.verifyPostcondition();
+        
+        if (!postconditionCheck.valid) {
+          log('Violation postcondition après rechargement: ' + JSON.stringify(postconditionCheck.violations));
+          return {
+            success: false,
+            code: 'CAPACITY_OVERCOMMITMENT_AFTER_RELOAD',
+            violations: postconditionCheck.violations,
+            phases: phases
+          };
+        }
+        
+        // =========================================================================
+        // RÉCONCILIATION TIMEENTRIES AVEC LE NOUVEAU PLAN
+        // =========================================================================
+        log('Réconciliation avec nouveau plan calculé');
+        
+        // Filtrer les entrées mutables pour la réconciliation
+        var refreshedEntriesForReconciliation = refreshedData.timeEntries.filter(function(e) {
+          var hasRealise = hasExplicitActual(e);
+          var isSubmitted = e.sheetStatus === 'submitted';
+          var isValidated = e.sheetStatus === 'validated';
+          var hasFeuille = e.feuille != null && e.feuille !== '';
+          
+          if (isSubmitted || isValidated) {
+            return false;
+          }
+          
+          if (hasRealise) {
+            return false;
+          }
+          
+          if (hasFeuille && e.sheetStatus === 'draft') {
+            return false;
+          }
+          
+          if (e.date && e.date < historyCutoffDate && !hasFeuille) {
+            return false;
+          }
+          
+          return true;
+        });
+        
+        log('Entrées mutables pour réconciliation : ' + refreshedEntriesForReconciliation.length);
+        
+        // Construire le plan désiré avec les vrais IDs de capacité
         var refreshedDesiredEntries = [];
-        assignmentResults.forEach(function(result) {
+        refreshedAssignmentResults.forEach(function(result) {
           if (result.plannedEntries && result.success) {
             result.plannedEntries.forEach(function(entry) {
               refreshedDesiredEntries.push({
@@ -5020,24 +5231,7 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
           }
         });
         
-        // Réconciliation avec les vraies capacités
-        var refreshedEntriesForReconciliation = refreshedData.timeEntries.filter(function(e) {
-          var hasActualHours = hasExplicitActual(e);
-          var isSubmitted = e.sheetStatus === 'submitted';
-          var isValidated = e.sheetStatus === 'validated';
-          var hasFeuille = e.feuille != null && e.feuille !== '';
-          
-          if (hasActualHours || isSubmitted || isValidated || (hasFeuille && e.sheetStatus === 'draft')) {
-            return false;
-          }
-          
-          if (e.date && e.date < historyCutoffDate && !hasFeuille) {
-            return false;
-          }
-          
-          return true;
-        });
-        
+        // Réconciliation
         var refreshedReconciliation = reconcileDailyEntries(refreshedEntriesForReconciliation, refreshedDesiredEntries, {
           precisionHours: 0.01
         });
@@ -5045,7 +5239,7 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
         log('Nouvelle réconciliation : ' + refreshedReconciliation.creates.length + ' créations, ' + 
             refreshedReconciliation.updates.length + ' updates, ' + refreshedReconciliation.deletes.length + ' suppressions');
         
-        // Utiliser la nouvelle réconciliation pour les actions TimeEntries
+        // Convertir en actions Grist
         var existingEntriesMap = new Map();
         refreshedData.timeEntries.forEach(function(e) {
           existingEntriesMap.set(e.id, e);
@@ -5499,20 +5693,51 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
         
         if (!commitResult.success) {
           log('Commit échoué : ' + commitResult.code);
+          
+          // Déterminer le type d'échec partiel
+          var phasesExecuted = [];
+          var phasesRemaining = [];
+          var actionsApplied = 0;
+          
+          if (commitResult.phases) {
+            if (commitResult.phases.capacityUpsert && commitResult.phases.capacityUpsert.actionsExecuted > 0) {
+              phasesExecuted.push('capacityUpsert');
+              actionsApplied += commitResult.phases.capacityUpsert.actionsExecuted;
+            } else {
+              phasesRemaining.push('capacityUpsert');
+            }
+            if (commitResult.phases.timeEntryReconciliation && commitResult.phases.timeEntryReconciliation.actionsExecuted > 0) {
+              phasesExecuted.push('timeEntryReconciliation');
+              actionsApplied += commitResult.phases.timeEntryReconciliation.actionsExecuted;
+            } else {
+              phasesRemaining.push('timeEntryReconciliation');
+            }
+            if (commitResult.phases.capacityCleanup && commitResult.phases.capacityCleanup.actionsExecuted > 0) {
+              phasesExecuted.push('capacityCleanup');
+              actionsApplied += commitResult.phases.capacityCleanup.actionsExecuted;
+            } else {
+              phasesRemaining.push('capacityCleanup');
+            }
+          }
+          
           return {
             success: false,
             memberId: memberId,
             affectedStartDate: affectedStartDate,
             affectedEndDate: affectedEndDate,
-            code: commitResult.code || 'COMMIT_FAILED',
-            message: commitResult.message,
+            code: actionsApplied > 0 ? 'PARTIAL_REPLAN_FAILURE' : (commitResult.code || 'COMMIT_FAILED'),
+            message: commitResult.message || 'Échec du commit',
             capacityActions: preview.capacityActions || [],
             timeEntryActions: preview.timeEntryActions || [],
             assignmentResults: preview.assignmentResults || [],
             totals: totals,
             diagnostics: preview.diagnostics || [],
             canCommit: false,
-            partialFailure: true
+            partialFailure: actionsApplied > 0,
+            phasesExecuted: phasesExecuted,
+            phasesRemaining: phasesRemaining,
+            actionsApplied: actionsApplied,
+            canRetry: true
           };
         }
         
@@ -5541,7 +5766,9 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
           affectedEndDate: affectedEndDate,
           code: 'REPLAN_ERROR',
           message: e.message,
-          canCommit: false
+          canCommit: false,
+          error: e,
+          canRetry: true
         };
       }
     }

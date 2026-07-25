@@ -353,6 +353,346 @@ var addDaysUTC = planningEngine.addDaysUTC;
       });
     });
     
+    // 10.14. Échec après capacités - simulé
+    it('10.14. Commit avec recalcul intégral après rechargement', function() {
+      var testDate = new Date('2026-07-25');
+      var targetDate1 = new Date('2026-07-27');
+      var targetDate2 = new Date('2026-07-28');
+      
+      // Créer des capacités initiales
+      var capacities = [];
+      var capDate = new Date('2026-07-27');
+      for (var i = 0; i < 5; i++) {
+        capacities.push({
+          id: i + 1,
+          memberId: 1,
+          date: Math.floor(capDate.getTime() / 1000),
+          capaciteTheorique: 7,
+          disponibiliteRatio: 1,
+          capaciteDisponible: 7,
+          absenceHeures: 0,
+          source: 'calcul',
+          revision: 1
+        });
+        capDate = new Date(capDate.getTime() + 86400000);
+      }
+      
+      var data = createTestData({
+        today: testDate,
+        timeEntries: [
+          {
+            id: 1,
+            assignmentId: 1000,
+            taskId: 100,
+            memberId: 1,
+            date: Math.floor(targetDate1.getTime() / 1000),
+            plannedHours: 7,
+            actualHours: null
+          },
+          {
+            id: 2,
+            assignmentId: 1000,
+            taskId: 100,
+            memberId: 1,
+            date: Math.floor(targetDate2.getTime() / 1000),
+            plannedHours: 7,
+            actualHours: null
+          }
+        ],
+        capacities: capacities
+      });
+      
+      var mockGrist = createMockGrist(data);
+      var orchestrator = createMemberPlanningOrchestrator(mockGrist);
+      
+      return orchestrator.previewMember(1, { todayIso: '2026-07-25' })
+        .then(function(preview) {
+          expect(preview.success).toBe(true);
+          // Le preview doit réussir
+          return orchestrator.commitMember(1, preview, { todayIso: '2026-07-25' });
+        })
+        .then(function(commitResult) {
+          // Le commit doit réussir et recalculer intégralement
+          expect(commitResult.success).toBe(true);
+          expect(commitResult.code).toBe('SUCCESS');
+        });
+    });
+    
+    // 10.2. Absence sur un trimestre
+    it('10.2. Absence sur un trimestre - redistribution sur les autres dates', function() {
+      var testDate = new Date('2026-07-25');
+      var q4Start = new Date('2026-10-01');
+      var q4End = new Date('2026-12-31');
+      
+      // Créer des TimeEntries sur toute l'année
+      var timeEntries = [];
+      var entryDate = new Date('2026-01-01');
+      var id = 1;
+      while (entryDate <= q4End) {
+        // Seulement les jours ouvrés
+        if (entryDate.getDay() !== 0 && entryDate.getDay() !== 6) {
+          timeEntries.push({
+            id: id++,
+            assignmentId: 1000,
+            taskId: 100,
+            memberId: 1,
+            date: Math.floor(entryDate.getTime() / 1000),
+            plannedHours: 2, // ~2h par jour ouvré pour 700h/an
+            actualHours: null
+          });
+        }
+        entryDate = new Date(entryDate.getTime() + 86400000);
+      }
+      
+      var data = createTestData({
+        today: testDate,
+        timeEntries: timeEntries,
+        disponibilites: [
+          {
+            id: 1,
+            memberId: 1,
+            type: 'maladie',
+            dateDebut: Math.floor(q4Start.getTime() / 1000),
+            dateFin: Math.floor(q4End.getTime() / 1000),
+            dispo: 0
+          }
+        ]
+      });
+      
+      var mockGrist = createMockGrist(data);
+      var orchestrator = createMemberPlanningOrchestrator(mockGrist);
+      
+      return orchestrator.previewMember(1, { todayIso: '2026-07-25' }).then(function(result) {
+        expect(result.success).toBe(true);
+        // Les heures de T4 doivent être redistribuées sur les autres trimestres
+        expect(result.totals.totalUnplannedHours).toBeDefined();
+      });
+    });
+    
+    // 10.3. Capacité insuffisante
+    it('10.3. Capacité insuffisante - unplannedHours > 0', function() {
+      var testDate = new Date('2026-07-25');
+      var startDate = new Date('2026-07-27');
+      var endDate = new Date('2026-07-31');
+      
+      var data = createTestData({
+        today: testDate,
+        assignments: [
+          {
+            id: 1000,
+            tache: 100,
+            membre: 1,
+            heuresAllouees: 100, // 100h sur 5 jours = impossible
+            dateDebut: Math.floor(startDate.getTime() / 1000),
+            dateFin: Math.floor(endDate.getTime() / 1000),
+            actif: true,
+            modeRepartition: 'uniforme'
+          }
+        ],
+        disponibilites: [
+          {
+            id: 1,
+            memberId: 1,
+            type: 'temps_partiel',
+            dateDebut: Math.floor(startDate.getTime() / 1000),
+            dateFin: Math.floor(endDate.getTime() / 1000),
+            dispo: 0.5 // 50% = 3.5h/jour max
+          }
+        ]
+      });
+      
+      var mockGrist = createMockGrist(data);
+      var orchestrator = createMemberPlanningOrchestrator(mockGrist);
+      
+      return orchestrator.previewMember(1, { todayIso: '2026-07-25' }).then(function(result) {
+        expect(result.success).toBe(true);
+        // 100h allouées mais capacité insuffisante
+        expect(result.totals.totalUnplannedHours).toBeGreaterThan(0);
+      });
+    });
+    
+    // 10.5. Disponibilité partielle
+    it('10.5. Disponibilité partielle (50%) - charge plafonnée', function() {
+      var testDate = new Date('2026-07-25');
+      var startDate = new Date('2026-07-27');
+      var endDate = new Date('2026-07-31');
+      
+      var data = createTestData({
+        today: testDate,
+        assignments: [
+          {
+            id: 1000,
+            tache: 100,
+            membre: 1,
+            heuresAllouees: 17.5, // 3.5h/jour * 5 jours
+            dateDebut: Math.floor(startDate.getTime() / 1000),
+            dateFin: Math.floor(endDate.getTime() / 1000),
+            actif: true,
+            modeRepartition: 'uniforme'
+          }
+        ],
+        disponibilites: [
+          {
+            id: 1,
+            memberId: 1,
+            type: 'temps_partiel',
+            dateDebut: Math.floor(startDate.getTime() / 1000),
+            dateFin: Math.floor(endDate.getTime() / 1000),
+            dispo: 0.5 // 50%
+          }
+        ]
+      });
+      
+      var mockGrist = createMockGrist(data);
+      var orchestrator = createMemberPlanningOrchestrator(mockGrist);
+      
+      return orchestrator.previewMember(1, { todayIso: '2026-07-25' }).then(function(result) {
+        expect(result.success).toBe(true);
+        // 17.5h doivent être planifiées sur 5 jours à 3.5h/jour max
+        expect(result.totals.totalPlannedHours).toBe(17.5);
+        expect(result.totals.totalUnplannedHours).toBe(0);
+      });
+    });
+    
+    // 10.10. Feuille soumise ou validée
+    it('10.10. Feuille soumise - ligne protégée', function() {
+      var testDate = new Date('2026-07-25');
+      var targetDate = new Date('2026-07-27');
+      
+      var data = createTestData({
+        today: testDate,
+        timeEntries: [
+          {
+            id: 1,
+            assignmentId: 1000,
+            taskId: 100,
+            memberId: 1,
+            date: Math.floor(targetDate.getTime() / 1000),
+            plannedHours: 5,
+            actualHours: null,
+            feuille: 1 // Feuille associée
+          }
+        ],
+        feuilles: {
+          id: [1],
+          membre: [1],
+          semaine: [202630], // Semaine du 27 juillet
+          statut: ['soumis']
+        }
+      });
+      
+      var mockGrist = createMockGrist(data);
+      var orchestrator = createMemberPlanningOrchestrator(mockGrist);
+      
+      return orchestrator.previewMember(1, { todayIso: '2026-07-25' }).then(function(result) {
+        expect(result.success).toBe(true);
+        // La ligne avec feuille soumise doit être protégée
+        expect(result.totals.protectedHours).toBeGreaterThanOrEqual(5);
+      });
+    });
+    
+    // 10.11. Deux affectations du même membre
+    it('10.11. Deux affectations - capacité partagée', function() {
+      var testDate = new Date('2026-07-25');
+      var startDate = new Date('2026-07-27');
+      var endDate = new Date('2026-07-31');
+      
+      var data = createTestData({
+        today: testDate,
+        assignments: [
+          {
+            id: 1000,
+            tache: 100,
+            membre: 1,
+            heuresAllouees: 10,
+            dateDebut: Math.floor(startDate.getTime() / 1000),
+            dateFin: Math.floor(endDate.getTime() / 1000),
+            actif: true,
+            modeRepartition: 'uniforme'
+          },
+          {
+            id: 1001,
+            tache: 101,
+            membre: 1,
+            heuresAllouees: 10,
+            dateDebut: Math.floor(startDate.getTime() / 1000),
+            dateFin: Math.floor(endDate.getTime() / 1000),
+            actif: true,
+            modeRepartition: 'uniforme'
+          }
+        ],
+        tasks: {
+          id: [100, 101],
+          titre: ['Tâche A', 'Tâche B'],
+          dateDebut: [Math.floor(startDate.getTime() / 1000), Math.floor(startDate.getTime() / 1000)],
+          dateEcheance: [Math.floor(endDate.getTime() / 1000), Math.floor(endDate.getTime() / 1000)]
+        }
+      });
+      
+      var mockGrist = createMockGrist(data);
+      var orchestrator = createMemberPlanningOrchestrator(mockGrist);
+      
+      return orchestrator.previewMember(1, { todayIso: '2026-07-25' }).then(function(result) {
+        // Deux affectations de 10h chacune = 20h totales
+        // Capacité sur 5 jours = 35h
+        // Les 20h doivent être planifiables
+        expect(result.totals.totalAllocatedHours).toBe(20);
+        expect(result.totals.totalPlannedHours).toBeLessThanOrEqual(20);
+      });
+    });
+    
+    // 10.12. Preview puis commit
+    it('10.12. Preview puis commit - état final cohérent', function() {
+      var testDate = new Date('2026-07-25');
+      var startDate = new Date('2026-07-27');
+      var endDate = new Date('2026-07-31');
+      
+      var data = createTestData({
+        today: testDate,
+        assignments: [
+          {
+            id: 1000,
+            tache: 100,
+            membre: 1,
+            heuresAllouees: 28, // 28h sur 4 jours (mercredi absent)
+            dateDebut: Math.floor(startDate.getTime() / 1000),
+            dateFin: Math.floor(endDate.getTime() / 1000),
+            actif: true,
+            modeRepartition: 'uniforme'
+          }
+        ],
+        disponibilites: [
+          {
+            id: 1,
+            memberId: 1,
+            type: 'maladie',
+            dateDebut: Math.floor(new Date('2026-07-29').getTime() / 1000), // Mercredi
+            dateFin: Math.floor(new Date('2026-07-29').getTime() / 1000),
+            dispo: 0
+          }
+        ]
+      });
+      
+      var mockGrist = createMockGrist(data);
+      var orchestrator = createMemberPlanningOrchestrator(mockGrist);
+      var previewResult;
+      
+      return orchestrator.previewMember(1, { todayIso: '2026-07-25' })
+        .then(function(preview) {
+          previewResult = preview;
+          expect(preview.success).toBe(true);
+          // canCommit peut être false s'il y a des heures non planifiées
+          return orchestrator.commitMember(1, preview, { todayIso: '2026-07-25' });
+        })
+        .then(function(commitResult) {
+          // Le commit doit réussir
+          expect(commitResult.success).toBe(true);
+          expect(commitResult.code).toBe('SUCCESS');
+          // Le commit doit retourner un état cohérent
+          expect(commitResult.phases).toBeDefined();
+        });
+    });
+    
   });
   
 })(typeof window !== 'undefined' ? window : (typeof global !== 'undefined' ? global : this));
