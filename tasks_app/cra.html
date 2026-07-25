@@ -5738,8 +5738,18 @@ function renderSaisie() {
     }
   }
   
+  // En mode correction, afficher uniquement le propriétaire de la feuille
+  let personsToShow = S.visiblePersonIds;
+  if (S.managerCorrectionSheetId) {
+    const correctionSheet = S.feuilles.find(f => f.id === S.managerCorrectionSheetId);
+    if (correctionSheet) {
+      // Forcer l'affichage du propriétaire, même s'il est filtré
+      personsToShow = [correctionSheet.membre];
+    }
+  }
+  
   // Une section par personne
-  for (const personId of S.visiblePersonIds) {
+  for (const personId of personsToShow) {
     const person = S.team.find(t => t.id === personId);
     if (!person) continue;
     
@@ -6571,14 +6581,6 @@ function myStatut() { return myStatutForPerson(S.selectedPersonId); }
 
 function isLocked() { return ['soumis', 'valide'].includes(myStatut()); }
 function weekTotalFor(membre, wkMs) { let h = 0; for (let i = 0; i < 7; i++) { const d = wkMs + i * DAY; for (const e of S.entries) if (e.membre === membre && sameDay(gristToMs(e.date), d)) h += Number(e.heures) || 0; } return h; }
-async function setFeuille(membre, wkSec, patch) {
-  const ex = S.feuilles.find(f => f.membre === membre && sameDay(gristToMs(f.semaine), wkSec * 1000));
-  if (ex) { Object.assign(ex, patch); if (!S.alone) await grist.docApi.applyUserActions([['UpdateRecord', 'Feuilles', ex.id, patch]]); return ex; }
-  const base = Object.assign({ membre: membre, semaine: wkSec }, patch);
-  if (S.alone) { const nid = Math.max(0, ...S.feuilles.map(f => f.id)) + 1; const f = Object.assign({ id: nid }, base); S.feuilles.push(f); return f; }
-  const r = await grist.docApi.applyUserActions([['AddRecord', 'Feuilles', null, base]]);
-  const f = Object.assign({ id: r.retValues[0] }, base); S.feuilles.push(f); return f;
-}
 
 /**
  * Extrait l'ID d'un enregistrement créé par applyUserActions
@@ -6709,13 +6711,24 @@ window.rejeterFeuille = async (id) => {
 function enterManagerCorrection(sheetId) {
   if (typeof CraWorkflowIntegration !== 'undefined' && CraWorkflowIntegration.enterManagerCorrection) {
     CraWorkflowIntegration.enterManagerCorrection(sheetId);
-    // Mettre à jour l'UI
-    S.managerCorrectionSheetId = sheetId;
-    render();
-    toast('Mode correction manager activé');
-  } else {
-    toast('Adaptateur non initialisé');
   }
+  
+  // Trouver la feuille et configurer l'état pour l'affichage
+  const correctionSheet = S.feuilles.find(f => f.id === sheetId);
+  if (!correctionSheet) {
+    toast('Feuille non trouvée');
+    return;
+  }
+  
+  // Configurer l'état pour afficher la bonne grille
+  S.managerCorrectionSheetId = sheetId;
+  S.tab = 'saisie';  // Basculer vers l'onglet de saisie
+  S.selectedPersonId = correctionSheet.membre;  // Afficher le propriétaire
+  S.weekStart = gristToMs(correctionSheet.semaine);  // Positionner sur la bonne semaine
+  
+  // Recharger l'affichage
+  render();
+  toast('Mode correction manager activé pour ' + (S.team.find(t => t.id === correctionSheet.membre)?.nom || 'la feuille'));
 }
 
 /**
@@ -7197,37 +7210,37 @@ async function initGrist() {
     }
     
     // Vérification défensive du bundle CRA (Étape 5)
-    if (!globalThis.TaskFlowCra || !globalThis.TaskFlowCra.service) {
+    if (!globalThis.TaskFlowCra || !globalThis.TaskFlowCra.service || !globalThis.TaskFlowCra.createUiAdapter) {
       throw new Error('TaskFlowCra indisponible : lancez le build CRA (npm run build:cra-browser)');
     }
     
-    // Instanciation de l'adaptateur UI (Étape 5)
-    const craSheetAdapter = globalThis.TaskFlowCra.createUiAdapter({
-      service: globalThis.TaskFlowCra.service,
-      grist: grist,
-      getActorMemberId: function() {
-        // Utiliser exclusivement l'identité réelle, jamais selectedPersonId
-        return S.currentUserMemberId;
-      },
-      reload: function(options) {
-        return CraDataLoader.requestCraReload(
-          Object.assign({}, options || {}, {
-            reason: options?.reason || 'sheet-workflow-transition',
-            allowSchemaRecovery: false
-          })
-        );
-      },
-      notify: function(message, type) {
-        toast(message);
-      },
-      setBusy: function(busy) {
-        S.busy = !!busy;
-        render();
-      }
-    });
-    
-    // Exposer l'adaptateur globalement pour débogage
-    globalThis.craSheetAdapter = craSheetAdapter;
+    // Configuration de l'intégration workflow (Étape 5 bis)
+    if (globalThis.CraWorkflowIntegration) {
+      CraWorkflowIntegration.configure({
+        grist: grist,
+        taskFlowCra: globalThis.TaskFlowCra,
+        getState: function() {
+          return S;
+        },
+        reload: function(options) {
+          return CraDataLoader.requestCraReload(
+            Object.assign({}, options || {}, {
+              reason: options?.reason || 'sheet-workflow-transition',
+              allowSchemaRecovery: false
+            })
+          );
+        },
+        notify: function(message, type) {
+          toast(message);
+        },
+        setBusy: function(busy) {
+          S.busy = Boolean(busy);
+          render();
+        }
+      });
+    } else {
+      console.warn('[CRA] CraWorkflowIntegration non disponible, utilisation du mode dégradé');
+    }
     
     // Configuration du loader (TODO 2)
     CraDataLoader.configure({

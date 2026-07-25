@@ -62,7 +62,8 @@
       return { sheet: null, status: 'none', reason: 'MISSING_STATE' };
     }
     
-    const monday = new Date(state.weekStart * 1000);
+    // S.weekStart est en millisecondes (format JavaScript)
+    const monday = new Date(state.weekStart);
     const mondayIso = monday.toISOString().split('T')[0];
     
     // Trouver toutes les feuilles pour currentUserMemberId et cette semaine
@@ -70,6 +71,7 @@
       if (f.membre !== state.currentUserMemberId) return false;
       if (!f.semaine) return false;
       
+      // f.semaine est en secondes Grist, convertir en millisecondes
       const fWeekStart = getMondayOf(new Date(f.semaine * 1000));
       return fWeekStart.toISOString().split('T')[0] === mondayIso;
     });
@@ -113,6 +115,9 @@
   function showRejectModal() {
     return new Promise((resolve) => {
       let modal = document.getElementById('craRejectModal');
+      let textarea, confirmBtn, cancelBtn, escHandler;
+      
+      // Créer la modale si elle n'existe pas
       if (!modal) {
         modal = document.createElement('div');
         modal.id = 'craRejectModal';
@@ -133,28 +138,36 @@
           </div>
         `;
         document.body.appendChild(modal);
-        
-        document.getElementById('craRejectCancel').onclick = () => {
-          modal.classList.remove('open');
-          resolve(null);
-        };
-        
-        const escHandler = (e) => {
-          if (e.key === 'Escape') {
-            modal.classList.remove('open');
-            document.removeEventListener('keydown', escHandler);
-            resolve(null);
-          }
-        };
-        document.addEventListener('keydown', escHandler);
       }
       
-      modal.classList.add('open');
-      const textarea = document.getElementById('craRejectReason');
-      textarea.value = '';
-      textarea.focus();
+      textarea = document.getElementById('craRejectReason');
+      confirmBtn = document.getElementById('craRejectConfirm');
+      cancelBtn = document.getElementById('craRejectCancel');
       
-      document.getElementById('craRejectConfirm').onclick = () => {
+      // Fonction de fermeture
+      function closeModal(result) {
+        modal.classList.remove('open');
+        if (escHandler) {
+          document.removeEventListener('keydown', escHandler);
+        }
+        if (cancelBtn) cancelBtn.onclick = null;
+        if (confirmBtn) confirmBtn.onclick = null;
+        resolve(result);
+      }
+      
+      // Gestionnaire Échap
+      escHandler = (e) => {
+        if (e.key === 'Escape') {
+          closeModal(null);
+        }
+      };
+      document.addEventListener('keydown', escHandler);
+      
+      // Bouton Annuler
+      cancelBtn.onclick = () => closeModal(null);
+      
+      // Bouton Confirmer
+      confirmBtn.onclick = () => {
         const reason = textarea.value.trim();
         if (!reason) {
           if (config && typeof config.notify === 'function') {
@@ -162,9 +175,13 @@
           }
           return;
         }
-        modal.classList.remove('open');
-        resolve(reason);
+        closeModal(reason);
       };
+      
+      // Afficher la modale
+      modal.classList.add('open');
+      textarea.value = '';
+      textarea.focus();
     });
   }
   
@@ -172,6 +189,9 @@
   function showCorrectionModal() {
     return new Promise((resolve) => {
       let modal = document.getElementById('craCorrectionModal');
+      let textarea, confirmBtn, cancelBtn, escHandler;
+      
+      // Créer la modale si elle n'existe pas
       if (!modal) {
         modal = document.createElement('div');
         modal.id = 'craCorrectionModal';
@@ -192,28 +212,36 @@
           </div>
         `;
         document.body.appendChild(modal);
-        
-        document.getElementById('craCorrectionCancel').onclick = () => {
-          modal.classList.remove('open');
-          resolve(null);
-        };
-        
-        const escHandler = (e) => {
-          if (e.key === 'Escape') {
-            modal.classList.remove('open');
-            document.removeEventListener('keydown', escHandler);
-            resolve(null);
-          }
-        };
-        document.addEventListener('keydown', escHandler);
       }
       
-      modal.classList.add('open');
-      const textarea = document.getElementById('craCorrectionReason');
-      textarea.value = '';
-      textarea.focus();
+      textarea = document.getElementById('craCorrectionReason');
+      confirmBtn = document.getElementById('craCorrectionConfirm');
+      cancelBtn = document.getElementById('craCorrectionCancel');
       
-      document.getElementById('craCorrectionConfirm').onclick = () => {
+      // Fonction de fermeture
+      function closeModal(result) {
+        modal.classList.remove('open');
+        if (escHandler) {
+          document.removeEventListener('keydown', escHandler);
+        }
+        if (cancelBtn) cancelBtn.onclick = null;
+        if (confirmBtn) confirmBtn.onclick = null;
+        resolve(result);
+      }
+      
+      // Gestionnaire Échap
+      escHandler = (e) => {
+        if (e.key === 'Escape') {
+          closeModal(null);
+        }
+      };
+      document.addEventListener('keydown', escHandler);
+      
+      // Bouton Annuler
+      cancelBtn.onclick = () => closeModal(null);
+      
+      // Bouton Confirmer
+      confirmBtn.onclick = () => {
         const reason = textarea.value.trim();
         if (!reason) {
           if (config && typeof config.notify === 'function') {
@@ -221,9 +249,13 @@
           }
           return;
         }
-        modal.classList.remove('open');
-        resolve(reason);
+        closeModal(reason);
       };
+      
+      // Afficher la modale
+      modal.classList.add('open');
+      textarea.value = '';
+      textarea.focus();
     });
   }
   

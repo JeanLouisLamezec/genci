@@ -17,20 +17,21 @@ const assert = require('assert');
 
 // Mock pour simuler l'environnement
 function createMockEnvironment() {
-  const now = Math.floor(Date.now() / 1000);
-  const monday = new Date(now * 1000);
+  const now = Date.now();  // Millisecondes (format JavaScript)
+  const monday = new Date(now);
   const dayOfWeek = monday.getDay();
   const diff = monday.getDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1);
   monday.setDate(diff);
-  const mondaySeconds = Math.floor(monday.getTime() / 1000);
+  monday.setHours(0, 0, 0, 0);
+  const mondayMs = monday.getTime();  // Format millisecondes
   
   const state = {
     currentUserMemberId: 1,
     selectedPersonId: 2,  // Différent pour tester la séparation
-    weekStart: mondaySeconds,  // Lundi en secondes Grist
+    weekStart: mondayMs,  // Lundi en millisecondes (format CRA)
     feuilles: [
-      { id: 100, membre: 1, semaine: mondaySeconds, statut: 'brouillon', responsableValidation: 3 },
-      { id: 101, membre: 2, semaine: mondaySeconds, statut: 'soumis', responsableValidation: 3 }
+      { id: 100, membre: 1, semaine: Math.floor(mondayMs / 1000), statut: 'brouillon', responsableValidation: 3 },
+      { id: 101, membre: 2, semaine: Math.floor(mondayMs / 1000), statut: 'soumis', responsableValidation: 3 }
     ],
     team: [
       { id: 1, nom: 'User1', responsable: 3 },
@@ -72,7 +73,7 @@ function createMockEnvironment() {
   
   const reloadFn = async () => { calls.reload.push(true); };
   
-  return { state, calls, mockAdapter, mockTaskFlowCra, mockGrist, reloadFn, mondaySeconds };
+  return { state, calls, mockAdapter, mockTaskFlowCra, mockGrist, reloadFn, mondayMs };
 }
 
 async function runTests() {
@@ -87,7 +88,7 @@ async function runTests() {
   }
   
   const env = createMockEnvironment();
-  const { state, calls, mockAdapter, mockTaskFlowCra, mockGrist, reloadFn, mondaySeconds } = env;
+  const { state, calls, mockAdapter, mockTaskFlowCra, mockGrist, reloadFn, mondayMs } = env;
   let passed = 0;
   let failed = 0;
   
@@ -155,7 +156,7 @@ async function runTests() {
   state.feuilles = originalFeuilles;
   
   // 6. Doublon bloqué
-  state.feuilles.push({ id: 102, membre: 1, semaine: mondaySeconds, statut: 'brouillon', responsableValidation: 3 });
+  state.feuilles.push({ id: 102, membre: 1, semaine: Math.floor(mondayMs / 1000), statut: 'brouillon', responsableValidation: 3 });
   const duplicateResult = await globalThis.CraWorkflowIntegration.submitCurrentWeek();
   test('Doublon bloqué', duplicateResult && duplicateResult.code === 'DUPLICATE_WEEKLY_SHEET');
   state.feuilles = state.feuilles.filter(f => f.id !== 102);
