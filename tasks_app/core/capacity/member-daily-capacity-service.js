@@ -7,7 +7,7 @@
 
 'use strict';
 
-const { parseDateUTC, formatDateUTC, addDaysUTC, compareDates, toCentiHours, toHours, validateNumber } = require('../planning/planning-engine.js');
+const { parseDateUTC, formatDateUTC, addDaysUTC, compareDates, toCentiHours, toHours, validateNumber, isWeekdayIso } = require('../planning/planning-engine.js');
 const { getDocApi } = require('../grist/grist-api-helper.js');
 
 // ============================================================================
@@ -220,10 +220,9 @@ function buildDesiredMemberDailyCapacities(input) {
   
   while (currentDate <= endDateObj) {
     const dateStr = formatDateUTC(currentDate);
-    const dayOfWeek = currentDate.getUTCDay();
     
-    // Week-end = 0
-    const isWeekend = (dayOfWeek === 0 || dayOfWeek === 6);
+    // Week-end = 0 (utilisation du helper partagé)
+    const isWeekend = !isWeekdayIso(dateStr);
     
     let capaciteTheorique = 0;
     let disponibiliteRatio = 1;
@@ -432,7 +431,7 @@ function reconcileMemberDailyCapacities(existingRows, desiredRows, options = {})
       // Vérifier si mise à jour nécessaire
       const needsUpdate = (
         Math.abs((existing.capaciteTheorique || 0) - desired.capaciteTheorique) > 0.005 ||
-        Math.abs((existing.disponibiliteRatio || 1) - desired.disponibiliteRatio) > 0.005 ||
+        Math.abs((existing.disponibiliteRatio ?? 1) - desired.disponibiliteRatio) > 0.005 ||
         Math.abs((existing.capaciteDisponible || 0) - desired.capaciteDisponible) > 0.005 ||
         Math.abs((existing.absenceHeures || 0) - desired.absenceHeures) > 0.005 ||
         (existingSource !== desiredSource && desiredSource !== null)

@@ -55,27 +55,37 @@ describe('Planning Engine - Distribution', () => {
     expect(weekendPlans.length).toBe(0);
   });
 
-  test('100h sur 100 jours donnent 1,00h par jour', () => {
+  test('100h sur 100 jours ouvrés donnent 1,00h par jour', () => {
+    // Générer exactement 100 jours ouvrés
+    const capacities = [];
+    const dates = [];
+    
+    let i = 0;
+    while (dates.length < 100) {
+      const date = new Date(Date.UTC(2026, 0, 1));
+      date.setUTCDate(date.getUTCDate() + i);
+      const dateStr = date.toISOString().split('T')[0];
+      const dayOfWeek = date.getUTCDay();
+      
+      if (dayOfWeek !== 0 && dayOfWeek !== 6) {
+        dates.push(dateStr);
+        capacities.push({
+          date: dateStr,
+          baseCapacityHours: 7,
+          availableCapacityHours: 7
+        });
+      }
+      i++;
+    }
+    
     const assignment = {
       id: 1,
       taskId: 1,
       memberId: 1,
       allocatedHours: 100,
-      startDate: '2026-01-01',
-      endDate: '2026-04-10'
+      startDate: dates[0],
+      endDate: dates[dates.length - 1]
     };
-    
-    const capacities = [];
-    for (let i = 0; i < 100; i++) {
-      const date = new Date(Date.UTC(2026, 0, 1));
-      date.setUTCDate(date.getUTCDate() + i);
-      const dateStr = date.toISOString().split('T')[0];
-      capacities.push({
-        date: dateStr,
-        baseCapacityHours: 7,
-        availableCapacityHours: 7
-      });
-    }
     
     const result = buildAssignmentPlan({
       assignment,
@@ -94,53 +104,64 @@ describe('Planning Engine - Distribution', () => {
   });
 
   test('Allocation 100h : 50j validés à 1h + 10j validés à 0h + 40j restants = 1,25h/jour sur 40j', () => {
+    // Générer exactement 100 jours ouvrés
+    const capacities = [];
+    const existingEntries = [];
+    const dates = [];
+    
+    let i = 0;
+    while (dates.length < 100) {
+      const date = new Date(Date.UTC(2026, 0, 1));
+      date.setUTCDate(date.getUTCDate() + i);
+      const dateStr = date.toISOString().split('T')[0];
+      const dayOfWeek = date.getUTCDay();
+      
+      if (dayOfWeek !== 0 && dayOfWeek !== 6) {
+        dates.push(dateStr);
+        capacities.push({
+          date: dateStr,
+          baseCapacityHours: 7,
+          availableCapacityHours: 7
+        });
+        
+        const dayIndex = dates.length;
+        if (dayIndex <= 50) {
+          // 50 premiers jours: 1h planifié + 1h réalisé validé
+          existingEntries.push({
+            id: dayIndex,
+            assignmentId: 1,
+            date: dateStr,
+            plannedHours: 1,
+            actualHours: 1,
+            sheetStatus: 'validated',
+            description: null,
+            imputation: null
+          });
+        } else if (dayIndex <= 60) {
+          // 10 jours suivants: 1h planifié + 0h réalisé validé
+          existingEntries.push({
+            id: dayIndex,
+            assignmentId: 1,
+            date: dateStr,
+            plannedHours: 1,
+            actualHours: 0,
+            sheetStatus: 'validated',
+            description: null,
+            imputation: null
+          });
+        }
+      }
+      i++;
+    }
+    
     const assignment = {
       id: 1,
       taskId: 1,
       memberId: 1,
       allocatedHours: 100,
-      startDate: '2026-01-01',
-      endDate: '2026-04-10'
+      startDate: dates[0],
+      endDate: dates[dates.length - 1]
     };
-    
-    const capacities = [];
-    const existingEntries = [];
-    
-    for (let i = 0; i < 100; i++) {
-      const date = new Date(Date.UTC(2026, 0, 1));
-      date.setUTCDate(date.getUTCDate() + i);
-      const dateStr = date.toISOString().split('T')[0];
-      
-      capacities.push({
-        date: dateStr,
-        baseCapacityHours: 7,
-        availableCapacityHours: 7
-      });
-      
-      if (i < 50) {
-        existingEntries.push({
-          id: i + 1,
-          assignmentId: 1,
-          date: dateStr,
-          plannedHours: 1,
-          actualHours: 1,
-          sheetStatus: 'validated',
-          description: null,
-          imputation: null
-        });
-      } else if (i < 60) {
-        existingEntries.push({
-          id: i + 1,
-          assignmentId: 1,
-          date: dateStr,
-          plannedHours: 1,
-          actualHours: 0,
-          sheetStatus: 'validated',
-          description: null,
-          imputation: null
-        });
-      }
-    }
     
     const result = buildAssignmentPlan({
       assignment,
@@ -148,6 +169,7 @@ describe('Planning Engine - Distribution', () => {
       existingEntries
     });
     
+    // 100 - 60 = 40 jours restants
     expect(result.desiredPlan.length).toBe(40);
     
     const totalPlanned = result.desiredPlan.reduce((sum, item) => sum + item.plannedHours, 0);
@@ -159,42 +181,50 @@ describe('Planning Engine - Distribution', () => {
   });
 
   test('Allocation 100h : 50j validés à 1h + 50j restants = 1,00h/jour sur 50j', () => {
+    // Créer exactement 100 jours ouvrés
+    const capacities = [];
+    const existingEntries = [];
+    const dates = [];
+    
+    let i = 0;
+    while (dates.length < 100) {
+      const date = new Date(Date.UTC(2026, 0, 1));
+      date.setUTCDate(date.getUTCDate() + i);
+      const dateStr = date.toISOString().split('T')[0];
+      const dayOfWeek = date.getUTCDay();
+      
+      if (dayOfWeek !== 0 && dayOfWeek !== 6) {
+        dates.push(dateStr);
+        capacities.push({
+          date: dateStr,
+          baseCapacityHours: 7,
+          availableCapacityHours: 7
+        });
+        
+        if (dates.length <= 50) {
+          existingEntries.push({
+            id: dates.length,
+            assignmentId: 1,
+            date: dateStr,
+            plannedHours: 1,
+            actualHours: 1,
+            sheetStatus: 'validated',
+            description: null,
+            imputation: null
+          });
+        }
+      }
+      i++;
+    }
+    
     const assignment = {
       id: 1,
       taskId: 1,
       memberId: 1,
       allocatedHours: 100,
-      startDate: '2026-01-01',
-      endDate: '2026-04-10'
+      startDate: dates[0],
+      endDate: dates[dates.length - 1]
     };
-    
-    const capacities = [];
-    const existingEntries = [];
-    
-    for (let i = 0; i < 100; i++) {
-      const date = new Date(Date.UTC(2026, 0, 1));
-      date.setUTCDate(date.getUTCDate() + i);
-      const dateStr = date.toISOString().split('T')[0];
-      
-      capacities.push({
-        date: dateStr,
-        baseCapacityHours: 7,
-        availableCapacityHours: 7
-      });
-      
-      if (i < 50) {
-        existingEntries.push({
-          id: i + 1,
-          assignmentId: 1,
-          date: dateStr,
-          plannedHours: 1,
-          actualHours: 1,
-          sheetStatus: 'validated',
-          description: null,
-          imputation: null
-        });
-      }
-    }
     
     const result = buildAssignmentPlan({
       assignment,
@@ -202,6 +232,7 @@ describe('Planning Engine - Distribution', () => {
       existingEntries
     });
     
+    // 50 jours restants (100 - 50 validés)
     expect(result.desiredPlan.length).toBe(50);
     
     const totalPlanned = result.desiredPlan.reduce((sum, item) => sum + item.plannedHours, 0);
@@ -634,8 +665,8 @@ describe('Planning Engine - unplannedHours', () => {
       { date: '2026-07-01', baseCapacityHours: 7, availableCapacityHours: 7 },
       { date: '2026-07-02', baseCapacityHours: 7, availableCapacityHours: 7 },
       { date: '2026-07-03', baseCapacityHours: 7, availableCapacityHours: 7 },
-      { date: '2026-07-04', baseCapacityHours: 7, availableCapacityHours: 7 },
-      { date: '2026-07-05', baseCapacityHours: 7, availableCapacityHours: 7 }
+      { date: '2026-07-04', baseCapacityHours: 0, availableCapacityHours: 0 }, // Samedi
+      { date: '2026-07-05', baseCapacityHours: 0, availableCapacityHours: 0 }  // Dimanche
     ];
     
     const result = buildAssignmentPlan({
@@ -644,11 +675,12 @@ describe('Planning Engine - unplannedHours', () => {
       existingEntries: []
     });
     
-    const totalCapacity = 5 * 7;
-    expect(totalCapacity).toBe(35);
+    // 3 jours ouvrés seulement (mer-ven)
+    const totalCapacity = 3 * 7;
+    expect(totalCapacity).toBe(21);
     
-    expect(result.summary.newlyPlannedHours).toBeCloseTo(35, 2);
-    expect(result.summary.unplannedHours).toBeCloseTo(65, 2);
+    expect(result.summary.newlyPlannedHours).toBeCloseTo(21, 2);
+    expect(result.summary.unplannedHours).toBeCloseTo(79, 2);
     expect(result.summary.remainingHours).toBe(100);
   });
 });
@@ -1566,6 +1598,42 @@ describe('Planning Engine - Doublons hors période', () => {
   });
 });
 
+describe('Planning Engine - generateDateRange() corrections P0-C', () => {
+  
+  const { generateDateRange } = require('./planning-engine.js');
+  
+  test('2026-02-30 (invalide) → tableau vide', () => {
+    const result = generateDateRange('2026-02-30', '2026-03-02');
+    expect(result).toEqual([]);
+  });
+  
+  test('plage inversée → tableau vide', () => {
+    const result = generateDateRange('2026-07-10', '2026-07-05');
+    expect(result).toEqual([]);
+  });
+  
+  test('2028-02-28 à 2028-03-01 → 3 jours (28, 29 février, 1er mars)', () => {
+    const result = generateDateRange('2028-02-28', '2028-03-01');
+    expect(result).toEqual(['2028-02-28', '2028-02-29', '2028-03-01']);
+  });
+  
+  test('1970-01-01 → date valide', () => {
+    const result = generateDateRange('1970-01-01', '1970-01-01');
+    expect(result).toEqual(['1970-01-01']);
+  });
+  
+  test('objet Date invalide → refus', () => {
+    const invalidDate = new Date('invalid');
+    const result = generateDateRange(invalidDate, '2026-07-05');
+    expect(result).toEqual([]);
+  });
+  
+  test('chaîne ISO invalide → refus', () => {
+    const result = generateDateRange('not-a-date', '2026-07-05');
+    expect(result).toEqual([]);
+  });
+});
+
 describe('Planning Engine - Tests complémentaires (spécifications lot 1)', () => {
   
   const { isWeekdayIso } = require('./planning-engine.js');
@@ -1803,6 +1871,37 @@ describe('Planning Engine - Tests complémentaires (spécifications lot 1)', () 
         const total = (planned1 ? planned1.plannedHours : 0) + (planned2 ? planned2.plannedHours : 0);
         expect(total).toBeLessThanOrEqual(7.01);
       }
+    });
+  });
+  
+  describe('P0-A - Test de fumée: week-end avec capacité positive', () => {
+    test('samedi + dimanche avec capacité 7h → desiredPlan = [], unplannedHours = 14', () => {
+      const assignment = {
+        id: 1,
+        taskId: 1,
+        memberId: 1,
+        allocatedHours: 14,
+        startDate: '2026-07-18', // Samedi
+        endDate: '2026-07-19' // Dimanche
+      };
+      
+      // Capacités incorrectes mais fournies ainsi par erreur
+      const capacities = [
+        { date: '2026-07-18', baseCapacityHours: 7, availableCapacityHours: 7 },
+        { date: '2026-07-19', baseCapacityHours: 7, availableCapacityHours: 7 }
+      ];
+      
+      const result = buildAssignmentPlan({
+        assignment,
+        capacities,
+        existingEntries: []
+      });
+      
+      // Aucun plan ne doit être créé le week-end
+      expect(result.desiredPlan.length).toBe(0);
+      expect(result.summary.newlyPlannedHours).toBe(0);
+      expect(result.summary.unplannedHours).toBe(14);
+      expect(result.diagnostics.some(d => d.code === 'NO_DISTRIBUTABLE_DATES' || d.code === 'UNPLANNED_HOURS')).toBe(true);
     });
   });
 });

@@ -198,22 +198,53 @@ function isDateInRange(date, startDate, endDate) {
 
 /**
  * Génère la liste des dates entre startDate et endDate (inclus)
- * @param {string} startDate - Date de début
- * @param {string} endDate - Date de fin
- * @returns {string[]} Tableau de dates YYYY-MM-DD
+ * @param {string|Date} startDate - Date de début (YYYY-MM-DD ou Date)
+ * @param {string|Date} endDate - Date de fin (YYYY-MM-DD ou Date)
+ * @returns {string[]} Tableau de dates YYYY-MM-DD (vide si dates invalides ou plage inversée)
  */
 function generateDateRange(startDate, endDate) {
   const dates = [];
   
-  // Accepter objets Date ou timestamps
-  let current = startDate instanceof Date ? startDate : new Date(startDate);
-  const end = endDate instanceof Date ? endDate : new Date(endDate);
+  let current, end;
   
-  if (!current.getTime() || !end.getTime()) return dates;
+  // Convertir startDate
+  if (startDate instanceof Date) {
+    if (!startDate.getTime() || isNaN(startDate.getTime())) {
+      return dates;
+    }
+    current = new Date(startDate.getTime());
+  } else if (typeof startDate === 'string') {
+    current = parseDateUTC(startDate);
+    if (!current) {
+      return dates;
+    }
+  } else {
+    return dates;
+  }
+  
+  // Convertir endDate
+  if (endDate instanceof Date) {
+    if (!endDate.getTime() || isNaN(endDate.getTime())) {
+      return dates;
+    }
+    end = new Date(endDate.getTime());
+  } else if (typeof endDate === 'string') {
+    end = parseDateUTC(endDate);
+    if (!end) {
+      return dates;
+    }
+  } else {
+    return dates;
+  }
+  
+  // Vérifier que startDate <= endDate
+  if (compareDates(formatDateUTC(current), formatDateUTC(end)) > 0) {
+    return dates;
+  }
   
   while (compareDates(formatDateUTC(current), formatDateUTC(end)) <= 0) {
-    dates.push(formatDateUTC(current));  // Retourner des strings
-    current.setUTCDate(current.getUTCDate() + 1);
+    dates.push(formatDateUTC(current));
+    current = addDaysUTC(current, 1);
   }
   
   return dates;
@@ -593,6 +624,10 @@ function buildAssignmentPlan(input) {
     }
     
     if (existingEntry && (existingEntry.sheetStatus === 'validated' || existingEntry.sheetStatus === null || existingEntry.sheetStatus === 'draft')) {
+      continue;
+    }
+    
+    if (!isWeekdayIso(date)) {
       continue;
     }
     
@@ -1231,7 +1266,7 @@ return {
  * Service dédié pour créer, réconcilier et assurer les capacités quotidiennes
  * des membres dans la table MemberDailyCapacities.
  */
-const { parseDateUTC, formatDateUTC, addDaysUTC, compareDates, toCentiHours, toHours, validateNumber } = __require('planning/planning-engine');
+const { parseDateUTC, formatDateUTC, addDaysUTC, compareDates, toCentiHours, toHours, validateNumber, isWeekdayIso } = __require('planning/planning-engine');
 const { getDocApi } = __require('grist/grist-api-helper');
 
 // ============================================================================
@@ -1444,10 +1479,9 @@ function buildDesiredMemberDailyCapacities(input) {
   
   while (currentDate <= endDateObj) {
     const dateStr = formatDateUTC(currentDate);
-    const dayOfWeek = currentDate.getUTCDay();
     
-    // Week-end = 0
-    const isWeekend = (dayOfWeek === 0 || dayOfWeek === 6);
+    // Week-end = 0 (utilisation du helper partagé)
+    const isWeekend = !isWeekdayIso(dateStr);
     
     let capaciteTheorique = 0;
     let disponibiliteRatio = 1;
@@ -1656,7 +1690,7 @@ function reconcileMemberDailyCapacities(existingRows, desiredRows, options = {})
       // Vérifier si mise à jour nécessaire
       const needsUpdate = (
         Math.abs((existing.capaciteTheorique || 0) - desired.capaciteTheorique) > 0.005 ||
-        Math.abs((existing.disponibiliteRatio || 1) - desired.disponibiliteRatio) > 0.005 ||
+        Math.abs((existing.disponibiliteRatio ?? 1) - desired.disponibiliteRatio) > 0.005 ||
         Math.abs((existing.capaciteDisponible || 0) - desired.capaciteDisponible) > 0.005 ||
         Math.abs((existing.absenceHeures || 0) - desired.absenceHeures) > 0.005 ||
         (existingSource !== desiredSource && desiredSource !== null)
@@ -2262,7 +2296,7 @@ async function buildEffectiveMemberDailyCapacityState(grist, memberId, startDate
         id: cap.id,
         capaciteTheorique: cap.capaciteTheorique || 0,
         capaciteDisponible: cap.capaciteDisponible || 0,
-        disponibiliteRatio: cap.disponibiliteRatio || 1
+        disponibiliteRatio: cap.disponibiliteRatio ?? 1
       });
     }
   }
@@ -2504,7 +2538,7 @@ async function loadAssignmentContext(grist, assignmentId, options = {}) {
           id: cap.id,
           capaciteTheorique: cap.capaciteTheorique || 0,
           capaciteDisponible: cap.capaciteDisponible || 0,
-          disponibiliteRatio: cap.disponibiliteRatio || 1
+        disponibiliteRatio: cap.disponibiliteRatio ?? 1
         });
       }
     }
@@ -2524,7 +2558,7 @@ async function loadAssignmentContext(grist, assignmentId, options = {}) {
       id: cap.id,
       capaciteTheorique: cap.capaciteTheorique || 0,
       capaciteDisponible: cap.capaciteDisponible || 0,
-      disponibiliteRatio: cap.disponibiliteRatio || 1
+      disponibiliteRatio: cap.disponibiliteRatio ?? 1
     });
   }
   
@@ -3929,7 +3963,7 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
               membre: capacitiesTable.membre[m],
               date: gristDateToIso(capacitiesTable.date[m]),
               capaciteTheorique: Number(capacitiesTable.capaciteTheorique[m] || 0),
-              disponibiliteRatio: Number(capacitiesTable.disponibiliteRatio[m] || 1),
+              disponibiliteRatio: capacitiesTable.disponibiliteRatio[m] == null ? 1 : Number(capacitiesTable.disponibiliteRatio[m]),
               capaciteDisponible: Number(capacitiesTable.capaciteDisponible[m] || 0),
               absenceHeures: Number(capacitiesTable.absenceHeures[m] || 0),
               source: capacitiesTable.source[m] || 'calcul',

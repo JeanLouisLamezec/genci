@@ -164,22 +164,53 @@ function isDateInRange(date, startDate, endDate) {
 
 /**
  * Génère la liste des dates entre startDate et endDate (inclus)
- * @param {string} startDate - Date de début
- * @param {string} endDate - Date de fin
- * @returns {string[]} Tableau de dates YYYY-MM-DD
+ * @param {string|Date} startDate - Date de début (YYYY-MM-DD ou Date)
+ * @param {string|Date} endDate - Date de fin (YYYY-MM-DD ou Date)
+ * @returns {string[]} Tableau de dates YYYY-MM-DD (vide si dates invalides ou plage inversée)
  */
 function generateDateRange(startDate, endDate) {
   const dates = [];
   
-  // Accepter objets Date ou timestamps
-  let current = startDate instanceof Date ? startDate : new Date(startDate);
-  const end = endDate instanceof Date ? endDate : new Date(endDate);
+  let current, end;
   
-  if (!current.getTime() || !end.getTime()) return dates;
+  // Convertir startDate
+  if (startDate instanceof Date) {
+    if (!startDate.getTime() || isNaN(startDate.getTime())) {
+      return dates;
+    }
+    current = new Date(startDate.getTime());
+  } else if (typeof startDate === 'string') {
+    current = parseDateUTC(startDate);
+    if (!current) {
+      return dates;
+    }
+  } else {
+    return dates;
+  }
+  
+  // Convertir endDate
+  if (endDate instanceof Date) {
+    if (!endDate.getTime() || isNaN(endDate.getTime())) {
+      return dates;
+    }
+    end = new Date(endDate.getTime());
+  } else if (typeof endDate === 'string') {
+    end = parseDateUTC(endDate);
+    if (!end) {
+      return dates;
+    }
+  } else {
+    return dates;
+  }
+  
+  // Vérifier que startDate <= endDate
+  if (compareDates(formatDateUTC(current), formatDateUTC(end)) > 0) {
+    return dates;
+  }
   
   while (compareDates(formatDateUTC(current), formatDateUTC(end)) <= 0) {
-    dates.push(formatDateUTC(current));  // Retourner des strings
-    current.setUTCDate(current.getUTCDate() + 1);
+    dates.push(formatDateUTC(current));
+    current = addDaysUTC(current, 1);
   }
   
   return dates;

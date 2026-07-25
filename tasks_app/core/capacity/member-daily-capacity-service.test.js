@@ -987,6 +987,40 @@ describe('Member Daily Capacity Service - Tests complémentaires (spécification
       expect(result.updates.length).toBe(0);
       expect(result.deletes.length).toBe(0);
     });
+    
+    test('devrait être idempotent avec ratio zéro', () => {
+      const existing = [
+        { id: 1, membre: 1, date: '2026-07-13', capaciteTheorique: 7, disponibiliteRatio: 0, capaciteDisponible: 0, absenceHeures: 7, source: 'calcul', revision: 1 }
+      ];
+      
+      const desired = [
+        { memberId: 1, date: '2026-07-13', capaciteTheorique: 7, disponibiliteRatio: 0, capaciteDisponible: 0, absenceHeures: 7, source: 'calcul', revision: 1 }
+      ];
+      
+      const result = reconcileMemberDailyCapacities(existing, desired);
+      
+      expect(result.creates.length).toBe(0);
+      expect(result.updates.length).toBe(0);
+      expect(result.deletes.length).toBe(0);
+    });
+    
+    test('deuxième réconciliation après absence totale → aucune action', () => {
+      const existing = [
+        { id: 1, membre: 1, date: '2026-07-13', capaciteTheorique: 7, disponibiliteRatio: 0, capaciteDisponible: 0, absenceHeures: 7, source: 'calcul', revision: 1 }
+      ];
+      
+      const desired = [
+        { memberId: 1, date: '2026-07-13', capaciteTheorique: 7, disponibiliteRatio: 0, capaciteDisponible: 0, absenceHeures: 7, source: 'calcul', revision: 1 }
+      ];
+      
+      const result1 = reconcileMemberDailyCapacities(existing, desired);
+      expect(result1.updates.length).toBe(0);
+      
+      // Deuxième appel identique
+      const result2 = reconcileMemberDailyCapacities(existing, desired);
+      expect(result2.updates.length).toBe(0);
+      expect(result2.creates.length).toBe(0);
+    });
   });
 });
 });

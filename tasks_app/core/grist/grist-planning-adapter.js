@@ -378,7 +378,7 @@ async function buildEffectiveMemberDailyCapacityState(grist, memberId, startDate
         id: cap.id,
         capaciteTheorique: cap.capaciteTheorique || 0,
         capaciteDisponible: cap.capaciteDisponible || 0,
-        disponibiliteRatio: cap.disponibiliteRatio || 1
+        disponibiliteRatio: cap.disponibiliteRatio ?? 1
       });
     }
   }
@@ -620,7 +620,7 @@ async function loadAssignmentContext(grist, assignmentId, options = {}) {
           id: cap.id,
           capaciteTheorique: cap.capaciteTheorique || 0,
           capaciteDisponible: cap.capaciteDisponible || 0,
-          disponibiliteRatio: cap.disponibiliteRatio || 1
+        disponibiliteRatio: cap.disponibiliteRatio ?? 1
         });
       }
     }
@@ -640,7 +640,7 @@ async function loadAssignmentContext(grist, assignmentId, options = {}) {
       id: cap.id,
       capaciteTheorique: cap.capaciteTheorique || 0,
       capaciteDisponible: cap.capaciteDisponible || 0,
-      disponibiliteRatio: cap.disponibiliteRatio || 1
+      disponibiliteRatio: cap.disponibiliteRatio ?? 1
     });
   }
   

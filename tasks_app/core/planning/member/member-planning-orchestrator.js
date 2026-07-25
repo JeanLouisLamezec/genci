@@ -504,7 +504,7 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
               membre: capacitiesTable.membre[m],
               date: gristDateToIso(capacitiesTable.date[m]),
               capaciteTheorique: Number(capacitiesTable.capaciteTheorique[m] || 0),
-              disponibiliteRatio: Number(capacitiesTable.disponibiliteRatio[m] || 1),
+              disponibiliteRatio: capacitiesTable.disponibiliteRatio[m] == null ? 1 : Number(capacitiesTable.disponibiliteRatio[m]),
               capaciteDisponible: Number(capacitiesTable.capaciteDisponible[m] || 0),
               absenceHeures: Number(capacitiesTable.absenceHeures[m] || 0),
               source: capacitiesTable.source[m] || 'calcul',
