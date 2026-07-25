@@ -5017,8 +5017,45 @@ function subLabel(d) { return S.granularity === 'month' ? '' : (d.getUTCDate() +
 const r1 = (n) => Math.round(n * 10) / 10;
 
 // Variables globales pour l'index canonique
-let canonPlanIndex = null;
 let canonData = null;
+let canonPlanIndex = null;
+let lastCanonState = null; // Pour détecter les changements nécessitant une reconstruction
+
+/**
+ * Vérifie si l'index canonique doit être reconstruit
+ */
+function shouldRebuildCanonIndex() {
+  if (!canonData || !canonPlanIndex) return true;
+  
+  const currentState = {
+    granularity: S.granularity,
+    offset: S.offset,
+    horizon: S.horizon,
+    includeDone: S.includeDone,
+    mode: S.mode,
+    groupBy: S.groupBy,
+    filters: JSON.stringify(S.filters || {})
+  };
+  
+  if (!lastCanonState) return true;
+  
+  return JSON.stringify(currentState) !== JSON.stringify(lastCanonState);
+}
+
+/**
+ * Met à jour l'état de référence pour la reconstruction
+ */
+function updateCanonState() {
+  lastCanonState = {
+    granularity: S.granularity,
+    offset: S.offset,
+    horizon: S.horizon,
+    includeDone: S.includeDone,
+    mode: S.mode,
+    groupBy: S.groupBy,
+    filters: JSON.stringify(S.filters || {})
+  };
+}
 
 function planTasks() {
   let ts = S.includeDone ? S.tasks : S.tasks.filter(t => !isTerminal(t));
@@ -5257,9 +5294,16 @@ function cellColor(h, cap) {
 // Rendu - VERSION CANONIQUE
 // ============================================================================
 async function render() {
-  // Charger les données canoniques si nécessaire
-  if (!canonData || !canonPlanIndex) {
-    await loadCanonDataForRender();
+  // Reconstruire l'index si nécessaire (changement de période, filtre, granularité, etc.)
+  if (shouldRebuildCanonIndex()) {
+    // Si les données n'ont pas changé, on garde canonData
+    // Sinon on recharge tout
+    if (!canonData) {
+      await loadCanonDataForRender();
+    } else {
+      // Reconstruire juste l'index avec les nouvelles périodes/filtres
+      rebuildCanonPlanIndex();
+    }
   }
   
   // segments
@@ -5279,7 +5323,7 @@ async function render() {
   // Utiliser l'index canonique pour la matrice
   let matrix;
   if (canonPlanIndex) {
-    matrix = PlanCanonAdapter.formatCanonMatrixForRender(canonPlanIndex.byMemberPeriod, S.groupBy);
+    matrix = PlanCanonAdapter.formatCanonMatrixForRender(canonPlanIndex.byMemberPeriod, S.groupBy, S.mode);
   } else {
     // Fallback legacy si index non disponible
     matrix = {};
@@ -5311,13 +5355,13 @@ async function render() {
     const ini = row.label.split(' ').filter(Boolean).map(w => w[0]).slice(0, 2).join('').toUpperCase();
     const resClk = row.isSub || S.groupBy === 'person';
     const resId = row.isSub ? row.teamId : row.key;
-    // Utiliser la capacité canonique
-    const capP = PlanCanonAdapter.getCapacityForRow(row, periods[0], S.granularity, canonData ? canonData.dailyCapacities : []);
-    const redu = PlanCanonAdapter.isRowCapacityReduced(row, periods[0], S.granularity, canonData ? canonData.dailyCapacities : []);
     h += '<tr' + (row.isSub ? ' class="subr"' : '') + '><td class="colres' + (row.isSub ? ' sub' : '') + (resClk ? ' clk' : '') + '"' + (resClk ? ' data-res="' + esc(resId) + '" title="Capacité & indisponibilités"' : '') + '><div class="res"><span class="ava" style="background:' + row.color + '">' + esc(ini) + '</span><span><span class="nm">' + esc(row.label) + '</span>' + (row.cap > 0 ? ' <span class="cap">(' + Math.round(row.cap) + 'h)</span>' : '') + '</span></div></td>';
     let win = 0, peakR = 0;
     for (let pi = 0; pi < periods.length; pi++) {
       const p = periods[pi], hr = r1(cells[p] || 0);
+      // Calculer la capacité et le réduit POUR CHAQUE période (pas seulement la première)
+      const capP = canonData ? PlanCanonAdapter.getCapacityForRow(row, p, S.granularity, canonData.dailyCapacities) : 0;
+      const redu = canonData ? PlanCanonAdapter.isRowCapacityReduced(row, p, S.granularity, canonData.dailyCapacities) : false;
       const dispo = S.mode === 'dispo';
       let content;
       if (dispo) { const free = capP > 0 ? r1(Math.max(capP - hr, 0)) : 0; win += free; content = fmtDispo(free, capP); }
@@ -5369,15 +5413,37 @@ async function loadCanonDataForRender() {
     
     canonData = await PlanCanonAdapter.loadCanonData(grist, state);
     
+    // Construire l'index pour la fenêtre et les filtres courants
+    rebuildCanonPlanIndex();
+    
+    // Mettre à jour l'état de référence
+    updateCanonState();
+  } catch (e) {
+    console.error('Erreur chargement données canoniques:', e);
+    canonData = null;
+    canonPlanIndex = null;
+  }
+}
+
+/**
+ * Reconstruit l'index canonique pour la fenêtre et les filtres courants
+ * (sans recharger les données depuis Grist)
+ */
+function rebuildCanonPlanIndex() {
+  if (!canonData) return;
+  
+  try {
     var periodConfig = {
       granularity: S.granularity,
       keys: TF.periodRange(TF.shiftPeriods(new Date(), S.granularity, S.offset), S.granularity, S.horizon)
     };
     
     canonPlanIndex = PlanCanonAdapter.buildCanonPlanIndex(canonData, periodConfig);
+    
+    // Mettre à jour l'état de référence
+    updateCanonState();
   } catch (e) {
-    console.error('Erreur chargement données canoniques:', e);
-    canonData = null;
+    console.error('Erreur reconstruction index canonique:', e);
     canonPlanIndex = null;
   }
 }
@@ -5568,9 +5634,16 @@ function fmtDispo(free, capP) {
 
 function renderAlerts(matrix, periods) {
   const rows = buildRows();
-  const starts = periodStarts(TF.shiftPeriods(new Date(), S.granularity, S.offset), S.granularity, periods.length);
   let over = 0;
-  for (const row of rows) { if (!(row.members && row.members.length)) continue; for (let pi = 0; pi < periods.length; pi++) { const hr = (matrix[row.key] || {})[periods[pi]] || 0; const capP = capForRow(row, starts[pi]); if (capP > 0 && hr > capP) over++; } }
+  for (const row of rows) { 
+    if (!(row.members && row.members.length)) continue; 
+    for (let pi = 0; pi < periods.length; pi++) { 
+      const hr = (matrix[row.key] || {})[periods[pi]] || 0; 
+      // Utiliser l'adaptateur canonique au lieu de capForRow()
+      const capP = canonData ? PlanCanonAdapter.getCapacityForRow(row, periods[pi], S.granularity, canonData.dailyCapacities) : 0;
+      if (capP > 0 && hr > capP) over++; 
+    } 
+  }
   const undated = planTasks().filter(t => effCharges(t).length && (t.dateDebut == null || t.dateEcheance == null)).length;
   const el = document.getElementById('alerts'); const parts = [];
   parts.push('<span class="' + (over ? 'over' : '') + '">' + (over ? '⚠ ' + over + ' cellule' + (over > 1 ? 's' : '') + ' en surcharge' : '✓ aucune surcharge sur la fenêtre') + '</span>');
@@ -5590,8 +5663,8 @@ function renderSeg(id, opts, cur, cb) {
 // ============================================================================
 function tasksInCell(key, period) {
   // Utilise l'index canonique si disponible
-  if (canonPlanIndex) {
-    return PlanCanonAdapter.getTasksInCell(canonPlanIndex, key, period);
+  if (canonPlanIndex && canonData) {
+    return PlanCanonAdapter.getTasksInCell(canonPlanIndex, key, period, S.tasks);
   }
   
   // Fallback legacy
@@ -5688,7 +5761,7 @@ function openCell(key, period) {
   const others = activeTeam().filter(m => m.id !== tid);
   const _starts = periodStarts(TF.shiftPeriods(new Date(), S.granularity, S.offset), S.granularity, S.horizon);
   const _pi = TF.periodRange(TF.shiftPeriods(new Date(), S.granularity, S.offset), S.granularity, S.horizon).indexOf(period);
-  const capP = row && _pi >= 0 ? capForRow(row, _starts[_pi]) : 0;
+  const capP = row && _pi >= 0 && canonData ? PlanCanonAdapter.getCapacityForRow(row, _starts[_pi], S.granularity, canonData.dailyCapacities) : 0;
   document.getElementById('pTitle').textContent = (row ? row.label : key) + ' — ' + plabel(period);
   const capTxt = capP > 0 ? ' · capacité ' + Math.round(capP) + 'h (' + Math.round(tot / capP * 100) + '%)' : '';
   document.getElementById('pSub').textContent = tot + (S.mode === 'realise' ? ' h réalisées' : ' h planifiées') + capTxt + (editable ? ' · allocation éditable' : '');

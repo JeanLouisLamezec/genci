@@ -244,10 +244,12 @@ function buildCanonPlanIndex(canonData, periodConfig) {
  * Formate l'index canonique pour compatibilité avec la matrice existante
  * @param {Object} byMemberPeriod - Agrégats par membre/période depuis buildPlanPeriodIndex
  * @param {string} groupBy - Type de groupement ('person', 'project', 'programme', 'role')
+ * @param {string} mode - Mode d'affichage ('prevu', 'realise', 'reste', 'dispo')
  * @returns {Object} Matrice compatible avec le rendu existant
  */
-function formatCanonMatrixForRender(byMemberPeriod, groupBy) {
+function formatCanonMatrixForRender(byMemberPeriod, groupBy, mode) {
   var matrix = {};
+  var displayMode = mode || 'prevu';
   
   if (groupBy === 'person') {
     // Clé simple : memberId
@@ -262,7 +264,21 @@ function formatCanonMatrixForRender(byMemberPeriod, groupBy) {
         matrix[matrixKey] = {};
       }
       
-      matrix[matrixKey][periodKey] = agg.plannedHours;
+      // Utiliser la bonne valeur selon le mode
+      var displayValue = 0;
+      if (displayMode === 'prevu') {
+        displayValue = agg.plannedHours;
+      } else if (displayMode === 'realise') {
+        displayValue = agg.actualHours;
+      } else if (displayMode === 'reste') {
+        // Reste = prévu - réalisé (définition métier à confirmer)
+        displayValue = Math.max(agg.plannedHours - agg.actualHours, 0);
+      } else if (displayMode === 'dispo') {
+        // Dispo = capacité disponible - prévu
+        displayValue = Math.max(agg.availableCapacityHours - agg.plannedHours, 0);
+      }
+      
+      matrix[matrixKey][periodKey] = displayValue;
     }
   } else if (groupBy === 'project' || groupBy === 'programme' || groupBy === 'role') {
     // Clé composite : "groupe|memberId"
@@ -277,6 +293,42 @@ function formatCanonMatrixForRender(byMemberPeriod, groupBy) {
       var periodKey2 = parts2[1];
       
       if (!byMemberId[memberId2]) {
+        byMemberId[memberId2] = {};
+      }
+      byMemberId[memberId2][periodKey2] = agg2;
+    }
+    
+    // Ensuite, créer les clés composites selon le groupement
+    // Cette logique dépend de keyFn() du widget Plan
+    // Pour une migration complète, il faudrait connaître la fonction keyFn()
+    
+    // Version simplifiée : on garde par memberId
+    for (var memberId3 in byMemberId) {
+      for (var periodKey3 in byMemberId[memberId3]) {
+        var matrixKey3 = memberId3;
+        if (!matrix[matrixKey3]) {
+          matrix[matrixKey3] = {};
+        }
+        
+        var agg3 = byMemberId[memberId3][periodKey3];
+        var displayValue3 = 0;
+        if (displayMode === 'prevu') {
+          displayValue3 = agg3.plannedHours;
+        } else if (displayMode === 'realise') {
+          displayValue3 = agg3.actualHours;
+        } else if (displayMode === 'reste') {
+          displayValue3 = Math.max(agg3.plannedHours - agg3.actualHours, 0);
+        } else if (displayMode === 'dispo') {
+          displayValue3 = Math.max(agg3.availableCapacityHours - agg3.plannedHours, 0);
+        }
+        
+        matrix[matrixKey3][periodKey3] = displayValue3;
+      }
+    }
+  }
+  
+  return matrix;
+}
         byMemberId[memberId2] = {};
       }
       byMemberId[memberId2][periodKey2] = agg2;
@@ -456,16 +508,36 @@ function getTeamCapacity(team, periodKey, granularity, dailyCapacities) {
  * Obtient les tâches dans une cellule pour le détail (drill-down)
  * Remplace tasksInCell() qui utilisait un filtrage manuel des TimeEntries
  * @param {Object} canonIndex - Index canonique depuis buildPlanPeriodIndex
- * @param {string} key - Clé de la cellule (memberId ou composite)
+ * @param {string} key - Clé de la cellule (memberId ou composite "groupe|memberId")
  * @param {string} period - Clé de période
- * @returns {Array} Tableau de tâches avec heures planifiées
+ * @param {Array} tasks - Tableau des tâches pour résoudre les détails
+ * @returns {Array} Tableau de tâches avec heures planifiées et détails de tâche
  */
-function getTasksInCell(canonIndex, key, period) {
-  var memberPeriodKey = key + ':' + period;
+function getTasksInCell(canonIndex, key, period, tasks) {
+  // Extraire le memberId de la clé (peut être composite)
+  var memberId;
+  var parts = key.split('|');
+  if (parts.length === 2) {
+    // Clé composite : "groupe|memberId"
+    memberId = parts[1];
+  } else {
+    // Clé simple : memberId
+    memberId = key;
+  }
+  
+  var memberPeriodKey = memberId + ':' + period;
   var agg = canonIndex.byMemberPeriod[memberPeriodKey];
   
   if (!agg || !agg.entries || !agg.entries.length) {
     return [];
+  }
+  
+  // Indexer les tâches par ID pour résolution rapide
+  var taskById = {};
+  if (tasks) {
+    for (var i = 0; i < tasks.length; i++) {
+      taskById[tasks[i].id] = tasks[i];
+    }
   }
   
   // Regrouper par taskId
@@ -486,11 +558,14 @@ function getTasksInCell(canonIndex, key, period) {
     byTaskId[taskId].entries.push(entry);
   }
   
-  // Convertir en tableau trié
+  // Convertir en tableau trié avec les détails de tâche
   var result = [];
   for (var taskId2 in byTaskId) {
     var item = byTaskId[taskId2];
+    var task = taskById[taskId2];
+    
     result.push({
+      task: task || { id: taskId2, titre: 'Tâche ' + taskId2, projet: null },
       taskId: item.taskId,
       slice: item.plannedHours,
       total: item.plannedHours,
