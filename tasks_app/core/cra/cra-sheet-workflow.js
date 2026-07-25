@@ -2146,6 +2146,129 @@ function buildRevalidationActions(params) {
 }
 
 // ============================================================================
+// ACTIONS GRIST : MISE À JOUR DES HEURES PAR LE MANAGER
+// ============================================================================
+
+/**
+ * Construit les actions Grist pour mettre à jour les heures réelles d'une TimeEntry en mode correction manager
+ *
+ * CONTRAT :
+ * 1. Appelle canManagerEditActual() en premier
+ * 2. Exige un ID de TimeEntry valide
+ * 3. Accepte uniquement un nombre fini supérieur ou égal à zéro
+ * 4. Préserve explicitement 0
+ * 5. Refuse null, chaîne vide, négatif, NaN, Infinity
+ * 6. Ne modifie que { heures: normalizedHours }
+ * 7. Ne modifie ni membre, ni tâche, ni date, ni feuille, ni heures prévues, ni révision de validation
+ * 8. Retourne le même contrat homogène que les autres builders
+ * 9. N'incrémente PAS revisionValidation
+ *
+ * @param {Object} params - Paramètres
+ * @param {number} params.actorMemberId - ID de l'acteur (manager)
+ * @param {Object} params.sheet - Feuille en correction_manager
+ * @param {Object} params.timeEntry - TimeEntry à modifier
+ * @param {number} params.hours - Nouvelles heures réelles
+ * @returns {{ allowed: boolean, can: boolean, code: string, reason: string, actions: Array, diagnostics: Array, summary: Object }}
+ */
+function buildManagerActualUpdateAction(params) {
+  const { actorMemberId, sheet, timeEntry, hours } = params || {};
+  const actions = [];
+  const diagnostics = [];
+  const summary = {};
+
+  if (!actorMemberId || !sheet || !timeEntry) {
+    return {
+      allowed: false,
+      can: false,
+      code: 'MISSING_PARAMS',
+      reason: 'Paramètres requis manquants',
+      actions: [],
+      diagnostics: [],
+      summary: {}
+    };
+  }
+
+  // Validation des heures
+  if (hours === null || hours === undefined || hours === '') {
+    return {
+      allowed: false,
+      can: false,
+      code: 'ACTUAL_HOURS_INVALID',
+      reason: 'Heures invalides : valeur requise',
+      actions: [],
+      diagnostics: [],
+      summary: {}
+    };
+  }
+
+  const numericHours = Number(hours);
+  if (!Number.isFinite(numericHours) || numericHours < 0) {
+    return {
+      allowed: false,
+      can: false,
+      code: 'ACTUAL_HOURS_INVALID',
+      reason: 'Heures invalides : doit être un nombre fini >= 0',
+      actions: [],
+      diagnostics: [],
+      summary: {}
+    };
+  }
+
+  // Vérification d'autorisation
+  const authCheck = canManagerEditActual({ actorMemberId, sheet, timeEntry });
+  if (!authCheck.can) {
+    return {
+      allowed: false,
+      can: authCheck.can,
+      code: authCheck.code,
+      reason: authCheck.reason,
+      actions: [],
+      diagnostics: [],
+      summary: {}
+    };
+  }
+
+  const timeEntryId = normalizeMemberId(timeEntry.id);
+  if (timeEntryId === null) {
+    return {
+      allowed: false,
+      can: false,
+      code: 'TIME_ENTRY_ID_INVALID',
+      reason: 'TimeEntry sans ID valide',
+      actions: [],
+      diagnostics: [],
+      summary: {}
+    };
+  }
+
+  // Construire l'action minimale : uniquement heures
+  const entryUpdate = {
+    heures: numericHours
+  };
+
+  actions.push([
+    'UpdateRecord',
+    'TimeEntries',
+    timeEntryId,
+    entryUpdate
+  ]);
+
+  summary.sheetId = normalizeMemberId(sheet.id);
+  summary.timeEntryId = timeEntryId;
+  summary.newHours = numericHours;
+
+  return {
+    allowed: true,
+    can: true,
+    code: 'OK',
+    reason: 'Autorisé',
+    actions,
+    diagnostics,
+    summary
+  };
+}
+
+// ============================================================================
 // HELPERS : DATES
 // ============================================================================
 
@@ -2284,6 +2407,7 @@ module.exports = {
   buildRejectionAction,
   buildOpenManagerCorrectionActions,
   buildRevalidationActions,
+  buildManagerActualUpdateAction,
 
   // Helpers
   getWeekStartIso,

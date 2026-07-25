@@ -905,6 +905,236 @@ async function revalidateSheet(params) {
   });
 }
 
+async function updateManagerActual(params) {
+  const { grist, actorMemberId, sheetId, timeEntryId, hours } = params || {};
+  const validation = validateCommonParams({ grist, sheetId, actorMemberId });
+  if (!validation.valid) return { success: false, code: validation.code, sheetId, transition: 'update_manager_actual' };
+
+  // Validation des paramètres spécifiques
+  const normalizedTimeEntryId = workflow.normalizeMemberId(timeEntryId);
+  if (normalizedTimeEntryId === null) {
+    return {
+      success: false,
+      code: 'TIME_ENTRY_ID_INVALID',
+      sheetId,
+      transition: 'update_manager_actual'
+    };
+  }
+
+  if (hours === null || hours === undefined || hours === '') {
+    return {
+      success: false,
+      code: 'ACTUAL_HOURS_INVALID',
+      sheetId,
+      transition: 'update_manager_actual'
+    };
+  }
+
+  const numericHours = Number(hours);
+  if (!Number.isFinite(numericHours) || numericHours < 0) {
+    return {
+      success: false,
+      code: 'ACTUAL_HOURS_INVALID',
+      sheetId,
+      transition: 'update_manager_actual'
+    };
+  }
+
+  try {
+    // === SNAPSHOT 1 ===
+    const snapshot1 = await loadWorkflowSnapshot(grist, sheetId);
+
+    // === VÉRIFICATION 1 ===
+    const timeEntry = snapshot1.timeEntries.find(e => {
+      return workflow.normalizeMemberId(e.id) === normalizedTimeEntryId;
+    });
+
+    if (!timeEntry) {
+      return {
+        success: false,
+        code: 'TIME_ENTRY_NOT_FOUND',
+        sheetId,
+        transition: 'update_manager_actual',
+        diagnostics: { searchedId: normalizedTimeEntryId }
+      };
+    }
+
+    // Vérifier que la TimeEntry appartient bien à cette feuille
+    const entrySheetId = workflow.normalizeMemberId(timeEntry.feuille);
+    const contextSheetId = workflow.normalizeMemberId(sheetId);
+    if (entrySheetId !== contextSheetId) {
+      return {
+        success: false,
+        code: 'TIME_ENTRY_SHEET_MISMATCH',
+        sheetId,
+        transition: 'update_manager_actual',
+        diagnostics: { entrySheetId, contextSheetId }
+      };
+    }
+
+    // === DÉCISION 1 ===
+    const decision1 = workflow.buildManagerActualUpdateAction({
+      actorMemberId,
+      sheet: snapshot1.sheet,
+      timeEntry,
+      hours: numericHours
+    });
+
+    if (!decision1.allowed || !decision1.can) {
+      return {
+        success: false,
+        code: decision1.code,
+        reason: decision1.reason,
+        sheetId,
+        transition: 'update_manager_actual',
+        actions: decision1.actions || []
+      };
+    }
+
+    // === SNAPSHOT 2 ===
+    const snapshot2 = await loadWorkflowSnapshot(grist, sheetId);
+
+    // === COMPARAISON ET RE-CONSTRUCTION ===
+    let finalDecision = decision1;
+
+    if (snapshot1.fingerprint !== snapshot2.fingerprint) {
+      // Re-charger la TimeEntry depuis snapshot 2
+      const timeEntry2 = snapshot2.timeEntries.find(e => {
+        return workflow.normalizeMemberId(e.id) === normalizedTimeEntryId;
+      });
+
+      if (!timeEntry2) {
+        return {
+          success: false,
+          code: 'WORKFLOW_STATE_CHANGED',
+          reason: 'TimeEntry introuvable après changement d\'état',
+          sheetId,
+          transition: 'update_manager_actual',
+          before: snapshot1,
+          after: snapshot2
+        };
+      }
+
+      // Re-vérifier l'appartenance à la feuille
+      const entrySheetId2 = workflow.normalizeMemberId(timeEntry2.feuille);
+      if (entrySheetId2 !== contextSheetId) {
+        return {
+          success: false,
+          code: 'WORKFLOW_STATE_CHANGED',
+          reason: 'TimeEntry déplacée vers une autre feuille',
+          sheetId,
+          transition: 'update_manager_actual',
+          before: snapshot1,
+          after: snapshot2
+        };
+      }
+
+      // Re-construire la décision avec snapshot 2
+      finalDecision = workflow.buildManagerActualUpdateAction({
+        actorMemberId,
+        sheet: snapshot2.sheet,
+        timeEntry: timeEntry2,
+        hours: numericHours
+      });
+
+      if (!finalDecision.allowed || !finalDecision.can) {
+        return {
+          success: false,
+          code: 'WORKFLOW_STATE_CHANGED',
+          reason: 'État modifié pendant la transaction - transition non autorisée',
+          sheetId,
+          transition: 'update_manager_actual',
+          before: snapshot1,
+          after: snapshot2
+        };
+      }
+    }
+
+    // === APPLICATION ===
+    await applyWorkflowActions(grist, finalDecision.actions);
+
+    // === SNAPSHOT 3 (POST-ÉCRITURE) ===
+    const snapshot3 = await loadWorkflowSnapshot(grist, sheetId);
+
+    // === VÉRIFICATION ===
+    const timeEntry3 = snapshot3.timeEntries.find(e => {
+      return workflow.normalizeMemberId(e.id) === normalizedTimeEntryId;
+    });
+
+    if (!timeEntry3) {
+      return {
+        success: false,
+        code: 'WORKFLOW_POSTCONDITION_FAILED',
+        reason: 'TimeEntry introuvable après écriture',
+        sheetId,
+        transition: 'update_manager_actual',
+        before: snapshot1,
+        after: snapshot3
+      };
+    }
+
+    // Vérifier que les heures ont été correctement mises à jour
+    const actualHours = timeEntry3.heures;
+    const normalizedActual = actualHours === null || actualHours === undefined || actualHours === ''
+      ? null
+      : Number(actualHours);
+
+    if (normalizedActual !== numericHours) {
+      return {
+        success: false,
+        code: 'WORKFLOW_POSTCONDITION_FAILED',
+        reason: `Heures incorrectes : attendu ${numericHours}, obtenu ${actualHours}`,
+        sheetId,
+        transition: 'update_manager_actual',
+        before: snapshot1,
+        after: snapshot3,
+        diagnostics: { expectedHours: numericHours, actualHours }
+      };
+    }
+
+    // Vérifier que revisionValidation n'a PAS été incrémentée
+    const rev1 = workflow.normalizeRevision(snapshot1.sheet.revisionValidation);
+    const rev3 = workflow.normalizeRevision(snapshot3.sheet.revisionValidation);
+    if (rev3 !== rev1) {
+      return {
+        success: false,
+        code: 'WORKFLOW_POSTCONDITION_FAILED',
+        reason: `revisionValidation modifiée : était ${rev1}, est ${rev3}`,
+        sheetId,
+        transition: 'update_manager_actual',
+        before: snapshot1,
+        after: snapshot3,
+        diagnostics: { expectedRevision: rev1, actualRevision: rev3 }
+      };
+    }
+
+    // === SUCCÈS ===
+    return {
+      success: true,
+      code: 'OK',
+      sheetId,
+      transition: 'update_manager_actual',
+      actions: finalDecision.actions,
+      appliedActions: finalDecision.actions.length,
+      before: snapshot1,
+      after: snapshot3,
+      summary: finalDecision.summary || {}
+    };
+  } catch (e) {
+    if (e.code === workflow.SERVICE_ERROR_CODES?.SHEET_NOT_FOUND) {
+      return { success: false, code: e.code, reason: e.message, sheetId, transition: 'update_manager_actual' };
+    }
+    return {
+      success: false,
+      code: e.code || 'WORKFLOW_APPLY_FAILED',
+      reason: e.message,
+      sheetId,
+      transition: 'update_manager_actual',
+      diagnostics: { error: e.message }
+    };
+  }
+}
+
 // ============================================================================
 // EXPORT
 // ============================================================================
@@ -916,6 +1146,7 @@ module.exports = {
   rejectSheet,
   openManagerCorrection,
   revalidateSheet,
+  updateManagerActual,
   loadWorkflowSnapshot,
   verifyTransitionResult,
   buildFingerprint,

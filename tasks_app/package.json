@@ -7,7 +7,8 @@
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
     "build:taskflow": "node scripts/build-taskflow.js",
-    "build:planning:browser": "node scripts/build-planning-browser.js"
+    "build:planning:browser": "node scripts/build-planning-browser.js",
+    "build:cra-browser": "node scripts/build-cra-browser.js"
   },
   "devDependencies": {
     "jest": "^29.7.0",

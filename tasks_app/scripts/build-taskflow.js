@@ -100,12 +100,36 @@ function buildPlanningBrowser() {
   }
 }
 
+// Build du bundle navigateur CRA
+function buildCraBrowser() {
+  const buildScript = path.join(__dirname, 'build-cra-browser.js');
+  if (!fs.existsSync(buildScript)) {
+    throw new Error(
+      'Script de build CRA manquant : ' + buildScript
+    );
+  }
+  
+  const buildModule = require(buildScript);
+  if (buildModule && typeof buildModule.build === 'function') {
+    buildModule.build();
+  }
+  
+  // Vérifier que le bundle CRA a été généré
+  const bundlePath = path.join(ROOT_DIR, 'core', 'generated', 'taskflow-cra-browser.js');
+  if (!fs.existsSync(bundlePath)) {
+    throw new Error('Bundle CRA non généré : ' + bundlePath);
+  }
+}
+
 // Main
 function main() {
     console.log('🔨 Build TaskFlow...\n');
     
     // Build du bundle navigateur en premier
     buildPlanningBrowser();
+    
+    // Build du bundle navigateur CRA
+    buildCraBrowser();
     
     // Lit les fichiers core
     console.log('📄 Lecture des fichiers core...');

@@ -1414,7 +1414,7 @@ if (typeof globalThis !== 'undefined') {
     }
 
     // Version courante du schéma
-    var SCHEMA_VERSION = 3;
+    var SCHEMA_VERSION = 5;
 
     // Ordre de création des tables (important pour les dépendances)
     var TABLE_ORDER = [
@@ -1547,7 +1547,9 @@ if (typeof globalThis !== 'undefined') {
                 { id: 'parentTask',       opts: refColumn('Tasks') },
                 // Plan de charge (opt-in mais défini ici)
                 { id: 'charges',          opts: dataColumn('Text') },
-                { id: 'dateCloture',      opts: dataColumn('Date') }
+                { id: 'dateCloture',      opts: dataColumn('Date') },
+                // Formule pour les ACL
+                { id: 'editorsEmails',    opts: { type: 'Text', isFormula: true, formula: '' } }
             ]
         },
 
@@ -1649,7 +1651,13 @@ if (typeof globalThis !== 'undefined') {
                 { id: 'statut',           opts: dataColumn('Choice') },
                 { id: 'validePar',        opts: refColumn('Team') },
                 { id: 'dateValidation',   opts: dataColumn('Date') },
-                { id: 'motifRejet',       opts: dataColumn('Text') }
+                { id: 'motifRejet',       opts: dataColumn('Text') },
+                // Nouvelles colonnes v4 pour le workflow de validation
+                { id: 'responsableValidation', opts: refColumn('Team') },
+                { id: 'soumisPar',        opts: refColumn('Team') },
+                { id: 'dateSoumission',   opts: dataColumn('DateTime') },
+                { id: 'revisionValidation', opts: dataColumn('Int') },
+                { id: 'motifCorrection',  opts: dataColumn('Text') }
             ]
         },
 
@@ -1673,7 +1681,11 @@ if (typeof globalThis !== 'undefined') {
                 { id: 'feuille',          opts: refColumn('Feuilles') },
                 { id: 'revisionPlan',     opts: dataColumn('Int') },
                 // Nouvelle colonne v3 : référence à la capacité quotidienne unique
-                { id: 'capaciteJour',     opts: refColumn('MemberDailyCapacities') }
+                { id: 'capaciteJour',     opts: refColumn('MemberDailyCapacities') },
+                // Nouvelles colonnes formulées v4 pour les ACL
+                { id: 'statutFeuille',          opts: { type: 'Text', isFormula: true, formula: '$feuille.statut if $feuille else ""' } },
+                { id: 'responsableValidation',  opts: { type: 'Ref:Team', isFormula: true, formula: '$feuille.responsableValidation if $feuille else None' } },
+                { id: 'semaineFeuille',         opts: { type: 'Date', isFormula: true, formula: '$feuille.semaine if $feuille else None' } }
             ]
         },
 
@@ -1688,7 +1700,13 @@ if (typeof globalThis !== 'undefined') {
                 { id: 'lastMigration',    opts: dataColumn('Text') },
                 { id: 'lastMigrationAt',  opts: dataColumn('DateTime') },
                 { id: 'lastError',        opts: dataColumn('Text') },
-                { id: 'installedBy',      opts: dataColumn('Text') }
+                { id: 'installedBy',      opts: dataColumn('Text') },
+                // Nouvelles colonnes v4 pour séparer les ACL du schéma métier
+                { id: 'aclVersion',       opts: dataColumn('Int') },
+                { id: 'aclStatus',        opts: dataColumn('Choice') },
+                { id: 'lastAclMigration', opts: dataColumn('Text') },
+                { id: 'lastAclMigrationAt', opts: dataColumn('DateTime') },
+                { id: 'lastAclError',     opts: dataColumn('Text') }
             ]
         }
     };
@@ -1728,6 +1746,8 @@ if (typeof globalThis !== 'undefined') {
         { table: 'TimeEntries', column: 'affectation', targetTable: 'TaskAssignments', visibleColumn: 'tache' },
         { table: 'TimeEntries', column: 'feuille', targetTable: 'Feuilles', visibleColumn: 'semaine' },
         { table: 'TimeEntries', column: 'capaciteJour', targetTable: 'MemberDailyCapacities', visibleColumn: 'date' },
+        // Nouvelles références v4
+        { table: 'TimeEntries', column: 'responsableValidation', targetTable: 'Team', visibleColumn: 'nom' },
         
         // TaskAssignments refs
         { table: 'TaskAssignments', column: 'tache', targetTable: 'Tasks', visibleColumn: 'titre' },
@@ -1736,6 +1756,9 @@ if (typeof globalThis !== 'undefined') {
         // Feuilles refs
         { table: 'Feuilles', column: 'membre', targetTable: 'Team', visibleColumn: 'nom' },
         { table: 'Feuilles', column: 'validePar', targetTable: 'Team', visibleColumn: 'nom' },
+        // Nouvelles références v4
+        { table: 'Feuilles', column: 'responsableValidation', targetTable: 'Team', visibleColumn: 'nom' },
+        { table: 'Feuilles', column: 'soumisPar', targetTable: 'Team', visibleColumn: 'nom' },
         
         // Disponibilites refs
         { table: 'Disponibilites', column: 'membre', targetTable: 'Team', visibleColumn: 'nom' },
@@ -1767,6 +1790,38 @@ if (typeof globalThis !== 'undefined') {
         { value: '4', label: 'Basse',  fillColor: '#64748b', textColor: '#ffffff' }
     ];
 
+    // ========================================================================
+    // FORMULES CENTRALISÉES — Source unique pour toutes les formules TaskFlow
+    // ========================================================================
+    var FORMULAS = {
+        Entites: {
+            ancetres: 'res, cur, seen = [], $parent, set()\nwhile cur and cur.id not in seen:\n    seen.add(cur.id); res.append(cur); cur = cur.parent\nres'
+        },
+        Team: {
+            chaine_chefs: 'chefs, e, seen = [], $entite, set()\nwhile e and e.id not in seen:\n    seen.add(e.id)\n    if e.chef: chefs.append(e.chef)\n    e = e.parent\nchefs',
+            agents_geres: '[a for a in Team.lookupRecords() if $id in [c.id for c in a.chaine_chefs]]'
+        },
+        Tasks: {
+            editorsEmails: "emails = set()\nfor a in $assignees:\n    emails.add(a.email)\nif $projet and $projet.responsable:\n    emails.add($projet.responsable.email)\n    for c in $projet.responsable.chaine_chefs:\n        emails.add(c.email)\n',' + ','.join(sorted(e for e in emails if e)) + ','"
+        },
+        TimeEntries: {
+            statutFeuille: '$feuille.statut if $feuille else ""',
+            responsableValidation: '$feuille.responsableValidation if $feuille else None',
+            semaineFeuille: '$feuille.semaine if $feuille else None'
+        }
+    };
+
+    // ========================================================================
+    // CHOIX PAR DÉFAUT CENTRALISÉS — Source unique pour les colonnes Choice
+    // ========================================================================
+    var DEFAULT_CHOICES = {
+        'Entites.niveau': ['direction', 'service', 'equipe'],
+        'Team.role': ['membre', 'chef', 'chef_de_projet'],
+        'Feuilles.statut': ['brouillon', 'soumis', 'valide', 'rejete', 'correction_manager'],
+        'Disponibilites.type': ['conge', 'maladie', 'ferie', 'formation', 'temps_partiel', 'autre'],
+        'Competences.categorie': ['technique', 'fonctionnel', 'transverse']
+    };
+
     // Export public
     global.TASKFLOW_SCHEMA = {
         version: SCHEMA_VERSION,
@@ -1776,11 +1831,1898 @@ if (typeof globalThis !== 'undefined') {
         defaultStatuses: DEFAULT_STATUSES,
         defaultTaskTypes: DEFAULT_TASK_TYPES,
         defaultPriorities: DEFAULT_PRIORITIES,
+        // Nouvelles propriétés v4 : formules et choix centralisés
+        formulas: FORMULAS,
+        defaultChoices: DEFAULT_CHOICES,
         // Helpers exportés
         dataColumn: dataColumn,
         refColumn: refColumn,
         refListColumn: refListColumn
     };
+
+})(typeof window !== 'undefined' ? window : (typeof global !== 'undefined' ? global : this));
+
+
+/* ============================================================================
+ * taskflow-timesheet-backfill.js — Planificateur pur du rattachement TimeEntries → Feuilles
+ * ----------------------------------------------------------------------------
+ * Module pur et testable qui :
+ * - Reçoit des tableaux de lignes (Team, Feuilles, TimeEntries)
+ * - Produit un plan déclaratif de créations et rattachements
+ * - Ne modifie jamais les données reçues
+ * - Ne dépend d'aucun accès Grist / DOM / état global
+ * 
+ * API publique :
+ * - normalizeId
+ * - normalizeDateValue
+ * - getWeekStart
+ * - buildSheetKey
+ * - inspect
+ * - buildPlan
+ * - verifyFinalState
+ * ============================================================================ */
+
+(function (global) {
+    'use strict';
+
+    // ========================================================================
+    // HELPERS : NORMALISATION DES IDS ET DATES
+    // ========================================================================
+
+    /**
+     * Normalise un ID (numérique ou référence Grist)
+     * Seuls sont valides : un nombre entier strictement positif ou une chaîne contenant uniquement un entier strictement positif
+     * @param {*} id - ID à normaliser
+     * @returns {number|null} ID numérique ou null
+     */
+    function normalizeId(id) {
+        if (
+            id === null ||
+            id === undefined ||
+            id === ''
+        ) {
+            return null;
+        }
+
+        if (
+            typeof id === 'string' &&
+            !/^[1-9]\d*$/.test(id)
+        ) {
+            return null;
+        }
+
+        var numeric = Number(id);
+
+        return (
+            Number.isInteger(numeric) &&
+            numeric > 0
+        )
+            ? numeric
+            : null;
+    }
+
+    /**
+     * Normalise une valeur de date Grist vers un objet Date
+     * Grist stocke les dates en secondes Unix (pour Date) ou millisecondes
+     * Utilise le fuseau Europe/Paris par défaut pour déterminer la date civile
+     * @param {*} value - Valeur Grist (secondes, ms, string ISO, Date)
+     * @param {Object} options - Options dont timeZone (défaut: 'Europe/Paris')
+     * @returns {Date|null} Date ou null
+     */
+    function normalizeDateValue(value, options) {
+        var opts = options || {};
+        var timeZone = opts.timeZone || 'Europe/Paris';
+
+        if (value === null || value === undefined || value === '') {
+            return null;
+        }
+
+        // String ISO YYYY-MM-DD (date civile pure)
+        if (typeof value === 'string') {
+            if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+                // Date civile UTC
+                var parts = value.split('-');
+                return new Date(Date.UTC(
+                    parseInt(parts[0], 10),
+                    parseInt(parts[1], 10) - 1,
+                    parseInt(parts[2], 10)
+                ));
+            }
+            // String avec heure : convertir en utilisant le fuseau
+            var dateFromIso = new Date(value);
+            if (isNaN(dateFromIso.getTime())) {
+                return null;
+            }
+            // Extraire la date civile dans le fuseau
+            return extractCivilDate(dateFromIso, timeZone);
+        }
+
+        // Nombre (secondes ou millisecondes)
+        if (typeof value === 'number' && Number.isFinite(value)) {
+            var ms;
+            // Si < 10^10, c'est des secondes Unix
+            if (value < 10000000000) {
+                ms = value * 1000;
+            } else {
+                ms = value;
+            }
+
+            var date = new Date(ms);
+            if (isNaN(date.getTime())) {
+                return null;
+            }
+
+            return extractCivilDate(date, timeZone);
+        }
+
+        // Déjà une Date
+        if (value instanceof Date) {
+            return extractCivilDate(value, timeZone);
+        }
+
+        return null;
+    }
+
+    /**
+     * Extrait la date civile (minuit UTC) d'une Date dans un fuseau donné
+     * @param {Date} date - Date à convertir
+     * @param {string} timeZone - Fuseau horaire
+     * @returns {Date} Date à minuit UTC de la date civile
+     */
+    function extractCivilDate(date, timeZone) {
+        var formatter = new Intl.DateTimeFormat('fr-FR', {
+            timeZone: timeZone,
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit'
+        });
+
+        var parts = formatter.formatToParts(date);
+        var year, month, day;
+        for (var i = 0; i < parts.length; i++) {
+            var part = parts[i];
+            if (part.type === 'year') {
+                year = parseInt(part.value, 10);
+            } else if (part.type === 'month') {
+                month = parseInt(part.value, 10);
+            } else if (part.type === 'day') {
+                day = parseInt(part.value, 10);
+            }
+        }
+
+        // Retourner minuit UTC de cette date civile
+        return new Date(Date.UTC(year, month - 1, day));
+    }
+
+    /**
+     * Formate une Date en clé ISO YYYY-MM-DD (UTC)
+     * @param {Date} date - Date à formater
+     * @returns {string|null} Clé ISO ou null
+     */
+    function formatDateKey(date) {
+        if (!date || isNaN(date.getTime())) {
+            return null;
+        }
+        var year = date.getUTCFullYear();
+        var month = String(date.getUTCMonth() + 1).padStart(2, '0');
+        var day = String(date.getUTCDate()).padStart(2, '0');
+        return year + '-' + month + '-' + day;
+    }
+
+    /**
+     * Convertit une date en secondes Unix pour stockage Grist
+     * @param {Date} date - Date à convertir
+     * @returns {number|null} Secondes Unix ou null
+     */
+    function dateToUnixSeconds(date) {
+        if (!date || isNaN(date.getTime())) {
+            return null;
+        }
+        return Math.floor(date.getTime() / 1000);
+    }
+
+    // ========================================================================
+    // CALCUL DE LA SEMAINE CIVILE (LUNDI → DIMANCHE)
+    // ========================================================================
+
+    /**
+     * Calcule le lundi de la semaine civile contenant la date donnée
+     * La semaine commence le lundi et se termine le dimanche
+     * Utilise le calendrier UTC pour éviter les problèmes de fuseau horaire
+     * @param {Date} date - Date d'entrée
+     * @param {Object} options - Options dont timeZone (défaut: 'Europe/Paris')
+     * @returns {Date|null} Lundi de la semaine (minuit UTC) ou null
+     */
+    function getWeekStart(date, options) {
+        if (!date || isNaN(date.getTime())) {
+            return null;
+        }
+
+        var opts = options || {};
+        var timeZone = opts.timeZone || 'Europe/Paris';
+
+        // Utiliser Intl.DateTimeFormat pour obtenir la date civile dans le fuseau
+        var formatter = new Intl.DateTimeFormat('fr-FR', {
+            timeZone: timeZone,
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit'
+        });
+
+        var parts = formatter.formatToParts(date);
+        var year, month, day;
+        for (var i = 0; i < parts.length; i++) {
+            var part = parts[i];
+            if (part.type === 'year') {
+                year = parseInt(part.value, 10);
+            } else if (part.type === 'month') {
+                month = parseInt(part.value, 10);
+            } else if (part.type === 'day') {
+                day = parseInt(part.value, 10);
+            }
+        }
+
+        // Créer une date UTC pour la date civile
+        var inputDate = new Date(Date.UTC(year, month - 1, day));
+
+        // Obtenir le jour de la semaine (0 = dimanche, 1 = lundi, ..., 6 = samedi)
+        var dayOfWeek = inputDate.getUTCDay();
+
+        // Calculer le décalage vers le lundi
+        // Si dimanche (0), on recule de 6 jours
+        // Si lundi (1), on recule de 0 jours
+        // Si mardi (2), on recule de 1 jour, etc.
+        var offset = (dayOfWeek === 0) ? 6 : (dayOfWeek - 1);
+
+        // Créer une nouvelle Date au lundi à minuit UTC
+        var weekStart = new Date(Date.UTC(
+            inputDate.getUTCFullYear(),
+            inputDate.getUTCMonth(),
+            inputDate.getUTCDate() - offset,
+            0, 0, 0, 0
+        ));
+
+        return weekStart;
+    }
+
+    /**
+     * Construit une clé canonique pour une feuille (membre + semaine)
+     * @param {number} memberId - ID du membre
+     * @param {Date} weekStart - Lundi de la semaine
+     * @returns {string|null} Clé canonique ou null
+     */
+    function buildSheetKey(memberId, weekStart) {
+        var normalizedId = normalizeId(memberId);
+        var weekKey = formatDateKey(weekStart);
+
+        if (normalizedId === null || !weekKey) {
+            return null;
+        }
+
+        return normalizedId + ':' + weekKey;
+    }
+
+    // ========================================================================
+    // INSPECTION
+    // ========================================================================
+
+    /**
+     * Inspecte les données et produit des diagnostics
+     * @param {Object} data - { team, sheets, entries }
+     * @param {Object} options - Options dont timeZone
+     * @returns {Object} Diagnostics structurés
+     */
+    function inspect(data, options) {
+        var opts = options || {};
+        var team = data.team || [];
+        var sheets = data.sheets || [];
+        var entries = data.entries || [];
+
+        var conflicts = [];
+        var warnings = [];
+
+        // Indexer Team par ID
+        var teamById = {};
+        for (var i = 0; i < team.length; i++) {
+            var member = team[i];
+            var memberId = normalizeId(member.id);
+            if (memberId !== null) {
+                teamById[memberId] = member;
+            }
+        }
+
+        // Indexer les Feuilles
+        var sheetById = {};
+        var sheetByKey = {};
+        var sheetsByMemberWeek = {};
+
+        for (var j = 0; j < sheets.length; j++) {
+            var sheet = sheets[j];
+            var sheetId = normalizeId(sheet.id);
+            var sheetMemberId = normalizeId(sheet.membre);
+            var sheetWeek = normalizeDateValue(sheet.semaine, opts);
+
+            if (sheetId === null) {
+                conflicts.push({
+                    code: 'SHEET_ID_INVALID',
+                    sheet: sheet,
+                    message: 'Feuille sans ID valide'
+                });
+                continue;
+            }
+
+            if (sheetMemberId === null) {
+                conflicts.push({
+                    code: 'SHEET_MEMBER_INVALID',
+                    sheetId: sheetId,
+                    sheet: sheet,
+                    message: 'Feuille sans membre valide'
+                });
+                continue;
+            }
+
+            if (!teamById[sheetMemberId]) {
+                conflicts.push({
+                    code: 'SHEET_MEMBER_INVALID',
+                    sheetId: sheetId,
+                    memberId: sheetMemberId,
+                    message: 'Feuille référence un membre absent de Team'
+                });
+                continue;
+            }
+
+            if (!sheetWeek) {
+                conflicts.push({
+                    code: 'SHEET_WEEK_INVALID',
+                    sheetId: sheetId,
+                    message: 'Feuille sans semaine valide'
+                });
+                continue;
+            }
+
+            var weekStart = getWeekStart(sheetWeek, opts);
+            var weekKey = formatDateKey(weekStart);
+            var sheetWeekKey = formatDateKey(sheetWeek);
+
+            // Vérifier que la semaine est un lundi canonique
+            if (weekKey !== sheetWeekKey) {
+                conflicts.push({
+                    code: 'SHEET_WEEK_NOT_CANONICAL',
+                    sheetId: sheetId,
+                    memberId: sheetMemberId,
+                    actualWeekDate: sheetWeekKey,
+                    expectedWeekStart: weekKey,
+                    message: 'Semaine de la feuille n\'est pas un lundi canonique'
+                });
+                // Ne pas indexer cette feuille comme valide
+                continue;
+            }
+
+            var key = sheetMemberId + ':' + weekKey;
+
+            // Indexer la feuille
+            var normalizedSheet = {
+                row: sheet,
+                id: sheetId,
+                memberId: sheetMemberId,
+                weekStartIso: weekKey,
+                key: key
+            };
+
+            sheetById[sheetId] = normalizedSheet;
+
+            // Vérifier les doublons
+            if (sheetByKey[key]) {
+                var existing = sheetByKey[key];
+                conflicts.push({
+                    code: 'DUPLICATE_SHEETS',
+                    memberId: sheetMemberId,
+                    weekStart: weekKey,
+                    sheetIds: [existing.id, sheetId],
+                    message: 'Plusieurs feuilles pour le même membre/semaine'
+                });
+            } else {
+                sheetByKey[key] = normalizedSheet;
+            }
+
+            // Regrouper par membre/semaine pour analyse
+            if (!sheetsByMemberWeek[key]) {
+                sheetsByMemberWeek[key] = [];
+            }
+            sheetsByMemberWeek[key].push(normalizedSheet);
+        }
+
+        // Inspecter les TimeEntries
+        var entriesBySheetKey = {};
+
+        for (var k = 0; k < entries.length; k++) {
+            var entry = entries[k];
+            var entryId = normalizeId(entry.id);
+            var entryMemberId = normalizeId(entry.membre);
+            var entryDate = normalizeDateValue(entry.date, opts);
+            var entrySheetId = normalizeId(entry.feuille);
+
+            if (entryId === null) {
+                conflicts.push({
+                    code: 'TIME_ENTRY_ID_INVALID',
+                    entry: entry,
+                    message: 'TimeEntry sans ID valide'
+                });
+                continue;
+            }
+
+            if (entryMemberId === null) {
+                conflicts.push({
+                    code: 'TIME_ENTRY_MEMBER_INVALID',
+                    entryId: entryId,
+                    entry: entry,
+                    message: 'TimeEntry sans membre valide'
+                });
+                continue;
+            }
+
+            if (!teamById[entryMemberId]) {
+                conflicts.push({
+                    code: 'TIME_ENTRY_MEMBER_INVALID',
+                    entryId: entryId,
+                    memberId: entryMemberId,
+                    message: 'TimeEntry référence un membre absent de Team'
+                });
+                continue;
+            }
+
+            if (!entryDate) {
+                conflicts.push({
+                    code: 'TIME_ENTRY_DATE_INVALID',
+                    entryId: entryId,
+                    entry: entry,
+                    message: 'TimeEntry sans date valide'
+                });
+                continue;
+            }
+
+            var entryWeekStart = getWeekStart(entryDate, opts);
+            var entryWeekKey = formatDateKey(entryWeekStart);
+            var entrySheetKey = entryMemberId + ':' + entryWeekKey;
+
+            if (!entriesBySheetKey[entrySheetKey]) {
+                entriesBySheetKey[entrySheetKey] = [];
+            }
+            entriesBySheetKey[entrySheetKey].push(entry);
+
+            // Si la TimeEntry a déjà un lien feuille, vérifier la cohérence
+            if (entrySheetId !== null) {
+                // Trouver la feuille référencée par ID normalisé
+                var referencedSheet = sheetById[entrySheetId];
+
+                if (!referencedSheet) {
+                    conflicts.push({
+                        code: 'TIME_ENTRY_SHEET_NOT_FOUND',
+                        entryId: entryId,
+                        sheetId: entrySheetId,
+                        message: 'TimeEntry référence une feuille inexistante'
+                    });
+                } else {
+                    // Vérifier la cohérence du membre
+                    var refMemberId = referencedSheet.memberId;
+                    if (refMemberId !== entryMemberId) {
+                        conflicts.push({
+                            code: 'TIME_ENTRY_SHEET_MEMBER_MISMATCH',
+                            entryId: entryId,
+                            entryMemberId: entryMemberId,
+                            sheetMemberId: refMemberId,
+                            sheetId: entrySheetId,
+                            message: 'Membre de la TimeEntry différent du membre de la feuille'
+                        });
+                    }
+
+                    // Vérifier la cohérence de la semaine
+                    var refWeekKey = referencedSheet.weekStartIso;
+
+                    if (refWeekKey !== entryWeekKey) {
+                        conflicts.push({
+                            code: 'TIME_ENTRY_SHEET_WEEK_MISMATCH',
+                            entryId: entryId,
+                            entryWeek: entryWeekKey,
+                            sheetWeek: refWeekKey,
+                            sheetId: entrySheetId,
+                            message: 'Semaine de la TimeEntry différente de la semaine de la feuille'
+                        });
+                    }
+                }
+            }
+        }
+
+        return {
+            conflicts: conflicts,
+            warnings: warnings,
+            summary: {
+                teamCount: team.length,
+                sheetCount: sheets.length,
+                entryCount: entries.length,
+                validSheets: Object.keys(sheetByKey).length,
+                sheetKeysWithEntries: Object.keys(entriesBySheetKey).length,
+                conflictCount: conflicts.length,
+                warningCount: warnings.length
+            },
+            sheetById: sheetById,
+            sheetByKey: sheetByKey,
+            sheetsByMemberWeek: sheetsByMemberWeek,
+            entriesBySheetKey: entriesBySheetKey,
+            teamById: teamById
+        };
+    }
+
+    // ========================================================================
+    // CONSTRUCTION DU PLAN
+    // ========================================================================
+
+    /**
+     * Construit un plan de backfill à partir des données inspectées
+     * @param {Object} data - { team, sheets, entries }
+     * @param {Object} inspection - Résultat de inspect(data)
+     * @param {Object} options - Options dont timeZone
+     * @returns {Object} Plan déclaratif
+     */
+    function buildPlan(data, inspection, options) {
+        var opts = options || {};
+
+        // Si aucune inspection fournie, la faire
+        if (!inspection) {
+            inspection = inspect(data, opts);
+        }
+
+        // FAIL CLOSED : si conflits, retour immédiat sans aucune action
+        if (inspection.conflicts.length > 0) {
+            return {
+                valid: false,
+                creates: [],
+                links: [],
+                preservedLinks: [],
+                conflicts: inspection.conflicts.slice(),
+                warnings: inspection.warnings.slice(),
+                summary: {
+                    teamCount: inspection.summary.teamCount,
+                    sheetCount: inspection.summary.sheetCount,
+                    entryCount: inspection.summary.entryCount,
+                    sheetsToCreate: 0,
+                    entriesToLink: 0,
+                    preservedLinks: 0,
+                    conflicts: inspection.conflicts.length,
+                    warnings: inspection.warnings.length
+                }
+            };
+        }
+
+        var conflicts = [];
+        var warnings = inspection.warnings.slice();
+        var sheetById = inspection.sheetById;
+        var sheetByKey = inspection.sheetByKey;
+        var sheetsByMemberWeek = inspection.sheetsByMemberWeek;
+        var entriesBySheetKey = inspection.entriesBySheetKey;
+        var teamById = inspection.teamById;
+
+        var creates = [];
+        var linksToExistingSheets = [];
+        var preservedLinks = [];
+
+        // Pour chaque groupe d'entrées par membre/semaine
+        for (var sheetKey in entriesBySheetKey) {
+            if (!Object.prototype.hasOwnProperty.call(entriesBySheetKey, sheetKey)) {
+                continue;
+            }
+
+            var entries = entriesBySheetKey[sheetKey];
+            var existingSheet = sheetByKey[sheetKey];
+
+            // Cas A — lien absent et Feuille unique existante
+            if (existingSheet) {
+                // Vérifier si des entrées ont déjà un lien correct
+                for (var i = 0; i < entries.length; i++) {
+                    var entry = entries[i];
+                    var entrySheetId = normalizeId(entry.feuille);
+
+                    if (entrySheetId === existingSheet.id) {
+                        // Lien déjà correct
+                        preservedLinks.push({
+                            entryId: entry.id,
+                            sheetId: existingSheet.id,
+                            key: sheetKey
+                        });
+                    } else if (entrySheetId === null || entrySheetId === 0 || entrySheetId === undefined) {
+                        // Lien absent : planifier rattachement
+                        linksToExistingSheets.push({
+                            entryId: entry.id,
+                            sheetId: existingSheet.id,
+                            key: sheetKey
+                        });
+                    }
+                    // Si entrySheetId !== null et !== existingSheet.id, c'est un conflit déjà enregistré
+                }
+            } else {
+                // Cas B — aucune Feuille existante : création nécessaire
+                var hasConflict = conflicts.some(function(c) {
+                    return c.code === 'DUPLICATE_SHEETS' &&
+                           sheetsByMemberWeek[sheetKey] &&
+                           sheetsByMemberWeek[sheetKey].length > 1;
+                });
+
+                if (!hasConflict) {
+                    var parts = sheetKey.split(':');
+                    var memberId = parseInt(parts[0], 10);
+                    var weekStartStr = parts[1];
+
+                    // Vérifier que le membre existe
+                    if (teamById[memberId]) {
+                        // Construire la date du lundi
+                        var weekParts = weekStartStr.split('-');
+                        var weekStart = new Date(Date.UTC(
+                            parseInt(weekParts[0], 10),
+                            parseInt(weekParts[1], 10) - 1,
+                            parseInt(weekParts[2], 10)
+                        ));
+
+                        var weekStartUnixSeconds = dateToUnixSeconds(weekStart);
+
+                        var entryIds = entries.map(function(e) { return e.id; });
+
+                        creates.push({
+                            key: sheetKey,
+                            memberId: memberId,
+                            weekStartIso: weekStartStr,
+                            weekStartUnixSeconds: weekStartUnixSeconds,
+                            values: {
+                                membre: memberId,
+                                semaine: weekStartUnixSeconds,
+                                statut: 'brouillon',
+                                revisionValidation: 0
+                            },
+                            entryIds: entryIds
+                        });
+
+                        // Après création, toutes les entrées seront rattachées
+                        for (var j = 0; j < entries.length; j++) {
+                            linksToExistingSheets.push({
+                                entryId: entries[j].id,
+                                sheetId: null, // Sera rempli après création
+                                key: sheetKey,
+                                pendingCreate: true
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        // Trier pour déterminisme
+        creates.sort(function(a, b) {
+            return a.key.localeCompare(b.key);
+        });
+
+        linksToExistingSheets.sort(function(a, b) {
+            return a.entryId - b.entryId;
+        });
+
+        preservedLinks.sort(function(a, b) {
+            return a.entryId - b.entryId;
+        });
+
+        // Construire les liens finaux
+        var links = linksToExistingSheets.map(function(l) {
+            return {
+                key: l.key,
+                entryId: l.entryId,
+                sheetId: l.sheetId,
+                pendingCreate: l.pendingCreate
+            };
+        });
+
+        // Calculer le résumé - inclure TOUS les rattachements
+        var entriesToLink = linksToExistingSheets.length;
+
+        var sheetsToCreate = creates.length;
+
+        return {
+            valid: true,
+            creates: creates,
+            links: links,
+            preservedLinks: preservedLinks,
+            conflicts: conflicts,
+            warnings: warnings,
+            summary: {
+                teamCount: inspection.summary.teamCount,
+                sheetCount: inspection.summary.sheetCount,
+                entryCount: inspection.summary.entryCount,
+                sheetsToCreate: sheetsToCreate,
+                entriesToLink: entriesToLink,
+                preservedLinks: preservedLinks.length,
+                conflicts: conflicts.length,
+                warnings: warnings.length
+            }
+        };
+    }
+
+    // ========================================================================
+    // VÉRIFICATION FINALE
+    // ========================================================================
+
+    /**
+     * Vérifie l'état final après application du plan
+     * @param {Object} data - { team, sheets, entries } (après modifications)
+     * @param {Object} options - Options dont timeZone
+     * @returns {Object} { valid: boolean, conflicts: [] }
+     */
+    function verifyFinalState(data, options) {
+        var opts = options || {};
+        var inspection = inspect(data, opts);
+        var conflicts = [];
+        var seenConflictKeys = {};
+
+        // Helper pour ajouter un conflit sans doublon
+        function addConflict(conflict) {
+            var key = conflict.code + ':' +
+                      (conflict.entryId || conflict.sheetId || '') + ':' +
+                      (conflict.memberId || '') + ':' +
+                      (conflict.weekStart || '');
+
+            if (!seenConflictKeys[key]) {
+                conflicts.push(conflict);
+                seenConflictKeys[key] = true;
+            }
+        }
+
+        // Inclure TOUS les conflits de l'inspection initiale
+        for (var i = 0; i < inspection.conflicts.length; i++) {
+            addConflict(inspection.conflicts[i]);
+        }
+
+        var teamById = inspection.teamById;
+        var sheetById = inspection.sheetById;
+        var sheetByKey = inspection.sheetByKey;
+        var entriesBySheetKey = inspection.entriesBySheetKey;
+        var sheetsByMemberWeek = inspection.sheetsByMemberWeek;
+
+        // 1. Vérifier que chaque Team utilisée existe
+        for (var key in sheetsByMemberWeek) {
+            if (!Object.prototype.hasOwnProperty.call(sheetsByMemberWeek, key)) {
+                continue;
+            }
+            var sheetsForWeek = sheetsByMemberWeek[key];
+            for (var si = 0; si < sheetsForWeek.length; si++) {
+                var sheet = sheetsForWeek[si];
+                if (!teamById[sheet.memberId]) {
+                    addConflict({
+                        code: 'SHEET_MEMBER_NOT_IN_TEAM',
+                        sheetId: sheet.id,
+                        memberId: sheet.memberId,
+                        message: 'Feuille référence un membre absent de Team'
+                    });
+                }
+            }
+        }
+
+        // 2. Vérifier chaque TimeEntry
+        for (var sheetKey in entriesBySheetKey) {
+            if (!Object.prototype.hasOwnProperty.call(entriesBySheetKey, sheetKey)) {
+                continue;
+            }
+
+            var entries = entriesBySheetKey[sheetKey];
+
+            for (var i = 0; i < entries.length; i++) {
+                var entry = entries[i];
+                var entrySheetId = normalizeId(entry.feuille);
+
+                // Vérifier que la TimeEntry a un lien vers une feuille
+                if (entrySheetId === null || entrySheetId === 0 || entrySheetId === undefined) {
+                    addConflict({
+                        code: 'TIME_ENTRY_WITHOUT_SHEET',
+                        entryId: entry.id,
+                        sheetKey: sheetKey,
+                        message: 'TimeEntry n\'a pas de lien vers une feuille'
+                    });
+                    continue;
+                }
+
+                // Vérifier que la feuille référencée existe
+                var referencedSheet = sheetById[entrySheetId];
+                if (!referencedSheet) {
+                    addConflict({
+                        code: 'TIME_ENTRY_SHEET_NOT_FOUND',
+                        entryId: entry.id,
+                        sheetId: entrySheetId,
+                        message: 'TimeEntry référence une feuille inexistante'
+                    });
+                    continue;
+                }
+
+                // 3. Vérifier que le membre correspond
+                if (referencedSheet.memberId !== normalizeId(entry.membre)) {
+                    addConflict({
+                        code: 'TIME_ENTRY_SHEET_MEMBER_MISMATCH',
+                        entryId: entry.id,
+                        entryMemberId: normalizeId(entry.membre),
+                        sheetMemberId: referencedSheet.memberId,
+                        sheetId: entrySheetId,
+                        message: 'Membre de la TimeEntry différent du membre de la feuille'
+                    });
+                }
+
+                // 4. Vérifier que la semaine correspond
+                if (referencedSheet.weekStartIso !== sheetKey.split(':')[1]) {
+                    var entryWeekKey = sheetKey.split(':')[1];
+                    addConflict({
+                        code: 'TIME_ENTRY_SHEET_WEEK_MISMATCH',
+                        entryId: entry.id,
+                        entryWeek: entryWeekKey,
+                        sheetWeek: referencedSheet.weekStartIso,
+                        sheetId: entrySheetId,
+                        message: 'Semaine de la TimeEntry différente de la semaine de la feuille'
+                    });
+                }
+            }
+        }
+
+        // Les doublons de feuilles sont déjà détectés par inspect()
+        // et inclus dans les conflits initiaux
+
+        return {
+            valid: conflicts.length === 0,
+            conflicts: conflicts,
+            summary: {
+                teamCount: inspection.summary.teamCount,
+                sheetCount: inspection.summary.sheetCount,
+                entryCount: inspection.summary.entryCount,
+                conflictCount: conflicts.length
+            }
+        };
+    }
+
+    // ========================================================================
+    // EXPORT PUBLIC
+    // ========================================================================
+
+    var TaskFlowTimesheetBackfill = {
+        normalizeId: normalizeId,
+        normalizeDateValue: normalizeDateValue,
+        getWeekStart: getWeekStart,
+        buildSheetKey: buildSheetKey,
+        formatDateKey: formatDateKey,
+        dateToUnixSeconds: dateToUnixSeconds,
+        inspect: inspect,
+        buildPlan: buildPlan,
+        verifyFinalState: verifyFinalState
+    };
+
+    // Exposition sur global pour Node/Jest et navigateur
+    // Dans Node, global est passé par l'IIFE ; dans le navigateur, c'est window
+    global.TaskFlowTimesheetBackfill = TaskFlowTimesheetBackfill;
+
+    // Export CommonJS pour Jest/Node
+    if (typeof module !== 'undefined' && module.exports) {
+        module.exports = TaskFlowTimesheetBackfill;
+    }
+
+})(typeof window !== 'undefined' ? window : (typeof global !== 'undefined' ? global : this));
+
+
+/* ============================================================================
+ * taskflow-migrations.js — Migrations versionnées du schéma TaskFlow
+ * ----------------------------------------------------------------------------
+ * Ce module gère les évolutions du schéma de manière contrôlée et réversible.
+ * Chaque migration est :
+ * - Idempotente (peut être réexécutée sans effet secondaire)
+ * - Non destructive (ne supprime jamais de données)
+ * - Testable indépendamment
+ * 
+ * Version 1: Schéma de base
+ * Version 2: TaskAssignments + extension quotidienne de TimeEntries
+ * Version 3: MemberDailyCapacities + TimeEntries.capaciteJour
+ * Version 4: Fondation du workflow de validation des feuilles de temps
+ * Version 5: Rattachement des entrées de temps aux feuilles hebdomadaires
+ * ============================================================================ */
+
+(function (global) {
+    'use strict';
+
+    var SCHEMA = global.TASKFLOW_SCHEMA;
+    var DEFAULT_WEEKLY_CAPACITY = 35;
+
+    // Helper : délai
+    function delay(ms) {
+        return new Promise(function (resolve) { setTimeout(resolve, ms); });
+    }
+
+    // Helper : log
+    function log(msg, data) {
+        var prefix = '[TaskFlow Migration] ';
+        if (typeof console !== 'undefined') {
+            if (data !== undefined) {
+                console.info(prefix + msg, data);
+            } else {
+                console.info(prefix + msg);
+            }
+        }
+    }
+
+    // Helper : convertir tableau colonnaire en lignes
+    function columnarToRows(data) {
+        if (!data || Array.isArray(data)) return data || [];
+        var cols = Object.keys(data);
+        if (!cols.length) return [];
+        var n = (data[cols[0]] && data[cols[0]].length) || 0;
+        var rows = [];
+        for (var i = 0; i < n; i++) {
+            var rec = {};
+            for (var j = 0; j < cols.length; j++) {
+                rec[cols[j]] = data[cols[j]][i];
+            }
+            rows.push(rec);
+        }
+        return rows;
+    }
+
+    // Helper : obtenir docApi normalisé
+    function getDocApi(grist) {
+        var docApi = grist && (grist.docApi || grist);
+        if (!docApi || typeof docApi.fetchTable !== 'function' || typeof docApi.applyUserActions !== 'function') {
+            throw new Error('INVALID_GRIST_DOC_API: grist.docApi doit exposer fetchTable et applyUserActions');
+        }
+        return docApi;
+    }
+
+    // Helper : charger les métadonnées
+    async function loadMigrationMetadata(grist) {
+        var docApi = getDocApi(grist);
+        var tablesData = await docApi.fetchTable('_grist_Tables');
+        var columnsData = await docApi.fetchTable('_grist_Tables_column');
+        
+        var tables = columnarToRows(tablesData);
+        var columns = columnarToRows(columnsData);
+        
+        var tableById = {};
+        for (var i = 0; i < tables.length; i++) {
+            tableById[tables[i].id] = tables[i].tableId;
+        }
+        
+        var columnsByKey = {};
+        for (var j = 0; j < columns.length; j++) {
+            var col = columns[j];
+            var tableId = tableById[col.parentId];
+            if (tableId) {
+                var key = tableId + '.' + col.colId;
+                columnsByKey[key] = {
+                    tableId: tableId,
+                    colId: col.colId,
+                    type: col.type,
+                    isFormula: col.isFormula,
+                    formula: col.formula || '',
+                    parentId: col.parentId
+                };
+            }
+        }
+        
+        var tablesByName = {};
+        for (var k = 0; k < tables.length; k++) {
+            tablesByName[tables[k].tableId] = tables[k];
+        }
+        
+        return {
+            tablesById: tableById,
+            tablesByName: tablesByName,
+            columnsByKey: columnsByKey
+        };
+    }
+
+    // ========================================================================
+    // MIGRATION V1 → V2 — Planning daily assignments
+    // ========================================================================
+    
+    async function migrateToV2(grist, metadata) {
+        log('Migration v1 → v2: planning-daily-assignments-v2');
+        
+        var docApi = getDocApi(grist);
+        var actions = [];
+        var existingTables = metadata.tablesByName || {};
+        var existingColumns = metadata.columnsByKey || {};
+        
+        // 1. Créer TaskAssignments si elle n'existe pas
+        if (!existingTables['TaskAssignments']) {
+            log('Création de la table TaskAssignments');
+            actions.push(['AddTable', 'TaskAssignments', [
+                { id: 'tache', type: 'Ref:Tasks', isFormula: false },
+                { id: 'membre', type: 'Ref:Team', isFormula: false },
+                { id: 'heuresAllouees', type: 'Numeric', isFormula: false },
+                { id: 'dateDebut', type: 'Date', isFormula: false },
+                { id: 'dateFin', type: 'Date', isFormula: false },
+                { id: 'modeRepartition', type: 'Choice', isFormula: false },
+                { id: 'actif', type: 'Bool', isFormula: false },
+                { id: 'commentaire', type: 'Text', isFormula: false }
+            ]]);
+            // Marquer les colonnes comme créées pour éviter de les recréer
+            existingTables['TaskAssignments'] = { id: null };
+            existingColumns['TaskAssignments.tache'] = { type: 'Ref:Tasks' };
+            existingColumns['TaskAssignments.membre'] = { type: 'Ref:Team' };
+            existingColumns['TaskAssignments.heuresAllouees'] = { type: 'Numeric' };
+            existingColumns['TaskAssignments.dateDebut'] = { type: 'Date' };
+            existingColumns['TaskAssignments.dateFin'] = { type: 'Date' };
+            existingColumns['TaskAssignments.modeRepartition'] = { type: 'Choice' };
+            existingColumns['TaskAssignments.actif'] = { type: 'Bool' };
+            existingColumns['TaskAssignments.commentaire'] = { type: 'Text' };
+        } else {
+            log('TaskAssignments existe déjà');
+        }
+        
+        // 2. Vérifier et ajouter les colonnes manquantes de TaskAssignments
+        var taskAssignmentsCols = [
+            { id: 'tache', type: 'Ref:Tasks' },
+            { id: 'membre', type: 'Ref:Team' },
+            { id: 'heuresAllouees', type: 'Numeric' },
+            { id: 'dateDebut', type: 'Date' },
+            { id: 'dateFin', type: 'Date' },
+            { id: 'modeRepartition', type: 'Choice' },
+            { id: 'actif', type: 'Bool' },
+            { id: 'commentaire', type: 'Text' }
+        ];
+        for (var i = 0; i < taskAssignmentsCols.length; i++) {
+            var colDef = taskAssignmentsCols[i];
+            var key = 'TaskAssignments.' + colDef.id;
+            if (!existingColumns[key]) {
+                log('Ajout de la colonne TaskAssignments.' + colDef.id);
+                actions.push(['AddColumn', 'TaskAssignments', colDef.id, {
+                    type: colDef.type,
+                    isFormula: false
+                }]);
+                existingColumns[key] = { type: colDef.type };
+            } else {
+                log('TaskAssignments.' + colDef.id + ' existe déjà');
+            }
+        }
+        
+        // 3. Ajouter les colonnes v2 manquantes à TimeEntries
+        var timeEntriesCols = [
+            { id: 'affectation', type: 'Ref:TaskAssignments' },
+            { id: 'heuresPrevues', type: 'Numeric' },
+            { id: 'capaciteTheorique', type: 'Numeric' },
+            { id: 'capaciteDisponible', type: 'Numeric' },
+            { id: 'feuille', type: 'Ref:Feuilles' },
+            { id: 'revisionPlan', type: 'Int' }
+        ];
+        
+        for (var j = 0; j < timeEntriesCols.length; j++) {
+            var colDef = timeEntriesCols[j];
+            var key = 'TimeEntries.' + colDef.id;
+            if (!existingColumns[key]) {
+                log('Ajout de la colonne TimeEntries.' + colDef.id);
+                actions.push(['AddColumn', 'TimeEntries', colDef.id, {
+                    type: colDef.type,
+                    isFormula: false
+                }]);
+                existingColumns[key] = { type: colDef.type };
+            } else {
+                log('TimeEntries.' + colDef.id + ' existe déjà');
+            }
+        }
+        
+        // Appliquer les actions si nécessaire
+        if (actions.length > 0) {
+            await docApi.applyUserActions(actions);
+            log('Migration v2 appliquée avec succès: ' + actions.length + ' actions');
+            
+            // Relire les métadonnées après écriture
+            metadata = await loadMigrationMetadata(grist);
+        } else {
+            log('Aucune action nécessaire, migration déjà appliquée');
+        }
+        
+        return { 
+            success: true, 
+            message: 'Migration v2 appliquée',
+            actionsExecuted: actions.length,
+            metadata: metadata
+        };
+    }
+
+    // ========================================================================
+    // MIGRATION V2 → V3 — Member daily capacities
+    // ========================================================================
+    
+    async function migrateToV3(grist, metadata) {
+        log('Migration v2 → v3: member-daily-capacities-v3');
+        
+        var docApi = getDocApi(grist);
+        var actions = [];
+        var existingTables = metadata.tablesByName || {};
+        var existingColumns = metadata.columnsByKey || {};
+        
+        // 1. Créer MemberDailyCapacities si elle n'existe pas
+        if (!existingTables['MemberDailyCapacities']) {
+            log('Création de la table MemberDailyCapacities');
+            actions.push(['AddTable', 'MemberDailyCapacities', [
+                { id: 'membre', type: 'Ref:Team', isFormula: false },
+                { id: 'date', type: 'Date', isFormula: false },
+                { id: 'capaciteTheorique', type: 'Numeric', isFormula: false },
+                { id: 'disponibiliteRatio', type: 'Numeric', isFormula: false },
+                { id: 'capaciteDisponible', type: 'Numeric', isFormula: false },
+                { id: 'absenceHeures', type: 'Numeric', isFormula: false },
+                { id: 'source', type: 'Choice', isFormula: false },
+                { id: 'revision', type: 'Int', isFormula: false },
+                { id: 'sourceUpdatedAt', type: 'DateTime', isFormula: false },
+                { id: 'commentaire', type: 'Text', isFormula: false }
+            ]]);
+            // Marquer les colonnes comme créées pour éviter de les recréer
+            existingTables['MemberDailyCapacities'] = { id: null };
+            existingColumns['MemberDailyCapacities.membre'] = { type: 'Ref:Team' };
+            existingColumns['MemberDailyCapacities.date'] = { type: 'Date' };
+            existingColumns['MemberDailyCapacities.capaciteTheorique'] = { type: 'Numeric' };
+            existingColumns['MemberDailyCapacities.disponibiliteRatio'] = { type: 'Numeric' };
+            existingColumns['MemberDailyCapacities.capaciteDisponible'] = { type: 'Numeric' };
+            existingColumns['MemberDailyCapacities.absenceHeures'] = { type: 'Numeric' };
+            existingColumns['MemberDailyCapacities.source'] = { type: 'Choice' };
+            existingColumns['MemberDailyCapacities.revision'] = { type: 'Int' };
+            existingColumns['MemberDailyCapacities.sourceUpdatedAt'] = { type: 'DateTime' };
+            existingColumns['MemberDailyCapacities.commentaire'] = { type: 'Text' };
+        } else {
+            log('MemberDailyCapacities existe déjà');
+        }
+        
+        // 2. Vérifier et ajouter les colonnes manquantes de MemberDailyCapacities
+        var memberDailyCapCols = [
+            { id: 'membre', type: 'Ref:Team' },
+            { id: 'date', type: 'Date' },
+            { id: 'capaciteTheorique', type: 'Numeric' },
+            { id: 'disponibiliteRatio', type: 'Numeric' },
+            { id: 'capaciteDisponible', type: 'Numeric' },
+            { id: 'absenceHeures', type: 'Numeric' },
+            { id: 'source', type: 'Choice' },
+            { id: 'revision', type: 'Int' },
+            { id: 'sourceUpdatedAt', type: 'DateTime' },
+            { id: 'commentaire', type: 'Text' }
+        ];
+        
+        for (var i = 0; i < memberDailyCapCols.length; i++) {
+            var colDef = memberDailyCapCols[i];
+            var key = 'MemberDailyCapacities.' + colDef.id;
+            if (!existingColumns[key]) {
+                log('Ajout de la colonne MemberDailyCapacities.' + colDef.id);
+                actions.push(['AddColumn', 'MemberDailyCapacities', colDef.id, {
+                    type: colDef.type,
+                    isFormula: false
+                }]);
+                existingColumns[key] = { type: colDef.type };
+            } else {
+                log('MemberDailyCapacities.' + colDef.id + ' existe déjà');
+            }
+        }
+        
+        // 3. Ajouter TimeEntries.capaciteJour
+        var key = 'TimeEntries.capaciteJour';
+        if (!existingColumns[key]) {
+            log('Ajout de la colonne TimeEntries.capaciteJour');
+            actions.push(['AddColumn', 'TimeEntries', 'capaciteJour', {
+                type: 'Ref:MemberDailyCapacities',
+                isFormula: false
+            }]);
+            existingColumns[key] = { type: 'Ref:MemberDailyCapacities' };
+        } else {
+            log('TimeEntries.capaciteJour existe déjà');
+        }
+        
+        // Appliquer les actions si nécessaire
+        if (actions.length > 0) {
+            await docApi.applyUserActions(actions);
+            log('Migration v3 appliquée avec succès: ' + actions.length + ' actions');
+            
+            // Relire les métadonnées après écriture
+            metadata = await loadMigrationMetadata(grist);
+        } else {
+            log('Aucune action nécessaire, migration déjà appliquée');
+        }
+        
+        return { 
+            success: true, 
+            message: 'Migration v3 appliquée',
+            actionsExecuted: actions.length,
+            metadata: metadata
+        };
+    }
+
+    // ========================================================================
+    // MIGRATION V3 → V4 — Fondation du workflow de validation
+    // ========================================================================
+    
+    async function migrateToV4(grist, metadata) {
+        log('Migration v3 → v4: timesheet-validation-foundation-v4');
+        
+        var docApi = getDocApi(grist);
+        var actions = [];
+        var existingTables = metadata.tablesByName || {};
+        var existingColumns = metadata.columnsByKey || {};
+        var errors = [];
+        
+        // 1. Ajouter les colonnes simples manquantes de Feuilles
+        var feuillesCols = [
+            { id: 'responsableValidation', type: 'Ref:Team' },
+            { id: 'soumisPar', type: 'Ref:Team' },
+            { id: 'dateSoumission', type: 'DateTime' },
+            { id: 'revisionValidation', type: 'Int' },
+            { id: 'motifCorrection', type: 'Text' }
+        ];
+        
+        for (var i = 0; i < feuillesCols.length; i++) {
+            var colDef = feuillesCols[i];
+            var key = 'Feuilles.' + colDef.id;
+            if (!existingColumns[key]) {
+                log('Ajout de la colonne Feuilles.' + colDef.id);
+                actions.push(['AddColumn', 'Feuilles', colDef.id, {
+                    type: colDef.type,
+                    isFormula: false
+                }]);
+                existingColumns[key] = { type: colDef.type };
+            } else {
+                // Vérifier le type
+                var existingCol = existingColumns[key];
+                if (existingCol.type !== colDef.type) {
+                    errors.push({
+                        column: key,
+                        expectedType: colDef.type,
+                        actualType: existingCol.type,
+                        issue: 'TYPE_MISMATCH'
+                    });
+                }
+                log('Feuilles.' + colDef.id + ' existe déjà (type: ' + existingCol.type + ')');
+            }
+        }
+        
+        // 2. Ajouter les colonnes simples de TaskFlow_Meta pour les ACL
+        var metaCols = [
+            { id: 'aclVersion', type: 'Int' },
+            { id: 'aclStatus', type: 'Choice' },
+            { id: 'lastAclMigration', type: 'Text' },
+            { id: 'lastAclMigrationAt', type: 'DateTime' },
+            { id: 'lastAclError', type: 'Text' }
+        ];
+        
+        for (var j = 0; j < metaCols.length; j++) {
+            var colDef = metaCols[j];
+            var key = 'TaskFlow_Meta.' + colDef.id;
+            if (!existingColumns[key]) {
+                log('Ajout de la colonne TaskFlow_Meta.' + colDef.id);
+                actions.push(['AddColumn', 'TaskFlow_Meta', colDef.id, {
+                    type: colDef.type,
+                    isFormula: false
+                }]);
+                existingColumns[key] = { type: colDef.type };
+            } else {
+                var existingCol = existingColumns[key];
+                if (existingCol.type !== colDef.type) {
+                    errors.push({
+                        column: key,
+                        expectedType: colDef.type,
+                        actualType: existingCol.type,
+                        issue: 'TYPE_MISMATCH'
+                    });
+                }
+                log('TaskFlow_Meta.' + colDef.id + ' existe déjà (type: ' + existingCol.type + ')');
+            }
+        }
+        
+        // 3. Ajouter les colonnes formulées de TimeEntries
+        var timeEntriesFormulaCols = [
+            { 
+                id: 'statutFeuille', 
+                type: 'Text', 
+                formula: '$feuille.statut if $feuille else ""' 
+            },
+            { 
+                id: 'responsableValidation', 
+                type: 'Ref:Team', 
+                formula: '$feuille.responsableValidation if $feuille else None' 
+            },
+            { 
+                id: 'semaineFeuille', 
+                type: 'Date', 
+                formula: '$feuille.semaine if $feuille else None' 
+            }
+        ];
+        
+        for (var k = 0; k < timeEntriesFormulaCols.length; k++) {
+            var colDef = timeEntriesFormulaCols[k];
+            var key = 'TimeEntries.' + colDef.id;
+            if (!existingColumns[key]) {
+                log('Ajout de la colonne formulée TimeEntries.' + colDef.id);
+                actions.push(['AddColumn', 'TimeEntries', colDef.id, {
+                    type: colDef.type,
+                    isFormula: true,
+                    formula: colDef.formula
+                }]);
+                existingColumns[key] = { 
+                    type: colDef.type,
+                    isFormula: true,
+                    formula: colDef.formula
+                };
+            } else {
+                var existingCol = existingColumns[key];
+                
+                // Vérifier isFormula
+                if (!existingCol.isFormula) {
+                    errors.push({
+                        column: key,
+                        expectedFormula: true,
+                        actualFormula: existingCol.isFormula,
+                        issue: 'NOT_A_FORMULA'
+                    });
+                }
+                
+                // Vérifier le type
+                if (existingCol.type !== colDef.type) {
+                    errors.push({
+                        column: key,
+                        expectedType: colDef.type,
+                        actualType: existingCol.type,
+                        issue: 'TYPE_MISMATCH'
+                    });
+                }
+                
+                // Vérifier la formule (seulement si isFormula=true)
+                if (existingCol.isFormula && existingCol.formula !== colDef.formula) {
+                    // Formule différente : pourrait être une personnalisation
+                    // On ne bloque pas, mais on logue
+                    log('TimeEntries.' + colDef.id + ' a une formule personnalisée');
+                }
+                
+                log('TimeEntries.' + colDef.id + ' existe déjà (type: ' + existingCol.type + ', isFormula: ' + existingCol.isFormula + ')');
+            }
+        }
+        
+        // Si des erreurs critiques, échouer la migration
+        if (errors.length > 0) {
+            var criticalErrors = errors.filter(function(e) { 
+                return e.issue === 'TYPE_MISMATCH' || e.issue === 'NOT_A_FORMULA'; 
+            });
+            
+            if (criticalErrors.length > 0) {
+                log('Migration v4 échouée: conflits critiques détectés', criticalErrors);
+                throw new Error(
+                    'Migration v4 bloquée: ' + criticalErrors.length + ' conflit(s) critique(s). ' +
+                    'Colonnes incompatibles détectées. Détails: ' + JSON.stringify(criticalErrors)
+                );
+            }
+        }
+        
+        // Appliquer les actions si nécessaire
+        if (actions.length > 0) {
+            await docApi.applyUserActions(actions);
+            log('Migration v4 appliquée avec succès: ' + actions.length + ' actions');
+            
+            // Relire les métadonnées après écriture
+            metadata = await loadMigrationMetadata(grist);
+        } else {
+            log('Aucune action nécessaire, migration déjà appliquée');
+        }
+        
+        return { 
+            success: true, 
+            message: 'Migration v4 appliquée',
+            actionsExecuted: actions.length,
+            metadata: metadata,
+            warnings: errors.length > 0 ? errors : undefined
+        };
+    }
+
+    // ========================================================================
+    // MIGRATION V4 → V5 — Rattachement des entrées de temps aux feuilles hebdomadaires
+    // ========================================================================
+    
+    async function migrateToV5(grist, metadata, options) {
+        var opts = options || {};
+        var dryRun = opts.dryRun || false;
+        
+        log('Migration v4 → v5: timesheet-sheet-link-backfill-v5');
+        
+        // Vérifier que le module de backfill est chargé
+        if (!global.TaskFlowTimesheetBackfill) {
+            throw new Error('TIMESHEET_BACKFILL_MODULE_NOT_LOADED: Le module TaskFlowTimesheetBackfill n\'est pas chargé');
+        }
+        
+        var backfill = global.TaskFlowTimesheetBackfill;
+        var docApi = getDocApi(grist);
+        
+        // Vérifier que les tables existent
+        var tablesData = await docApi.fetchTable('_grist_Tables');
+        var tables = columnarToRows(tablesData);
+        var tableIds = tables.map(function(t) { return t.tableId; });
+        
+        var requiredTables = ['Team', 'Feuilles', 'TimeEntries'];
+        var missingTables = requiredTables.filter(function(t) { return tableIds.indexOf(t) === -1; });
+        
+        if (missingTables.length > 0) {
+            throw new Error('TIMESHEET_BACKFILL_TABLE_MISSING: Tables manquantes: ' + missingTables.join(', '));
+        }
+        
+        // Charger les données
+        var teamData = await docApi.fetchTable('Team');
+        var sheetsData = await docApi.fetchTable('Feuilles');
+        var entriesData = await docApi.fetchTable('TimeEntries');
+        
+        var team = columnarToRows(teamData);
+        var sheets = columnarToRows(sheetsData);
+        var entries = columnarToRows(entriesData);
+        
+        log('Données chargées: ' + team.length + ' membres, ' + sheets.length + ' feuilles, ' + entries.length + ' entrées');
+        
+        // Phase 1 : Prévalidation - construire le plan initial
+        var inspection = backfill.inspect({ team: team, sheets: sheets, entries: entries });
+        var plan = backfill.buildPlan({ team: team, sheets: sheets, entries: entries }, inspection);
+        
+        if (!plan.valid) {
+            log('Migration v5 échouée: conflits détectés', plan.conflicts);
+            throw new Error(
+                'TIMESHEET_BACKFILL_CONFLICT: ' + plan.conflicts.length + ' conflit(s) détecté(s). ' +
+                'Codes: ' + plan.conflicts.map(function(c) { return c.code; }).join(', ')
+            );
+        }
+        
+        // Dry run : retourner le plan sans appliquer
+        if (dryRun) {
+            log('Dry run: aucun changement appliqué');
+            return {
+                success: true,
+                dryRun: true,
+                message: 'Prévisualisation de la migration v5',
+                actionsExecuted: 0,
+                plan: plan
+            };
+        }
+        
+        var actionsExecuted = 0;
+        var createdSheets = [];
+        var linkedEntries = [];
+        var preservedLinks = [];
+        
+        // Phase A : Créer les feuilles manquantes
+        if (plan.creates.length > 0) {
+            log('Phase A: Création de ' + plan.creates.length + ' feuilles manquantes');
+            
+            // Sauvegarder les clés des feuilles créées pour le rapport
+            var createdSheetKeys = plan.creates.map(function(create) {
+                return create.key;
+            });
+            
+            var addActions = [];
+            for (var i = 0; i < plan.creates.length; i++) {
+                var create = plan.creates[i];
+                addActions.push([
+                    'AddRecord',
+                    'Feuilles',
+                    null,
+                    create.values
+                ]);
+            }
+            
+            if (addActions.length > 0) {
+                await docApi.applyUserActions(addActions);
+                actionsExecuted += addActions.length;
+                log('Feuilles créées: ' + addActions.length);
+                createdSheets = createdSheetKeys;
+            }
+            
+            // Relire TOUTES les tables pour la concurrence (Team, Feuilles, TimeEntries)
+            var newTeamData = await docApi.fetchTable('Team');
+            var newSheetsData = await docApi.fetchTable('Feuilles');
+            var newEntriesData = await docApi.fetchTable('TimeEntries');
+            
+            var newTeam = columnarToRows(newTeamData);
+            var newSheets = columnarToRows(newSheetsData);
+            var newEntries = columnarToRows(newEntriesData);
+            
+            // Reconstruire le plan avec les nouvelles données
+            var newInspection = backfill.inspect({ 
+                team: newTeam, 
+                sheets: newSheets, 
+                entries: newEntries 
+            });
+            
+            // Vérifier qu'il n'y a pas de conflits après création
+            if (newInspection.conflicts.length > 0) {
+                log('Conflits détectés après phase A', newInspection.conflicts);
+                throw new Error(
+                    'TIMESHEET_BACKFILL_CONFLICT_AFTER_CREATE: ' + newInspection.conflicts.length + ' conflit(s) après création des feuilles'
+                );
+            }
+            
+            var newPlan = backfill.buildPlan({ 
+                team: newTeam, 
+                sheets: newSheets, 
+                entries: newEntries 
+            }, newInspection);
+            
+            // Vérifier que la phase A est complète
+            if (newPlan.creates.length > 0) {
+                throw new Error('TIMESHEET_BACKFILL_PHASE_A_INCOMPLETE: Il reste des feuilles à créer après la phase A');
+            }
+            
+            // Utiliser le nouveau plan pour la phase B
+            plan = newPlan;
+        } else {
+            // Même sans création, relire pour détecter les modifications concurrentes
+            var preTeamData = await docApi.fetchTable('Team');
+            var preSheetsData = await docApi.fetchTable('Feuilles');
+            var preEntriesData = await docApi.fetchTable('TimeEntries');
+            
+            var preTeam = columnarToRows(preTeamData);
+            var preSheets = columnarToRows(preSheetsData);
+            var preEntries = columnarToRows(preEntriesData);
+            
+            var preInspection = backfill.inspect({ 
+                team: preTeam, 
+                sheets: preSheets, 
+                entries: preEntries 
+            });
+            
+            if (preInspection.conflicts.length > 0) {
+                log('Conflits détectés avant phase B', preInspection.conflicts);
+                throw new Error(
+                    'TIMESHEET_BACKFILL_CONFLICT_AFTER_CREATE: ' + preInspection.conflicts.length + ' conflit(s) détectés avant rattachement'
+                );
+            }
+            
+            var prePlan = backfill.buildPlan({ 
+                team: preTeam, 
+                sheets: preSheets, 
+                entries: preEntries 
+            }, preInspection);
+            
+            plan = prePlan;
+        }
+        
+        // Phase B : Rattacher les TimeEntries
+        if (plan.links.length > 0) {
+            // Vérifier qu'il n'y a pas de créations restantes ou de liens non résolus
+            var unresolvedLinks = plan.links.filter(function(link) {
+                return backfill.normalizeId(link.sheetId) === null;
+            });
+
+            if (plan.creates.length > 0 || unresolvedLinks.length > 0) {
+                log('Phase B bloquée : créations restantes ou liens non résolus', {
+                    creates: plan.creates.length,
+                    unresolvedLinks: unresolvedLinks.length
+                });
+                throw new Error(
+                    'TIMESHEET_BACKFILL_PHASE_A_INCOMPLETE: ' +
+                    plan.creates.length +
+                    ' feuille(s) restent à créer et ' +
+                    unresolvedLinks.length +
+                    ' lien(s) restent non résolus'
+                );
+            }
+
+            log('Phase B: Rattachement de ' + plan.links.length + ' entrées');
+            
+            var updateActions = [];
+            for (var j = 0; j < plan.links.length; j++) {
+                var link = plan.links[j];
+                updateActions.push([
+                    'UpdateRecord',
+                    'TimeEntries',
+                    link.entryId,
+                    {
+                        feuille: link.sheetId
+                    }
+                ]);
+            }
+            
+            if (updateActions.length > 0) {
+                await docApi.applyUserActions(updateActions);
+                actionsExecuted += updateActions.length;
+                log('Entrées rattachées: ' + updateActions.length);
+            }
+        }
+        
+        // Vérification finale
+        log('Vérification finale...');
+        var finalTeamData = await docApi.fetchTable('Team');
+        var finalSheetsData = await docApi.fetchTable('Feuilles');
+        var finalEntriesData = await docApi.fetchTable('TimeEntries');
+        
+        var finalTeam = columnarToRows(finalTeamData);
+        var finalSheets = columnarToRows(finalSheetsData);
+        var finalEntries = columnarToRows(finalEntriesData);
+        
+        var verification = backfill.verifyFinalState({ 
+            team: finalTeam, 
+            sheets: finalSheets, 
+            entries: finalEntries 
+        });
+        
+        if (!verification.valid) {
+            log('Vérification finale échouée', verification.conflicts);
+            throw new Error(
+                'TIMESHEET_BACKFILL_VERIFICATION_FAILED: ' + verification.conflicts.length + ' conflit(s) après migration'
+            );
+        }
+        
+        // Compter les statistiques
+        for (var k = 0; k < plan.links.length; k++) {
+            var link = plan.links[k];
+            if (link.pendingCreate) {
+                linkedEntries.push(link.entryId);
+            } else {
+                // Lien vers feuille existante
+                linkedEntries.push(link.entryId);
+            }
+        }
+        
+        for (var l = 0; l < plan.preservedLinks.length; l++) {
+            preservedLinks.push(plan.preservedLinks[l].entryId);
+        }
+        
+        log('Migration v5 appliquée avec succès');
+        
+        return {
+            success: true,
+            message: 'Migration v5 appliquée',
+            actionsExecuted: actionsExecuted,
+            createdSheets: createdSheets,
+            linkedEntries: linkedEntries,
+            preservedLinks: preservedLinks,
+            verification: verification,
+            dryRun: false
+        };
+    }
+
+    // ========================================================================
+    // LISTE DES MIGRATIONS
+    // ========================================================================
+    
+    var MIGRATIONS = [
+        {
+            version: 2,
+            name: 'planning-daily-assignments-v2',
+            description: 'Création de TaskAssignments et extension de TimeEntries',
+            run: migrateToV2
+        },
+        {
+            version: 3,
+            name: 'member-daily-capacities-v3',
+            description: 'Création de MemberDailyCapacities et TimeEntries.capaciteJour',
+            run: migrateToV3
+        },
+        {
+            version: 4,
+            name: 'timesheet-validation-foundation-v4',
+            description: 'Fondation du workflow de validation des feuilles de temps',
+            run: migrateToV4
+        },
+        {
+            version: 5,
+            name: 'timesheet-sheet-link-backfill-v5',
+            description: 'Rattachement des entrées de temps aux feuilles hebdomadaires',
+            run: migrateToV5
+        }
+    ];
+
+    // ========================================================================
+    // API PUBLIQUE
+    // ========================================================================
+
+    // Lit la version actuelle installée
+    async function getCurrentVersion(grist) {
+        var docApi = getDocApi(grist);
+        try {
+            var meta = await docApi.fetchTable('TaskFlow_Meta');
+            var rows = columnarToRows(meta);
+            if (rows && rows.length > 0) {
+                return rows[0].schemaVersion || 1;
+            }
+            return 1;
+        } catch (e) {
+            return 1; // Pas de table meta = version 1
+        }
+    }
+
+    // Calcule les migrations à appliquer
+    function getPendingMigrations(currentVersion) {
+        var pending = [];
+        var targetVersion = SCHEMA ? SCHEMA.version : 3;
+        
+        for (var i = 0; i < MIGRATIONS.length; i++) {
+            var migration = MIGRATIONS[i];
+            if (migration.version > currentVersion && migration.version <= targetVersion) {
+                pending.push(migration);
+            }
+        }
+        return pending;
+    }
+
+    // Exécute toutes les migrations en attente
+    async function runMigrations(grist, currentVersion, options) {
+        options = options || {};
+        var nowUnixSeconds = options.nowUnixSeconds || Math.floor(Date.now() / 1000);
+        var dryRun = options.dryRun || false;
+        
+        var pending = getPendingMigrations(currentVersion);
+        
+        // Dry run autorisé uniquement si la seule migration en attente est v5
+        if (dryRun && pending.length > 0) {
+            var hasOnlyV5 = pending.length === 1 && pending[0].version === 5;
+            if (!hasOnlyV5) {
+                throw new Error('DRY_RUN_REQUIRES_SCHEMA_V4: Le dry run n\'est autorisé que pour la migration v5 depuis un schéma v4');
+            }
+        }
+        
+        if (pending.length === 0) {
+            log('Aucune migration en attente');
+            return {
+                success: true,
+                applied: 0,
+                message: 'Schéma à jour',
+                finalVersion: currentVersion
+            };
+        }
+        
+        log('Migrations en attente: ' + pending.length, pending.map(function (m) { return m.name; }));
+        
+        var results = [];
+        var metadata = null;
+        var lastSuccessfulVersion = currentVersion;
+        var docApi = getDocApi(grist);
+        
+        for (var i = 0; i < pending.length; i++) {
+            var migration = pending[i];
+            
+            try {
+                log('Application migration: ' + migration.name + ' (v' + migration.version + ')');
+                
+                // Relit les métadonnées avant chaque migration
+                try {
+                    metadata = await loadMigrationMetadata(grist);
+                } catch (e) {
+                    metadata = { tablesByName: {}, columnsByKey: {} };
+                }
+                
+                // Exécute la migration
+                var migrationOptions = {
+                    dryRun: dryRun,
+                    nowUnixSeconds: nowUnixSeconds
+                };
+                var result = await migration.run(grist, metadata, migrationOptions);
+                
+                if (!result || !result.success) {
+                    throw new Error('Migration échouée: ' + migration.name);
+                }
+                
+                results.push({
+                    version: migration.version,
+                    name: migration.name,
+                    success: true,
+                    message: result.message
+                });
+                
+                // Met à jour la version courante après succès (seulement si pas dry run)
+                if (!dryRun) {
+                    lastSuccessfulVersion = migration.version;
+                    
+                    // Mettre à jour TaskFlow_Meta
+                    await updateSchemaVersion(grist, lastSuccessfulVersion, migration.name, nowUnixSeconds);
+                    
+                    log('Migration appliquée: ' + migration.name + ' - version mise à jour: ' + lastSuccessfulVersion);
+                } else {
+                    log('Dry run: migration ' + migration.name + ' non appliquée');
+                }
+                
+                // Petit délai entre les migrations
+                await delay(100);
+                
+            } catch (e) {
+                log('Échec migration: ' + migration.name, e);
+                
+                results.push({
+                    version: migration.version,
+                    name: migration.name,
+                    success: false,
+                    error: e.message || String(e)
+                });
+                
+                // Met à jour les métadonnées avec l'erreur (seulement si pas dry run)
+                if (!dryRun) {
+                    try {
+                        await updateMigrationError(grist, migration.name, e.message || String(e), nowUnixSeconds);
+                    } catch (updateError) {
+                        log('Erreur lors de la mise à jour de l\'erreur: ' + updateError);
+                    }
+                }
+                
+                // Arrête au premier échec
+                throw new Error('Migration échouée à v' + migration.version + ': ' + (e.message || e));
+            }
+        }
+        
+        return {
+            success: true,
+            applied: pending.length,
+            results: results,
+            finalVersion: dryRun ? currentVersion : lastSuccessfulVersion,
+            dryRun: dryRun
+        };
+    }
+    
+    // Met à jour la version du schéma dans TaskFlow_Meta
+    async function updateSchemaVersion(grist, version, migrationName, nowUnixSeconds) {
+        var docApi = getDocApi(grist);
+        nowUnixSeconds = nowUnixSeconds || Math.floor(Date.now() / 1000);
+        
+        try {
+            var meta = await docApi.fetchTable('TaskFlow_Meta');
+            var rows = columnarToRows(meta);
+            
+            if (rows && rows.length > 0) {
+                // Mettre à jour l'enregistrement existant
+                var rowId = meta.id ? meta.id[0] : rows[0].id;
+                await docApi.applyUserActions([
+                    ['UpdateRecord', 'TaskFlow_Meta', rowId, {
+                        schemaVersion: version,
+                        lastMigration: migrationName,
+                        lastMigrationAt: nowUnixSeconds,
+                        lastError: null
+                    }]
+                ]);
+            } else {
+                // Créer un nouvel enregistrement
+                await docApi.applyUserActions([
+                    ['AddRecord', 'TaskFlow_Meta', null, {
+                        schemaVersion: version,
+                        lastMigration: migrationName,
+                        lastMigrationAt: nowUnixSeconds,
+                        installationStatus: 'migrated'
+                    }]
+                ]);
+            }
+        } catch (e) {
+            log('Erreur lors de la mise à jour de TaskFlow_Meta: ' + (e.message || e));
+            throw e; // Propager l'erreur pour que la migration échoue
+        }
+    }
+    
+    // Met à jour l'erreur de migration dans TaskFlow_Meta
+    async function updateMigrationError(grist, migrationName, errorMessage, nowUnixSeconds) {
+        var docApi = getDocApi(grist);
+        nowUnixSeconds = nowUnixSeconds || Math.floor(Date.now() / 1000);
+        
+        try {
+            var meta = await docApi.fetchTable('TaskFlow_Meta');
+            var rows = columnarToRows(meta);
+            
+            if (rows && rows.length > 0) {
+                var rowId = meta.id ? meta.id[0] : rows[0].id;
+                await docApi.applyUserActions([
+                    ['UpdateRecord', 'TaskFlow_Meta', rowId, {
+                        lastError: errorMessage,
+                        lastMigration: migrationName,
+                        lastMigrationAt: nowUnixSeconds
+                    }]
+                ]);
+            }
+        } catch (e) {
+            log('Erreur lors de la mise à jour de l\'erreur: ' + (e.message || e));
+        }
+    }
+
+    // Export public
+    global.TaskFlowMigrations = {
+        getCurrentVersion: getCurrentVersion,
+        getPendingMigrations: getPendingMigrations,
+        runMigrations: runMigrations,
+        MIGRATIONS: MIGRATIONS,
+        updateSchemaVersion: updateSchemaVersion,
+        updateMigrationError: updateMigrationError,
+        loadMigrationMetadata: loadMigrationMetadata
+    };
+    
+    // Export CommonJS pour Jest
+    if (typeof module !== 'undefined' && module.exports) {
+        module.exports = global.TaskFlowMigrations;
+    }
 
 })(typeof window !== 'undefined' ? window : (typeof global !== 'undefined' ? global : this));
 
@@ -1994,10 +3936,17 @@ if (typeof globalThis !== 'undefined') {
         
         for (var i = 0; i < columns.length; i++) {
             var col = columns[i];
-            var type = col.type || (col.opts && col.opts.type);
+            var opts = col.opts || col;
+            var type = opts.type;
             
-            // Vérifier si c'est une formule définie
-            if (formulasMap && formulasMap[tableName] && formulasMap[tableName][col.id]) {
+            // Vérifier si c'est une formule définie dans le schéma (isFormula=true)
+            var isFormulaInSchema = Boolean(opts.isFormula);
+            
+            // Vérifier si c'est une formule fournie dans formulasMap
+            var isFormulaInMap = formulasMap && formulasMap[tableName] && formulasMap[tableName][col.id];
+            
+            // Une colonne est formulée si isFormula=true OU si elle est dans formulasMap
+            if (isFormulaInSchema || isFormulaInMap) {
                 formulaCols.push(col);
             } else if (isRefType(type)) {
                 refCols.push(col);
@@ -2418,7 +4367,7 @@ if (typeof globalThis !== 'undefined') {
     
     async function ensureFormulaColumns(grist, formulasMap) {
         var metadata = await loadSchemaMetadata(grist);
-        var result = { added: [], skipped: [], errors: [] };
+        var result = { added: [], skipped: [], errors: [], repaired: [], warnings: [] };
         
         for (var tableName in formulasMap) {
             if (!formulasMap.hasOwnProperty(tableName)) continue;
@@ -2438,12 +4387,18 @@ if (typeof globalThis !== 'undefined') {
                 var key = tableName + '.' + colId;
                 var existingCol = metadata.columnByKey[key];
                 
+                // Retrouver la déclaration de colonne dans le schéma
+                var schemaTable = SCHEMA.tables[tableName];
+                var schemaCol = schemaTable ? schemaTable.columns.find(function(c) { return c.id === colId; }) : null;
+                var declaredType = schemaCol ? (schemaCol.opts?.type || schemaCol.type) : null;
+                
                 if (!existingCol) {
-                    // Colonne manquante : l'ajouter
+                    // Colonne manquante : l'ajouter avec le type déclaré
+                    var targetType = declaredType || 'Any';
                     try {
                         await grist.docApi.applyUserActions([
                             ['AddColumn', tableName, colId, {
-                                type: 'Any',
+                                type: targetType,
                                 isFormula: true,
                                 formula: formula
                             }]
@@ -2457,7 +4412,79 @@ if (typeof globalThis !== 'undefined') {
                         });
                     }
                 } else {
-                    result.skipped.push({ table: tableName, column: colId, reason: 'Déjà existe' });
+                    // Colonne existante : vérifier l'état
+                    var existingFormula = existingCol.formula || '';
+                    var existingIsFormula = existingCol.isFormula || false;
+                    var existingType = existingCol.type;
+                    
+                    // Cas 1 : Formule vide "" → réparer si on a une formule centrale
+                    if (existingIsFormula && existingFormula === '' && formula && formula !== '') {
+                        try {
+                            await grist.docApi.applyUserActions([
+                                ['ModifyColumn', tableName, colId, {
+                                    formula: formula
+                                }]
+                            ]);
+                            result.repaired.push({ key: key, reason: 'formule-vide' });
+                        } catch (e) {
+                            result.errors.push({
+                                table: tableName,
+                                column: colId,
+                                action: 'repair-empty-formula',
+                                error: e.message || String(e)
+                            });
+                        }
+                    }
+                    // Cas 2 : Placeholder [] → réparer
+                    else if (existingIsFormula && existingFormula === '[]' && formula && formula !== '[]') {
+                        try {
+                            await grist.docApi.applyUserActions([
+                                ['ModifyColumn', tableName, colId, {
+                                    formula: formula
+                                }]
+                            ]);
+                            result.repaired.push({ key: key, reason: 'placeholder' });
+                        } catch (e) {
+                            result.errors.push({
+                                table: tableName,
+                                column: colId,
+                                action: 'repair-placeholder',
+                                error: e.message || String(e)
+                            });
+                        }
+                    }
+                    // Cas 3 : isFormula=false mais devrait être true → warning
+                    else if (!existingIsFormula && declaredType) {
+                        result.warnings.push({
+                            table: tableName,
+                            column: colId,
+                            issue: 'should-be-formula',
+                            expectedType: declaredType,
+                            actualType: existingType,
+                            expectedFormula: true,
+                            actualFormula: existingIsFormula
+                        });
+                        result.skipped.push({ table: tableName, column: colId, reason: 'not-a-formula' });
+                    }
+                    // Cas 4 : Type incompatible → warning
+                    else if (existingType !== declaredType && declaredType) {
+                        result.warnings.push({
+                            table: tableName,
+                            column: colId,
+                            issue: 'type-mismatch',
+                            expectedType: declaredType,
+                            actualType: existingType
+                        });
+                        result.skipped.push({ table: tableName, column: colId, reason: 'type-mismatch' });
+                    }
+                    // Cas 5 : Formule personnalisée (différente de celle du schéma) → skipped
+                    else if (existingIsFormula && existingFormula && existingFormula !== formula) {
+                        result.skipped.push({ table: tableName, column: colId, reason: 'custom-formula' });
+                    }
+                    // Cas 6 : Tout est conforme → skipped
+                    else {
+                        result.skipped.push({ table: tableName, column: colId, reason: 'conforme' });
+                    }
                 }
             }
         }
@@ -2893,6 +4920,10 @@ if (typeof globalThis !== 'undefined') {
     async function ensureGenciSchema(grist, options) {
         options = options || {};
         
+        // Utiliser les formules et choix centralisés par défaut
+        var formulasMap = options.formulasMap || SCHEMA.formulas || {};
+        var defaultChoices = options.defaultChoices || SCHEMA.defaultChoices || {};
+        
         // Sérialise les appels dans une même iframe
         if (bootstrapPromise) {
             return bootstrapPromise;
@@ -2915,12 +4946,74 @@ if (typeof globalThis !== 'undefined') {
             try {
                 log('Démarrage initialisation...');
                 
-                // Phase 0 : Exécuter les migrations puis inspection
-                log('Phase 0: Migrations...');
+                // Phase 0 : Inspection et détection du type de document
+                log('Phase 0: Inspection...');
                 var migrationLog = await migrateLegacyTables(grist);
                 globalLog = globalLog.concat(migrationLog);
                 
+                // Inspection des tables existantes
+                var tablesData = await grist.docApi.fetchTable('_grist_Tables');
+                var tables = columnarToRows(tablesData);
+                var tableIds = tables.map(function(t) { return t.tableId; });
+                
+                var essentialTables = ['Team', 'Feuilles', 'TimeEntries', 'TaskFlow_Meta'];
+                var hasAnyEssentialTable = essentialTables.some(function(tableId) {
+                    return tableIds.indexOf(tableId) !== -1;
+                });
+                
+                var isNewDoc = !hasAnyEssentialTable;
+                
+                if (isNewDoc) {
+                    log('Document véritablement neuf détecté : création des tables avant migrations');
+                    
+                    // Pour un document neuf : créer les tables D'ABORD
+                    log('Phase 1: Création tables (document neuf)...');
+                    var phase1 = await ensureBaseTables(grist, SCHEMA, formulasMap);
+                    globalLog.push('Tables créées: ' + phase1.created.join(', '));
+                    result.phases.tables = phase1;
+                    
+                    // Synchronisation
+                    var allExpectedTables = SCHEMA.tableOrder.slice();
+                    var metadata = await syncMetadata(grist, allExpectedTables);
+                    result.phases.sync = { success: true };
+                    
+                    // Phase 2 : Colonnes Ref
+                    log('Phase 2: Colonnes Ref (document neuf)...');
+                    var phase2 = await ensureRefColumns(grist, SCHEMA, formulasMap);
+                    globalLog.push('Ref ajoutées: ' + phase2.added.join(', '));
+                    if (phase2.repaired.length > 0) {
+                        globalLog.push('Ref réparées: ' + phase2.repaired.join(', '));
+                    }
+                    
+                    if (phase2.errors.length > 0) {
+                        result.errors.push({ phase: 'refs', errors: phase2.errors });
+                        result.success = false;
+                        log('Échec création des colonnes Ref, arrêt du bootstrap');
+                        return result;
+                    }
+                    
+                    result.phases.refs = phase2;
+                    
+                    // Pause stabilisation
+                    await delay(500);
+                    
+                    // Phase 3 : Formules
+                    if (formulasMap && Object.keys(formulasMap).length > 0) {
+                        log('Phase 3: Formules (document neuf)...');
+                        var phase3 = await ensureFormulaColumns(grist, formulasMap);
+                        globalLog.push('Formules ajoutées: ' + phase3.added.join(', '));
+                        if (phase3.repaired.length > 0) {
+                            globalLog.push('Formules réparées: ' + phase3.repaired.join(', '));
+                        }
+                        result.phases.formulas = phase3;
+                    }
+                    
+                    // Maintenant que les tables existent, exécuter les migrations
+                    log('Tables créées, exécution des migrations...');
+                }
+                
                 // Exécuter les migrations versionnées si TaskFlowMigrations est disponible
+                var migrationFailed = false;
                 if (global.TaskFlowMigrations) {
                     try {
                         var currentVersion = await global.TaskFlowMigrations.getCurrentVersion(grist);
@@ -2933,20 +5026,79 @@ if (typeof globalThis !== 'undefined') {
                             globalLog.push('Migrations: v' + currentVersion + ' → v' + migrationResult.finalVersion);
                             result.phases.migrations = migrationResult;
                         } else {
-                            result.warnings.push({ phase: 'migrations', message: 'Certaines migrations ont échoué' });
+                            migrationFailed = true;
+                            result.errors.push({ phase: 'migrations', message: 'Certaines migrations ont échoué' });
                         }
                     } catch (migrationError) {
                         log('Erreur lors des migrations: ' + (migrationError.message || migrationError));
-                        result.warnings.push({ phase: 'migrations', error: migrationError.message || String(migrationError) });
-                        // Continuer malgré tout, le schéma déclaratif réparera
+                        migrationFailed = true;
+                        result.errors.push({ phase: 'migrations', error: migrationError.message || String(migrationError) });
                     }
                 }
                 
                 result.phases.migration = migrationLog;
                 
+                // FAIL CLOSED : si les migrations ont échoué ET que ce n'est pas un document neuf, arrêter
+                if (migrationFailed && !isNewDoc) {
+                    log('Échec des migrations sur document existant - arrêt du bootstrap en mode fail closed');
+                    result.success = false;
+                    bootstrapComplete = false;
+                    return result;
+                }
+                
+                // Si c'est un document neuf et que les migrations ont échoué, continuer avec le schéma déclaratif
+                if (migrationFailed && isNewDoc) {
+                    log('Document neuf : migrations échouées mais on continue avec le schéma déclaratif');
+                }
+                
+                // Pour un document neuf, les phases 1-3 ont déjà été exécutées
+                if (!isNewDoc) {
+                    // Phase 1 : Création des tables (sans Ref)
+                    log('Phase 1: Création tables...');
+                    var phase1 = await ensureBaseTables(grist, SCHEMA, formulasMap);
+                    globalLog.push('Tables créées: ' + phase1.created.join(', '));
+                    result.phases.tables = phase1;
+                    
+                    // Synchronisation
+                    var allExpectedTables = SCHEMA.tableOrder.slice();
+                    var metadata = await syncMetadata(grist, allExpectedTables);
+                    result.phases.sync = { success: true };
+                    
+                    // Phase 2 : Colonnes Ref
+                    log('Phase 2: Colonnes Ref...');
+                    var phase2 = await ensureRefColumns(grist, SCHEMA, formulasMap);
+                    globalLog.push('Ref ajoutées: ' + phase2.added.join(', '));
+                    if (phase2.repaired.length > 0) {
+                        globalLog.push('Ref réparées: ' + phase2.repaired.join(', '));
+                    }
+                    
+                    if (phase2.errors.length > 0) {
+                        result.errors.push({ phase: 'refs', errors: phase2.errors });
+                        result.success = false;
+                        log('Échec création des colonnes Ref, arrêt du bootstrap');
+                        return result;
+                    }
+                    
+                    result.phases.refs = phase2;
+                    
+                    // Pause stabilisation avant formules
+                    await delay(500);
+                    
+                    // Phase 3 : Formules
+                    if (formulasMap && Object.keys(formulasMap).length > 0) {
+                        log('Phase 3: Formules...');
+                        var phase3 = await ensureFormulaColumns(grist, formulasMap);
+                        globalLog.push('Formules ajoutées: ' + phase3.added.join(', '));
+                        if (phase3.repaired.length > 0) {
+                            globalLog.push('Formules réparées: ' + phase3.repaired.join(', '));
+                        }
+                        result.phases.formulas = phase3;
+                    }
+                }
+                
                 // Phase 1 : Création des tables (sans Ref)
                 log('Phase 1: Création tables...');
-                var phase1 = await ensureBaseTables(grist, SCHEMA, options.formulasMap || {});
+                var phase1 = await ensureBaseTables(grist, SCHEMA, formulasMap);
                 globalLog.push('Tables créées: ' + phase1.created.join(', '));
                 result.phases.tables = phase1;
                 
@@ -2957,7 +5109,7 @@ if (typeof globalThis !== 'undefined') {
                 
                 // Phase 2 : Colonnes Ref
                 log('Phase 2: Colonnes Ref...');
-                var phase2 = await ensureRefColumns(grist, SCHEMA, options.formulasMap || {});
+                var phase2 = await ensureRefColumns(grist, SCHEMA, formulasMap);
                 globalLog.push('Ref ajoutées: ' + phase2.added.join(', '));
                 if (phase2.repaired.length > 0) {
                     globalLog.push('Ref réparées: ' + phase2.repaired.join(', '));
@@ -2984,16 +5136,19 @@ if (typeof globalThis !== 'undefined') {
                 await delay(500);
                 
                 // Phase 3 : Formules
-                if (options.formulasMap && Object.keys(options.formulasMap).length > 0) {
+                if (formulasMap && Object.keys(formulasMap).length > 0) {
                     log('Phase 3: Formules...');
-                    var phase3 = await ensureFormulaColumns(grist, options.formulasMap);
+                    var phase3 = await ensureFormulaColumns(grist, formulasMap);
                     globalLog.push('Formules ajoutées: ' + phase3.added.join(', '));
+                    if (phase3.repaired.length > 0) {
+                        globalLog.push('Formules réparées: ' + phase3.repaired.join(', '));
+                    }
                     result.phases.formulas = phase3;
                 }
                 
                 // Phase 4 : Choices
                 log('Phase 4: Choices...');
-                var phase4 = await configureChoiceColumns(grist, options.defaultChoices || {});
+                var phase4 = await configureChoiceColumns(grist, defaultChoices);
                 result.phases.choices = phase4;
                 
                 // Phase 5 : Affichage des références
@@ -3062,11 +5217,44 @@ if (typeof globalThis !== 'undefined') {
                     try {
                         log('Écriture de TaskFlow_Meta avec statut ready...');
                         
-                        var writeResult = await TF.writeSchemaReady(grist, {
+                        // Vérifier que la version dans TaskFlow_Meta correspond à SCHEMA.version
+                        var metaData = await grist.docApi.fetchTable('TaskFlow_Meta');
+                        var metaRows = columnarToRows(metaData);
+                        var metaVersion = metaRows && metaRows.length > 0 ? metaRows[0].schemaVersion : null;
+                        
+                        if (metaVersion !== SCHEMA.version) {
+                            log('Attention: version TaskFlow_Meta (' + metaVersion + ') != SCHEMA.version (' + SCHEMA.version + ')');
+                            result.errors.push({
+                                phase: 'validation',
+                                code: 'SCHEMA_VERSION_NOT_CONFIRMED',
+                                expected: SCHEMA.version,
+                                actual: metaVersion
+                            });
+                            result.success = false;
+                            bootstrapComplete = false;
+                            return result;
+                        }
+                        
+                        // Utiliser le nom de la dernière migration appliquée, pas la version numérique
+                        var lastAppliedMigration = null;
+                        if (result.phases.migrations && result.phases.migrations.results) {
+                            var migrationResults = result.phases.migrations.results;
+                            if (migrationResults.length > 0) {
+                                lastAppliedMigration = migrationResults[migrationResults.length - 1].name;
+                            }
+                        }
+                        
+                        // Construire les options conditionnellement pour ne pas effacer lastMigration
+                        var readyOptions = {
                             schemaVersion: SCHEMA.version,
-                            installedBy: 'TaskFlowBootstrap',
-                            lastMigration: result.phases.migrations ? result.phases.migrations.finalVersion : null
-                        });
+                            installedBy: 'TaskFlowBootstrap'
+                        };
+                        
+                        if (lastAppliedMigration) {
+                            readyOptions.lastMigration = lastAppliedMigration;
+                        }
+                        
+                        var writeResult = await TF.writeSchemaReady(grist, readyOptions);
                         
                         if (writeResult.success) {
                             log('TaskFlow_Meta écrit avec succès: ' + writeResult.action);
@@ -3151,548 +5339,6 @@ if (typeof globalThis !== 'undefined') {
         },
         GENCI_REF_DISPLAY_SPECS: GENCI_REF_DISPLAY_SPECS
     };
-
-})(typeof window !== 'undefined' ? window : (typeof global !== 'undefined' ? global : this));
-
-
-/* ============================================================================
- * taskflow-migrations.js — Migrations versionnées du schéma TaskFlow
- * ----------------------------------------------------------------------------
- * Ce module gère les évolutions du schéma de manière contrôlée et réversible.
- * Chaque migration est :
- * - Idempotente (peut être réexécutée sans effet secondaire)
- * - Non destructive (ne supprime jamais de données)
- * - Testable indépendamment
- * 
- * Version 1: Schéma de base
- * Version 2: TaskAssignments + extension quotidienne de TimeEntries
- * Version 3: MemberDailyCapacities + TimeEntries.capaciteJour
- * ============================================================================ */
-
-(function (global) {
-    'use strict';
-
-    var SCHEMA = global.TASKFLOW_SCHEMA;
-    var DEFAULT_WEEKLY_CAPACITY = 35;
-
-    // Helper : délai
-    function delay(ms) {
-        return new Promise(function (resolve) { setTimeout(resolve, ms); });
-    }
-
-    // Helper : log
-    function log(msg, data) {
-        var prefix = '[TaskFlow Migration] ';
-        if (typeof console !== 'undefined') {
-            if (data !== undefined) {
-                console.info(prefix + msg, data);
-            } else {
-                console.info(prefix + msg);
-            }
-        }
-    }
-
-    // Helper : convertir tableau colonnaire en lignes
-    function columnarToRows(data) {
-        if (!data || Array.isArray(data)) return data || [];
-        var cols = Object.keys(data);
-        if (!cols.length) return [];
-        var n = (data[cols[0]] && data[cols[0]].length) || 0;
-        var rows = [];
-        for (var i = 0; i < n; i++) {
-            var rec = {};
-            for (var j = 0; j < cols.length; j++) {
-                rec[cols[j]] = data[cols[j]][i];
-            }
-            rows.push(rec);
-        }
-        return rows;
-    }
-
-    // Helper : obtenir docApi normalisé
-    function getDocApi(grist) {
-        var docApi = grist && (grist.docApi || grist);
-        if (!docApi || typeof docApi.fetchTable !== 'function' || typeof docApi.applyUserActions !== 'function') {
-            throw new Error('INVALID_GRIST_DOC_API: grist.docApi doit exposer fetchTable et applyUserActions');
-        }
-        return docApi;
-    }
-
-    // Helper : charger les métadonnées
-    async function loadMigrationMetadata(grist) {
-        var docApi = getDocApi(grist);
-        var tablesData = await docApi.fetchTable('_grist_Tables');
-        var columnsData = await docApi.fetchTable('_grist_Tables_column');
-        
-        var tables = columnarToRows(tablesData);
-        var columns = columnarToRows(columnsData);
-        
-        var tableById = {};
-        for (var i = 0; i < tables.length; i++) {
-            tableById[tables[i].id] = tables[i].tableId;
-        }
-        
-        var columnsByKey = {};
-        for (var j = 0; j < columns.length; j++) {
-            var col = columns[j];
-            var tableId = tableById[col.parentId];
-            if (tableId) {
-                var key = tableId + '.' + col.colId;
-                columnsByKey[key] = {
-                    tableId: tableId,
-                    colId: col.colId,
-                    type: col.type,
-                    isFormula: col.isFormula,
-                    parentId: col.parentId
-                };
-            }
-        }
-        
-        var tablesByName = {};
-        for (var k = 0; k < tables.length; k++) {
-            tablesByName[tables[k].tableId] = tables[k];
-        }
-        
-        return {
-            tablesById: tableById,
-            tablesByName: tablesByName,
-            columnsByKey: columnsByKey
-        };
-    }
-
-    // ========================================================================
-    // MIGRATION V1 → V2 — Planning daily assignments
-    // ========================================================================
-    
-    async function migrateToV2(grist, metadata) {
-        log('Migration v1 → v2: planning-daily-assignments-v2');
-        
-        var docApi = getDocApi(grist);
-        var actions = [];
-        var existingTables = metadata.tablesByName || {};
-        var existingColumns = metadata.columnsByKey || {};
-        
-        // 1. Créer TaskAssignments si elle n'existe pas
-        if (!existingTables['TaskAssignments']) {
-            log('Création de la table TaskAssignments');
-            actions.push(['AddTable', 'TaskAssignments', [
-                { id: 'tache', type: 'Ref:Tasks', isFormula: false },
-                { id: 'membre', type: 'Ref:Team', isFormula: false },
-                { id: 'heuresAllouees', type: 'Numeric', isFormula: false },
-                { id: 'dateDebut', type: 'Date', isFormula: false },
-                { id: 'dateFin', type: 'Date', isFormula: false },
-                { id: 'modeRepartition', type: 'Choice', isFormula: false },
-                { id: 'actif', type: 'Bool', isFormula: false },
-                { id: 'commentaire', type: 'Text', isFormula: false }
-            ]]);
-            // Marquer les colonnes comme créées pour éviter de les recréer
-            existingTables['TaskAssignments'] = { id: null };
-            existingColumns['TaskAssignments.tache'] = { type: 'Ref:Tasks' };
-            existingColumns['TaskAssignments.membre'] = { type: 'Ref:Team' };
-            existingColumns['TaskAssignments.heuresAllouees'] = { type: 'Numeric' };
-            existingColumns['TaskAssignments.dateDebut'] = { type: 'Date' };
-            existingColumns['TaskAssignments.dateFin'] = { type: 'Date' };
-            existingColumns['TaskAssignments.modeRepartition'] = { type: 'Choice' };
-            existingColumns['TaskAssignments.actif'] = { type: 'Bool' };
-            existingColumns['TaskAssignments.commentaire'] = { type: 'Text' };
-        } else {
-            log('TaskAssignments existe déjà');
-        }
-        
-        // 2. Vérifier et ajouter les colonnes manquantes de TaskAssignments
-        var taskAssignmentsCols = [
-            { id: 'tache', type: 'Ref:Tasks' },
-            { id: 'membre', type: 'Ref:Team' },
-            { id: 'heuresAllouees', type: 'Numeric' },
-            { id: 'dateDebut', type: 'Date' },
-            { id: 'dateFin', type: 'Date' },
-            { id: 'modeRepartition', type: 'Choice' },
-            { id: 'actif', type: 'Bool' },
-            { id: 'commentaire', type: 'Text' }
-        ];
-        for (var i = 0; i < taskAssignmentsCols.length; i++) {
-            var colDef = taskAssignmentsCols[i];
-            var key = 'TaskAssignments.' + colDef.id;
-            if (!existingColumns[key]) {
-                log('Ajout de la colonne TaskAssignments.' + colDef.id);
-                actions.push(['AddColumn', 'TaskAssignments', colDef.id, {
-                    type: colDef.type,
-                    isFormula: false
-                }]);
-                existingColumns[key] = { type: colDef.type };
-            } else {
-                log('TaskAssignments.' + colDef.id + ' existe déjà');
-            }
-        }
-        
-        // 3. Ajouter les colonnes v2 manquantes à TimeEntries
-        var timeEntriesCols = [
-            { id: 'affectation', type: 'Ref:TaskAssignments' },
-            { id: 'heuresPrevues', type: 'Numeric' },
-            { id: 'capaciteTheorique', type: 'Numeric' },
-            { id: 'capaciteDisponible', type: 'Numeric' },
-            { id: 'feuille', type: 'Ref:Feuilles' },
-            { id: 'revisionPlan', type: 'Int' }
-        ];
-        
-        for (var j = 0; j < timeEntriesCols.length; j++) {
-            var colDef = timeEntriesCols[j];
-            var key = 'TimeEntries.' + colDef.id;
-            if (!existingColumns[key]) {
-                log('Ajout de la colonne TimeEntries.' + colDef.id);
-                actions.push(['AddColumn', 'TimeEntries', colDef.id, {
-                    type: colDef.type,
-                    isFormula: false
-                }]);
-                existingColumns[key] = { type: colDef.type };
-            } else {
-                log('TimeEntries.' + colDef.id + ' existe déjà');
-            }
-        }
-        
-        // Appliquer les actions si nécessaire
-        if (actions.length > 0) {
-            await docApi.applyUserActions(actions);
-            log('Migration v2 appliquée avec succès: ' + actions.length + ' actions');
-            
-            // Relire les métadonnées après écriture
-            metadata = await loadMigrationMetadata(grist);
-        } else {
-            log('Aucune action nécessaire, migration déjà appliquée');
-        }
-        
-        return { 
-            success: true, 
-            message: 'Migration v2 appliquée',
-            actionsExecuted: actions.length,
-            metadata: metadata
-        };
-    }
-
-    // ========================================================================
-    // MIGRATION V2 → V3 — Member daily capacities
-    // ========================================================================
-    
-    async function migrateToV3(grist, metadata) {
-        log('Migration v2 → v3: member-daily-capacities-v3');
-        
-        var docApi = getDocApi(grist);
-        var actions = [];
-        var existingTables = metadata.tablesByName || {};
-        var existingColumns = metadata.columnsByKey || {};
-        
-        // 1. Créer MemberDailyCapacities si elle n'existe pas
-        if (!existingTables['MemberDailyCapacities']) {
-            log('Création de la table MemberDailyCapacities');
-            actions.push(['AddTable', 'MemberDailyCapacities', [
-                { id: 'membre', type: 'Ref:Team', isFormula: false },
-                { id: 'date', type: 'Date', isFormula: false },
-                { id: 'capaciteTheorique', type: 'Numeric', isFormula: false },
-                { id: 'disponibiliteRatio', type: 'Numeric', isFormula: false },
-                { id: 'capaciteDisponible', type: 'Numeric', isFormula: false },
-                { id: 'absenceHeures', type: 'Numeric', isFormula: false },
-                { id: 'source', type: 'Choice', isFormula: false },
-                { id: 'revision', type: 'Int', isFormula: false },
-                { id: 'sourceUpdatedAt', type: 'DateTime', isFormula: false },
-                { id: 'commentaire', type: 'Text', isFormula: false }
-            ]]);
-            // Marquer les colonnes comme créées pour éviter de les recréer
-            existingTables['MemberDailyCapacities'] = { id: null };
-            existingColumns['MemberDailyCapacities.membre'] = { type: 'Ref:Team' };
-            existingColumns['MemberDailyCapacities.date'] = { type: 'Date' };
-            existingColumns['MemberDailyCapacities.capaciteTheorique'] = { type: 'Numeric' };
-            existingColumns['MemberDailyCapacities.disponibiliteRatio'] = { type: 'Numeric' };
-            existingColumns['MemberDailyCapacities.capaciteDisponible'] = { type: 'Numeric' };
-            existingColumns['MemberDailyCapacities.absenceHeures'] = { type: 'Numeric' };
-            existingColumns['MemberDailyCapacities.source'] = { type: 'Choice' };
-            existingColumns['MemberDailyCapacities.revision'] = { type: 'Int' };
-            existingColumns['MemberDailyCapacities.sourceUpdatedAt'] = { type: 'DateTime' };
-            existingColumns['MemberDailyCapacities.commentaire'] = { type: 'Text' };
-        } else {
-            log('MemberDailyCapacities existe déjà');
-        }
-        
-        // 2. Vérifier et ajouter les colonnes manquantes de MemberDailyCapacities
-        var memberDailyCapCols = [
-            { id: 'membre', type: 'Ref:Team' },
-            { id: 'date', type: 'Date' },
-            { id: 'capaciteTheorique', type: 'Numeric' },
-            { id: 'disponibiliteRatio', type: 'Numeric' },
-            { id: 'capaciteDisponible', type: 'Numeric' },
-            { id: 'absenceHeures', type: 'Numeric' },
-            { id: 'source', type: 'Choice' },
-            { id: 'revision', type: 'Int' },
-            { id: 'sourceUpdatedAt', type: 'DateTime' },
-            { id: 'commentaire', type: 'Text' }
-        ];
-        
-        for (var i = 0; i < memberDailyCapCols.length; i++) {
-            var colDef = memberDailyCapCols[i];
-            var key = 'MemberDailyCapacities.' + colDef.id;
-            if (!existingColumns[key]) {
-                log('Ajout de la colonne MemberDailyCapacities.' + colDef.id);
-                actions.push(['AddColumn', 'MemberDailyCapacities', colDef.id, {
-                    type: colDef.type,
-                    isFormula: false
-                }]);
-                existingColumns[key] = { type: colDef.type };
-            } else {
-                log('MemberDailyCapacities.' + colDef.id + ' existe déjà');
-            }
-        }
-        
-        // 3. Ajouter TimeEntries.capaciteJour
-        var key = 'TimeEntries.capaciteJour';
-        if (!existingColumns[key]) {
-            log('Ajout de la colonne TimeEntries.capaciteJour');
-            actions.push(['AddColumn', 'TimeEntries', 'capaciteJour', {
-                type: 'Ref:MemberDailyCapacities',
-                isFormula: false
-            }]);
-            existingColumns[key] = { type: 'Ref:MemberDailyCapacities' };
-        } else {
-            log('TimeEntries.capaciteJour existe déjà');
-        }
-        
-        // Appliquer les actions si nécessaire
-        if (actions.length > 0) {
-            await docApi.applyUserActions(actions);
-            log('Migration v3 appliquée avec succès: ' + actions.length + ' actions');
-            
-            // Relire les métadonnées après écriture
-            metadata = await loadMigrationMetadata(grist);
-        } else {
-            log('Aucune action nécessaire, migration déjà appliquée');
-        }
-        
-        return { 
-            success: true, 
-            message: 'Migration v3 appliquée',
-            actionsExecuted: actions.length,
-            metadata: metadata
-        };
-    }
-
-    // ========================================================================
-    // LISTE DES MIGRATIONS
-    // ========================================================================
-    
-    var MIGRATIONS = [
-        {
-            version: 2,
-            name: 'planning-daily-assignments-v2',
-            description: 'Création de TaskAssignments et extension de TimeEntries',
-            run: migrateToV2
-        },
-        {
-            version: 3,
-            name: 'member-daily-capacities-v3',
-            description: 'Création de MemberDailyCapacities et TimeEntries.capaciteJour',
-            run: migrateToV3
-        }
-    ];
-
-    // ========================================================================
-    // API PUBLIQUE
-    // ========================================================================
-
-    // Lit la version actuelle installée
-    async function getCurrentVersion(grist) {
-        var docApi = getDocApi(grist);
-        try {
-            var meta = await docApi.fetchTable('TaskFlow_Meta');
-            var rows = columnarToRows(meta);
-            if (rows && rows.length > 0) {
-                return rows[0].schemaVersion || 1;
-            }
-            return 1;
-        } catch (e) {
-            return 1; // Pas de table meta = version 1
-        }
-    }
-
-    // Calcule les migrations à appliquer
-    function getPendingMigrations(currentVersion) {
-        var pending = [];
-        var targetVersion = SCHEMA ? SCHEMA.version : 3;
-        
-        for (var i = 0; i < MIGRATIONS.length; i++) {
-            var migration = MIGRATIONS[i];
-            if (migration.version > currentVersion && migration.version <= targetVersion) {
-                pending.push(migration);
-            }
-        }
-        return pending;
-    }
-
-    // Exécute toutes les migrations en attente
-    async function runMigrations(grist, currentVersion, options) {
-        options = options || {};
-        var nowUnixSeconds = options.nowUnixSeconds || Math.floor(Date.now() / 1000);
-        
-        var pending = getPendingMigrations(currentVersion);
-        
-        if (pending.length === 0) {
-            log('Aucune migration en attente');
-            return {
-                success: true,
-                applied: 0,
-                message: 'Schéma à jour',
-                finalVersion: currentVersion
-            };
-        }
-        
-        log('Migrations en attente: ' + pending.length, pending.map(function (m) { return m.name; }));
-        
-        var results = [];
-        var metadata = null;
-        var lastSuccessfulVersion = currentVersion;
-        var docApi = getDocApi(grist);
-        
-        for (var i = 0; i < pending.length; i++) {
-            var migration = pending[i];
-            
-            try {
-                log('Application migration: ' + migration.name + ' (v' + migration.version + ')');
-                
-                // Relit les métadonnées avant chaque migration
-                try {
-                    metadata = await loadMigrationMetadata(grist);
-                } catch (e) {
-                    metadata = { tablesByName: {}, columnsByKey: {} };
-                }
-                
-                // Exécute la migration
-                var result = await migration.run(grist, metadata);
-                
-                if (!result || !result.success) {
-                    throw new Error('Migration échouée: ' + migration.name);
-                }
-                
-                results.push({
-                    version: migration.version,
-                    name: migration.name,
-                    success: true,
-                    message: result.message
-                });
-                
-                // Met à jour la version courante après succès
-                lastSuccessfulVersion = migration.version;
-                
-                // Mettre à jour TaskFlow_Meta
-                await updateSchemaVersion(grist, lastSuccessfulVersion, migration.name, nowUnixSeconds);
-                
-                log('Migration appliquée: ' + migration.name + ' - version mise à jour: ' + lastSuccessfulVersion);
-                
-                // Petit délai entre les migrations
-                await delay(100);
-                
-            } catch (e) {
-                log('Échec migration: ' + migration.name, e);
-                
-                results.push({
-                    version: migration.version,
-                    name: migration.name,
-                    success: false,
-                    error: e.message || String(e)
-                });
-                
-                // Met à jour les métadonnées avec l'erreur
-                try {
-                    await updateMigrationError(grist, migration.name, e.message || String(e), nowUnixSeconds);
-                } catch (updateError) {
-                    log('Erreur lors de la mise à jour de l\'erreur: ' + updateError);
-                }
-                
-                // Arrête au premier échec
-                throw new Error('Migration échouée à v' + migration.version + ': ' + (e.message || e));
-            }
-        }
-        
-        return {
-            success: true,
-            applied: pending.length,
-            results: results,
-            finalVersion: lastSuccessfulVersion
-        };
-    }
-    
-    // Met à jour la version du schéma dans TaskFlow_Meta
-    async function updateSchemaVersion(grist, version, migrationName, nowUnixSeconds) {
-        var docApi = getDocApi(grist);
-        nowUnixSeconds = nowUnixSeconds || Math.floor(Date.now() / 1000);
-        
-        try {
-            var meta = await docApi.fetchTable('TaskFlow_Meta');
-            var rows = columnarToRows(meta);
-            
-            if (rows && rows.length > 0) {
-                // Mettre à jour l'enregistrement existant
-                var rowId = meta.id ? meta.id[0] : rows[0].id;
-                await docApi.applyUserActions([
-                    ['UpdateRecord', 'TaskFlow_Meta', rowId, {
-                        schemaVersion: version,
-                        lastMigration: migrationName,
-                        lastMigrationAt: nowUnixSeconds,
-                        lastError: null
-                    }]
-                ]);
-            } else {
-                // Créer un nouvel enregistrement
-                await docApi.applyUserActions([
-                    ['AddRecord', 'TaskFlow_Meta', null, {
-                        schemaVersion: version,
-                        lastMigration: migrationName,
-                        lastMigrationAt: nowUnixSeconds,
-                        installationStatus: 'migrated'
-                    }]
-                ]);
-            }
-        } catch (e) {
-            log('Erreur lors de la mise à jour de TaskFlow_Meta: ' + (e.message || e));
-            throw e; // Propager l'erreur pour que la migration échoue
-        }
-    }
-    
-    // Met à jour l'erreur de migration dans TaskFlow_Meta
-    async function updateMigrationError(grist, migrationName, errorMessage, nowUnixSeconds) {
-        var docApi = getDocApi(grist);
-        nowUnixSeconds = nowUnixSeconds || Math.floor(Date.now() / 1000);
-        
-        try {
-            var meta = await docApi.fetchTable('TaskFlow_Meta');
-            var rows = columnarToRows(meta);
-            
-            if (rows && rows.length > 0) {
-                var rowId = meta.id ? meta.id[0] : rows[0].id;
-                await docApi.applyUserActions([
-                    ['UpdateRecord', 'TaskFlow_Meta', rowId, {
-                        lastError: errorMessage,
-                        lastMigration: migrationName,
-                        lastMigrationAt: nowUnixSeconds
-                    }]
-                ]);
-            }
-        } catch (e) {
-            log('Erreur lors de la mise à jour de l\'erreur: ' + (e.message || e));
-        }
-    }
-
-    // Export public
-    global.TaskFlowMigrations = {
-        getCurrentVersion: getCurrentVersion,
-        getPendingMigrations: getPendingMigrations,
-        runMigrations: runMigrations,
-        MIGRATIONS: MIGRATIONS,
-        updateSchemaVersion: updateSchemaVersion,
-        updateMigrationError: updateMigrationError,
-        loadMigrationMetadata: loadMigrationMetadata
-    };
-    
-    // Export CommonJS pour Jest
-    if (typeof module !== 'undefined' && module.exports) {
-        module.exports = global.TaskFlowMigrations;
-    }
 
 })(typeof window !== 'undefined' ? window : (typeof global !== 'undefined' ? global : this));
 

@@ -80,6 +80,61 @@ function configure(options) {
 // ============================================================================
 
 /**
+ * Helper : préserve null et 0 pour les capacités
+ * CONTRAT : null reste null, 0 reste 0
+ */
+function normalizeCapacityValue(value) {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0) {
+    return null;
+  }
+  return number;
+}
+
+/**
+ * Helper : normalise un ID de membre (délégation vers workflow)
+ */
+function workflowNormalizeMemberId(value) {
+  if (
+    value === null ||
+    value === undefined ||
+    value === ''
+  ) {
+    return null;
+  }
+
+  if (
+    typeof value === 'string' &&
+    !/^[1-9]\d*$/.test(value)
+  ) {
+    return null;
+  }
+
+  const numeric = Number(value);
+
+  return (
+    Number.isInteger(numeric) &&
+    numeric > 0
+  )
+    ? numeric
+    : null;
+}
+
+/**
+ * Helper : normalise une révision (délégation vers workflow)
+ */
+function workflowNormalizeRevision(value) {
+  const numeric = Number(value);
+  return (
+    Number.isInteger(numeric) &&
+    numeric >= 0
+  ) ? numeric : 0;
+}
+
+/**
  * Helper : décoder base64 URL-safe (TODO 16)
  */
 function decodeBase64Url(value) {
@@ -200,7 +255,7 @@ const CRA_TABLES = {
   team: {
     tableId: 'Team',
     required: true,
-    columns: ['id', 'nom', 'email', 'gristUserId', 'capaciteHebdo', 'indispos', 'entite']
+    columns: ['id', 'nom', 'email', 'gristUserId', 'capaciteHebdo', 'indispos', 'entite', 'responsable']
   },
   
   entites: {
@@ -241,7 +296,12 @@ const CRA_TABLES = {
   feuilles: {
     tableId: 'Feuilles',
     required: true,
-    columns: ['id', 'membre', 'semaine', 'statut', 'validePar', 'dateValidation', 'motifRejet']
+    columns: [
+      'id', 'membre', 'semaine', 'statut',
+      'responsableValidation', 'soumisPar', 'dateSoumission',
+      'revisionValidation', 'validePar', 'dateValidation',
+      'motifRejet', 'motifCorrection'
+    ]
   },
   
   disponibilites: {
@@ -544,16 +604,16 @@ function normalizeCraSnapshot(raw, currentUser) {
     // PHASE 2 : nullableNumber pour heures (préserve null, 0 reste 0)
     return {
       id: r.id,  // ID Grist requis pour UpdateRecord
-      membre: Number(r.membre) || null,
-      tache: Number(r.tache) || null,
+      membre: workflowNormalizeMemberId(r.membre),
+      tache: workflowNormalizeMemberId(r.tache),
       date: r.date,  // Timestamp Grist (secondes)
       heures: nullableNumber(r.heures),  // PHASE 2 : null ≠ 0
-      heuresPrevues: Number(r.heuresPrevues) || 0,
-      affectation: Number(r.affectation) || null,
-      capaciteTheorique: Number(r.capaciteTheorique) || 0,
-      capaciteDisponible: Number(r.capaciteDisponible) || 0,
-      capaciteJour: Number(r.capaciteJour) || null,
-      feuille: Number(r.feuille) || null,
+      heuresPrevues: normalizeCapacityValue(r.heuresPrevues),
+      affectation: workflowNormalizeMemberId(r.affectation),
+      capaciteTheorique: normalizeCapacityValue(r.capaciteTheorique),
+      capaciteDisponible: normalizeCapacityValue(r.capaciteDisponible),
+      capaciteJour: normalizeCapacityValue(r.capaciteJour),
+      feuille: workflowNormalizeMemberId(r.feuille),
       revisionPlan: Number(r.revisionPlan) || 0,
       imputation: r.imputation || '',
       description: r.description || ''
@@ -565,17 +625,23 @@ function normalizeCraSnapshot(raw, currentUser) {
     membre: r.membre,
     semaine: r.semaine,
     statut: r.statut,
-    validePar: r.validePar,
-    motifRejet: r.motifRejet
+    responsableValidation: workflowNormalizeMemberId(r.responsableValidation),
+    soumisPar: workflowNormalizeMemberId(r.soumisPar),
+    dateSoumission: r.dateSoumission,
+    revisionValidation: workflowNormalizeRevision(r.revisionValidation),
+    validePar: workflowNormalizeMemberId(r.validePar),
+    dateValidation: r.dateValidation,
+    motifRejet: r.motifRejet || '',
+    motifCorrection: r.motifCorrection || ''
   }));
   
   const disponibilites = raw.disponibilites ? columnarToRows(raw.disponibilites) : [];
   
   const assignments = columnarToRows(raw.assignments).map(r => ({
     id: r.id,
-    tache: Number(r.tache) || null,
-    membre: Number(r.membre) || null,
-    heuresAllouees: Number(r.heuresAllouees) || 0,
+    tache: workflowNormalizeMemberId(r.tache),
+    membre: workflowNormalizeMemberId(r.membre),
+    heuresAllouees: normalizeCapacityValue(r.heuresAllouees),
     dateDebut: r.dateDebut,
     dateFin: r.dateFin,
     modeRepartition: r.modeRepartition || 'uniforme',
@@ -583,7 +649,14 @@ function normalizeCraSnapshot(raw, currentUser) {
     commentaire: r.commentaire || ''
   }));
   
-  const dailyCapacities = columnarToRows(raw.dailyCapacities);
+  const dailyCapacities = columnarToRows(raw.dailyCapacities).map(r => ({
+    id: r.id,
+    membre: workflowNormalizeMemberId(r.membre),
+    date: r.date,
+    capaciteTheorique: normalizeCapacityValue(r.capaciteTheorique),
+    capaciteDisponible: normalizeCapacityValue(r.capaciteDisponible),
+    revision: Number(r.revision) || 0
+  }));
   
   // 1.2.1 - SÉPARATION IDENTITÉ : Distinguer utilisateur connecté et personne affichée
   const meUserId = currentUser ? currentUser.userId : null;
