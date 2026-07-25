@@ -115,7 +115,7 @@
   function showRejectModal() {
     return new Promise((resolve) => {
       let modal = document.getElementById('craRejectModal');
-      let textarea, confirmBtn, cancelBtn, escHandler;
+      let textarea, confirmBtn, cancelBtn, escHandler, errorEl;
       
       // Créer la modale si elle n'existe pas
       if (!modal) {
@@ -131,6 +131,7 @@
             <p class="csub">Veuillez indiquer un motif de rejet</p>
             <label for="craRejectReason" style="display:block;margin-bottom:8px;font-weight:600;font-size:.88rem;">Motif</label>
             <textarea id="craRejectReason" rows="4" style="width:100%;border:1px solid var(--border);border-radius:8px;padding:10px;font-family:inherit;font-size:.88rem;resize:vertical;" placeholder="Ex: Heures incorrectes, capacité dépassée..."></textarea>
+            <div id="craRejectError" style="color:#ef4444;font-size:.8rem;margin-top:8px;display:none"></div>
             <div class="cacts" style="margin-top:16px;display:flex;gap:8px;justify-content:flex-end;">
               <button class="cbtn" id="craRejectCancel">Annuler</button>
               <button class="cbtn danger" id="craRejectConfirm">Rejeter</button>
@@ -143,10 +144,12 @@
       textarea = document.getElementById('craRejectReason');
       confirmBtn = document.getElementById('craRejectConfirm');
       cancelBtn = document.getElementById('craRejectCancel');
+      errorEl = document.getElementById('craRejectError');
       
       // Fonction de fermeture
       function closeModal(result) {
         modal.classList.remove('open');
+        modal.setAttribute('aria-hidden', 'true');
         if (escHandler) {
           document.removeEventListener('keydown', escHandler);
         }
@@ -170,17 +173,22 @@
       confirmBtn.onclick = () => {
         const reason = textarea.value.trim();
         if (!reason) {
-          if (config && typeof config.notify === 'function') {
-            config.notify('Le motif est obligatoire', 'error');
-          }
+          errorEl.textContent = 'Le motif est obligatoire';
+          errorEl.style.display = 'block';
+          textarea.focus();
           return;
         }
+        errorEl.style.display = 'none';
+        confirmBtn.disabled = true;
         closeModal(reason);
       };
       
       // Afficher la modale
       modal.classList.add('open');
+      modal.setAttribute('aria-hidden', 'false');
       textarea.value = '';
+      errorEl.style.display = 'none';
+      confirmBtn.disabled = false;
       textarea.focus();
     });
   }
@@ -189,7 +197,7 @@
   function showCorrectionModal() {
     return new Promise((resolve) => {
       let modal = document.getElementById('craCorrectionModal');
-      let textarea, confirmBtn, cancelBtn, escHandler;
+      let textarea, confirmBtn, cancelBtn, escHandler, errorEl;
       
       // Créer la modale si elle n'existe pas
       if (!modal) {
@@ -205,6 +213,7 @@
             <p class="csub">Veuillez indiquer un motif pour ouvrir une correction manager</p>
             <label for="craCorrectionReason" style="display:block;margin-bottom:8px;font-weight:600;font-size:.88rem;">Motif</label>
             <textarea id="craCorrectionReason" rows="4" style="width:100%;border:1px solid var(--border);border-radius:8px;padding:10px;font-family:inherit;font-size:.88rem;resize:vertical;" placeholder="Ex: Erreur sur les heures, modification nécessaire..."></textarea>
+            <div id="craCorrectionError" style="color:#ef4444;font-size:.8rem;margin-top:8px;display:none"></div>
             <div class="cacts" style="margin-top:16px;display:flex;gap:8px;justify-content:flex-end;">
               <button class="cbtn" id="craCorrectionCancel">Annuler</button>
               <button class="cbtn primary" id="craCorrectionConfirm">Ouvrir la correction</button>
@@ -217,10 +226,12 @@
       textarea = document.getElementById('craCorrectionReason');
       confirmBtn = document.getElementById('craCorrectionConfirm');
       cancelBtn = document.getElementById('craCorrectionCancel');
+      errorEl = document.getElementById('craCorrectionError');
       
       // Fonction de fermeture
       function closeModal(result) {
         modal.classList.remove('open');
+        modal.setAttribute('aria-hidden', 'true');
         if (escHandler) {
           document.removeEventListener('keydown', escHandler);
         }
@@ -244,17 +255,22 @@
       confirmBtn.onclick = () => {
         const reason = textarea.value.trim();
         if (!reason) {
-          if (config && typeof config.notify === 'function') {
-            config.notify('Le motif est obligatoire', 'error');
-          }
+          errorEl.textContent = 'Le motif est obligatoire';
+          errorEl.style.display = 'block';
+          textarea.focus();
           return;
         }
+        errorEl.style.display = 'none';
+        confirmBtn.disabled = true;
         closeModal(reason);
       };
       
       // Afficher la modale
       modal.classList.add('open');
+      modal.setAttribute('aria-hidden', 'false');
       textarea.value = '';
+      errorEl.style.display = 'none';
+      confirmBtn.disabled = false;
       textarea.focus();
     });
   }
@@ -265,7 +281,7 @@
       throw new Error('CraWorkflowIntegration.configure: options requises');
     }
     
-    const { grist, taskFlowCra, getState, reload, notify, setBusy } = options;
+    const { grist, taskFlowCra, getState, reload, notify, setBusy, enterCorrectionMode, leaveCorrectionMode } = options;
     
     if (!grist || !taskFlowCra || !taskFlowCra.service || !taskFlowCra.createUiAdapter) {
       throw new Error('CraWorkflowIntegration.configure: taskFlowCra et service requis');
@@ -275,7 +291,22 @@
       throw new Error('CraWorkflowIntegration.configure: getState requis');
     }
     
-    config = { grist, taskFlowCra, getState, reload, notify, setBusy };
+    // Protection contre double configuration
+    if (config !== null) {
+      console.warn('[CRA] CraWorkflowIntegration déjà configuré, ignoré');
+      return;
+    }
+    
+    config = { 
+      grist, 
+      taskFlowCra, 
+      getState, 
+      reload, 
+      notify, 
+      setBusy,
+      enterCorrectionMode: enterCorrectionMode || (() => {}),
+      leaveCorrectionMode: leaveCorrectionMode || (() => {})
+    };
     
     // Créer l'adaptateur UI
     adapter = taskFlowCra.createUiAdapter({
@@ -350,48 +381,85 @@
   }
   
   // Rejeter une feuille avec modale
-  async function rejectSheet(sheetId) {
+  async function rejectSheet(sheetId, reason) {
     if (!config || !adapter) {
       throw new Error('CraWorkflowIntegration non configuré');
     }
     
-    const reason = await showRejectModal();
-    if (!reason) {
+    // Si le motif est fourni en paramètre, l'utiliser directement
+    if (reason !== undefined && reason !== null) {
+      const trimmedReason = String(reason).trim();
+      if (!trimmedReason) {
+        return { success: false, code: 'MISSING_REJECT_REASON' };
+      }
+      return await adapter.reject(sheetId, trimmedReason);
+    }
+    
+    // Sinon, ouvrir la modale
+    const modalReason = await showRejectModal();
+    if (!modalReason) {
       return { success: false, code: 'MISSING_REJECT_REASON' };
     }
     
-    return await adapter.reject(sheetId, reason);
+    return await adapter.reject(sheetId, modalReason);
   }
   
   // Ouvrir une correction manager avec modale
-  async function openCorrection(sheetId) {
+  async function openCorrection(sheetId, reason) {
     if (!config || !adapter) {
       throw new Error('CraWorkflowIntegration non configuré');
     }
     
-    const reason = await showCorrectionModal();
-    if (!reason) {
+    // Si le motif est fourni en paramètre, l'utiliser directement
+    if (reason !== undefined && reason !== null) {
+      const trimmedReason = String(reason).trim();
+      if (!trimmedReason) {
+        return { success: false, code: 'MISSING_CORRECTION_REASON' };
+      }
+      return await adapter.openCorrection(sheetId, trimmedReason);
+    }
+    
+    // Sinon, ouvrir la modale
+    const modalReason = await showCorrectionModal();
+    if (!modalReason) {
       return { success: false, code: 'MISSING_CORRECTION_REASON' };
     }
     
-    return await adapter.openCorrection(sheetId, reason);
+    return await adapter.openCorrection(sheetId, modalReason);
   }
   
   // Entrer en mode correction manager
-  function enterManagerCorrection(sheetId) {
+  async function enterManagerCorrection(sheetId) {
     if (!config) {
       throw new Error('CraWorkflowIntegration non configuré');
     }
     
-    // Stocker l'état de correction dans le state global
     const state = config.getState();
-    if (state) {
-      state.managerCorrectionSheetId = sheetId;
+    if (!state || !state.feuilles) {
+      return { success: false, code: 'MISSING_STATE' };
     }
     
-    if (config.notify) {
-      config.notify('Mode correction manager activé', 'info');
+    // Trouver la feuille par ID
+    const sheet = state.feuilles.find(f => f.id === sheetId);
+    if (!sheet) {
+      return { success: false, code: 'SHEET_NOT_FOUND' };
     }
+    
+    // Vérifier que la feuille est en correction_manager
+    const status = String(sheet.statut || '').toLowerCase();
+    if (status !== 'correction_manager') {
+      return { success: false, code: 'SHEET_NOT_IN_MANAGER_CORRECTION' };
+    }
+    
+    // Vérifier que le currentUserMemberId est le responsable validation
+    if (sheet.responsableValidation !== state.currentUserMemberId) {
+      return { success: false, code: 'NOT_EXPECTED_VALIDATION_MANAGER' };
+    }
+    
+    // Appeler le callback pour entrer en mode correction
+    config.enterCorrectionMode(sheet);
+    
+    return { success: true, code: 'MANAGER_CORRECTION_MODE_ENTERED', sheetId };
   }
   
   // Mettre à jour les heures en mode correction
@@ -425,14 +493,8 @@
       throw new Error('CraWorkflowIntegration non configuré');
     }
     
-    const state = config.getState();
-    if (state) {
-      state.managerCorrectionSheetId = null;
-    }
-    
-    if (config.notify) {
-      config.notify('Mode correction manager désactivé', 'info');
-    }
+    // Appeler le callback pour quitter le mode correction
+    config.leaveCorrectionMode();
   }
   
   // Exposer l'API publique
@@ -451,7 +513,10 @@
     getManagerAccessibleSheets,
     isSheetAccessibleBySnapshot,
     showRejectModal,
-    showCorrectionModal
+    showCorrectionModal,
+    // Helpers exportés pour tests
+    resolveCurrentUserSheet,
+    findSheetForMemberWeek
   };
   
   console.info('[CRA] Workflow integration loaded');

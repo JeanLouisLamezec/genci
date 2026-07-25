@@ -6708,27 +6708,15 @@ window.rejeterFeuille = async (id) => {
 /**
  * Entrer en mode correction manager pour une feuille
  */
-function enterManagerCorrection(sheetId) {
+async function enterManagerCorrection(sheetId) {
   if (typeof CraWorkflowIntegration !== 'undefined' && CraWorkflowIntegration.enterManagerCorrection) {
-    CraWorkflowIntegration.enterManagerCorrection(sheetId);
+    const result = await CraWorkflowIntegration.enterManagerCorrection(sheetId);
+    if (!result || !result.success) {
+      toast('Erreur : ' + (result?.code || 'Feuille non trouvée'));
+    }
+  } else {
+    toast('Adaptateur non initialisé');
   }
-  
-  // Trouver la feuille et configurer l'état pour l'affichage
-  const correctionSheet = S.feuilles.find(f => f.id === sheetId);
-  if (!correctionSheet) {
-    toast('Feuille non trouvée');
-    return;
-  }
-  
-  // Configurer l'état pour afficher la bonne grille
-  S.managerCorrectionSheetId = sheetId;
-  S.tab = 'saisie';  // Basculer vers l'onglet de saisie
-  S.selectedPersonId = correctionSheet.membre;  // Afficher le propriétaire
-  S.weekStart = gristToMs(correctionSheet.semaine);  // Positionner sur la bonne semaine
-  
-  // Recharger l'affichage
-  render();
-  toast('Mode correction manager activé pour ' + (S.team.find(t => t.id === correctionSheet.membre)?.nom || 'la feuille'));
 }
 
 /**
@@ -6736,7 +6724,12 @@ function enterManagerCorrection(sheetId) {
  */
 async function revalidateSheet(sheetId) {
   if (typeof CraWorkflowIntegration !== 'undefined' && CraWorkflowIntegration.revalidateSheet) {
-    await CraWorkflowIntegration.revalidateSheet(sheetId);
+    const result = await CraWorkflowIntegration.revalidateSheet(sheetId);
+    if (result && result.success) {
+      // La sortie du mode correction est gérée par l'adaptateur via leaveCorrectionMode
+      render();
+      updateSubmitBtn();
+    }
   } else {
     toast('Adaptateur non initialisé');
   }
@@ -6746,12 +6739,11 @@ async function revalidateSheet(sheetId) {
  * Quitter le mode correction manager
  */
 function leaveManagerCorrection() {
-  S.managerCorrectionSheetId = null;
   if (typeof CraWorkflowIntegration !== 'undefined' && CraWorkflowIntegration.leaveManagerCorrection) {
     CraWorkflowIntegration.leaveManagerCorrection();
   }
   render();
-  toast('Mode correction désactivé');
+  updateSubmitBtn();
 }
 
 // ---- Export Excel (CSV + BOM, comme le Plan) ------------------------------
@@ -7231,11 +7223,28 @@ async function initGrist() {
           );
         },
         notify: function(message, type) {
-          toast(message);
+          toast(message, type);
         },
         setBusy: function(busy) {
-          S.busy = Boolean(busy);
+          S.workflowBusy = Boolean(busy);
+          updateSubmitBtn();
+        },
+        enterCorrectionMode: function(sheet) {
+          // Configurer l'état pour afficher la bonne grille
+          S.managerCorrectionSheetId = sheet.id;
+          S.tab = 'saisie';  // Basculer vers l'onglet de saisie
+          S.selectedPersonId = sheet.membre;  // Afficher le propriétaire
+          S.weekStart = gristToMs(sheet.semaine);  // Positionner sur la bonne semaine
+          
+          // Recharger l'affichage
           render();
+          updateSubmitBtn();
+        },
+        leaveCorrectionMode: function() {
+          S.managerCorrectionSheetId = null;
+          S.tab = 'valider';  // Revenir à l'onglet de validation
+          render();
+          updateSubmitBtn();
         }
       });
     } else {

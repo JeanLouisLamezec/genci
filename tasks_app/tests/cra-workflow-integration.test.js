@@ -1,256 +1,414 @@
-#!/usr/bin/env node
 /**
  * Tests de CraWorkflowIntegration
- * 
- * Vérifie :
- * 1. Configuration nominale
- * 2. Acteur venant de currentUserMemberId
- * 3. selectedPersonId ignoré comme acteur
- * 4. Feuille courante résolue par membre + semaine
- * 5. Absence de feuille bloquée
- * 6. Doublon bloqué
- * 7-14. Délégation à l'adaptateur
- * 15-20. Reload et état concurrent
  */
 
-const assert = require('assert');
-
-// Mock pour simuler l'environnement
-function createMockEnvironment() {
-  const now = Date.now();  // Millisecondes (format JavaScript)
-  const monday = new Date(now);
-  const dayOfWeek = monday.getDay();
-  const diff = monday.getDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1);
-  monday.setDate(diff);
-  monday.setHours(0, 0, 0, 0);
-  const mondayMs = monday.getTime();  // Format millisecondes
+describe('CraWorkflowIntegration', () => {
+  let mockEnv;
+  let integration;
   
-  const state = {
-    currentUserMemberId: 1,
-    selectedPersonId: 2,  // Différent pour tester la séparation
-    weekStart: mondayMs,  // Lundi en millisecondes (format CRA)
-    feuilles: [
-      { id: 100, membre: 1, semaine: Math.floor(mondayMs / 1000), statut: 'brouillon', responsableValidation: 3 },
-      { id: 101, membre: 2, semaine: Math.floor(mondayMs / 1000), statut: 'soumis', responsableValidation: 3 }
-    ],
-    team: [
-      { id: 1, nom: 'User1', responsable: 3 },
-      { id: 2, nom: 'User2', responsable: 3 },
-      { id: 3, nom: 'Manager' }
-    ]
-  };
-  
-  const calls = {
-    submit: [],
-    withdraw: [],
-    validate: [],
-    reject: [],
-    openCorrection: [],
-    updateManagerActual: [],
-    revalidate: [],
-    reload: []
-  };
-  
-  const mockAdapter = {
-    submit: async (sheetId) => { calls.submit.push(sheetId); return { success: true, code: 'OK' }; },
-    withdraw: async (sheetId) => { calls.withdraw.push(sheetId); return { success: true, code: 'OK' }; },
-    validate: async (sheetId) => { calls.validate.push(sheetId); return { success: true, code: 'OK' }; },
-    reject: async (sheetId, reason) => { calls.reject.push({ sheetId, reason }); return { success: true, code: 'OK' }; },
-    openCorrection: async (sheetId, reason) => { calls.openCorrection.push({ sheetId, reason }); return { success: true, code: 'OK' }; },
-    updateManagerActual: async (sheetId, timeEntryId, hours) => { calls.updateManagerActual.push({ sheetId, timeEntryId, hours }); return { success: true, code: 'OK' }; },
-    revalidate: async (sheetId) => { calls.revalidate.push(sheetId); return { success: true, code: 'OK' }; }
-  };
-  
-  const mockTaskFlowCra = {
-    service: {},
-    workflow: {},
-    createUiAdapter: (options) => {
-      return mockAdapter;
-    }
-  };
-  
-  const mockGrist = { docApi: {} };
-  
-  const reloadFn = async () => { calls.reload.push(true); };
-  
-  return { state, calls, mockAdapter, mockTaskFlowCra, mockGrist, reloadFn, mondayMs };
-}
-
-async function runTests() {
-  console.log('🧪 Tests de CraWorkflowIntegration...\n');
-  
-  // Charger le module
-  require('../core/cra/cra-workflow-integration.js');
-  
-  if (typeof globalThis.CraWorkflowIntegration === 'undefined') {
-    console.error('❌ CraWorkflowIntegration non exposé');
-    process.exit(1);
+  function createMockEnvironment() {
+    const now = Date.now();
+    const monday = new Date(now);
+    const dayOfWeek = monday.getDay();
+    const diff = monday.getDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1);
+    monday.setDate(diff);
+    monday.setHours(0, 0, 0, 0);
+    const mondayMs = monday.getTime();
+    
+    const state = {
+      currentUserMemberId: 1,
+      selectedPersonId: 2,
+      weekStart: mondayMs,
+      feuilles: [
+        { id: 100, membre: 1, semaine: Math.floor(mondayMs / 1000), statut: 'brouillon', responsableValidation: 3 },
+        { id: 101, membre: 2, semaine: Math.floor(mondayMs / 1000), statut: 'soumis', responsableValidation: 3 }
+      ],
+      team: [
+        { id: 1, nom: 'User1', responsable: 3 },
+        { id: 2, nom: 'User2', responsable: 3 },
+        { id: 3, nom: 'Manager' }
+      ]
+    };
+    
+    const calls = {
+      submit: [],
+      withdraw: [],
+      validate: [],
+      reject: [],
+      openCorrection: [],
+      updateManagerActual: [],
+      revalidate: [],
+      reload: [],
+      enterCorrectionMode: [],
+      leaveCorrectionMode: []
+    };
+    
+    const mockAdapter = {
+      submit: jest.fn(async (sheetId) => { calls.submit.push(sheetId); return { success: true, code: 'OK' }; }),
+      withdraw: jest.fn(async (sheetId) => { calls.withdraw.push(sheetId); return { success: true, code: 'OK' }; }),
+      validate: jest.fn(async (sheetId) => { calls.validate.push(sheetId); return { success: true, code: 'OK' }; }),
+      reject: jest.fn(async (sheetId, reason) => { calls.reject.push({ sheetId, reason }); return { success: true, code: 'OK' }; }),
+      openCorrection: jest.fn(async (sheetId, reason) => { calls.openCorrection.push({ sheetId, reason }); return { success: true, code: 'OK' }; }),
+      updateManagerActual: jest.fn(async (sheetId, timeEntryId, hours) => { calls.updateManagerActual.push({ sheetId, timeEntryId, hours }); return { success: true, code: 'OK' }; }),
+      revalidate: jest.fn(async (sheetId) => { calls.revalidate.push(sheetId); return { success: true, code: 'OK' }; })
+    };
+    
+    const mockTaskFlowCra = {
+      service: {},
+      workflow: {},
+      createUiAdapter: jest.fn(() => mockAdapter)
+    };
+    
+    const mockGrist = { docApi: {} };
+    
+    const reloadFn = jest.fn(async () => { calls.reload.push(true); });
+    const enterCorrectionModeFn = jest.fn((sheet) => { calls.enterCorrectionMode.push(sheet); });
+    const leaveCorrectionModeFn = jest.fn(() => { calls.leaveCorrectionMode.push(true); });
+    
+    return { 
+      state, 
+      calls, 
+      mockAdapter, 
+      mockTaskFlowCra, 
+      mockGrist, 
+      reloadFn, 
+      mondayMs,
+      enterCorrectionModeFn,
+      leaveCorrectionModeFn
+    };
   }
   
-  const env = createMockEnvironment();
-  const { state, calls, mockAdapter, mockTaskFlowCra, mockGrist, reloadFn, mondayMs } = env;
-  let passed = 0;
-  let failed = 0;
+  beforeEach(() => {
+    mockEnv = createMockEnvironment();
+    globalThis.CraWorkflowIntegration = undefined;
+    jest.resetModules();
+  });
   
-  function test(name, condition, details) {
-    if (condition) {
-      console.log('  ✓ ' + name);
-      passed++;
-    } else {
-      console.error('  ✗ ' + name);
-      if (details) console.error('    ' + details);
-      failed++;
-    }
-  }
+  afterEach(() => {
+    delete globalThis.CraWorkflowIntegration;
+  });
   
-  // 1. Configuration nominale
-  try {
-    globalThis.CraWorkflowIntegration.configure({
-      grist: mockGrist,
-      taskFlowCra: mockTaskFlowCra,
-      getState: () => state,
-      reload: reloadFn,
-      notify: () => {},
-      setBusy: () => {}
+  describe('Configuration', () => {
+    test('configuration nominale avec toutes les options', () => {
+      require('../core/cra/cra-workflow-integration.js');
+      
+      expect(() => {
+        globalThis.CraWorkflowIntegration.configure({
+          grist: mockEnv.mockGrist,
+          taskFlowCra: mockEnv.mockTaskFlowCra,
+          getState: () => mockEnv.state,
+          reload: mockEnv.reloadFn,
+          notify: () => {},
+          setBusy: () => {},
+          enterCorrectionMode: mockEnv.enterCorrectionModeFn,
+          leaveCorrectionMode: mockEnv.leaveCorrectionModeFn
+        });
+      }).not.toThrow();
     });
-    test('Configuration nominale', true);
-  } catch (e) {
-    test('Configuration nominale', false, e.message);
-  }
+    
+    test('double configuration ignoree avec avertissement', () => {
+      require('../core/cra/cra-workflow-integration.js');
+      const consoleWarn = jest.spyOn(console, 'warn').mockImplementation();
+      
+      globalThis.CraWorkflowIntegration.configure({
+        grist: mockEnv.mockGrist,
+        taskFlowCra: mockEnv.mockTaskFlowCra,
+        getState: () => mockEnv.state,
+        reload: mockEnv.reloadFn,
+        notify: () => {},
+        setBusy: () => {}
+      });
+      
+      globalThis.CraWorkflowIntegration.configure({
+        grist: mockEnv.mockGrist,
+        taskFlowCra: mockEnv.mockTaskFlowCra,
+        getState: () => mockEnv.state,
+        reload: mockEnv.reloadFn,
+        notify: () => {},
+        setBusy: () => {}
+      });
+      
+      expect(consoleWarn).toHaveBeenCalledWith(
+        expect.stringContaining('configur')
+      );
+      
+      consoleWarn.mockRestore();
+    });
+    
+    test('erreur si taskFlowCra manquant', () => {
+      require('../core/cra/cra-workflow-integration.js');
+      
+      expect(() => {
+        globalThis.CraWorkflowIntegration.configure({
+          grist: mockEnv.mockGrist,
+          taskFlowCra: null,
+          getState: () => mockEnv.state
+        });
+      }).toThrow('taskFlowCra et service requis');
+    });
+    
+    test('erreur si getState manquant', () => {
+      require('../core/cra/cra-workflow-integration.js');
+      
+      expect(() => {
+        globalThis.CraWorkflowIntegration.configure({
+          grist: mockEnv.mockGrist,
+          taskFlowCra: mockEnv.mockTaskFlowCra,
+          getState: null
+        });
+      }).toThrow('getState requis');
+    });
+  });
   
-  // 2. Acteur venant de currentUserMemberId
-  test(
-    'Acteur venant de currentUserMemberId',
-    state.currentUserMemberId === 1,
-    'currentUserMemberId incorrect'
-  );
+  describe('Resolution de feuille', () => {
+    beforeEach(() => {
+      require('../core/cra/cra-workflow-integration.js');
+      globalThis.CraWorkflowIntegration.configure({
+        grist: mockEnv.mockGrist,
+        taskFlowCra: mockEnv.mockTaskFlowCra,
+        getState: () => mockEnv.state,
+        reload: mockEnv.reloadFn,
+        notify: () => {},
+        setBusy: () => {}
+      });
+    });
+    
+    test('currentUserMemberId utilise comme acteur', () => {
+      expect(mockEnv.state.currentUserMemberId).toBe(1);
+      expect(mockEnv.state.selectedPersonId).toBe(2);
+      expect(mockEnv.state.selectedPersonId).not.toBe(mockEnv.state.currentUserMemberId);
+    });
+    
+    test('semaine en millisecondes dans l etat', () => {
+      expect(typeof mockEnv.state.weekStart).toBe('number');
+      expect(mockEnv.state.weekStart).toBeGreaterThan(1000000000000);
+    });
+    
+    test('semaine de feuille en secondes', () => {
+      const sheet = mockEnv.state.feuilles[0];
+      expect(typeof sheet.semaine).toBe('number');
+      expect(sheet.semaine).toBeLessThan(1000000000000);
+    });
+    
+    test('resolution nominale de la feuille courante', async () => {
+      const result = await globalThis.CraWorkflowIntegration.submitCurrentWeek();
+      expect(result.success).toBe(true);
+      expect(mockEnv.calls.submit).toHaveLength(1);
+      expect(mockEnv.calls.submit[0]).toBe(100);
+    });
+    
+    test('absence de feuille bloquee', async () => {
+      mockEnv.state.feuilles = mockEnv.state.feuilles.filter(f => f.membre !== 1);
+      const result = await globalThis.CraWorkflowIntegration.submitCurrentWeek();
+      expect(result.success).toBe(false);
+      expect(result.code).toBe('NO_SHEET');
+    });
+    
+    test('doublon de feuille bloque', async () => {
+      mockEnv.state.feuilles.push({
+        id: 102,
+        membre: 1,
+        semaine: Math.floor(mockEnv.mondayMs / 1000),
+        statut: 'brouillon',
+        responsableValidation: 3
+      });
+      const result = await globalThis.CraWorkflowIntegration.submitCurrentWeek();
+      expect(result.success).toBe(false);
+      expect(result.code).toBe('DUPLICATE_WEEKLY_SHEET');
+    });
+  });
   
-  // 3. selectedPersonId ignoré comme acteur
-  test(
-    'selectedPersonId différent de currentUserMemberId',
-    state.selectedPersonId !== state.currentUserMemberId,
-    'selectedPersonId ne devrait pas être égal à currentUserMemberId'
-  );
+  describe('Soumission et retrait', () => {
+    beforeEach(() => {
+      require('../core/cra/cra-workflow-integration.js');
+      globalThis.CraWorkflowIntegration.configure({
+        grist: mockEnv.mockGrist,
+        taskFlowCra: mockEnv.mockTaskFlowCra,
+        getState: () => mockEnv.state,
+        reload: mockEnv.reloadFn,
+        notify: () => {},
+        setBusy: () => {}
+      });
+    });
+    
+    test('soumission delegue a l adaptateur', async () => {
+      await globalThis.CraWorkflowIntegration.submitCurrentWeek();
+      expect(mockEnv.calls.submit).toHaveLength(1);
+      expect(mockEnv.calls.submit[0]).toBe(100);
+    });
+    
+    test('retrait delegue a l adaptateur', async () => {
+      await globalThis.CraWorkflowIntegration.withdrawCurrentWeek();
+      expect(mockEnv.calls.withdraw).toHaveLength(1);
+      expect(mockEnv.calls.withdraw[0]).toBe(100);
+    });
+  });
   
-  // 4. Feuille courante résolue
-  try {
-    await globalThis.CraWorkflowIntegration.submitCurrentWeek();
-    test(
-      'Feuille courante résolue',
-      calls.submit.length === 1 && calls.submit[0] === 100,
-      'submit appelé avec sheetId incorrect: ' + JSON.stringify(calls.submit)
-    );
-  } catch (e) {
-    test('Feuille courante résolue', false, e.message);
-  }
+  describe('Validation et rejet', () => {
+    beforeEach(() => {
+      require('../core/cra/cra-workflow-integration.js');
+      globalThis.CraWorkflowIntegration.configure({
+        grist: mockEnv.mockGrist,
+        taskFlowCra: mockEnv.mockTaskFlowCra,
+        getState: () => mockEnv.state,
+        reload: mockEnv.reloadFn,
+        notify: () => {},
+        setBusy: () => {}
+      });
+    });
+    
+    test('validation delegue a l adaptateur', async () => {
+      await globalThis.CraWorkflowIntegration.validateSheet(101);
+      expect(mockEnv.calls.validate).toHaveLength(1);
+      expect(mockEnv.calls.validate[0]).toBe(101);
+    });
+    
+    test('rejet avec motif fourni', async () => {
+      const result = await globalThis.CraWorkflowIntegration.rejectSheet(101, 'Motif test');
+      expect(result.success).toBe(true);
+      expect(mockEnv.calls.reject).toHaveLength(1);
+      expect(mockEnv.calls.reject[0].sheetId).toBe(101);
+      expect(mockEnv.calls.reject[0].reason).toBe('Motif test');
+    });
+    
+    test('rejet avec motif trime', async () => {
+      await globalThis.CraWorkflowIntegration.rejectSheet(101, '  Motif avec espaces  ');
+      expect(mockEnv.calls.reject[0].reason).toBe('Motif avec espaces');
+    });
+    
+    test('rejet vide refuse', async () => {
+      const result = await globalThis.CraWorkflowIntegration.rejectSheet(101, '');
+      expect(result.success).toBe(false);
+      expect(result.code).toBe('MISSING_REJECT_REASON');
+      expect(mockEnv.calls.reject).toHaveLength(0);
+    });
+    
+    test('rejet sans motif ouvre la modale', async () => {
+      // Verifie que la fonction showRejectModal est exposee et peut etre appelee
+      expect(typeof globalThis.CraWorkflowIntegration.showRejectModal).toBe('function');
+    });
+  });
   
-  // 5. Absence de feuille bloquée
-  const originalFeuilles = state.feuilles.slice();
-  state.feuilles = state.feuilles.filter(f => f.membre !== 1);
-  try {
-    const result = await globalThis.CraWorkflowIntegration.submitCurrentWeek();
-    test('Absence de feuille bloquée', result && result.code === 'NO_SHEET');
-  } catch (e) {
-    test('Absence de feuille bloquée', true);
-  }
-  state.feuilles = originalFeuilles;
+  describe('Correction manager', () => {
+    beforeEach(() => {
+      require('../core/cra/cra-workflow-integration.js');
+      globalThis.CraWorkflowIntegration.configure({
+        grist: mockEnv.mockGrist,
+        taskFlowCra: mockEnv.mockTaskFlowCra,
+        getState: () => mockEnv.state,
+        reload: mockEnv.reloadFn,
+        notify: () => {},
+        setBusy: () => {},
+        enterCorrectionMode: mockEnv.enterCorrectionModeFn,
+        leaveCorrectionMode: mockEnv.leaveCorrectionModeFn
+      });
+    });
+    
+    test('ouverture de correction avec motif fourni', async () => {
+      const result = await globalThis.CraWorkflowIntegration.openCorrection(101, 'Motif correction');
+      expect(result.success).toBe(true);
+      expect(mockEnv.calls.openCorrection).toHaveLength(1);
+      expect(mockEnv.calls.openCorrection[0].reason).toBe('Motif correction');
+    });
+    
+    test('ouverture de correction vide refusee', async () => {
+      const result = await globalThis.CraWorkflowIntegration.openCorrection(101, '');
+      expect(result.success).toBe(false);
+      expect(result.code).toBe('MISSING_CORRECTION_REASON');
+    });
+    
+    test('entree en correction autorisee', async () => {
+      const sheet = {
+        id: 101,
+        membre: 2,
+        semaine: Math.floor(mockEnv.mondayMs / 1000),
+        statut: 'correction_manager',
+        responsableValidation: 1
+      };
+      mockEnv.state.feuilles = [sheet];
+      
+      const result = await globalThis.CraWorkflowIntegration.enterManagerCorrection(101);
+      expect(result.success).toBe(true);
+      expect(result.code).toBe('MANAGER_CORRECTION_MODE_ENTERED');
+      expect(mockEnv.enterCorrectionModeFn).toHaveBeenCalledWith(sheet);
+    });
+    
+    test('feuille absente refusee', async () => {
+      const result = await globalThis.CraWorkflowIntegration.enterManagerCorrection(999);
+      expect(result.success).toBe(false);
+      expect(result.code).toBe('SHEET_NOT_FOUND');
+    });
+    
+    test('statut incorrect refuse', async () => {
+      mockEnv.state.feuilles[0].statut = 'brouillon';
+      const result = await globalThis.CraWorkflowIntegration.enterManagerCorrection(100);
+      expect(result.success).toBe(false);
+      expect(result.code).toBe('SHEET_NOT_IN_MANAGER_CORRECTION');
+    });
+    
+    test('mauvais manager refuse', async () => {
+      mockEnv.state.feuilles[0].statut = 'correction_manager';
+      mockEnv.state.feuilles[0].responsableValidation = 999;
+      const result = await globalThis.CraWorkflowIntegration.enterManagerCorrection(100);
+      expect(result.success).toBe(false);
+      expect(result.code).toBe('NOT_EXPECTED_VALIDATION_MANAGER');
+    });
+    
+    test('modification manager deleguee', async () => {
+      await globalThis.CraWorkflowIntegration.updateManagerActual(101, 500, 3.5);
+      expect(mockEnv.calls.updateManagerActual).toHaveLength(1);
+      expect(mockEnv.calls.updateManagerActual[0].hours).toBe(3.5);
+    });
+    
+    test('zero preserve', async () => {
+      await globalThis.CraWorkflowIntegration.updateManagerActual(101, 500, 0);
+      expect(mockEnv.calls.updateManagerActual[0].hours).toBe(0);
+    });
+    
+    test('revalidation', async () => {
+      await globalThis.CraWorkflowIntegration.revalidateSheet(101);
+      expect(mockEnv.calls.revalidate).toHaveLength(1);
+      expect(mockEnv.calls.revalidate[0]).toBe(101);
+    });
+    
+    test('callback leaveCorrectionMode apres succes', async () => {
+      await globalThis.CraWorkflowIntegration.revalidateSheet(101);
+      expect(mockEnv.leaveCorrectionModeFn).toHaveBeenCalled();
+    });
+  });
   
-  // 6. Doublon bloqué
-  state.feuilles.push({ id: 102, membre: 1, semaine: Math.floor(mondayMs / 1000), statut: 'brouillon', responsableValidation: 3 });
-  const duplicateResult = await globalThis.CraWorkflowIntegration.submitCurrentWeek();
-  test('Doublon bloqué', duplicateResult && duplicateResult.code === 'DUPLICATE_WEEKLY_SHEET');
-  state.feuilles = state.feuilles.filter(f => f.id !== 102);
-  
-  // 7. Soumission
-  calls.submit = [];
-  await globalThis.CraWorkflowIntegration.submitCurrentWeek();
-  test('Soumission délègue à l\'adaptateur', calls.submit.length === 1);
-  
-  // 8. Retrait
-  calls.withdraw = [];
-  await globalThis.CraWorkflowIntegration.withdrawCurrentWeek();
-  test('Retrait délègue à l\'adaptateur', calls.withdraw.length === 1);
-  
-  // 9. Validation
-  calls.validate = [];
-  await globalThis.CraWorkflowIntegration.validateSheet(101);
-  test('Validation délègue à l\'adaptateur', calls.validate.length === 1 && calls.validate[0] === 101);
-  
-  // 10. Rejet avec modale (simulée)
-  calls.reject = [];
-  // La modale est dans l'intégration, pas testable ici sans DOM
-  test('Rejet avec modale', true, 'Modale présente dans cra-workflow-integration.js');
-  
-  // 11. Correction avec modale
-  calls.openCorrection = [];
-  test('Correction avec modale', true, 'Modale présente dans cra-workflow-integration.js');
-  
-  // 12. Entrée en mode correction
-  try {
-    globalThis.CraWorkflowIntegration.enterManagerCorrection(101);
-    test('Entrée en mode correction', state.managerCorrectionSheetId === 101 || true);
-  } catch (e) {
-    test('Entrée en mode correction', false, e.message);
-  }
-  
-  // 13. Modification manager
-  calls.updateManagerActual = [];
-  await globalThis.CraWorkflowIntegration.updateManagerActual(101, 500, 3.5);
-  test('Modification manager délègue', calls.updateManagerActual.length === 1);
-  
-  // 14. Revalidation
-  calls.revalidate = [];
-  await globalThis.CraWorkflowIntegration.revalidateSheet(101);
-  test('Revalidation délègue', calls.revalidate.length === 1);
-  
-  // 15. Sortie du mode correction
-  try {
-    globalThis.CraWorkflowIntegration.leaveManagerCorrection();
-    test('Sortie du mode correction', true);
-  } catch (e) {
-    test('Sortie du mode correction', false, e.message);
-  }
-  
-  // 16. Aucun applyUserActions() direct
-  const integrationCode = require('fs').readFileSync(require('path').join(__dirname, '..', 'core', 'cra', 'cra-workflow-integration.js'), 'utf8');
-  const hasDirectApply = integrationCode.includes('applyUserActions(');
-  test('Aucun applyUserActions() direct', !hasDirectApply);
-  
-  // 17. Aucun changement direct de l'état fourni
-  const hasDirectStateMutation = integrationCode.includes('S.') && 
-                                  (integrationCode.includes('=') || integrationCode.includes('Object.assign'));
-  test('Aucun changement direct de l\'état', !hasDirectStateMutation || true);  // Tolérance
-  
-  // 18. Reload après succès
-  calls.reload = [];
-  await globalThis.CraWorkflowIntegration.submitCurrentWeek();
-  test('Reload après succès', calls.reload.length >= 0);  // Reload géré par l'adaptateur
-  
-  // 19. Reload après état concurrent
-  test('Reload après état concurrent', true, 'Géré par executeTransition dans le service');
-  
-  // 20. Filtre sur une autre personne sans changement d'acteur
-  state.selectedPersonId = 2;  // Filtre sur une autre personne
-  calls.submit = [];
-  await globalThis.CraWorkflowIntegration.submitCurrentWeek();
-  test(
-    'Filtre sur autre personne sans changement d\'acteur',
-    calls.submit.length === 1 && calls.submit[0] === 100,  // Devrait soumettre la feuille de currentUserMemberId (1)
-    'submit appelé avec sheetId incorrect: ' + JSON.stringify(calls.submit)
-  );
-  
-  // Résumé
-  console.log('\n' + '='.repeat(60));
-  console.log('Résumé : ' + passed + ' passés, ' + failed + ' échoués');
-  
-  if (failed > 0) {
-    process.exit(1);
-  } else {
-    console.log('✅ Tous les tests de CraWorkflowIntegration sont passés');
-  }
-}
-
-runTests().catch(e => {
-  console.error('Erreur:', e);
-  process.exit(1);
+  describe('Aucune mutation directe', () => {
+    test('aucune mutation directe de l etat', () => {
+      // Note: Object.freeze ne leve une erreur qu en mode strict avec assignment
+      // On verifie plutot que l integration ne modifie pas l etat directement
+      const stateCopy = {
+        currentUserMemberId: 1,
+        feuilles: []
+      };
+      
+      require('../core/cra/cra-workflow-integration.js');
+      globalThis.CraWorkflowIntegration.configure({
+        grist: mockEnv.mockGrist,
+        taskFlowCra: mockEnv.mockTaskFlowCra,
+        getState: () => stateCopy,
+        reload: mockEnv.reloadFn,
+        notify: () => {},
+        setBusy: () => {}
+      });
+      
+      // L etat ne doit pas etre modifie par la configuration
+      expect(stateCopy.currentUserMemberId).toBe(1);
+      expect(stateCopy.feuilles).toHaveLength(0);
+    });
+    
+    test('aucun applyUserActions direct dans le code', () => {
+      const fs = require('fs');
+      const path = require('path');
+      const integrationCode = fs.readFileSync(
+        path.join(__dirname, '..', 'core', 'cra', 'cra-workflow-integration.js'),
+        'utf8'
+      );
+      expect(integrationCode).not.toMatch(/applyUserActions\s*\(/);
+    });
+  });
 });
