@@ -235,6 +235,108 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
   // ===========================================================================
   
   /**
+   * Applique une réconciliation de capacités sans muter les originaux
+   * @param {Array} existingCapacities - Capacités existantes
+   * @param {Object} reconciliation - Résultat de reconcileMemberDailyCapacities
+   * @returns {Array} Capacités effectives triées, une par membre+date
+   */
+  function applyCapacityReconciliation(existingCapacities, reconciliation) {
+    var effectiveCapacities = [];
+    var capacityByKey = new Map();
+    
+    // Cloner les capacités existantes (sauf celles qui seront mises à jour)
+    var updatedIds = new Set();
+    if (reconciliation.updates) {
+      reconciliation.updates.forEach(function(update) {
+        updatedIds.add(update.id);
+      });
+    }
+    
+    existingCapacities.forEach(function(cap) {
+      if (updatedIds.has(cap.id)) {
+        // Sera mis à jour, ne pas inclure maintenant
+        return;
+      }
+      var dateKey = typeof cap.date === 'number' ? formatDateUTC(new Date(cap.date * 1000)) : cap.date;
+      var key = cap.membre + ':' + dateKey;
+      
+      // Détecter les doublons
+      if (capacityByKey.has(key)) {
+        // Conserver le premier, signaler le conflit
+        return;
+      }
+      
+      capacityByKey.set(key, {
+        id: cap.id,
+        membre: cap.membre,
+        date: dateKey,
+        capaciteTheorique: cap.capaciteTheorique || 0,
+        disponibiliteRatio: cap.disponibiliteRatio == null ? 1 : cap.disponibiliteRatio,
+        capaciteDisponible: cap.capaciteDisponible || 0,
+        absenceHeures: cap.absenceHeures || 0,
+        source: cap.source || 'calcul',
+        revision: cap.revision || 1
+      });
+    });
+    
+    // Appliquer les updates
+    if (reconciliation.updates) {
+      reconciliation.updates.forEach(function(update) {
+        var existingCap = existingCapacities.find(function(c) { return c.id === update.id; });
+        if (!existingCap) return;
+        
+        var dateKey = typeof existingCap.date === 'number' ? formatDateUTC(new Date(existingCap.date * 1000)) : existingCap.date;
+        var key = existingCap.membre + ':' + dateKey;
+        
+        capacityByKey.set(key, {
+          id: update.id,
+          membre: existingCap.membre,
+          date: dateKey,
+          capaciteTheorique: update.fields.capaciteTheorique != null ? update.fields.capaciteTheorique : existingCap.capaciteTheorique,
+          disponibiliteRatio: update.fields.disponibiliteRatio != null ? update.fields.disponibiliteRatio : (existingCap.disponibiliteRatio == null ? 1 : existingCap.disponibiliteRatio),
+          capaciteDisponible: update.fields.capaciteDisponible != null ? update.fields.capaciteDisponible : existingCap.capaciteDisponible,
+          absenceHeures: update.fields.absenceHeures != null ? update.fields.absenceHeures : existingCap.absenceHeures,
+          source: update.fields.source != null ? update.fields.source : existingCap.source,
+          revision: update.fields.revision != null ? update.fields.revision : existingCap.revision
+        });
+      });
+    }
+    
+    // Appliquer les creates
+    if (reconciliation.creates) {
+      reconciliation.creates.forEach(function(create) {
+        var dateKey = typeof create.date === 'number' ? formatDateUTC(new Date(create.date * 1000)) : create.date;
+        var key = create.membre + ':' + dateKey;
+        
+        // Si doublon, ne pas ajouter (conflit déjà détecté)
+        if (capacityByKey.has(key)) {
+          return;
+        }
+        
+        capacityByKey.set(key, {
+          id: null,
+          membre: create.membre,
+          date: dateKey,
+          capaciteTheorique: create.capaciteTheorique || 0,
+          disponibiliteRatio: create.disponibiliteRatio == null ? 1 : create.disponibiliteRatio,
+          capaciteDisponible: create.capaciteDisponible || 0,
+          absenceHeures: create.absenceHeures || 0,
+          source: create.source || 'calcul',
+          revision: create.revision || 1
+        });
+      });
+    }
+    
+    // Convertir en tableau trié par date
+    effectiveCapacities = Array.from(capacityByKey.values());
+    effectiveCapacities.sort(function(a, b) {
+      return a.date.localeCompare(b.date);
+    });
+    
+    return effectiveCapacities;
+  }
+  
+  /**
    * Crée un registre de capacité pour un membre
    * @param {Object} params - Paramètres
    * @returns {Object} Registre de capacité
@@ -785,7 +887,7 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
         
         // 5. Réconcilier avec les capacités existantes
         var capacityActions = [];
-        var capacitiesToUse = data.capacities;
+        var capacitiesToUse = [];
         if (capacityResult && capacityResult.capacities) {
           var nowUnixSeconds = Math.floor(Date.now() / 1000);
           var capReconciliation = reconcileMemberDailyCapacities(
@@ -793,6 +895,17 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
             capacityResult.capacities,
             { nowUnixSeconds: nowUnixSeconds, todayIso: historyCutoffDate }
           );
+          
+          // Vérifier les conflits
+          if (capReconciliation.conflicts && capReconciliation.conflicts.length > 0) {
+            log('Conflits de capacité détectés: ' + capReconciliation.conflicts.length);
+            return {
+              success: false,
+              code: 'CAPACITY_CONFLICTS',
+              conflicts: capReconciliation.conflicts,
+              diagnostics: capacityResult.diagnostics || []
+            };
+          }
           
           for (var capI = 0; capI < capReconciliation.creates.length; capI++) {
             var capCreate = capReconciliation.creates[capI];
@@ -803,21 +916,8 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
             capacityActions.push(['UpdateRecord', 'MemberDailyCapacities', capUpdate.id, capUpdate.fields]);
           }
           
-          // Utiliser les capacités réconciliées
-          var reconciledCapacities = [];
-          data.capacities.forEach(function(cap) {
-            reconciledCapacities.push(cap);
-          });
-          capReconciliation.creates.forEach(function(cap) {
-            reconciledCapacities.push({
-              id: null,
-              membre: cap.membre,
-              date: typeof cap.date === 'number' ? formatDateUTC(new Date(cap.date * 1000)) : cap.date,
-              capaciteTheorique: cap.capaciteTheorique,
-              capaciteDisponible: cap.capaciteDisponible
-            });
-          });
-          capacitiesToUse = reconciledCapacities;
+          // Utiliser le helper pour appliquer la réconciliation
+          capacitiesToUse = applyCapacityReconciliation(data.capacities, capReconciliation);
         }
         
         // 6. Calculer les heures protégées par date selon le statut

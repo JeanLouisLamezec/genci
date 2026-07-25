@@ -572,6 +572,11 @@ function buildAssignmentPlan(input) {
   const capacityForDistribution = new Map();
   
   for (const date of allDates) {
+    // Règle de jour ouvré : s'applique en premier, indépendamment du reste
+    if (!isWeekdayIso(date)) {
+      continue;
+    }
+    
     const isBeforeReplan = compareDates(date, effectiveReplanFromDate) < 0;
     if (isBeforeReplan) continue;
     
@@ -590,10 +595,6 @@ function buildAssignmentPlan(input) {
     }
     
     if (existingEntry && (existingEntry.sheetStatus === 'validated' || existingEntry.sheetStatus === null || existingEntry.sheetStatus === 'draft')) {
-      continue;
-    }
-    
-    if (!isWeekdayIso(date)) {
       continue;
     }
     

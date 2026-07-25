@@ -1903,5 +1903,46 @@ describe('Planning Engine - Tests complémentaires (spécifications lot 1)', () 
       expect(result.summary.unplannedHours).toBe(14);
       expect(result.diagnostics.some(d => d.code === 'NO_DISTRIBUTABLE_DATES' || d.code === 'UNPLANNED_HOURS')).toBe(true);
     });
+    
+    test('week-end positif avec TimeEntry mutable préexistante → aucun plan, aucune exception', () => {
+      const assignment = {
+        id: 1,
+        taskId: 1,
+        memberId: 1,
+        allocatedHours: 14,
+        startDate: '2026-07-18', // Samedi
+        endDate: '2026-07-19' // Dimanche
+      };
+      
+      const capacities = [
+        { date: '2026-07-18', baseCapacityHours: 7, availableCapacityHours: 7 },
+        { date: '2026-07-19', baseCapacityHours: 7, availableCapacityHours: 7 }
+      ];
+      
+      // TimeEntry mutable préexistante le samedi
+      const existingEntries = [
+        {
+          id: 1,
+          assignmentId: 1,
+          date: '2026-07-18',
+          plannedHours: 3,
+          actualHours: 0,
+          sheetStatus: null,
+          description: null,
+          imputation: null
+        }
+      ];
+      
+      const result = buildAssignmentPlan({
+        assignment,
+        capacities,
+        existingEntries
+      });
+      
+      // Aucun plan ne doit être créé le week-end, même avec une entrée mutable
+      expect(result.desiredPlan.length).toBe(0);
+      expect(result.summary.newlyPlannedHours).toBe(0);
+      expect(result.summary.unplannedHours).toBe(14);
+    });
   });
 });
