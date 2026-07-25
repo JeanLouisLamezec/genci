@@ -140,6 +140,18 @@ function compareDates(a, b) {
 }
 
 /**
+ * Vérifie si une date civile (YYYY-MM-DD) est un jour ouvré (lundi-vendredi)
+ * @param {string} dateIso - Date au format YYYY-MM-DD
+ * @returns {boolean} true si lundi-vendredi, false si samedi-dimanche
+ */
+function isWeekdayIso(dateIso) {
+  const date = parseDateUTC(dateIso);
+  if (!date) return false;
+  const dayOfWeek = date.getUTCDay();
+  return dayOfWeek !== 0 && dayOfWeek !== 6;
+}
+
+/**
  * Vérifie si une date est dans un intervalle
  * @param {string} date - Date à tester
  * @param {string} startDate - Date de début (inclusive)
@@ -550,6 +562,10 @@ function buildAssignmentPlan(input) {
       continue;
     }
     
+    if (!isWeekdayIso(date)) {
+      continue;
+    }
+    
     const cap = capacityMap.get(date);
     const availableCapacity = cap ? toCentiHours(cap.availableCapacityHours) : 0;
     
@@ -714,5 +730,6 @@ module.exports = {
   isDateInRange,
   generateDateRange,
   findDuplicates,
-  validateNumber
+  validateNumber,
+  isWeekdayIso
 };

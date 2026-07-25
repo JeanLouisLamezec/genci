@@ -614,4 +614,379 @@ describe('Member Daily Capacity Service - Options de protection', () => {
     expect(hasManuelSource).toBe(true);
   });
 });
+
+describe('Member Daily Capacity Service - Tests complémentaires (spécifications lot 1)', () => {
+  
+  const { isWeekdayIso } = require('../planning/planning-engine.js');
+  
+  describe('Helper isWeekdayIso', () => {
+    test('devrait retourner true pour lundi-vendredi', () => {
+      expect(isWeekdayIso('2026-07-13')).toBe(true); // Lundi
+      expect(isWeekdayIso('2026-07-14')).toBe(true); // Mardi
+      expect(isWeekdayIso('2026-07-15')).toBe(true); // Mercredi
+      expect(isWeekdayIso('2026-07-16')).toBe(true); // Jeudi
+      expect(isWeekdayIso('2026-07-17')).toBe(true); // Vendredi
+    });
+    
+    test('devrait retourner false pour samedi-dimanche', () => {
+      expect(isWeekdayIso('2026-07-11')).toBe(false); // Samedi
+      expect(isWeekdayIso('2026-07-12')).toBe(false); // Dimanche
+      expect(isWeekdayIso('2026-07-18')).toBe(false); // Samedi
+      expect(isWeekdayIso('2026-07-19')).toBe(false); // Dimanche
+    });
+    
+    test('devrait gérer les dates invalides', () => {
+      expect(isWeekdayIso('invalid')).toBe(false);
+      expect(isWeekdayIso('')).toBe(false);
+      expect(isWeekdayIso(null)).toBe(false);
+    });
+  });
+  
+  describe('8.1. Semaine complète incluant le week-end (35h)', () => {
+    test('devrait produire 7 lignes avec 35h théoriques totales', () => {
+      const result = buildDesiredMemberDailyCapacities({
+        memberId: 1,
+        weeklyCapacity: 35,
+        startDate: '2026-07-13', // Lundi
+        endDate: '2026-07-19', // Dimanche
+        defaultWeeklyCapacity: 35
+      });
+      
+      expect(result.capacities.length).toBe(7);
+      
+      // Lundi à vendredi: 7h
+      for (let i = 0; i < 5; i++) {
+        expect(result.capacities[i].capaciteTheorique).toBe(7);
+        expect(result.capacities[i].capaciteDisponible).toBe(7);
+      }
+      
+      // Samedi et dimanche: 0h
+      expect(result.capacities[5].capaciteTheorique).toBe(0);
+      expect(result.capacities[5].capaciteDisponible).toBe(0);
+      expect(result.capacities[6].capaciteTheorique).toBe(0);
+      expect(result.capacities[6].capaciteDisponible).toBe(0);
+      
+      // Somme théorique: 35h
+      const totalTheorique = result.capacities.reduce((sum, cap) => sum + cap.capaciteTheorique, 0);
+      expect(totalTheorique).toBe(35);
+      
+      // Somme disponible: 35h
+      const totalDisponible = result.capacities.reduce((sum, cap) => sum + cap.capaciteDisponible, 0);
+      expect(totalDisponible).toBe(35);
+    });
+  });
+  
+  describe('8.2. Capacité hebdomadaire de 21h', () => {
+    test('devrait produire 4,2h par jour ouvré', () => {
+      const result = buildDesiredMemberDailyCapacities({
+        memberId: 1,
+        weeklyCapacity: 21,
+        startDate: '2026-07-13',
+        endDate: '2026-07-17',
+        defaultWeeklyCapacity: 35
+      });
+      
+      expect(result.capacities.length).toBe(5);
+      
+      for (const cap of result.capacities) {
+        expect(cap.capaciteTheorique).toBe(4.2); // 21/5
+        expect(cap.capaciteDisponible).toBe(4.2);
+      }
+    });
+    
+    test('devrait produire 0h le week-end', () => {
+      const result = buildDesiredMemberDailyCapacities({
+        memberId: 1,
+        weeklyCapacity: 21,
+        startDate: '2026-07-11',
+        endDate: '2026-07-12',
+        defaultWeeklyCapacity: 35
+      });
+      
+      expect(result.capacities.length).toBe(2);
+      
+      for (const cap of result.capacities) {
+        expect(cap.capaciteTheorique).toBe(0);
+        expect(cap.capaciteDisponible).toBe(0);
+      }
+    });
+  });
+  
+  describe('8.3. Mois réel de juillet 2026 (21h/semaine)', () => {
+    test('devrait totaliser 96,6h sur 23 jours ouvrés', () => {
+      const result = buildDesiredMemberDailyCapacities({
+        memberId: 1,
+        weeklyCapacity: 21,
+        startDate: '2026-07-01',
+        endDate: '2026-07-31',
+        defaultWeeklyCapacity: 35
+      });
+      
+      // Juillet 2026: 1er (Mer) au 31 (Ven)
+      // Jours ouvrés: 23 (sans jours fériés)
+      expect(result.capacities.length).toBe(31);
+      
+      const weekdayCapacities = result.capacities.filter(cap => cap.capaciteTheorique > 0);
+      expect(weekdayCapacities.length).toBe(23);
+      
+      const totalTheorique = result.capacities.reduce((sum, cap) => sum + cap.capaciteTheorique, 0);
+      expect(totalTheorique).toBeCloseTo(96.6, 1); // 23 * 4.2 = 96.6
+    });
+  });
+  
+  describe('8.4. Mois réel d\'août 2026 (21h/semaine)', () => {
+    test('devrait totaliser 88,2h sur 21 jours ouvrés', () => {
+      const result = buildDesiredMemberDailyCapacities({
+        memberId: 1,
+        weeklyCapacity: 21,
+        startDate: '2026-08-01',
+        endDate: '2026-08-31',
+        defaultWeeklyCapacity: 35
+      });
+      
+      expect(result.capacities.length).toBe(31);
+      
+      const weekdayCapacities = result.capacities.filter(cap => cap.capaciteTheorique > 0);
+      expect(weekdayCapacities.length).toBe(21);
+      
+      const totalTheorique = result.capacities.reduce((sum, cap) => sum + cap.capaciteTheorique, 0);
+      expect(totalTheorique).toBeCloseTo(88.2, 1); // 21 * 4.2 = 88.2
+    });
+  });
+  
+  describe('8.5. Mois de février non bissextile (2027)', () => {
+    test('devrait avoir 28 jours sans débordement sur mars', () => {
+      const result = buildDesiredMemberDailyCapacities({
+        memberId: 1,
+        weeklyCapacity: 35,
+        startDate: '2027-02-01',
+        endDate: '2027-02-28',
+        defaultWeeklyCapacity: 35
+      });
+      
+      expect(result.capacities.length).toBe(28);
+      expect(result.capacities[0].date).toBe('2027-02-01');
+      expect(result.capacities[27].date).toBe('2027-02-28');
+      
+      // Vérifier qu'aucune date de mars n'est incluse
+      for (const cap of result.capacities) {
+        expect(cap.date.startsWith('2027-02')).toBe(true);
+      }
+    });
+  });
+  
+  describe('8.6. Mois de février bissextile (2028)', () => {
+    test('devrait avoir 29 jours avec le 29 février', () => {
+      const result = buildDesiredMemberDailyCapacities({
+        memberId: 1,
+        weeklyCapacity: 35,
+        startDate: '2028-02-01',
+        endDate: '2028-02-29',
+        defaultWeeklyCapacity: 35
+      });
+      
+      expect(result.capacities.length).toBe(29);
+      expect(result.capacities[28].date).toBe('2028-02-29');
+    });
+  });
+  
+  describe('8.7. Absence totale sur une semaine ouvrée', () => {
+    test('devrait avoir 0h disponible mais 7h théoriques', () => {
+      const result = buildDesiredMemberDailyCapacities({
+        memberId: 1,
+        weeklyCapacity: 35,
+        availabilities: [
+          { dateDebut: '2026-07-13', dateFin: '2026-07-17', dispo: 0 }
+        ],
+        startDate: '2026-07-13',
+        endDate: '2026-07-19',
+        defaultWeeklyCapacity: 35
+      });
+      
+      // Lundi à vendredi
+      for (let i = 0; i < 5; i++) {
+        expect(result.capacities[i].capaciteTheorique).toBe(7);
+        expect(result.capacities[i].capaciteDisponible).toBe(0);
+        expect(result.capacities[i].absenceHeures).toBe(7);
+      }
+      
+      // Week-end
+      expect(result.capacities[5].capaciteTheorique).toBe(0);
+      expect(result.capacities[6].capaciteTheorique).toBe(0);
+      
+      // Somme disponible: 0h
+      const totalDisponible = result.capacities.slice(0, 5).reduce((sum, cap) => sum + cap.capaciteDisponible, 0);
+      expect(totalDisponible).toBe(0);
+    });
+  });
+  
+  describe('8.8. Absence limitée au week-end', () => {
+    test('ne devrait avoir aucun effet sur les jours ouvrés', () => {
+      const result = buildDesiredMemberDailyCapacities({
+        memberId: 1,
+        weeklyCapacity: 35,
+        availabilities: [
+          { dateDebut: '2026-07-11', dateFin: '2026-07-12', dispo: 0 }
+        ],
+        startDate: '2026-07-13',
+        endDate: '2026-07-17',
+        defaultWeeklyCapacity: 35
+      });
+      
+      // Tous les jours ouvrés devraient avoir pleine capacité
+      for (const cap of result.capacities) {
+        expect(cap.capaciteTheorique).toBe(7);
+        expect(cap.capaciteDisponible).toBe(7);
+        expect(cap.absenceHeures).toBe(0);
+      }
+    });
+  });
+  
+  describe('8.9. Disponibilité à 50%', () => {
+    test('devrait réduire la capacité disponible de moitié', () => {
+      const result = buildDesiredMemberDailyCapacities({
+        memberId: 1,
+        weeklyCapacity: 35,
+        availabilities: [
+          { dateDebut: '2026-07-15', dateFin: '2026-07-15', dispo: 0.5 } // Mercredi seulement
+        ],
+        startDate: '2026-07-15',
+        endDate: '2026-07-15',
+        defaultWeeklyCapacity: 35
+      });
+      
+      expect(result.capacities.length).toBe(1);
+      expect(result.capacities[0].capaciteTheorique).toBe(7);
+      expect(result.capacities[0].disponibiliteRatio).toBe(0.5);
+      expect(result.capacities[0].capaciteDisponible).toBe(3.5);
+      expect(result.capacities[0].absenceHeures).toBe(3.5);
+    });
+  });
+  
+  describe('8.10. Chevauchement de disponibilités', () => {
+    test('devrait appliquer le ratio minimum', () => {
+      const result = buildDesiredMemberDailyCapacities({
+        memberId: 1,
+        weeklyCapacity: 35,
+        availabilities: [
+          { dateDebut: '2026-07-13', dateFin: '2026-07-17', dispo: 0.8 },
+          { dateDebut: '2026-07-14', dateFin: '2026-07-15', dispo: 0.5 }
+        ],
+        startDate: '2026-07-13',
+        endDate: '2026-07-17',
+        defaultWeeklyCapacity: 35
+      });
+      
+      // Lundi: 0.8
+      expect(result.capacities[0].disponibiliteRatio).toBe(0.8);
+      
+      // Mardi et mercredi: 0.5 (minimum)
+      expect(result.capacities[1].disponibiliteRatio).toBe(0.5);
+      expect(result.capacities[2].disponibiliteRatio).toBe(0.5);
+      
+      // Jeudi et vendredi: 0.8
+      expect(result.capacities[3].disponibiliteRatio).toBe(0.8);
+      expect(result.capacities[4].disponibiliteRatio).toBe(0.8);
+    });
+  });
+  
+  describe('8.11. Bornes inclusives', () => {
+    test('devrait appliquer la disponibilité sur un seul jour', () => {
+      const result = buildDesiredMemberDailyCapacities({
+        memberId: 1,
+        weeklyCapacity: 35,
+        availabilities: [
+          { dateDebut: '2026-07-15', dateFin: '2026-07-15', dispo: 0.5 }
+        ],
+        startDate: '2026-07-13',
+        endDate: '2026-07-17',
+        defaultWeeklyCapacity: 35
+      });
+      
+      // Seul le mercredi (index 2) devrait avoir 0.5
+      expect(result.capacities[0].disponibiliteRatio).toBe(1);
+      expect(result.capacities[1].disponibiliteRatio).toBe(1);
+      expect(result.capacities[2].disponibiliteRatio).toBe(0.5);
+      expect(result.capacities[3].disponibiliteRatio).toBe(1);
+      expect(result.capacities[4].disponibiliteRatio).toBe(1);
+    });
+  });
+  
+  describe('8.12. Formats de date (ISO vs timestamp Grist)', () => {
+    test('devrait produire le même résultat avec ISO et timestamp', () => {
+      // Format ISO
+      const resultIso = buildDesiredMemberDailyCapacities({
+        memberId: 1,
+        weeklyCapacity: 35,
+        availabilities: [
+          { dateDebut: '2026-07-13', dateFin: '2026-07-15', dispo: 0.5 }
+        ],
+        startDate: '2026-07-13',
+        endDate: '2026-07-15',
+        defaultWeeklyCapacity: 35
+      });
+      
+      // Format timestamp Grist (secondes Unix)
+      // 2026-07-13 00:00:00 UTC = 1783900800
+      // 2026-07-15 00:00:00 UTC = 1784073600
+      const resultTimestamp = buildDesiredMemberDailyCapacities({
+        memberId: 1,
+        weeklyCapacity: 35,
+        availabilities: [
+          { dateDebut: 1783900800, dateFin: 1784073600, dispo: 0.5 }
+        ],
+        startDate: '2026-07-13',
+        endDate: '2026-07-15',
+        defaultWeeklyCapacity: 35
+      });
+      
+      expect(resultIso.capacities.length).toBe(resultTimestamp.capacities.length);
+      
+      for (let i = 0; i < resultIso.capacities.length; i++) {
+        expect(resultIso.capacities[i].date).toBe(resultTimestamp.capacities[i].date);
+        expect(resultIso.capacities[i].capaciteTheorique).toBe(resultTimestamp.capacities[i].capaciteTheorique);
+        expect(resultIso.capacities[i].capaciteDisponible).toBe(resultTimestamp.capacities[i].capaciteDisponible);
+      }
+    });
+  });
+  
+  describe('8.14. Capacité future de week-end déjà incorrecte', () => {
+    test('devrait corriger un samedi avec capacité positive', () => {
+      const existing = [
+        { id: 1, membre: 1, date: '2026-07-11', capaciteTheorique: 7, disponibiliteRatio: 1, capaciteDisponible: 7, absenceHeures: 0, source: 'calcul', revision: 1 }
+      ];
+      
+      const desired = [
+        { memberId: 1, date: '2026-07-11', capaciteTheorique: 0, disponibiliteRatio: 1, capaciteDisponible: 0, absenceHeures: 0, source: 'calcul', revision: 1 }
+      ];
+      
+      const result = reconcileMemberDailyCapacities(existing, desired, {
+        todayIso: '2026-07-10'
+      });
+      
+      expect(result.updates.length).toBe(1);
+      expect(result.updates[0].fields.capaciteTheorique).toBe(0);
+      expect(result.updates[0].fields.capaciteDisponible).toBe(0);
+      expect(result.updates[0].fields.revision).toBe(2);
+    });
+  });
+  
+  describe('8.18. Idempotence', () => {
+    test('devrait produire zéro action sur deuxième exécution', () => {
+      const existing = [
+        { id: 1, membre: 1, date: '2026-07-13', capaciteTheorique: 7, disponibiliteRatio: 1, capaciteDisponible: 7, absenceHeures: 0, source: 'calcul', revision: 1 }
+      ];
+      
+      const desired = [
+        { memberId: 1, date: '2026-07-13', capaciteTheorique: 7, disponibiliteRatio: 1, capaciteDisponible: 7, absenceHeures: 0, source: 'calcul', revision: 1 }
+      ];
+      
+      const result = reconcileMemberDailyCapacities(existing, desired);
+      
+      expect(result.creates.length).toBe(0);
+      expect(result.updates.length).toBe(0);
+      expect(result.deletes.length).toBe(0);
+    });
+  });
+});
 });

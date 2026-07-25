@@ -1565,3 +1565,244 @@ describe('Planning Engine - Doublons hors période', () => {
     expect(result.desiredPlan).toEqual([]);
   });
 });
+
+describe('Planning Engine - Tests complémentaires (spécifications lot 1)', () => {
+  
+  const { isWeekdayIso } = require('./planning-engine.js');
+  
+  describe('9.1. Répartition excluant le week-end', () => {
+    test('35h du lundi au dimanche → 5 journées à 7h, aucun week-end', () => {
+      const assignment = {
+        id: 1,
+        taskId: 1,
+        memberId: 1,
+        allocatedHours: 35,
+        startDate: '2026-07-13', // Lundi
+        endDate: '2026-07-19' // Dimanche
+      };
+      
+      const capacities = [];
+      for (let i = 0; i < 7; i++) {
+        const date = `2026-07-${String(13 + i).padStart(2, '0')}`;
+        const dayOfWeek = new Date(Date.UTC(2026, 6, 13 + i)).getUTCDay();
+        const isWeekend = (dayOfWeek === 0 || dayOfWeek === 6);
+        
+        capacities.push({
+          date,
+          baseCapacityHours: isWeekend ? 0 : 7,
+          availableCapacityHours: isWeekend ? 0 : 7
+        });
+      }
+      
+      const result = buildAssignmentPlan({
+        assignment,
+        capacities,
+        existingEntries: []
+      });
+      
+      // 5 jours ouvrés uniquement (le moteur respecte les capacités fournies)
+      expect(result.desiredPlan.length).toBe(5);
+      
+      // Total: 35h
+      const totalPlanned = result.desiredPlan.reduce((sum, item) => sum + item.plannedHours, 0);
+      expect(totalPlanned).toBe(35);
+      
+      // Chaque jour: 7h
+      for (const item of result.desiredPlan) {
+        expect(item.plannedHours).toBe(7);
+      }
+      
+      // Vérifier qu'aucun week-end n'est planifié
+      for (const item of result.desiredPlan) {
+        expect(isWeekdayIso(item.date)).toBe(true);
+      }
+      
+      expect(result.summary.unplannedHours).toBe(0);
+    });
+  });
+  
+  describe('9.2. Absence totale sur un jour (mercredi)', () => {
+    test('35h sur deux semaines avec mercredi indisponible → redistribution', () => {
+      const assignment = {
+        id: 1,
+        taskId: 1,
+        memberId: 1,
+        allocatedHours: 35,
+        startDate: '2026-07-13', // Lundi
+        endDate: '2026-07-24' // Vendredi (2 semaines)
+      };
+      
+      const capacities = [];
+      for (let i = 0; i < 14; i++) {
+        const date = `2026-07-${String(13 + i).padStart(2, '0')}`;
+        const dayOfWeek = new Date(Date.UTC(2026, 6, 13 + i)).getUTCDay();
+        const isWeekend = (dayOfWeek === 0 || dayOfWeek === 6);
+        
+        // Mercredi 15 juillet: capacité 0
+        const isWednesday = (i === 2 || i === 9);
+        const availableCapacity = isWeekend || isWednesday ? 0 : 7;
+        
+        capacities.push({
+          date,
+          baseCapacityHours: isWeekend ? 0 : 7,
+          availableCapacityHours: availableCapacity
+        });
+      }
+      
+      const result = buildAssignmentPlan({
+        assignment,
+        capacities,
+        existingEntries: []
+      });
+      
+      // 8 jours disponibles (10 jours ouvrés - 2 mercredis)
+      expect(result.desiredPlan.length).toBe(8);
+      
+      // Total: 35h
+      const totalPlanned = result.desiredPlan.reduce((sum, item) => sum + item.plannedHours, 0);
+      expect(totalPlanned).toBeCloseTo(35, 2);
+      
+      // Aucun mercredi ne devrait être planifié
+      for (const item of result.desiredPlan) {
+        const dayOfWeek = new Date(Date.UTC(2026, 6, parseInt(item.date.split('-')[2]))).getUTCDay();
+        expect(dayOfWeek).not.toBe(3); // Pas de mercredi
+        expect(dayOfWeek).not.toBe(0); // Pas de dimanche
+        expect(dayOfWeek).not.toBe(6); // Pas de samedi
+      }
+    });
+  });
+  
+  describe('9.3. Absence totale sur toute la période', () => {
+    test('35h sur une semaine entièrement indisponible → unplannedHours = 35', () => {
+      const assignment = {
+        id: 1,
+        taskId: 1,
+        memberId: 1,
+        allocatedHours: 35,
+        startDate: '2026-07-13',
+        endDate: '2026-07-17'
+      };
+      
+      const capacities = [
+        { date: '2026-07-13', baseCapacityHours: 7, availableCapacityHours: 0 },
+        { date: '2026-07-14', baseCapacityHours: 7, availableCapacityHours: 0 },
+        { date: '2026-07-15', baseCapacityHours: 7, availableCapacityHours: 0 },
+        { date: '2026-07-16', baseCapacityHours: 7, availableCapacityHours: 0 },
+        { date: '2026-07-17', baseCapacityHours: 7, availableCapacityHours: 0 }
+      ];
+      
+      const result = buildAssignmentPlan({
+        assignment,
+        capacities,
+        existingEntries: []
+      });
+      
+      expect(result.desiredPlan.length).toBe(0);
+      expect(result.summary.unplannedHours).toBe(35);
+      expect(result.diagnostics.some(d => d.code === 'UNPLANNED_HOURS' || d.code === 'NO_DISTRIBUTABLE_DATES')).toBe(true);
+    });
+  });
+  
+  describe('9.4. Disponibilité partielle', () => {
+    test('capacité réduite à 3,5h → distribution respecte la limite', () => {
+      const assignment = {
+        id: 1,
+        taskId: 1,
+        memberId: 1,
+        allocatedHours: 21,
+        startDate: '2026-07-13',
+        endDate: '2026-07-17'
+      };
+      
+      const capacities = [
+        { date: '2026-07-13', baseCapacityHours: 7, availableCapacityHours: 3.5 },
+        { date: '2026-07-14', baseCapacityHours: 7, availableCapacityHours: 3.5 },
+        { date: '2026-07-15', baseCapacityHours: 7, availableCapacityHours: 7 },
+        { date: '2026-07-16', baseCapacityHours: 7, availableCapacityHours: 3.5 },
+        { date: '2026-07-17', baseCapacityHours: 7, availableCapacityHours: 3.5 }
+      ];
+      
+      const result = buildAssignmentPlan({
+        assignment,
+        capacities,
+        existingEntries: []
+      });
+      
+      // Total capacité: 21h
+      const totalCapacity = capacities.reduce((sum, cap) => sum + cap.availableCapacityHours, 0);
+      expect(totalCapacity).toBe(21);
+      
+      // Tout devrait être planifié
+      expect(result.summary.unplannedHours).toBe(0);
+      
+      // Aucun jour ne devrait dépasser sa capacité
+      for (const item of result.desiredPlan) {
+        const cap = capacities.find(c => c.date === item.date);
+        expect(item.plannedHours).toBeLessThanOrEqual(cap.availableCapacityHours + 0.01);
+      }
+    });
+  });
+  
+  describe('9.5. Plusieurs affectations partageant une capacité', () => {
+    test('deux affectations ne devraient pas dépasser 7h par jour', () => {
+      // Cette simulation teste le registre de capacité de l'orchestrateur
+      // via une vérification manuelle du partage
+      
+      const capacities = [
+        { date: '2026-07-13', baseCapacityHours: 7, availableCapacityHours: 7 },
+        { date: '2026-07-14', baseCapacityHours: 7, availableCapacityHours: 7 }
+      ];
+      
+      // Première affectation: 7h
+      const assignment1 = {
+        id: 1,
+        taskId: 1,
+        memberId: 1,
+        allocatedHours: 7,
+        startDate: '2026-07-13',
+        endDate: '2026-07-14'
+      };
+      
+      const result1 = buildAssignmentPlan({
+        assignment: assignment1,
+        capacities,
+        existingEntries: []
+      });
+      
+      // Simuler la capacité restante après la première affectation
+      const remainingCapacities = capacities.map(cap => {
+        const planned1 = result1.desiredPlan.find(p => p.date === cap.date);
+        const planned1Hours = planned1 ? planned1.plannedHours : 0;
+        return {
+          date: cap.date,
+          baseCapacityHours: cap.baseCapacityHours,
+          availableCapacityHours: cap.availableCapacityHours - planned1Hours
+        };
+      });
+      
+      // Deuxième affectation: 7h
+      const assignment2 = {
+        id: 2,
+        taskId: 2,
+        memberId: 1,
+        allocatedHours: 7,
+        startDate: '2026-07-13',
+        endDate: '2026-07-14'
+      };
+      
+      const result2 = buildAssignmentPlan({
+        assignment: assignment2,
+        capacities: remainingCapacities,
+        existingEntries: []
+      });
+      
+      // Vérifier que la somme des deux affectations ne dépasse pas 7h par jour
+      for (const date of ['2026-07-13', '2026-07-14']) {
+        const planned1 = result1.desiredPlan.find(p => p.date === date);
+        const planned2 = result2.desiredPlan.find(p => p.date === date);
+        const total = (planned1 ? planned1.plannedHours : 0) + (planned2 ? planned2.plannedHours : 0);
+        expect(total).toBeLessThanOrEqual(7.01);
+      }
+    });
+  });
+});
