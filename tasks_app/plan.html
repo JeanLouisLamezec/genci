@@ -7,6 +7,8 @@
 <script src="https://docs.getgrist.com/grist-plugin-api.js"></script>
 <script src="core/filters/filter-manager.js"></script>
 <script src="core/planning/time_entry/time-entry-loader.js"></script>
+<script src="core/planning/view/plan-period-aggregation.js"></script>
+<script src="core/planning/view/plan-canon-adapter.js"></script>
 <script src="core/generated/taskflow-planning-browser.js"></script>
 <link rel="stylesheet" href="core/theme/taskflow-theme.css">
 <link rel="stylesheet" href="core/filters/filter-styles.css">
@@ -5004,7 +5006,6 @@ const groupLabel = (g) => g === 'project' ? 'Projet' : g === 'role' ? 'Rôle' : 
 const activeTeam = () => S.team.filter(m => m.actif !== false);
 const isTerminal = (t) => TF.isTerminal(statusCfg, t.statut);
 const capOf = (m) => (Number(m && m.capaciteHebdo) > 0 ? Number(m.capaciteHebdo) : 35);
-const capPeriod = (cap) => S.granularity === 'month' ? cap * 52 / 12 : cap;
 const plabel = (p) => S.granularity === 'month' ? (p.slice(5) + '/' + p.slice(2, 4)) : ('S' + p.slice(6));
 const MOIS = ['janv', 'févr', 'mars', 'avr', 'mai', 'juin', 'juil', 'août', 'sept', 'oct', 'nov', 'déc'];
 function periodStarts(start, g, count) {
@@ -5014,6 +5015,10 @@ function periodStarts(start, g, count) {
 }
 function subLabel(d) { return S.granularity === 'month' ? '' : (d.getUTCDate() + ' ' + MOIS[d.getUTCMonth()]); }
 const r1 = (n) => Math.round(n * 10) / 10;
+
+// Variables globales pour l'index canonique
+let canonPlanIndex = null;
+let canonData = null;
 
 function planTasks() {
   let ts = S.includeDone ? S.tasks : S.tasks.filter(t => !isTerminal(t));
@@ -5217,6 +5222,7 @@ function buildRows() {
 
 // Disponibilités : table datée Disponibilites [{membre, type, dateDebut, dateFin (Unix s), dispo 0..1}] -> capacité réduite par période.
 // Fallback historique : ancien JSON Team.indispos [{start,end,label}] (dates ISO) compté comme indispo totale.
+// NOTE LOT 3 : Ces fonctions legacy sont remplacées par PlanCanonAdapter.getCapacityForRow() et isRowCapacityReduced()
 function parseIndispos(v) { try { const a = JSON.parse(v || '[]'); return Array.isArray(a) ? a.filter(x => x && x.start && x.end) : []; } catch (e) { return []; } }
 const dayIdx = (s) => Math.floor(Date.parse(s + 'T00:00:00Z') / 86400000); // ISO yyyy-mm-dd -> index de jour
 const isoToSec = (iso) => Math.floor(Date.parse(iso + 'T00:00:00Z') / 1000);
@@ -5234,18 +5240,12 @@ function buildDispoIndex() {
   }
   for (const m of (S.team || [])) for (const iv of parseIndispos(m && m.indispos)) push(m.id, dayIdx(iv.start), dayIdx(iv.end), 1); // fallback legacy
 }
-function indispoFrac(member, periodStart) {
-  const arr = (member && DISPO[member.id]) || []; if (!arr.length) return 0;
-  const p0 = Math.floor(periodStart.getTime() / 86400000), days = periodDays(periodStart);
-  let acc = 0;
-  for (let d = p0; d < p0 + days; d++) { let f = 0; for (const iv of arr) { if (d >= iv.s && d <= iv.e && iv.frac > f) f = iv.frac; } acc += f; }
-  return Math.min(acc / days, 1);
-}
-// Capacité d'une ligne sur une période donnée (heures), ajustée des indisponibilités.
-function capForRow(row, periodStart) {
-  return (row.members || []).reduce((s, m) => s + capPeriod(capOf(m)) * (1 - indispoFrac(m, periodStart)), 0);
-}
-function rowReduced(row, periodStart) { return (row.members || []).some(m => indispoFrac(m, periodStart) > 0); }
+// LEGACY - Remplacé par PlanCanonAdapter.getCapacityForRow()
+// function capForRow(row, periodStart) {
+//   return (row.members || []).reduce((s, m) => s + capPeriod(capOf(m)) * (1 - indispoFrac(m, periodStart)), 0);
+// }
+// LEGACY - Remplacé par PlanCanonAdapter.isRowCapacityReduced()
+// function rowReduced(row, periodStart) { return (row.members || []).some(m => indispoFrac(m, periodStart) > 0); }
 
 function cellColor(h, cap) {
   if (!(h > 0)) return 'transparent';
@@ -5254,9 +5254,14 @@ function cellColor(h, cap) {
 }
 
 // ============================================================================
-// Rendu
+// Rendu - VERSION CANONIQUE
 // ============================================================================
-function render() {
+async function render() {
+  // Charger les données canoniques si nécessaire
+  if (!canonData || !canonPlanIndex) {
+    await loadCanonDataForRender();
+  }
+  
   // segments
   renderSeg('segGran', [['week', 'Sem'], ['month', 'Mois']], S.granularity, v => { S.granularity = v; S.offset = 0; render(); });
   renderSeg('segMode', [['prevu', 'Prévu'], ['realise', 'Réalisé'], ['reste', 'Reste'], ['dispo', 'Dispo']], S.mode, v => { S.mode = v; if (v === 'dispo' && S.groupBy !== 'person') { S.groupBy = 'person'; document.getElementById('selGroup').value = 'person'; toast('Vue Dispo : groupement « Personne » (la marge ne se mesure qu\'au global, tous projets confondus)'); } render(); });
@@ -5267,30 +5272,25 @@ function render() {
   document.getElementById('chkWorkdays').checked = S.workdays;
   document.getElementById('navToday').style.display = S.offset !== 0 ? '' : 'none';
 
-  const _rmode = S.mode === 'realise' || S.mode === 'reste';
-  const tasks = planTasks().map(t => (_rmode && isTerminal(t) && t.dateCloture && t.dateCloture >= t.dateDebut) ? Object.assign({}, t, { dateEcheance: t.dateCloture }) : t); // réalisé/reste : redater les tâches clôturées sur leur date de clôture réelle
-  const dispo = S.mode === 'dispo';  // mode "capacité disponible" = cap - charge planifiée
-  // #5 : en Réalisé/Reste, si la Feuille de temps existe, on place les heures dans leur période RÉELLE (datée) au lieu d'étaler tempsPasse.
-  const exactReal = S.hasEntries && (S.mode === 'realise' || S.mode === 'reste');
-  document.getElementById('legend').style.display = dispo ? 'none' : 'flex';
-  document.getElementById('legendDispo').style.display = dispo ? 'flex' : 'none';
-  document.getElementById('legendRealise').style.display = (S.mode === 'realise') ? 'flex' : 'none';
-  { const lr = document.getElementById('legendRealiseTxt'); if (lr) lr.innerHTML = exactReal ? 'réalisé <b>daté</b> (Feuille de temps) — heures placées dans leur période réelle' : 'réalisé = temps passé saisi · <b>estimé</b> (= prévu) pour les tâches clôturées sans temps'; }
-  let matrix;
-  if (exactReal && S.mode === 'realise') matrix = entriesMatrix();
-  else if (exactReal && S.mode === 'reste') matrix = subtractMatrix(TF.chargeMatrix(tasks, keyFn(), S.granularity, effCharges, S.workdays), entriesMatrix());
-  else matrix = TF.chargeMatrix(tasks, keyFn(), S.granularity, dispo ? effCharges : chargesFor, S.workdays);
   const periods = TF.periodRange(TF.shiftPeriods(new Date(), S.granularity, S.offset), S.granularity, S.horizon);
   const nowKey = TF.periodKey(new Date(), S.granularity);
   document.getElementById('navRange').textContent = plabel(periods[0]) + ' → ' + plabel(periods[periods.length - 1]);
 
+  // Utiliser l'index canonique pour la matrice
+  let matrix;
+  if (canonPlanIndex) {
+    matrix = PlanCanonAdapter.formatCanonMatrixForRender(canonPlanIndex.byMemberPeriod, S.groupBy);
+  } else {
+    // Fallback legacy si index non disponible
+    matrix = {};
+  }
+  
   const rows = buildRows();
   const wrap = document.getElementById('gridwrap');
 
   if (!S.team.length) { wrap.innerHTML = '<div class="empty"><div class="ic">▦</div><div>Aucun membre dans la table Team</div></div>'; renderAlerts(matrix, []); return; }
   const hasData = Object.keys(matrix).length > 0;
-  const undated = tasks.filter(t => effCharges(t).length && (t.dateDebut == null || t.dateEcheance == null)).length;
-  if (!hasData && !undated) { wrap.innerHTML = '<div class="empty"><div class="ic">▦</div><div>Aucune charge datée à planifier</div><div style="font-size:.78rem">Renseignez la charge par personne + des dates sur les tâches.</div></div>'; renderAlerts(matrix, periods); return; }
+  if (!hasData) { wrap.innerHTML = '<div class="empty"><div class="ic">▦</div><div>Aucune charge datée à planifier</div><div style="font-size:.78rem">Renseignez la charge par personne + des dates sur les tâches.</div></div>'; renderAlerts(matrix, periods); return; }
 
   const starts = periodStarts(TF.shiftPeriods(new Date(), S.granularity, S.offset), S.granularity, S.horizon);
   let h = '<table class="grid"><thead><tr><th class="colres">Ressource</th>';
@@ -5311,31 +5311,32 @@ function render() {
     const ini = row.label.split(' ').filter(Boolean).map(w => w[0]).slice(0, 2).join('').toUpperCase();
     const resClk = row.isSub || S.groupBy === 'person';
     const resId = row.isSub ? row.teamId : row.key;
-    h += '<tr' + (row.isSub ? ' class="subr"' : '') + '><td class="colres' + (row.isSub ? ' sub' : '') + (resClk ? ' clk' : '') + '"' + (resClk ? ' data-res="' + esc(resId) + '" title="Capacité & indisponibilités"' : '') + '><div class="res"><span class="ava" style="background:' + row.color + '">' + esc(ini) + '</span><span><span class="nm">' + esc(row.label) + '</span>' + (row.cap > 0 ? ' <span class="cap">(' + Math.round(capPeriod(row.cap)) + 'h)</span>' : '') + '</span></div></td>';
+    // Utiliser la capacité canonique
+    const capP = PlanCanonAdapter.getCapacityForRow(row, periods[0], S.granularity, canonData ? canonData.dailyCapacities : []);
+    const redu = PlanCanonAdapter.isRowCapacityReduced(row, periods[0], S.granularity, canonData ? canonData.dailyCapacities : []);
+    h += '<tr' + (row.isSub ? ' class="subr"' : '') + '><td class="colres' + (row.isSub ? ' sub' : '') + (resClk ? ' clk' : '') + '"' + (resClk ? ' data-res="' + esc(resId) + '" title="Capacité & indisponibilités"' : '') + '><div class="res"><span class="ava" style="background:' + row.color + '">' + esc(ini) + '</span><span><span class="nm">' + esc(row.label) + '</span>' + (row.cap > 0 ? ' <span class="cap">(' + Math.round(row.cap) + 'h)</span>' : '') + '</span></div></td>';
     let win = 0, peakR = 0;
     for (let pi = 0; pi < periods.length; pi++) {
       const p = periods[pi], hr = r1(cells[p] || 0);
-      const capP = capForRow(row, starts[pi]);
-      const redu = rowReduced(row, starts[pi]);
+      const dispo = S.mode === 'dispo';
       let content;
       if (dispo) { const free = capP > 0 ? r1(Math.max(capP - hr, 0)) : 0; win += free; content = fmtDispo(free, capP); }
       else { win += hr; if (capP > 0 && hr / capP > peakR) peakR = hr / capP; content = fmtCell(hr, capP); }
       h += '<td class="cell' + (p === nowKey ? ' nowcol' : '') + (redu ? ' redu' : '') + (String(S._cellKey) === String(row.key) && p === S._cellPeriod ? ' sel' : '') + '" data-key="' + esc(row.key) + '" data-period="' + p + '">' + content + '</td>';
     }
     const peak = Math.round(peakR * 100);
-    h += '<td class="sum"><div class="sh">' + r1(win) + ' h</div>' + (dispo ? '<div class="sp">dispo</div>' : '<div class="sp" style="' + (peak > 100 ? 'color:var(--over)' : '') + '">pic ' + peak + '%</div>') + '</td>';
+    h += '<td class="sum"><div class="sh">' + r1(win) + ' h</div>' + (S.mode === 'dispo' ? '<div class="sp">dispo</div>' : '<div class="sp" style="' + (peak > 100 ? 'color:var(--over)' : '') + '">pic ' + peak + '%</div>') + '</td>';
     h += '</tr>';
   }
   h += '</tbody>';
-  // pied : total équipe par période vs capacité (ajustée des indisponibilités)
-  h += '<tfoot><tr><td class="colres" style="text-align:left;padding:7px 10px">' + (dispo ? 'Dispo équipe' : 'Capacité équipe') + '</td>';
+  // pied : total équipe par période vs capacité canonique
+  h += '<tfoot><tr><td class="colres" style="text-align:left;padding:7px 10px">' + (S.mode === 'dispo' ? 'Dispo équipe' : 'Capacité équipe') + '</td>';
   let grand = 0;
   for (let pi = 0; pi < periods.length; pi++) {
     const p = periods[pi];
-    // charge totale = somme des sous-lignes (les en-têtes n'ont pas de clé matrice) ; capacité = équipe une seule fois (indép. du groupement)
     let tot = 0; for (const row of rows) if (!row.isHeader) tot += (matrix[row.key] || {})[p] || 0;
-    const capTeam = activeTeam().reduce((s, m) => s + capPeriod(capOf(m)) * (1 - indispoFrac(m, starts[pi])), 0);
-    if (dispo) {
+    const capTeam = PlanCanonAdapter.getTeamCapacity(activeTeam(), p, S.granularity, canonData ? canonData.dailyCapacities : []);
+    if (S.mode === 'dispo') {
       const freeTot = Math.max(capTeam - tot, 0); grand += freeTot;
       h += '<td class="' + (p === nowKey ? 'nowcol' : '') + '">' + (freeTot > 0.05 ? r1(freeTot) : '·') + '</td>';
     } else {
@@ -5345,7 +5346,6 @@ function render() {
     }
   }
   h += '<td class="sum"><div class="sh">' + r1(grand) + ' h</div></td></tr></tfoot></table>';
-  // #6 : groupement Programme sans aucune affectation -> tout sous « Sans programme » : on guide l'utilisateur.
   if (S.groupBy === 'programme' && !S.projects.some(p => Number(p.programme || p.portefeuille) > 0)) {
     h = '<div class="pf-hint">Aucun projet n\'est rattaché à un programme — tout apparaît sous « Sans programme ». Affectez vos projets dans la table <b>Projects</b> (colonne <b>Programme</b>).</div>' + h;
   }
@@ -5354,6 +5354,32 @@ function render() {
   wrap.querySelectorAll('td.colres.clk').forEach(td => td.addEventListener('click', () => openResource(td.dataset.res)));
   renderAlerts(matrix, periods);
   if (S.timeline) renderTimeline();
+}
+
+/**
+ * Charge les données canoniques pour le rendu
+ */
+async function loadCanonDataForRender() {
+  try {
+    var state = {
+      includeDone: S.includeDone,
+      statusCfg: statusCfg,
+      filters: S.filters || {}
+    };
+    
+    canonData = await PlanCanonAdapter.loadCanonData(grist, state);
+    
+    var periodConfig = {
+      granularity: S.granularity,
+      keys: TF.periodRange(TF.shiftPeriods(new Date(), S.granularity, S.offset), S.granularity, S.horizon)
+    };
+    
+    canonPlanIndex = PlanCanonAdapter.buildCanonPlanIndex(canonData, periodConfig);
+  } catch (e) {
+    console.error('Erreur chargement données canoniques:', e);
+    canonData = null;
+    canonPlanIndex = null;
+  }
 }
 
 // Timeline par personne : tâches de chacun en barres sur la même fenêtre que la heatmap (panel du bas).
@@ -5560,10 +5586,15 @@ function renderSeg(id, opts, cur, cb) {
 }
 
 // ============================================================================
-// Drill cellule -> panel (liste des tâches composant la charge)
+// Drill cellule -> panel (liste des tâches composant la charge) - VERSION CANONIQUE
 // ============================================================================
 function tasksInCell(key, period) {
-  // Utilise TimeEntries au lieu de planTasks() + charges (contrat Plan/CRA unifié)
+  // Utilise l'index canonique si disponible
+  if (canonPlanIndex) {
+    return PlanCanonAdapter.getTasksInCell(canonPlanIndex, key, period);
+  }
+  
+  // Fallback legacy
   const periodRange = TF.periodRange(TF.shiftPeriods(new Date(), S.granularity, S.offset), S.granularity, S.horizon);
   const periodStartsArr = periodStarts(TF.shiftPeriods(new Date(), S.granularity, S.offset), S.granularity, S.horizon);
   const pi = periodRange.indexOf(period);
@@ -5573,20 +5604,17 @@ function tasksInCell(key, period) {
   const startDate = TF.formatDateUTC(pstart);
   const endDate = TF.formatDateUTC(pend);
   
-  // Filtrer les TimeEntries pour cette cellule (membre + période)
   const entries = (S.entries || []).filter(e => 
     e.memberId === Number(key) &&
     e.date >= startDate &&
     e.date <= endDate
   );
   
-  // Regrouper par affectation
   const byAssignment = TaskFlowTimeEntryLoader.groupEntriesByAssignment(entries);
   
-  // Mapper vers les tâches
   const out = [];
   byAssignment.forEach((assignmentEntries, assignmentId) => {
-    if (!assignmentId) return; // Skip legacy (sans affectation)
+    if (!assignmentId) return;
     
     const totalHours = assignmentEntries.reduce((sum, e) => sum + e.plannedHours, 0);
     const taskId = assignmentEntries[0].taskId;
@@ -5606,15 +5634,24 @@ function tasksInCell(key, period) {
   return out.sort((a, b) => b.slice - a.slice);
 }
 
-// Disponibilité par membre sur une période (charge TOTALE tous projets vs capacité) → guide la réaffectation.
-// Utilise TimeEntries.heuresPrevues comme source canonique (contrat Plan/CRA unifié)
+// Disponibilité par membre sur une période - VERSION CANONIQUE
 function memberAvail(period) {
+  if (canonPlanIndex && canonData) {
+    return PlanCanonAdapter.calculateMemberAvailability(
+      activeTeam(),
+      period,
+      S.granularity,
+      canonPlanIndex,
+      canonData.dailyCapacities
+    );
+  }
+  
+  // Fallback legacy
   const pr = TF.periodRange(TF.shiftPeriods(new Date(), S.granularity, S.offset), S.granularity, S.horizon);
   const ss = periodStarts(TF.shiftPeriods(new Date(), S.granularity, S.offset), S.granularity, S.horizon);
   const pi = pr.indexOf(period);
   const pstart = pi >= 0 ? ss[pi] : new Date();
   
-  // Calculer la fin de période (semaine = 7 jours, mois = 30 jours)
   const periodDuration = S.granularity === 'week' ? 7 : 30;
   const pend = new Date(pstart.getTime() + periodDuration * 24 * 60 * 60 * 1000);
   const startDate = TF.formatDateUTC(pstart);
@@ -5622,19 +5659,17 @@ function memberAvail(period) {
   
   const out = {};
   for (const m of activeTeam()) {
-    // Filtrer les TimeEntries du membre sur cette période
     const memberEntries = (S.entries || []).filter(e => 
       e.memberId === m.id && 
       e.date >= startDate && 
       e.date <= endDate
     );
     
-    // NOUVEAU : Somme des heures prévues depuis TimeEntries.heuresPrevues
     const plannedHours = memberEntries.reduce((sum, e) => sum + e.plannedHours, 0);
     
     const cap = capPeriod(capOf(m)) * (1 - indispoFrac(m, pstart));
     out[m.id] = { 
-      load: r1(plannedHours),  // Utilise TimeEntries.heuresPrevues
+      load: r1(plannedHours),
       cap: r1(cap), 
       free: r1(Math.max(cap - plannedHours, 0)) 
     };
