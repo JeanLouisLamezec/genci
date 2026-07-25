@@ -92,30 +92,28 @@ function createUiAdapter(options) {
   } = options;
   
   // État interne pour empêcher le double-clic
-  const pendingOperations = new Map();
+  // Verrouillage par sheetId uniquement (pas par opération)
+  const pendingOperations = new Set();
   
   /**
    * Vérifie si une opération est déjà en cours pour cette feuille
    */
-  function isOperationPending(sheetId, operationType) {
-    const key = `${sheetId}:${operationType}`;
-    return pendingOperations.has(key);
+  function isOperationPending(sheetId) {
+    return pendingOperations.has(sheetId);
   }
   
   /**
    * Marque une opération comme en cours
    */
-  function markOperationPending(sheetId, operationType) {
-    const key = `${sheetId}:${operationType}`;
-    pendingOperations.set(key, true);
+  function markOperationPending(sheetId) {
+    pendingOperations.add(sheetId);
   }
   
   /**
    * Marque une opération comme terminée
    */
-  function markOperationDone(sheetId, operationType) {
-    const key = `${sheetId}:${operationType}`;
-    pendingOperations.delete(key);
+  function markOperationDone(sheetId) {
+    pendingOperations.delete(sheetId);
   }
   
   /**
@@ -196,7 +194,7 @@ function createUiAdapter(options) {
       throw new Error('submit: sheetId requis');
     }
     
-    if (isOperationPending(sheetId, 'submit')) {
+    if (isOperationPending(sheetId)) {
       console.warn('[CRA UI] Double-clic soumis ignoré');
       return { success: false, code: 'OPERATION_PENDING' };
     }
@@ -207,7 +205,7 @@ function createUiAdapter(options) {
       return { success: false, code: 'ACTOR_NOT_IDENTIFIED' };
     }
     
-    markOperationPending(sheetId, 'submit');
+    markOperationPending(sheetId);
     if (typeof setBusy === 'function') {
       setBusy(true);
     }
@@ -226,13 +224,11 @@ function createUiAdapter(options) {
         'submit',
         'Semaine soumise à votre responsable'
       );
-    } catch (e) {
-      console.error('[CRA UI] Erreur soumission:', e);
-      markOperationDone(sheetId, 'submit');
+    } finally {
+      markOperationDone(sheetId);
       if (typeof setBusy === 'function') {
         setBusy(false);
       }
-      throw e;
     }
   }
   
@@ -244,7 +240,7 @@ function createUiAdapter(options) {
       throw new Error('withdraw: sheetId requis');
     }
     
-    if (isOperationPending(sheetId, 'withdraw')) {
+    if (isOperationPending(sheetId)) {
       console.warn('[CRA UI] Double-clic retrait ignoré');
       return { success: false, code: 'OPERATION_PENDING' };
     }
@@ -255,7 +251,7 @@ function createUiAdapter(options) {
       return { success: false, code: 'ACTOR_NOT_IDENTIFIED' };
     }
     
-    markOperationPending(sheetId, 'withdraw');
+    markOperationPending(sheetId);
     if (typeof setBusy === 'function') {
       setBusy(true);
     }
@@ -273,13 +269,11 @@ function createUiAdapter(options) {
         'withdraw',
         'Soumission retirée'
       );
-    } catch (e) {
-      console.error('[CRA UI] Erreur retrait:', e);
-      markOperationDone(sheetId, 'withdraw');
+    } finally {
+      markOperationDone(sheetId);
       if (typeof setBusy === 'function') {
         setBusy(false);
       }
-      throw e;
     }
   }
   
@@ -291,7 +285,7 @@ function createUiAdapter(options) {
       throw new Error('validate: sheetId requis');
     }
     
-    if (isOperationPending(sheetId, 'validate')) {
+    if (isOperationPending(sheetId)) {
       console.warn('[CRA UI] Double-clic validation ignoré');
       return { success: false, code: 'OPERATION_PENDING' };
     }
@@ -302,7 +296,7 @@ function createUiAdapter(options) {
       return { success: false, code: 'ACTOR_NOT_IDENTIFIED' };
     }
     
-    markOperationPending(sheetId, 'validate');
+    markOperationPending(sheetId);
     if (typeof setBusy === 'function') {
       setBusy(true);
     }
@@ -321,13 +315,11 @@ function createUiAdapter(options) {
         'validate',
         'Feuille validée'
       );
-    } catch (e) {
-      console.error('[CRA UI] Erreur validation:', e);
-      markOperationDone(sheetId, 'validate');
+    } finally {
+      markOperationDone(sheetId);
       if (typeof setBusy === 'function') {
         setBusy(false);
       }
-      throw e;
     }
   }
   
@@ -344,7 +336,7 @@ function createUiAdapter(options) {
       return { success: false, code: 'MISSING_REJECT_REASON' };
     }
     
-    if (isOperationPending(sheetId, 'reject')) {
+    if (isOperationPending(sheetId)) {
       console.warn('[CRA UI] Double-clic rejet ignoré');
       return { success: false, code: 'OPERATION_PENDING' };
     }
@@ -355,7 +347,7 @@ function createUiAdapter(options) {
       return { success: false, code: 'ACTOR_NOT_IDENTIFIED' };
     }
     
-    markOperationPending(sheetId, 'reject');
+    markOperationPending(sheetId);
     if (typeof setBusy === 'function') {
       setBusy(true);
     }
@@ -374,13 +366,11 @@ function createUiAdapter(options) {
         'reject',
         'Feuille rejetée'
       );
-    } catch (e) {
-      console.error('[CRA UI] Erreur rejet:', e);
-      markOperationDone(sheetId, 'reject');
+    } finally {
+      markOperationDone(sheetId);
       if (typeof setBusy === 'function') {
         setBusy(false);
       }
-      throw e;
     }
   }
   
@@ -397,7 +387,7 @@ function createUiAdapter(options) {
       return { success: false, code: 'MISSING_CORRECTION_REASON' };
     }
     
-    if (isOperationPending(sheetId, 'open_correction')) {
+    if (isOperationPending(sheetId)) {
       console.warn('[CRA UI] Double-clic ouverture correction ignoré');
       return { success: false, code: 'OPERATION_PENDING' };
     }
@@ -408,7 +398,7 @@ function createUiAdapter(options) {
       return { success: false, code: 'ACTOR_NOT_IDENTIFIED' };
     }
     
-    markOperationPending(sheetId, 'open_correction');
+    markOperationPending(sheetId);
     if (typeof setBusy === 'function') {
       setBusy(true);
     }
@@ -427,13 +417,11 @@ function createUiAdapter(options) {
         'open_correction',
         'Correction manager ouverte'
       );
-    } catch (e) {
-      console.error('[CRA UI] Erreur ouverture correction:', e);
-      markOperationDone(sheetId, 'open_correction');
+    } finally {
+      markOperationDone(sheetId);
       if (typeof setBusy === 'function') {
         setBusy(false);
       }
-      throw e;
     }
   }
   
@@ -458,7 +446,7 @@ function createUiAdapter(options) {
       throw new Error('updateManagerActual: heures invalides (doit être >= 0)');
     }
     
-    if (isOperationPending(sheetId, 'update_actual')) {
+    if (isOperationPending(sheetId)) {
       console.warn('[CRA UI] Double-clic update actual ignoré');
       return { success: false, code: 'OPERATION_PENDING' };
     }
@@ -469,7 +457,7 @@ function createUiAdapter(options) {
       return { success: false, code: 'ACTOR_NOT_IDENTIFIED' };
     }
     
-    markOperationPending(sheetId, 'update_actual');
+    markOperationPending(sheetId);
     if (typeof setBusy === 'function') {
       setBusy(true);
     }
@@ -489,13 +477,11 @@ function createUiAdapter(options) {
         'update_actual',
         'Heures mises à jour'
       );
-    } catch (e) {
-      console.error('[CRA UI] Erreur update manager actual:', e);
-      markOperationDone(sheetId, 'update_actual');
+    } finally {
+      markOperationDone(sheetId);
       if (typeof setBusy === 'function') {
         setBusy(false);
       }
-      throw e;
     }
   }
   
@@ -507,7 +493,7 @@ function createUiAdapter(options) {
       throw new Error('revalidate: sheetId requis');
     }
     
-    if (isOperationPending(sheetId, 'revalidate')) {
+    if (isOperationPending(sheetId)) {
       console.warn('[CRA UI] Double-clic revalidation ignoré');
       return { success: false, code: 'OPERATION_PENDING' };
     }
@@ -518,7 +504,7 @@ function createUiAdapter(options) {
       return { success: false, code: 'ACTOR_NOT_IDENTIFIED' };
     }
     
-    markOperationPending(sheetId, 'revalidate');
+    markOperationPending(sheetId);
     if (typeof setBusy === 'function') {
       setBusy(true);
     }
@@ -537,13 +523,11 @@ function createUiAdapter(options) {
         'revalidate',
         'Feuille corrigée et revalidée'
       );
-    } catch (e) {
-      console.error('[CRA UI] Erreur revalidation:', e);
-      markOperationDone(sheetId, 'revalidate');
+    } finally {
+      markOperationDone(sheetId);
       if (typeof setBusy === 'function') {
         setBusy(false);
       }
-      throw e;
     }
   }
   

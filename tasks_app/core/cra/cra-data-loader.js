@@ -568,10 +568,11 @@ function normalizeCraSnapshot(raw, currentUser) {
     nom: r.nom,
     email: r.email,
     gristUserId: r.gristUserId,
-    entite: Number(r.entite) || 0,
+    entite: workflowNormalizeMemberId(r.entite),
     agentsGeres: [],
-    capaciteHebdo: r.capaciteHebdo || 35,
-    indispos: r.indispos || ''
+    capaciteHebdo: normalizeCapacityValue(r.capaciteHebdo) !== null ? normalizeCapacityValue(r.capaciteHebdo) : 35,
+    indispos: r.indispos || '',
+    responsable: workflowNormalizeMemberId(r.responsable)
   }));
   
   const entites = raw.entites ? columnarToRows(raw.entites).map(e => ({

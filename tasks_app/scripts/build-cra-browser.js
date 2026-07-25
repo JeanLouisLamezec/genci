@@ -96,14 +96,18 @@ function readAndTransformModule(moduleId, filePath, baseDir = CORE_DIR) {
 function compileModule(moduleId, filePath) {
   const code = readAndTransformModule(moduleId, filePath);
   
+  // Le code transformé retourne directement les exports
+  // Le système de cache est géré au niveau du bundle
   const factoryCode = `(function() {
     var exports = {};
-    var module = { exports: exports };
     var __require = function(id) {
-      if (!moduleRegistry.has(id)) {
-        throw new Error('Module non résolu: ' + id);
+      if (!moduleCache.has(id)) {
+        if (!moduleFactories.has(id)) {
+          throw new Error('Module non résolu: ' + id);
+        }
+        moduleCache.set(id, moduleFactories.get(id)());
       }
-      return moduleRegistry.get(id)();
+      return moduleCache.get(id);
     };
     
     ${code}
@@ -152,14 +156,22 @@ function build(options = {}) {
   'use strict';
   
   // Registry des modules (remplie ci-dessous)
-  var moduleRegistry = new Map();
+  var moduleFactories = new Map();
+  var moduleCache = new Map();
   
-  // Fonction require interne
+  // Fonction require interne avec cache
   function __require(id) {
-    if (!moduleRegistry.has(id)) {
+    if (moduleCache.has(id)) {
+      return moduleCache.get(id);
+    }
+    
+    if (!moduleFactories.has(id)) {
       throw new Error('Module non résolu: ' + id);
     }
-    return moduleRegistry.get(id)();
+    
+    var exports = moduleFactories.get(id)();
+    moduleCache.set(id, exports);
+    return exports;
   }
 `);
 
@@ -168,7 +180,7 @@ function build(options = {}) {
     const factoryCode = compileModule(mod.id, mod.path);
     bundleParts.push(`
   // Module: ${mod.id}
-  moduleRegistry.set('${mod.id}', ${factoryCode});`);
+  moduleFactories.set('${mod.id}', ${factoryCode});`);
   }
   
   // Exposer les exports publics

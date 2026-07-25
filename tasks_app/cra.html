@@ -11,6 +11,7 @@
 <script src="core/cra/cra-time-entry-controller.js"></script>
 <script src="core/cra/cra-data-loader.js"></script>
 <script src="core/generated/taskflow-cra-browser.js"></script>
+<script src="core/cra/cra-workflow-integration.js"></script>
 <script src="core/cra/cra-export-model.js"></script>
 <script src="core/cra/cra-export-pdf.js"></script>
 <script src="core/cra/cra-export-csv.js"></script>
@@ -5586,10 +5587,16 @@ function loadDemo() {
 function render() {
   document.getElementById('wLabel').textContent = weekLabel();
   document.getElementById('lgUnit').textContent = 'Unite : ' + unitLabel() + (S.unit !== 'heures' ? ' (' + S.hoursPerDay + ' h/jour)' : '');
-  // Onglet "A valider" : visible seulement si je supervise des agents (annuaire)
+  // Onglet "A valider" : visible selon responsableValidation (snapshot)
+  // Étape 5 : Utiliser le manager snapshoté, pas mesGeres
   const tv = document.getElementById('tabValider');
-  const pending = S.feuilles.filter(f => S.mesGeres.includes(f.membre) && f.statut === 'soumis').length;
-  tv.style.display = S.mesGeres.length ? 'inline-block' : 'none';
+  const managerId = S.currentUserMemberId;
+  const accessible = S.feuilles.filter(f => 
+    f.responsableValidation === managerId &&
+    ['soumis', 'submitted', 'valide', 'validated', 'correction_manager'].includes(String(f.statut || '').toLowerCase())
+  );
+  const pending = accessible.filter(f => ['soumis', 'submitted'].includes(String(f.statut || '').toLowerCase())).length;
+  tv.style.display = accessible.length ? 'inline-block' : 'none';
   tv.textContent = 'A valider' + (pending ? ' (' + pending + ')' : '');
   document.querySelectorAll('#tabSeg button').forEach(b => b.classList.toggle('active', b.dataset.t === S.tab));
   updateSubmitBtn();
@@ -5765,14 +5772,22 @@ function renderSaisie() {
 
 function renderValider() {
   const main = document.getElementById('main');
-  // 1.2.2 - Utiliser normalizeSheetStatus pour comparer
+  // Étape 5 : Utiliser responsableValidation (snapshot) au lieu de mesGeres
+  const managerId = S.currentUserMemberId;
+  
   const subs = S.feuilles.filter(f => {
+    // Utiliser le snapshot responsableValidation
+    if (f.responsableValidation !== managerId) return false;
+    
     const status = normalizeSheetStatus(f.statut);
-    return S.mesGeres.includes(f.membre) && status === 'soumis';
+    // Inclure soumis, valide, et correction_manager
+    return ['soumis', 'submitted', 'valide', 'validated', 'correction_manager'].includes(status);
   }).sort((a, b) => {
     const statusA = normalizeSheetStatus(a.statut);
     const statusB = normalizeSheetStatus(b.statut);
-    return (statusA === 'soumis' ? 0 : 1) - (statusB === 'soumis' ? 0 : 1);
+    // Priorité : soumis > correction_manager > valide
+    const priority = { 'soumis': 0, 'submitted': 0, 'correction_manager': 1, 'valide': 2, 'validated': 2 };
+    return (priority[statusA] || 99) - (priority[statusB] || 99);
   });
   
   if (!subs.length) { main.innerHTML = '<div class="empty-cta">Aucune feuille de ton equipe pour l\'instant.</div>'; return; }
@@ -5780,12 +5795,21 @@ function renderValider() {
   for (const f of subs) {
     const p = S.team.find(t => t.id === f.membre), wk = gristToMs(f.semaine);
     const status = normalizeSheetStatus(f.statut);
-    const act = status === 'soumis'
-      ? '<button class="btn" onclick="validerFeuille(' + f.id + ')">Valider</button> <button class="btn ghost" onclick="rejeterFeuille(' + f.id + ')">Rejeter</button>' : '';
+    
+    // Actions selon le statut
+    let act = '';
+    if (status === 'soumis' || status === 'submitted') {
+      act = '<button class="btn" onclick="validerFeuille(' + f.id + ')">Valider</button> <button class="btn ghost" onclick="rejeterFeuille(' + f.id + ')">Rejeter</button>';
+    } else if (status === 'valide' || status === 'validated') {
+      act = '<button class="btn ghost" onclick="CraWorkflowIntegration.openManagerCorrection(' + f.id + ')">Ouvrir une correction</button>';
+    } else if (status === 'correction_manager') {
+      act = '<button class="btn" onclick="revalidateSheet(' + f.id + ')">Revalider la feuille</button>';
+    }
+    
     html += '<tr><td class="tcell">' + esc(p ? p.nom : '?') + '</td>'
       + '<td class="tcell">' + new Date(wk).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' }) + '</td>'
       + '<td class="total">' + (fmtQty(weekTotalFor(f.membre, wk)) || '0') + '</td>'
-      + '<td class="tcell"><span class="fbadge ' + status + '">' + status + '</span></td>'
+      + '<td class="tcell"><span class="fbadge ' + status + '">' + status + '</span>' + (f.motifCorrection ? '<br><small style="color:var(--text-muted);font-style:italic">' + esc(f.motifCorrection.substring(0, 50)) + '...</small>' : '') + '</td>'
       + '<td class="tcell">' + act + '</td></tr>';
   }
   html += '</tbody></table>';
@@ -6650,69 +6674,32 @@ async function withdrawWeekForPerson(personId) {
 }
 
 async function submitWeek() { 
-  // 1.2.1 - Utiliser selectedPersonId pour la soumission (personne affichée)
-  await submitWeekForPerson(S.selectedPersonId); 
+  // Étape 5 : Utiliser l'intégration du workflow
+  // currentUserMemberId uniquement, jamais selectedPersonId
+  if (!S.currentUserMemberId) {
+    toast('Acteur non identifié');
+    return;
+  }
+  await CraWorkflowIntegration.submitWeekForPerson(S.currentUserMemberId); 
 }
 
 async function withdrawWeek() { 
-  await withdrawWeekForPerson(S.selectedPersonId); 
+  // Étape 5 : Utiliser l'intégration du workflow
+  if (!S.currentUserMemberId) {
+    toast('Acteur non identifié');
+    return;
+  }
+  await CraWorkflowIntegration.withdrawWeekForPerson(S.currentUserMemberId); 
 }
 
 window.validerFeuille = async (id) => {
-  const f = S.feuilles.find(x => x.id === id);
-  if (!f) return;
-  
-  // 1.2.1 - UTILISER currentUserMemberId pour validePar (identité réelle)
-  // Pas S.me qui peut être modifié par les filtres
-  if (!S.currentUserMemberId) {
-    toast('Utilisateur non identifié - validation impossible');
-    return;
-  }
-  
-  try {
-    await grist.docApi.applyUserActions([
-      ['UpdateRecord', 'Feuilles', id, { 
-        statut: 'valide', 
-        validePar: S.currentUserMemberId, 
-        dateValidation: Math.floor(Date.now() / 1000) 
-      }]
-    ]);
-    
-    // Recharger après succès
-    await reloadCra('validate-sheet', { immediate: true });
-    toast('Feuille validee');
-  } catch (e) {
-    // Recharger en cas d'erreur
-    try {
-      await reloadCra('write-error-recovery', { immediate: true });
-    } catch (reloadError) {
-      // Ignorer
-    }
-    toast('Refuse : ' + (e.message || e));
-  }
+  // Étape 5 : Délégation à l'adaptateur UI
+  await CraWorkflowIntegration.validerFeuille(id);
 };
 
 window.rejeterFeuille = async (id) => {
-  const f = S.feuilles.find(x => x.id === id);
-  if (!f) return;
-  
-  try {
-    await grist.docApi.applyUserActions([
-      ['UpdateRecord', 'Feuilles', id, { statut: 'rejete' }]
-    ]);
-    
-    // Recharger après succès
-    await reloadCra('reject-sheet', { immediate: true });
-    toast('Feuille rejetee');
-  } catch (e) {
-    // Recharger en cas d'erreur
-    try {
-      await reloadCra('write-error-recovery', { immediate: true });
-    } catch (reloadError) {
-      // Ignorer
-    }
-    toast('Refuse : ' + (e.message || e));
-  }
+  // Étape 5 : Délégation à l'adaptateur UI avec modale
+  await CraWorkflowIntegration.rejeterFeuille(id);
 };
 
 // ---- Export Excel (CSV + BOM, comme le Plan) ------------------------------
@@ -7169,6 +7156,39 @@ async function initGrist() {
     if (!globalThis.CraDataLoader) {
       throw new Error('CraDataLoader indisponible : vérifiez le chargement du script');
     }
+    
+    // Vérification défensive du bundle CRA (Étape 5)
+    if (!globalThis.TaskFlowCra || !globalThis.TaskFlowCra.service) {
+      throw new Error('TaskFlowCra indisponible : lancez le build CRA (npm run build:cra-browser)');
+    }
+    
+    // Instanciation de l'adaptateur UI (Étape 5)
+    const craSheetAdapter = globalThis.TaskFlowCra.createUiAdapter({
+      service: globalThis.TaskFlowCra.service,
+      grist: grist,
+      getActorMemberId: function() {
+        // Utiliser exclusivement l'identité réelle, jamais selectedPersonId
+        return S.currentUserMemberId;
+      },
+      reload: function(options) {
+        return CraDataLoader.requestCraReload(
+          Object.assign({}, options || {}, {
+            reason: options?.reason || 'sheet-workflow-transition',
+            allowSchemaRecovery: false
+          })
+        );
+      },
+      notify: function(message, type) {
+        toast(message);
+      },
+      setBusy: function(busy) {
+        S.busy = !!busy;
+        render();
+      }
+    });
+    
+    // Exposer l'adaptateur globalement pour débogage
+    globalThis.craSheetAdapter = craSheetAdapter;
     
     // Configuration du loader (TODO 2)
     CraDataLoader.configure({

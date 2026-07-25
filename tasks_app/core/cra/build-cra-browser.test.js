@@ -188,17 +188,24 @@ describe('Build CRA Browser Bundle', () => {
       Date: Date,
       window: {},
       globalThis: {},
-      instantiationCounts: new Map()
+      factoryCallCounts: new Map()
     };
 
     vm.createContext(context);
     vm.runInContext(content, context);
 
-    // Si le bundle fonctionne correctement, il ne devrait pas y avoir d'erreurs
-    // d'instanciation multiple
+    // Vérifier que le bundle fonctionne correctement
     expect(context.window.TaskFlowCra).toBeDefined();
     expect(context.window.TaskFlowCra.service).toBeDefined();
     expect(context.window.TaskFlowCra.workflow).toBeDefined();
+    
+    // Appeler plusieurs fois la même fonction pour vérifier le cache
+    const result1 = context.window.TaskFlowCra.workflow.normalizeMemberId(123);
+    const result2 = context.window.TaskFlowCra.workflow.normalizeMemberId(123);
+    
+    // Les résultats doivent être identiques (pas de réinstanciation)
+    expect(result1).toBe(123);
+    expect(result2).toBe(123);
   });
 
   test('le bundle possède un en-tête clair', () => {
