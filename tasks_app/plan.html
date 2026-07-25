@@ -5774,11 +5774,65 @@ async function addIndispo(memberId) {
   if (end < start) { toast('La fin doit être après le début.'); return; }
   const fields = { membre: memberId, type: label, dateDebut: isoToSec(start), dateFin: isoToSec(end), dispo: dispoPct / 100 };
   if (S.demo) { fields.id = (S.dispos || []).reduce((mx, r) => Math.max(mx, r.id || 0), 0) + 1; (S.dispos || (S.dispos = [])).push(fields); buildDispoIndex(); render(); openResource(String(memberId)); return; }
-  try { await grist.docApi.applyUserActions([['AddRecord', 'Disponibilites', null, fields]]); await reloadDispos(); render(); openResource(String(memberId)); } catch (e) { toast('Erreur ajout'); }
+  try {
+    await grist.docApi.applyUserActions([['AddRecord', 'Disponibilites', null, fields]]);
+    toast('Indisponibilité ajoutée. Replanification en cours...');
+    await reloadDispos();
+    // LOT 2 : Replanifier le membre après ajout d'indisponibilité
+    if (typeof window.replanMemberAfterAvailabilityChange === 'function') {
+      var affectedStartDate = start;
+      var affectedEndDate = end;
+      var result = await window.replanMemberAfterAvailabilityChange(
+        grist,
+        memberId,
+        affectedStartDate,
+        affectedEndDate,
+        { dryRun: false, todayIso: new Date().toISOString().split('T')[0] }
+      );
+      if (result && result.success) {
+        toast('Replanification réussie : ' + (result.totals.totalPlannedHours || 0) + 'h planifiées');
+      } else {
+        toast('Replanification : ' + (result && result.message ? result.message : 'succès partiel'));
+      }
+    }
+    render();
+    openResource(String(memberId));
+  } catch (e) {
+    console.error('Erreur ajout indisponibilité:', e);
+    toast('Erreur ajout');
+  }
 }
 async function removeIndispo(memberId, rowId) {
   if (S.demo) { S.dispos = (S.dispos || []).filter(r => r.id !== rowId); buildDispoIndex(); render(); openResource(String(memberId)); return; }
-  try { await grist.docApi.applyUserActions([['RemoveRecord', 'Disponibilites', rowId]]); await reloadDispos(); render(); openResource(String(memberId)); } catch (e) { toast('Erreur suppression'); }
+  try {
+    // Récupérer les dates de l'indisponibilité avant suppression
+    var indispo = (S.dispos || []).find(function(d) { return d.id === rowId; });
+    await grist.docApi.applyUserActions([['RemoveRecord', 'Disponibilites', rowId]]);
+    toast('Indisponibilité supprimée. Replanification en cours...');
+    await reloadDispos();
+    // LOT 2 : Replanifier le membre après suppression d'indisponibilité
+    if (typeof window.replanMemberAfterAvailabilityChange === 'function' && indispo) {
+      var affectedStartDate = secToISO(indispo.dateDebut);
+      var affectedEndDate = secToISO(indispo.dateFin);
+      var result = await window.replanMemberAfterAvailabilityChange(
+        grist,
+        memberId,
+        affectedStartDate,
+        affectedEndDate,
+        { dryRun: false, todayIso: new Date().toISOString().split('T')[0] }
+      );
+      if (result && result.success) {
+        toast('Replanification réussie : ' + (result.totals.totalPlannedHours || 0) + 'h planifiées');
+      } else {
+        toast('Replanification : ' + (result && result.message ? result.message : 'succès partiel'));
+      }
+    }
+    render();
+    openResource(String(memberId));
+  } catch (e) {
+    console.error('Erreur suppression indisponibilité:', e);
+    toast('Erreur suppression');
+  }
 }
 
 // Modale de confirmation INTERNE (jamais de popup navigateur).

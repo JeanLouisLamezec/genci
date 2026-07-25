@@ -160,6 +160,7 @@ function validateCapacityInput(input) {
         });
       }
       
+      // Valider startDate <= endDate
       if (startDate && endDate && compareDates(startDate, endDate) > 0) {
         errors.push({
           code: 'INVALID_AVAILABILITY_DATE_RANGE',
@@ -242,6 +243,7 @@ function buildDesiredMemberDailyCapacities(input) {
   const availabilityMap = new Map();
   
   for (const avail of availabilities) {
+    // Normaliser les dates avant validation
     const availStart = normalizeCivilDate(avail.dateDebut);
     const availEnd = normalizeCivilDate(avail.dateFin);
     const dispoRatio = typeof avail.dispo === 'number' ? avail.dispo : 1;

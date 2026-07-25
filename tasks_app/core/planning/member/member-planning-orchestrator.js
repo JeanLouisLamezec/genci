@@ -51,16 +51,20 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
   
   /**
    * Vérifie si une entrée a un réalisé explicitement renseigné
+   * CONTRAT : actualHours === 0 retourne true (zéro explicitement saisi, ligne protégée)
    * @param {Object} entry - Entrée TimeEntry
-   * @returns {boolean} true si heures est une valeur numérique valide
+   * @returns {boolean} true si heures est une valeur numérique valide (y compris 0)
    */
   function hasExplicitActual(entry) {
-    return (
-      entry.actualHours !== null &&
-      entry.actualHours !== undefined &&
-      entry.actualHours !== '' &&
-      Number.isFinite(Number(entry.actualHours))
-    );
+    if (
+      entry.actualHours === null ||
+      entry.actualHours === undefined ||
+      entry.actualHours === ''
+    ) {
+      return false;
+    }
+    const val = Number(entry.actualHours);
+    return Number.isFinite(val);
   }
   
   // ===========================================================================
@@ -648,7 +652,7 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
      * Identifie les entrées protégées (verrouillées)
      * Critères :
      * - feuille soumise ou validée
-     * - heures réalisées > 0
+     * - heures réalisées > 0 OU === 0 (explicitement saisi)
      * - historique avant historyCutoffDate (sans feuille et sans réalisé)
      */
     function identifyProtectedEntries(timeEntries, feuillesById, options) {
@@ -666,7 +670,7 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
           return true;
         }
         
-        // Heures réalisées explicites (null ≠ 0)
+        // Heures réalisées explicites (null ≠ 0, et 0 est protégé)
         if (hasActualHours) {
           return true;
         }
@@ -685,9 +689,10 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
      * N'inclut QUE :
      * - les affectations actives actuelles
      * - les TimeEntries protégées (réalisé, soumis, validé, historique)
+     * - la date de coupure historique (pour permettre la replanification future)
      * Exclut les TimeEntries mutables qui vont être supprimées
      */
-    function calculateCapacityPeriod(assignments, protectedEntries) {
+    function calculateCapacityPeriod(assignments, protectedEntries, historyCutoffDate) {
       if (!assignments || assignments.length === 0) {
         return null;
       }
@@ -716,6 +721,17 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
             if (date && (!maxDate || date > maxDate)) maxDate = date;
           }
         });
+      }
+      
+      // Extension pour inclure historyCutoffDate si nécessaire
+      // Cela permet de replanifier les affectations passées sur des dates futures
+      if (historyCutoffDate) {
+        if (!minDate || historyCutoffDate < minDate) {
+          // minDate reste la date de début la plus ancienne
+        }
+        if (!maxDate || historyCutoffDate > maxDate) {
+          maxDate = historyCutoffDate;
+        }
       }
       
       if (!minDate || !maxDate) {
@@ -781,7 +797,7 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
         else if (entry.sheetStatus === 'submitted') {
           protectedHoursByDate[entry.date] += entry.plannedHours;
         }
-        // Ligne avec réalisé explicite : protéger max(heuresPrevues, heures)
+        // Ligne avec réalisé explicite (y compris 0) : protéger max(heuresPrevues, heures)
         else if (hasRealise) {
           protectedHoursByDate[entry.date] += Math.max(entry.plannedHours, entry.actualHours === null || entry.actualHours === undefined || entry.actualHours === '' ? 0 : entry.actualHours);
         }
@@ -857,8 +873,8 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
         
         log('Entrées protégées: ' + protectedEntries.length + ' sur ' + data.timeEntries.length + ' totales');
         
-        // 3. Calculer la période de capacité utile (affectations actives + entrées protégées)
-        var period = calculateCapacityPeriod(data.assignments, protectedEntries);
+        // 3. Calculer la période de capacité utile (affectations actives + entrées protégées + historyCutoffDate)
+        var period = calculateCapacityPeriod(data.assignments, protectedEntries, historyCutoffDate);
         
         if (!period) {
           log('Période invalide');
@@ -1838,6 +1854,174 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
       return await replanMembers(memberIds, options);
     }
     
+    /**
+     * API PUBLIQUE LOT 2 : Replanifie un membre après un changement de disponibilité
+     * 
+     * @param {number} memberId - ID du membre à replanifier
+     * @param {string} affectedStartDate - Date de début de la période affectée (YYYY-MM-DD)
+     * @param {string} affectedEndDate - Date de fin de la période affectée (YYYY-MM-DD)
+     * @param {Object} options - Options de replanification
+     * @param {string} [options.todayIso] - Date de référence pour les tests (YYYY-MM-DD)
+     * @param {boolean} [options.dryRun=false] - Si true, ne fait qu'un preview sans écrire
+     * @param {boolean} [options.forceHistoricalRebuild=false] - Si true, autorise la modification du passé
+     * @param {boolean} [options.forceSourceOverride=false] - Si true, ignore la priorité des sources
+     * @returns {Promise<Object>} Résultat avec success, memberId, capacityActions, timeEntryActions, etc.
+     */
+    async function replanMemberAfterAvailabilityChange(memberId, affectedStartDate, affectedEndDate, options) {
+      options = options || {};
+      
+      log('Replanification membre ' + memberId + ' après changement disponibilité [' + affectedStartDate + ' → ' + affectedEndDate + ']');
+      
+      try {
+        // Validation des paramètres
+        if (!memberId) {
+          return {
+            success: false,
+            code: 'MISSING_MEMBER_ID',
+            message: 'memberId est requis'
+          };
+        }
+        
+        if (!affectedStartDate || !affectedEndDate) {
+          return {
+            success: false,
+            code: 'MISSING_DATES',
+            message: 'affectedStartDate et affectedEndDate sont requis'
+          };
+        }
+        
+        // Phase A — PREVIEW
+        log('PHASE A : Preview de la replanification');
+        
+        var previewOptions = {
+          todayIso: options.todayIso,
+          forceHistoricalRebuild: options.forceHistoricalRebuild || false,
+          forceSourceOverride: options.forceSourceOverride || false,
+          allowPartialPlanning: true
+        };
+        
+        var preview = await previewMember(memberId, previewOptions);
+        
+        if (!preview.success) {
+          log('Preview échoué : ' + preview.code);
+          return {
+            success: false,
+            memberId: memberId,
+            affectedStartDate: affectedStartDate,
+            affectedEndDate: affectedEndDate,
+            code: preview.code,
+            message: preview.message,
+            diagnostics: preview.diagnostics || [],
+            canCommit: false
+          };
+        }
+        
+        // Calculer les totaux depuis le registre
+        var totals = {
+          totalAllocatedHours: preview.totals.totalAllocatedHours || 0,
+          totalProtectedHours: preview.totals.protectedHours || 0,
+          totalPlannedHours: preview.totals.totalPlannedHours || 0,
+          totalUnplannedHours: preview.totals.totalUnplannedHours || 0
+        };
+        
+        var result = {
+          success: true,
+          memberId: memberId,
+          affectedStartDate: affectedStartDate,
+          affectedEndDate: affectedEndDate,
+          capacityActions: preview.capacityActions || [],
+          timeEntryActions: preview.timeEntryActions || [],
+          assignmentResults: preview.assignmentResults || [],
+          totals: totals,
+          diagnostics: preview.diagnostics || [],
+          canCommit: preview.canCommit !== false,
+          fingerprint: preview.fingerprint,
+          historyCutoffDate: preview.historyCutoffDate,
+          capacityPeriod: preview.capacityPeriod
+        };
+        
+        // Si dryRun, retourner le preview sans commit
+        if (options.dryRun) {
+          log('Mode dryRun, retour du preview sans commit');
+          return result;
+        }
+        
+        // Phase B — COMMIT
+        log('PHASE B : Commit de la replanification');
+        
+        if (!result.canCommit) {
+          log('Commit non autorisé selon le preview');
+          return {
+            success: false,
+            memberId: memberId,
+            affectedStartDate: affectedStartDate,
+            affectedEndDate: affectedEndDate,
+            code: preview.code || 'CANNOT_COMMIT',
+            message: 'Le preview indique que le commit n\'est pas autorisé',
+            capacityActions: preview.capacityActions || [],
+            timeEntryActions: preview.timeEntryActions || [],
+            assignmentResults: preview.assignmentResults || [],
+            totals: totals,
+            diagnostics: preview.diagnostics || [],
+            canCommit: false
+          };
+        }
+        
+        // Exécuter le commit
+        var commitResult = await commitMember(memberId, preview, {
+          todayIso: options.todayIso,
+          expectedFingerprint: preview.fingerprint
+        });
+        
+        if (!commitResult.success) {
+          log('Commit échoué : ' + commitResult.code);
+          return {
+            success: false,
+            memberId: memberId,
+            affectedStartDate: affectedStartDate,
+            affectedEndDate: affectedEndDate,
+            code: commitResult.code || 'COMMIT_FAILED',
+            message: commitResult.message,
+            capacityActions: preview.capacityActions || [],
+            timeEntryActions: preview.timeEntryActions || [],
+            assignmentResults: preview.assignmentResults || [],
+            totals: totals,
+            diagnostics: preview.diagnostics || [],
+            canCommit: false,
+            partialFailure: true
+          };
+        }
+        
+        log('Replanification terminée avec succès');
+        
+        return {
+          success: true,
+          memberId: memberId,
+          affectedStartDate: affectedStartDate,
+          affectedEndDate: affectedEndDate,
+          capacityActions: preview.capacityActions || [],
+          timeEntryActions: preview.timeEntryActions || [],
+          assignmentResults: preview.assignmentResults || [],
+          totals: totals,
+          diagnostics: preview.diagnostics || [],
+          canCommit: true,
+          commitResult: commitResult
+        };
+        
+      } catch (e) {
+        log('Erreur replanMemberAfterAvailabilityChange: ' + e.message);
+        return {
+          success: false,
+          memberId: memberId,
+          affectedStartDate: affectedStartDate,
+          affectedEndDate: affectedEndDate,
+          code: 'REPLAN_ERROR',
+          message: e.message,
+          canCommit: false
+        };
+      }
+    }
+    
     // API publique
     return {
       previewMember: previewMember,
@@ -1846,6 +2030,7 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
       replanMembers: replanMembers,
       replanTask: replanTask,
       replanTasks: replanTasks,
+      replanMemberAfterAvailabilityChange: replanMemberAfterAvailabilityChange,
       loadMemberData: loadMemberData,
       createCapacityRegistry: createCapacityRegistry
     };
@@ -1865,4 +2050,12 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
     window.createMemberPlanningOrchestrator = createMemberPlanningOrchestrator;
     window.createCapacityRegistry = createCapacityRegistry;
     window.sortAssignments = sortAssignments;
+  }
+  
+  // Export Lot 2 : API publique pour replanification après changement de disponibilité
+  if (typeof window !== 'undefined') {
+    window.replanMemberAfterAvailabilityChange = function(grist, memberId, affectedStartDate, affectedEndDate, options) {
+      var orchestrator = createMemberPlanningOrchestrator(grist);
+      return orchestrator.replanMemberAfterAvailabilityChange(memberId, affectedStartDate, affectedEndDate, options);
+    };
   }
