@@ -4854,48 +4854,50 @@ function createUiAdapter(options) {
   
   /**
    * Gère le résultat d'une opération
+   * CONTRAT: busy reste actif jusqu'à la fin du reload
    */
   async function handleOperationResult(result, sheetId, operationType, successMessage) {
-    const wasBusy = typeof setBusy === 'function';
-    if (wasBusy) {
-      setBusy(false);
-    }
-    
-    markOperationDone(sheetId, operationType);
-    
-    if (result.success) {
-      showNotification(successMessage || USER_MESSAGES.OK, 'success');
-      await reloadAfterTransition('workflow-success');
+    try {
+      if (result.success) {
+        showNotification(successMessage || USER_MESSAGES.OK, 'success');
+        await reloadAfterTransition('workflow-success');
+        return result;
+      }
+      
+      // Échec
+      const code = result.code || 'UNKNOWN_ERROR';
+      const message = getUserMessage(code, result);
+      
+      // Logger les détails techniques dans la console
+      console.error('[CRA UI] Échec opération', {
+        code,
+        reason: result.reason,
+        transition: result.transition,
+        diagnostics: result.diagnostics,
+        before: result.before,
+        after: result.after
+      });
+      
+      // Afficher le message utilisateur (sans stack technique)
+      showNotification(message, 'error');
+      
+      // Recharger si l'état a pu changer
+      if (
+        code === 'WORKFLOW_STATE_CHANGED' ||
+        code === 'WORKFLOW_POSTCONDITION_FAILED' ||
+        code === 'WORKFLOW_APPLY_FAILED'
+      ) {
+        await reloadAfterTransition('workflow-error');
+      }
+      
       return result;
+    } finally {
+      // Libérer le verrou et busy APRÈS le reload
+      markOperationDone(sheetId);
+      if (typeof setBusy === 'function') {
+        setBusy(false);
+      }
     }
-    
-    // Échec
-    const code = result.code || 'UNKNOWN_ERROR';
-    const message = getUserMessage(code, result);
-    
-    // Logger les détails techniques dans la console
-    console.error('[CRA UI] Échec opération', {
-      code,
-      reason: result.reason,
-      transition: result.transition,
-      diagnostics: result.diagnostics,
-      before: result.before,
-      after: result.after
-    });
-    
-    // Afficher le message utilisateur (sans stack technique)
-    showNotification(message, 'error');
-    
-    // Recharger si l'état a pu changer
-    if (
-      code === 'WORKFLOW_STATE_CHANGED' ||
-      code === 'WORKFLOW_POSTCONDITION_FAILED' ||
-      code === 'WORKFLOW_APPLY_FAILED'
-    ) {
-      await reloadAfterTransition('workflow-error');
-    }
-    
-    return result;
   }
   
   /**
@@ -4922,26 +4924,19 @@ function createUiAdapter(options) {
       setBusy(true);
     }
     
-    try {
-      const result = await service.submitSheet({
-        grist,
-        actorMemberId,
-        sheetId,
-        nowUnixSeconds: nowUnixSeconds()
-      });
-      
-      return await handleOperationResult(
-        result,
-        sheetId,
-        'submit',
-        'Semaine soumise à votre responsable'
-      );
-    } finally {
-      markOperationDone(sheetId);
-      if (typeof setBusy === 'function') {
-        setBusy(false);
-      }
-    }
+    const result = await service.submitSheet({
+      grist,
+      actorMemberId,
+      sheetId,
+      nowUnixSeconds: nowUnixSeconds()
+    });
+    
+    return await handleOperationResult(
+      result,
+      sheetId,
+      'submit',
+      'Semaine soumise à votre responsable'
+    );
   }
   
   /**
@@ -4968,25 +4963,18 @@ function createUiAdapter(options) {
       setBusy(true);
     }
     
-    try {
-      const result = await service.withdrawSheet({
-        grist,
-        actorMemberId,
-        sheetId
-      });
-      
-      return await handleOperationResult(
-        result,
-        sheetId,
-        'withdraw',
-        'Soumission retirée'
-      );
-    } finally {
-      markOperationDone(sheetId);
-      if (typeof setBusy === 'function') {
-        setBusy(false);
-      }
-    }
+    const result = await service.withdrawSheet({
+      grist,
+      actorMemberId,
+      sheetId
+    });
+    
+    return await handleOperationResult(
+      result,
+      sheetId,
+      'withdraw',
+      'Soumission retirée'
+    );
   }
   
   /**
@@ -5013,26 +5001,19 @@ function createUiAdapter(options) {
       setBusy(true);
     }
     
-    try {
-      const result = await service.validateSheet({
-        grist,
-        actorMemberId,
-        sheetId,
-        nowUnixSeconds: nowUnixSeconds()
-      });
-      
-      return await handleOperationResult(
-        result,
-        sheetId,
-        'validate',
-        'Feuille validée'
-      );
-    } finally {
-      markOperationDone(sheetId);
-      if (typeof setBusy === 'function') {
-        setBusy(false);
-      }
-    }
+    const result = await service.validateSheet({
+      grist,
+      actorMemberId,
+      sheetId,
+      nowUnixSeconds: nowUnixSeconds()
+    });
+    
+    return await handleOperationResult(
+      result,
+      sheetId,
+      'validate',
+      'Feuille validée'
+    );
   }
   
   /**
@@ -5064,26 +5045,19 @@ function createUiAdapter(options) {
       setBusy(true);
     }
     
-    try {
-      const result = await service.rejectSheet({
-        grist,
-        actorMemberId,
-        sheetId,
-        rejectReason: String(reason).trim()
-      });
-      
-      return await handleOperationResult(
-        result,
-        sheetId,
-        'reject',
-        'Feuille rejetée'
-      );
-    } finally {
-      markOperationDone(sheetId);
-      if (typeof setBusy === 'function') {
-        setBusy(false);
-      }
-    }
+    const result = await service.rejectSheet({
+      grist,
+      actorMemberId,
+      sheetId,
+      rejectReason: String(reason).trim()
+    });
+    
+    return await handleOperationResult(
+      result,
+      sheetId,
+      'reject',
+      'Feuille rejetée'
+    );
   }
   
   /**
@@ -5115,26 +5089,19 @@ function createUiAdapter(options) {
       setBusy(true);
     }
     
-    try {
-      const result = await service.openManagerCorrection({
-        grist,
-        actorMemberId,
-        sheetId,
-        correctionReason: String(reason).trim()
-      });
-      
-      return await handleOperationResult(
-        result,
-        sheetId,
-        'open_correction',
-        'Correction manager ouverte'
-      );
-    } finally {
-      markOperationDone(sheetId);
-      if (typeof setBusy === 'function') {
-        setBusy(false);
-      }
-    }
+    const result = await service.openManagerCorrection({
+      grist,
+      actorMemberId,
+      sheetId,
+      correctionReason: String(reason).trim()
+    });
+    
+    return await handleOperationResult(
+      result,
+      sheetId,
+      'open_correction',
+      'Correction manager ouverte'
+    );
   }
   
   /**
@@ -5174,27 +5141,20 @@ function createUiAdapter(options) {
       setBusy(true);
     }
     
-    try {
-      const result = await service.updateManagerActual({
-        grist,
-        actorMemberId,
-        sheetId,
-        timeEntryId,
-        hours: numericHours
-      });
-      
-      return await handleOperationResult(
-        result,
-        sheetId,
-        'update_actual',
-        'Heures mises à jour'
-      );
-    } finally {
-      markOperationDone(sheetId);
-      if (typeof setBusy === 'function') {
-        setBusy(false);
-      }
-    }
+    const result = await service.updateManagerActual({
+      grist,
+      actorMemberId,
+      sheetId,
+      timeEntryId,
+      hours: numericHours
+    });
+    
+    return await handleOperationResult(
+      result,
+      sheetId,
+      'update_actual',
+      'Heures mises à jour'
+    );
   }
   
   /**
@@ -5221,26 +5181,19 @@ function createUiAdapter(options) {
       setBusy(true);
     }
     
-    try {
-      const result = await service.revalidateSheet({
-        grist,
-        actorMemberId,
-        sheetId,
-        nowUnixSeconds: nowUnixSeconds()
-      });
-      
-      return await handleOperationResult(
-        result,
-        sheetId,
-        'revalidate',
-        'Feuille corrigée et revalidée'
-      );
-    } finally {
-      markOperationDone(sheetId);
-      if (typeof setBusy === 'function') {
-        setBusy(false);
-      }
-    }
+    const result = await service.revalidateSheet({
+      grist,
+      actorMemberId,
+      sheetId,
+      nowUnixSeconds: nowUnixSeconds()
+    });
+    
+    return await handleOperationResult(
+      result,
+      sheetId,
+      'revalidate',
+      'Feuille corrigée et revalidée'
+    );
   }
   
   return {

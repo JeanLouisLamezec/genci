@@ -4950,6 +4950,35 @@ function unitFactor() { return S.unit === 'jours' ? S.hoursPerDay : (S.unit === 
 function unitLabel() { return S.unit === 'jours' ? 'jours' : (S.unit === 'demi' ? 'demi-journees' : 'heures'); }
 function hoursToQty(h) { const q = h / unitFactor(); return Math.round(q * 100) / 100; }
 function qtyToHours(q) { return (Number(q) || 0) * unitFactor(); }
+
+/**
+ * Parseur pour la saisie en mode correction manager
+ * CONTRAT: distingue chaîne vide et zéro
+ * @param {string} qtyStr - Chaîne saisie par l'utilisateur
+ * @returns {{ valid: boolean, hours?: number, error?: string }}
+ */
+function parseManagerHoursInput(qtyStr) {
+  // Chaîne vide ou uniquement des espaces
+  if (qtyStr === null || qtyStr === undefined || String(qtyStr).trim() === '') {
+    return { valid: false, error: 'Valeur requise' };
+  }
+  
+  const trimmed = String(qtyStr).trim();
+  const parsed = Number(trimmed);
+  
+  // Valeur non numérique
+  if (!Number.isFinite(parsed)) {
+    return { valid: false, error: 'Valeur numérique requise' };
+  }
+  
+  // Valeur négative
+  if (parsed < 0) {
+    return { valid: false, error: 'Valeur positive requise' };
+  }
+  
+  // Zéro est valide
+  return { valid: true, hours: parsed };
+}
 function fmtQty(h) { if (!h) return ''; const q = hoursToQty(h); return String(q); }
 
 // PHASE 5 : Formatter pour inputs (distingue 0 explicite de null)
@@ -5709,7 +5738,18 @@ function renderSaisie() {
     }
   }
   
-  if (S.visiblePersonIds.length === 0) {
+  // MODE CORRECTION PRIORITAIRE : afficher même si visiblePersonIds est vide
+  let personsToShow = S.visiblePersonIds;
+  if (S.managerCorrectionSheetId) {
+    const correctionSheet = S.feuilles.find(f => f.id === S.managerCorrectionSheetId);
+    if (correctionSheet) {
+      // Forcer l'affichage du propriétaire, même s'il est filtré
+      personsToShow = [correctionSheet.membre];
+    }
+  }
+  
+  // Vérifier si aucune personne à afficher (hors mode correction)
+  if (personsToShow.length === 0) {
     if (S.isEmptyDueToFilter) {
       main.innerHTML = '<div class="empty-cta">' +
         '<div style="font-size:1.05rem;font-weight:600;margin-bottom:8px;color:var(--text)">Aucune personne ne correspond aux filtres sélectionnés</div>' +
@@ -5735,16 +5775,6 @@ function renderSaisie() {
         (correctionSheet.motifCorrection ? '<div style="font-size:.8rem;color:var(--text-muted);margin-top:6px;font-style:italic">Motif : ' + esc(correctionSheet.motifCorrection) + '</div>' : '') +
         '<div style="margin-top:8px"><button class="btn ghost" onclick="leaveManagerCorrection()" style="font-size:.75rem;padding:4px 8px">Quitter le mode correction</button></div>' +
         '</div>';
-    }
-  }
-  
-  // En mode correction, afficher uniquement le propriétaire de la feuille
-  let personsToShow = S.visiblePersonIds;
-  if (S.managerCorrectionSheetId) {
-    const correctionSheet = S.feuilles.find(f => f.id === S.managerCorrectionSheetId);
-    if (correctionSheet) {
-      // Forcer l'affichage du propriétaire, même s'il est filtré
-      personsToShow = [correctionSheet.membre];
     }
   }
   
@@ -5930,10 +5960,17 @@ async function setCell(taskId, dayMs, personId, qtyStr) {
         return;
       }
       
+      // Parser la saisie avec le parseur manager (distingue vide et zéro)
+      const parseResult = parseManagerHoursInput(qtyStr);
+      if (!parseResult.valid) {
+        toast(parseResult.error || 'Valeur invalide');
+        render();
+        return;
+      }
+      
       // Appeler updateManagerActual via CraWorkflowIntegration
-      const hours = qtyToHours(qtyStr);
       if (typeof CraWorkflowIntegration !== 'undefined' && CraWorkflowIntegration.updateManagerActual) {
-        await CraWorkflowIntegration.updateManagerActual(S.managerCorrectionSheetId, existingEntry.id, hours);
+        await CraWorkflowIntegration.updateManagerActual(S.managerCorrectionSheetId, existingEntry.id, parseResult.hours);
       } else {
         toast('Adaptateur non initialisé');
       }
@@ -6119,9 +6156,36 @@ function taskRealizedHours(taskId) {
 function toast(msg) { const t = document.getElementById('toast'); t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2600); }
 
 // ---- Controles ------------------------------------------------------------
-document.getElementById('wPrev').onclick = () => { S.weekStart -= 7 * DAY; buildCraIndexes(); if (S.filterManager) S.filterManager.setData({ tasks: S.tasks }); render(); };
-document.getElementById('wNext').onclick = () => { S.weekStart += 7 * DAY; buildCraIndexes(); if (S.filterManager) S.filterManager.setData({ tasks: S.tasks }); render(); };
-document.getElementById('wNow').onclick = () => { S.weekStart = mondayOf(Date.now()); buildCraIndexes(); if (S.filterManager) S.filterManager.setData({ tasks: S.tasks }); render(); };
+document.getElementById('wPrev').onclick = () => {
+  if (S.managerCorrectionSheetId) {
+    toast('Navigation bloquée en mode correction manager');
+    return;
+  }
+  S.weekStart -= 7 * DAY;
+  buildCraIndexes();
+  if (S.filterManager) S.filterManager.setData({ tasks: S.tasks });
+  render();
+};
+document.getElementById('wNext').onclick = () => {
+  if (S.managerCorrectionSheetId) {
+    toast('Navigation bloquée en mode correction manager');
+    return;
+  }
+  S.weekStart += 7 * DAY;
+  buildCraIndexes();
+  if (S.filterManager) S.filterManager.setData({ tasks: S.tasks });
+  render();
+};
+document.getElementById('wNow').onclick = () => {
+  if (S.managerCorrectionSheetId) {
+    toast('Navigation bloquée en mode correction manager');
+    return;
+  }
+  S.weekStart = mondayOf(Date.now());
+  buildCraIndexes();
+  if (S.filterManager) S.filterManager.setData({ tasks: S.tasks });
+  render();
+};
 document.getElementById('unitSeg').querySelectorAll('button').forEach(b => b.onclick = () => {
   document.querySelectorAll('#unitSeg button').forEach(x => x.classList.remove('active'));
   b.classList.add('active'); S.unit = b.dataset.u; render();
