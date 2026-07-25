@@ -1,8 +1,20 @@
 /**
  * CRA Workflow Integration - Intégration du workflow dans l'UI du CRA
  * 
- * Ce fichier fait le lien entre l'ancien code CRA et le nouveau service transactionnel.
+ * Ce fichier est la frontière unique entre le HTML et l'adaptateur UI.
  * Il doit être chargé APRÈS le bundle taskflow-cra-browser.js et APRÈS l'initialisation de S.
+ * 
+ * API :
+ *   CraWorkflowIntegration.configure({ grist, taskFlowCra, getState, reload, notify, setBusy })
+ *   CraWorkflowIntegration.submitCurrentWeek()
+ *   CraWorkflowIntegration.withdrawCurrentWeek()
+ *   CraWorkflowIntegration.validateSheet(sheetId)
+ *   CraWorkflowIntegration.rejectSheet(sheetId, reason)
+ *   CraWorkflowIntegration.openCorrection(sheetId, reason)
+ *   CraWorkflowIntegration.enterManagerCorrection(sheetId)
+ *   CraWorkflowIntegration.updateManagerActual(sheetId, timeEntryId, hours)
+ *   CraWorkflowIntegration.revalidateSheet(sheetId)
+ *   CraWorkflowIntegration.leaveManagerCorrection()
  * 
  * @module core/cra/cra-workflow-integration
  */
@@ -10,9 +22,11 @@
 (function(global) {
   'use strict';
   
-  /**
-   * Helper : obtenir le lundi de la semaine pour une date
-   */
+  // État interne
+  let config = null;
+  let adapter = null;
+  
+  // Helper : obtenir le lundi de la semaine pour une date
   function getMondayOf(date) {
     const d = new Date(date);
     const day = d.getDay();
@@ -20,16 +34,12 @@
     return new Date(d.setDate(diff));
   }
   
-  /**
-   * Helper : formater une date en ISO YYYY-MM-DD
-   */
+  // Helper : formater une date en ISO YYYY-MM-DD
   function toISODate(date) {
     return date.toISOString().split('T')[0];
   }
   
-  /**
-   * Helper : trouver l'unique feuille pour un membre et une semaine
-   */
+  // Helper : trouver l'unique feuille pour un membre et une semaine
   function findSheetForMemberWeek(memberId, weekStart, sheets) {
     if (!memberId || !weekStart || !sheets) {
       return null;
@@ -46,113 +56,62 @@
     });
   }
   
-  /**
-   * Remplace submitWeekForPerson par l'adaptateur
-   */
-  async function submitWeekForPerson(personId) {
-    // Vérifier que c'est bien l'acteur qui soumet sa propre feuille
-    if (!globalThis.S || !globalThis.S.currentUserMemberId) {
-      toast('Acteur non identifié');
-      return { success: false, code: 'ACTOR_NOT_IDENTIFIED' };
+  // Helper : résoudre la feuille courante pour l'utilisateur connecté
+  function resolveCurrentUserSheet(state) {
+    if (!state || !state.currentUserMemberId || !state.feuilles) {
+      return { sheet: null, status: 'none', reason: 'MISSING_STATE' };
     }
     
-    // La soumission ne concerne que la feuille de currentUserMemberId
-    if (personId !== globalThis.S.currentUserMemberId) {
-      toast('Vous ne pouvez soumettre que votre propre feuille');
-      return { success: false, code: 'NOT_SHEET_OWNER' };
+    const monday = new Date(state.weekStart * 1000);
+    const mondayIso = monday.toISOString().split('T')[0];
+    
+    // Trouver toutes les feuilles pour currentUserMemberId et cette semaine
+    const matchingSheets = state.feuilles.filter(f => {
+      if (f.membre !== state.currentUserMemberId) return false;
+      if (!f.semaine) return false;
+      
+      const fWeekStart = getMondayOf(new Date(f.semaine * 1000));
+      return fWeekStart.toISOString().split('T')[0] === mondayIso;
+    });
+    
+    if (matchingSheets.length === 0) {
+      return { sheet: null, status: 'none', reason: 'NO_SHEET_FOR_WEEK' };
     }
     
-    // Trouver la feuille
-    const monday = new Date(globalThis.S.weekStart * 1000);
-    const sheet = findSheetForMemberWeek(personId, monday, globalThis.S.feuilles);
-    
-    if (!sheet) {
-      toast('Aucune feuille trouvée pour cette semaine. Veuillez créer une feuille d\'abord.');
-      return { success: false, code: 'NO_SHEET' };
+    if (matchingSheets.length > 1) {
+      return { sheet: null, status: 'duplicate', reason: 'DUPLICATE_WEEKLY_SHEET', duplicates: matchingSheets };
     }
     
-    // Vérifier le statut
+    return { sheet: matchingSheets[0], status: 'found', reason: 'SHEET_FOUND' };
+  }
+  
+  // Helper : vérifier si une feuille est accessible au manager par snapshot
+  function isSheetAccessibleBySnapshot(sheet, managerId) {
+    if (!sheet || !managerId) {
+      return false;
+    }
+    
+    const resp = sheet.responsableValidation;
+    if (!resp || resp !== managerId) {
+      return false;
+    }
+    
     const status = String(sheet.statut || '').toLowerCase();
-    if (['soumis', 'submitted', 'valide', 'validated', 'correction_manager'].includes(status)) {
-      toast('Feuille non éditable (statut: ' + status + ')');
-      return { success: false, code: 'SHEET_NOT_EDITABLE' };
-    }
-    
-    // Utiliser l'adaptateur
-    if (!globalThis.craSheetAdapter) {
-      toast('Adaptateur non initialisé');
-      return { success: false, code: 'ADAPTER_NOT_READY' };
-    }
-    
-    return await globalThis.craSheetAdapter.submit(sheet.id);
+    return ['soumis', 'submitted', 'valide', 'validated', 'correction_manager'].includes(status);
   }
   
-  /**
-   * Remplace withdrawWeekForPerson par l'adaptateur
-   */
-  async function withdrawWeekForPerson(personId) {
-    if (!globalThis.S || !globalThis.S.currentUserMemberId) {
-      toast('Acteur non identifié');
-      return { success: false, code: 'ACTOR_NOT_IDENTIFIED' };
+  // Helper : obtenir les feuilles accessibles au manager
+  function getManagerAccessibleSheets(managerId, sheets) {
+    if (!managerId || !sheets) {
+      return [];
     }
     
-    if (personId !== globalThis.S.currentUserMemberId) {
-      toast('Vous ne pouvez retirer que votre propre soumission');
-      return { success: false, code: 'NOT_SHEET_OWNER' };
-    }
-    
-    const monday = new Date(globalThis.S.weekStart * 1000);
-    const sheet = findSheetForMemberWeek(personId, monday, globalThis.S.feuilles);
-    
-    if (!sheet) {
-      toast('Aucune feuille trouvée');
-      return { success: false, code: 'NO_SHEET' };
-    }
-    
-    if (!globalThis.craSheetAdapter) {
-      toast('Adaptateur non initialisé');
-      return { success: false, code: 'ADAPTER_NOT_READY' };
-    }
-    
-    return await globalThis.craSheetAdapter.withdraw(sheet.id);
+    return sheets.filter(f => isSheetAccessibleBySnapshot(f, managerId));
   }
   
-  /**
-   * Remplace validerFeuille par l'adaptateur
-   */
-  async function validerFeuille(sheetId) {
-    if (!globalThis.craSheetAdapter) {
-      toast('Adaptateur non initialisé');
-      return { success: false, code: 'ADAPTER_NOT_READY' };
-    }
-    
-    return await globalThis.craSheetAdapter.validate(sheetId);
-  }
-  
-  /**
-   * Remplace rejeterFeuille par l'adaptateur avec modale
-   */
-  async function rejeterFeuille(sheetId) {
-    if (!globalThis.craSheetAdapter) {
-      toast('Adaptateur non initialisé');
-      return { success: false, code: 'ADAPTER_NOT_READY' };
-    }
-    
-    // Afficher la modale de rejet
-    const reason = await showRejectModal();
-    if (!reason) {
-      return { success: false, code: 'MISSING_REJECT_REASON' };
-    }
-    
-    return await globalThis.craSheetAdapter.reject(sheetId, reason);
-  }
-  
-  /**
-   * Modale de rejet
-   */
+  // Modale de rejet
   function showRejectModal() {
     return new Promise((resolve) => {
-      // Créer la modale si elle n'existe pas
       let modal = document.getElementById('craRejectModal');
       if (!modal) {
         modal = document.createElement('div');
@@ -175,13 +134,11 @@
         `;
         document.body.appendChild(modal);
         
-        // Gérer la fermeture
         document.getElementById('craRejectCancel').onclick = () => {
           modal.classList.remove('open');
           resolve(null);
         };
         
-        // Fermeture par Échap
         const escHandler = (e) => {
           if (e.key === 'Escape') {
             modal.classList.remove('open');
@@ -192,17 +149,17 @@
         document.addEventListener('keydown', escHandler);
       }
       
-      // Afficher la modale
       modal.classList.add('open');
       const textarea = document.getElementById('craRejectReason');
       textarea.value = '';
       textarea.focus();
       
-      // Confirmer
       document.getElementById('craRejectConfirm').onclick = () => {
         const reason = textarea.value.trim();
         if (!reason) {
-          toast('Le motif est obligatoire');
+          if (config && typeof config.notify === 'function') {
+            config.notify('Le motif est obligatoire', 'error');
+          }
           return;
         }
         modal.classList.remove('open');
@@ -211,9 +168,7 @@
     });
   }
   
-  /**
-   * Modale d'ouverture de correction manager
-   */
+  // Modale d'ouverture de correction manager
   function showCorrectionModal() {
     return new Promise((resolve) => {
       let modal = document.getElementById('craCorrectionModal');
@@ -261,7 +216,9 @@
       document.getElementById('craCorrectionConfirm').onclick = () => {
         const reason = textarea.value.trim();
         if (!reason) {
-          toast('Le motif est obligatoire');
+          if (config && typeof config.notify === 'function') {
+            config.notify('Le motif est obligatoire', 'error');
+          }
           return;
         }
         modal.classList.remove('open');
@@ -270,13 +227,114 @@
     });
   }
   
-  /**
-   * Ouvrir une correction manager
-   */
-  async function openManagerCorrection(sheetId) {
-    if (!globalThis.craSheetAdapter) {
-      toast('Adaptateur non initialisé');
-      return { success: false, code: 'ADAPTER_NOT_READY' };
+  // Configuration
+  function configure(options) {
+    if (!options) {
+      throw new Error('CraWorkflowIntegration.configure: options requises');
+    }
+    
+    const { grist, taskFlowCra, getState, reload, notify, setBusy } = options;
+    
+    if (!grist || !taskFlowCra || !taskFlowCra.service || !taskFlowCra.createUiAdapter) {
+      throw new Error('CraWorkflowIntegration.configure: taskFlowCra et service requis');
+    }
+    
+    if (!getState || typeof getState !== 'function') {
+      throw new Error('CraWorkflowIntegration.configure: getState requis');
+    }
+    
+    config = { grist, taskFlowCra, getState, reload, notify, setBusy };
+    
+    // Créer l'adaptateur UI
+    adapter = taskFlowCra.createUiAdapter({
+      service: taskFlowCra.service,
+      grist,
+      getActorMemberId: () => {
+        const state = getState();
+        return state ? state.currentUserMemberId : null;
+      },
+      reload: reload || (() => {}),
+      notify: notify || (() => {}),
+      setBusy: setBusy || (() => {})
+    });
+    
+    console.info('[CRA] Workflow integration configured');
+  }
+  
+  // Soumettre la semaine courante
+  async function submitCurrentWeek() {
+    if (!config || !adapter) {
+      throw new Error('CraWorkflowIntegration non configuré');
+    }
+    
+    const state = config.getState();
+    if (!state || !state.currentUserMemberId) {
+      if (config.notify) config.notify('Acteur non identifié', 'error');
+      return { success: false, code: 'ACTOR_NOT_IDENTIFIED' };
+    }
+    
+    const sheetResult = resolveCurrentUserSheet(state);
+    if (sheetResult.status === 'none') {
+      if (config.notify) config.notify('Aucune feuille trouvée pour cette semaine', 'error');
+      return { success: false, code: 'NO_SHEET' };
+    }
+    
+    if (sheetResult.status === 'duplicate') {
+      if (config.notify) config.notify('Plusieurs feuilles existent pour cette semaine', 'error');
+      return { success: false, code: 'DUPLICATE_WEEKLY_SHEET' };
+    }
+    
+    return await adapter.submit(sheetResult.sheet.id);
+  }
+  
+  // Retirer la soumission
+  async function withdrawCurrentWeek() {
+    if (!config || !adapter) {
+      throw new Error('CraWorkflowIntegration non configuré');
+    }
+    
+    const state = config.getState();
+    if (!state || !state.currentUserMemberId) {
+      if (config.notify) config.notify('Acteur non identifié', 'error');
+      return { success: false, code: 'ACTOR_NOT_IDENTIFIED' };
+    }
+    
+    const sheetResult = resolveCurrentUserSheet(state);
+    if (sheetResult.status !== 'found' || !sheetResult.sheet) {
+      if (config.notify) config.notify('Aucune feuille trouvée', 'error');
+      return { success: false, code: 'NO_SHEET' };
+    }
+    
+    return await adapter.withdraw(sheetResult.sheet.id);
+  }
+  
+  // Valider une feuille
+  async function validateSheet(sheetId) {
+    if (!config || !adapter) {
+      throw new Error('CraWorkflowIntegration non configuré');
+    }
+    
+    return await adapter.validate(sheetId);
+  }
+  
+  // Rejeter une feuille avec modale
+  async function rejectSheet(sheetId) {
+    if (!config || !adapter) {
+      throw new Error('CraWorkflowIntegration non configuré');
+    }
+    
+    const reason = await showRejectModal();
+    if (!reason) {
+      return { success: false, code: 'MISSING_REJECT_REASON' };
+    }
+    
+    return await adapter.reject(sheetId, reason);
+  }
+  
+  // Ouvrir une correction manager avec modale
+  async function openCorrection(sheetId) {
+    if (!config || !adapter) {
+      throw new Error('CraWorkflowIntegration non configuré');
     }
     
     const reason = await showCorrectionModal();
@@ -284,83 +342,82 @@
       return { success: false, code: 'MISSING_CORRECTION_REASON' };
     }
     
-    return await globalThis.craSheetAdapter.openCorrection(sheetId, reason);
+    return await adapter.openCorrection(sheetId, reason);
   }
   
-  /**
-   * Revalider une feuille après correction
-   */
+  // Entrer en mode correction manager
+  function enterManagerCorrection(sheetId) {
+    if (!config) {
+      throw new Error('CraWorkflowIntegration non configuré');
+    }
+    
+    // Stocker l'état de correction dans le state global
+    const state = config.getState();
+    if (state) {
+      state.managerCorrectionSheetId = sheetId;
+    }
+    
+    if (config.notify) {
+      config.notify('Mode correction manager activé', 'info');
+    }
+  }
+  
+  // Mettre à jour les heures en mode correction
+  async function updateManagerActual(sheetId, timeEntryId, hours) {
+    if (!config || !adapter) {
+      throw new Error('CraWorkflowIntegration non configuré');
+    }
+    
+    return await adapter.updateManagerActual(sheetId, timeEntryId, hours);
+  }
+  
+  // Revalider une feuille après correction
   async function revalidateSheet(sheetId) {
-    if (!globalThis.craSheetAdapter) {
-      toast('Adaptateur non initialisé');
-      return { success: false, code: 'ADAPTER_NOT_READY' };
+    if (!config || !adapter) {
+      throw new Error('CraWorkflowIntegration non configuré');
     }
     
-    return await globalThis.craSheetAdapter.revalidate(sheetId);
+    const result = await adapter.revalidate(sheetId);
+    
+    if (result && result.success) {
+      // Quitter le mode correction
+      leaveManagerCorrection();
+    }
+    
+    return result;
   }
   
-  /**
-   * Mettre à jour les heures d'une TimeEntry en mode correction
-   */
-  async function updateManagerActualHours(sheetId, timeEntryId, hours) {
-    if (!globalThis.craSheetAdapter) {
-      toast('Adaptateur non initialisé');
-      return { success: false, code: 'ADAPTER_NOT_READY' };
+  // Quitter le mode correction manager
+  function leaveManagerCorrection() {
+    if (!config) {
+      throw new Error('CraWorkflowIntegration non configuré');
     }
     
-    return await globalThis.craSheetAdapter.updateManagerActual(sheetId, timeEntryId, hours);
+    const state = config.getState();
+    if (state) {
+      state.managerCorrectionSheetId = null;
+    }
+    
+    if (config.notify) {
+      config.notify('Mode correction manager désactivé', 'info');
+    }
   }
   
-  /**
-   * Calculer les feuilles accessibles au manager (par snapshot)
-   */
-  function getManagerAccessibleSheets(managerId, sheets) {
-    if (!managerId || !sheets) {
-      return [];
-    }
-    
-    return sheets.filter(f => {
-      const status = String(f.statut || '').toLowerCase();
-      const resp = f.responsableValidation;
-      
-      // Utiliser le snapshot responsableValidation, pas Team.responsable
-      if (!resp || resp !== managerId) {
-        return false;
-      }
-      
-      // Feuilles soumises, validées, ou en correction_manager
-      return ['soumis', 'submitted', 'valide', 'validated', 'correction_manager'].includes(status);
-    });
-  }
-  
-  /**
-   * Vérifier si une feuille est accessible au manager
-   */
-  function isSheetAccessibleToManager(sheet, managerId) {
-    if (!sheet || !managerId) {
-      return false;
-    }
-    
-    const resp = sheet.responsableValidation;
-    if (!resp || resp !== managerId) {
-      return false;
-    }
-    
-    const status = String(sheet.statut || '').toLowerCase();
-    return ['soumis', 'submitted', 'valide', 'validated', 'correction_manager'].includes(status);
-  }
-  
-  // Exposer globalement
-  globalThis.CraWorkflowIntegration = {
-    submitWeekForPerson,
-    withdrawWeekForPerson,
-    validerFeuille,
-    rejeterFeuille,
-    openManagerCorrection,
+  // Exposer l'API publique
+  global.CraWorkflowIntegration = {
+    configure,
+    submitCurrentWeek,
+    withdrawCurrentWeek,
+    validateSheet,
+    rejectSheet,
+    openCorrection,
+    enterManagerCorrection,
+    updateManagerActual,
     revalidateSheet,
-    updateManagerActualHours,
+    leaveManagerCorrection,
+    // Helpers pour compatibilité
     getManagerAccessibleSheets,
-    isSheetAccessibleToManager,
+    isSheetAccessibleBySnapshot,
     showRejectModal,
     showCorrectionModal
   };
