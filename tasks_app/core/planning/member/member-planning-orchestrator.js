@@ -658,7 +658,7 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
       return timeEntries.filter(function(entry) {
         var isSubmitted = entry.sheetStatus === 'submitted';
         var isValidated = entry.sheetStatus === 'validated';
-        var hasActualHours = entry.heures !== null && entry.heures !== undefined && entry.heures !== '' && Number.isFinite(Number(entry.heures));
+        var hasActualHours = hasExplicitActual(entry);
         var isBeforeCutoff = historyCutoffDate && entry.date && entry.date < historyCutoffDate;
         
         // Feuille soumise ou validée
@@ -1482,7 +1482,7 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
         
         // Réconciliation avec les vraies capacités
         var refreshedEntriesForReconciliation = refreshedData.timeEntries.filter(function(e) {
-          var hasActualHours = e.heures !== null && e.heures !== undefined && e.heures !== '' && Number.isFinite(Number(e.heures));
+          var hasActualHours = hasExplicitActual(e);
           var isSubmitted = e.sheetStatus === 'submitted';
           var isValidated = e.sheetStatus === 'validated';
           var hasFeuille = e.feuille != null && e.feuille !== '';

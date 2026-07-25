@@ -1622,6 +1622,11 @@ describe('Planning Engine - generateDateRange() corrections P0-C', () => {
     expect(result).toEqual(['1970-01-01']);
   });
   
+  test('new Date(0) à new Date(0) → ["1970-01-01"]', () => {
+    const result = generateDateRange(new Date(0), new Date(0));
+    expect(result).toEqual(['1970-01-01']);
+  });
+  
   test('objet Date invalide → refus', () => {
     const invalidDate = new Date('invalid');
     const result = generateDateRange(invalidDate, '2026-07-05');

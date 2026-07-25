@@ -27,53 +27,82 @@ describe('Member Daily Capacity Service', () => {
       expect(result.errors.length).toBe(0);
     });
     
-    test('devrait rejeter un ratio de disponibilité > 1', () => {
+    test('devrait rejeter une dateDebut absente', () => {
       const result = validateCapacityInput({
         weeklyCapacity: 35,
         defaultWeeklyCapacity: 35,
         availabilities: [
-          { dateDebut: '2026-07-01', dateFin: '2026-07-05', dispo: 2 }
+          { dateFin: '2026-07-05', dispo: 0.5 }
         ]
       });
       
       expect(result.valid).toBe(false);
-      expect(result.errors.some(e => e.code === 'INVALID_AVAILABILITY_RATIO')).toBe(true);
+      expect(result.errors.some(e => e.code === 'INVALID_AVAILABILITY_DATE')).toBe(true);
     });
     
-    test('devrait rejeter un ratio de disponibilité < 0', () => {
+    test('devrait rejeter une dateFin absente', () => {
       const result = validateCapacityInput({
         weeklyCapacity: 35,
         defaultWeeklyCapacity: 35,
         availabilities: [
-          { dateDebut: '2026-07-01', dateFin: '2026-07-05', dispo: -0.5 }
+          { dateDebut: '2026-07-01', dispo: 0.5 }
         ]
       });
       
       expect(result.valid).toBe(false);
-      expect(result.errors.some(e => e.code === 'INVALID_AVAILABILITY_RATIO')).toBe(true);
+      expect(result.errors.some(e => e.code === 'INVALID_AVAILABILITY_DATE')).toBe(true);
     });
     
-    test('devrait rejeter une dateDebut > dateFin', () => {
+    test('devrait rejeter une date ISO invalide', () => {
       const result = validateCapacityInput({
         weeklyCapacity: 35,
         defaultWeeklyCapacity: 35,
         availabilities: [
-          { dateDebut: '2026-07-10', dateFin: '2026-07-01', dispo: 0.5 }
+          { dateDebut: 'not-a-date', dateFin: '2026-07-05', dispo: 0.5 }
         ]
       });
       
       expect(result.valid).toBe(false);
-      expect(result.errors.some(e => e.code === 'INVALID_AVAILABILITY_DATE_RANGE')).toBe(true);
+      expect(result.errors.some(e => e.code === 'INVALID_AVAILABILITY_DATE')).toBe(true);
     });
     
-    test('devrait rejeter une capaciteHebdo négative', () => {
+    test('devrait rejeter une date civile impossible (2026-02-30)', () => {
       const result = validateCapacityInput({
-        weeklyCapacity: -5,
-        defaultWeeklyCapacity: 35
+        weeklyCapacity: 35,
+        defaultWeeklyCapacity: 35,
+        availabilities: [
+          { dateDebut: '2026-02-30', dateFin: '2026-03-05', dispo: 0.5 }
+        ]
       });
       
       expect(result.valid).toBe(false);
-      expect(result.errors.some(e => e.code === 'INVALID_WEEKLY_CAPACITY')).toBe(true);
+      expect(result.errors.some(e => e.code === 'INVALID_AVAILABILITY_DATE')).toBe(true);
+    });
+    
+    test('devrait accepter un timestamp Grist fini', () => {
+      // 2026-07-01 00:00:00 UTC = 1783900800
+      const result = validateCapacityInput({
+        weeklyCapacity: 35,
+        defaultWeeklyCapacity: 35,
+        availabilities: [
+          { dateDebut: 1783900800, dateFin: 1784160000, dispo: 0.5 }
+        ]
+      });
+      
+      expect(result.valid).toBe(true);
+    });
+    
+    test('devrait rejeter Infinity comme timestamp', () => {
+      const result = validateCapacityInput({
+        weeklyCapacity: 35,
+        defaultWeeklyCapacity: 35,
+        availabilities: [
+          { dateDebut: Infinity, dateFin: '2026-07-05', dispo: 0.5 }
+        ]
+      });
+      
+      expect(result.valid).toBe(false);
+      expect(result.errors.some(e => e.code === 'INVALID_AVAILABILITY_DATE')).toBe(true);
     });
   });
   

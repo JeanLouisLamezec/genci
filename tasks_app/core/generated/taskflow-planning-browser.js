@@ -209,7 +209,7 @@ function generateDateRange(startDate, endDate) {
   
   // Convertir startDate
   if (startDate instanceof Date) {
-    if (!startDate.getTime() || isNaN(startDate.getTime())) {
+    if (!Number.isFinite(startDate.getTime())) {
       return dates;
     }
     current = new Date(startDate.getTime());
@@ -224,7 +224,7 @@ function generateDateRange(startDate, endDate) {
   
   // Convertir endDate
   if (endDate instanceof Date) {
-    if (!endDate.getTime() || isNaN(endDate.getTime())) {
+    if (!Number.isFinite(endDate.getTime())) {
       return dates;
     }
     end = new Date(endDate.getTime());
@@ -1278,6 +1278,52 @@ const DEFAULT_WEEKLY_CAPACITY = 35;
 const DAYS_PER_WEEK = 5;
 
 // ============================================================================
+// HELPERS DE NORMALISATION
+// ============================================================================
+
+/**
+ * Normalise une valeur en date civile YYYY-MM-DD ou null si invalide
+ * @param {*} value - Valeur à normaliser (string ISO, timestamp Grist, Date)
+ * @returns {string|null} Date YYYY-MM-DD ou null
+ */
+function normalizeCivilDate(value) {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+  
+  // Timestamp Grist (secondes)
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) {
+      return null;
+    }
+    const date = new Date(value * 1000);
+    if (!Number.isFinite(date.getTime())) {
+      return null;
+    }
+    return formatDateUTC(date);
+  }
+  
+  // String ISO
+  if (typeof value === 'string') {
+    const date = parseDateUTC(value);
+    if (!date) {
+      return null;
+    }
+    return formatDateUTC(date);
+  }
+  
+  // Objet Date
+  if (value instanceof Date) {
+    if (!Number.isFinite(value.getTime())) {
+      return null;
+    }
+    return formatDateUTC(value);
+  }
+  
+  return null;
+}
+
+// ============================================================================
 // VALIDATION
 // ============================================================================
 
@@ -1350,9 +1396,29 @@ function validateCapacityInput(input) {
         });
       }
       
-      // Valider les dates
-      const startDate = typeof avail.dateDebut === 'number' ? new Date(avail.dateDebut * 1000).toISOString().split('T')[0] : avail.dateDebut;
-      const endDate = typeof avail.dateFin === 'number' ? new Date(avail.dateFin * 1000).toISOString().split('T')[0] : avail.dateFin;
+      // Valider les dates avec normalisation stricte
+      const startDate = normalizeCivilDate(avail.dateDebut);
+      const endDate = normalizeCivilDate(avail.dateFin);
+      
+      if (!startDate) {
+        errors.push({
+          code: 'INVALID_AVAILABILITY_DATE',
+          index: i,
+          field: 'dateDebut',
+          value: avail.dateDebut,
+          message: `dateDebut est invalide ou manquante`
+        });
+      }
+      
+      if (!endDate) {
+        errors.push({
+          code: 'INVALID_AVAILABILITY_DATE',
+          index: i,
+          field: 'dateFin',
+          value: avail.dateFin,
+          message: `dateFin est invalide ou manquante`
+        });
+      }
       
       if (startDate && endDate && compareDates(startDate, endDate) > 0) {
         errors.push({
@@ -1436,12 +1502,8 @@ function buildDesiredMemberDailyCapacities(input) {
   const availabilityMap = new Map();
   
   for (const avail of availabilities) {
-    const availStart = typeof avail.dateDebut === 'number' 
-      ? formatDateUTC(new Date(avail.dateDebut * 1000))
-      : avail.dateDebut;
-    const availEnd = typeof avail.dateFin === 'number'
-      ? formatDateUTC(new Date(avail.dateFin * 1000))
-      : avail.dateFin;
+    const availStart = normalizeCivilDate(avail.dateDebut);
+    const availEnd = normalizeCivilDate(avail.dateFin);
     const dispoRatio = typeof avail.dispo === 'number' ? avail.dispo : 1;
     
     if (!availStart || !availEnd) continue;
@@ -4118,7 +4180,7 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
       return timeEntries.filter(function(entry) {
         var isSubmitted = entry.sheetStatus === 'submitted';
         var isValidated = entry.sheetStatus === 'validated';
-        var hasActualHours = entry.heures !== null && entry.heures !== undefined && entry.heures !== '' && Number.isFinite(Number(entry.heures));
+        var hasActualHours = hasExplicitActual(entry);
         var isBeforeCutoff = historyCutoffDate && entry.date && entry.date < historyCutoffDate;
         
         // Feuille soumise ou validée
@@ -4942,7 +5004,7 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
         
         // Réconciliation avec les vraies capacités
         var refreshedEntriesForReconciliation = refreshedData.timeEntries.filter(function(e) {
-          var hasActualHours = e.heures !== null && e.heures !== undefined && e.heures !== '' && Number.isFinite(Number(e.heures));
+          var hasActualHours = hasExplicitActual(e);
           var isSubmitted = e.sheetStatus === 'submitted';
           var isValidated = e.sheetStatus === 'validated';
           var hasFeuille = e.feuille != null && e.feuille !== '';

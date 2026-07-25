@@ -175,7 +175,7 @@ function generateDateRange(startDate, endDate) {
   
   // Convertir startDate
   if (startDate instanceof Date) {
-    if (!startDate.getTime() || isNaN(startDate.getTime())) {
+    if (!Number.isFinite(startDate.getTime())) {
       return dates;
     }
     current = new Date(startDate.getTime());
@@ -190,7 +190,7 @@ function generateDateRange(startDate, endDate) {
   
   // Convertir endDate
   if (endDate instanceof Date) {
-    if (!endDate.getTime() || isNaN(endDate.getTime())) {
+    if (!Number.isFinite(endDate.getTime())) {
       return dates;
     }
     end = new Date(endDate.getTime());
