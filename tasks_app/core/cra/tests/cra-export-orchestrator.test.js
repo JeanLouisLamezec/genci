@@ -8,7 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
-const CraExportOrchestrator = require('./cra-export-orchestrator.js');
+const CraExportOrchestrator = require('../export/cra-export-orchestrator.js');
 
 // ============================================================================
 // HELPERS DE FIXTURES
@@ -216,7 +216,7 @@ describe('CRA Export Orchestrator - Exports', () => {
   });
 
   it('s\'expose dans globalThis en environnement navigateur simulé', () => {
-    const scriptPath = path.resolve(__dirname, 'cra-export-orchestrator.js');
+    const scriptPath = path.resolve(__dirname, '../export/cra-export-orchestrator.js');
     const scriptContent = fs.readFileSync(scriptPath, 'utf-8');
 
     const sandbox = {
@@ -241,7 +241,7 @@ describe('CRA Export Orchestrator - Exports', () => {
   });
 
   it('peut être chargé sans CraExportModel, CraExportPdf, CraExportCsv dans un contexte navigateur', () => {
-    const scriptPath = path.resolve(__dirname, 'cra-export-orchestrator.js');
+    const scriptPath = path.resolve(__dirname, '../export/cra-export-orchestrator.js');
     const scriptContent = fs.readFileSync(scriptPath, 'utf-8');
 
     const sandbox = {
@@ -394,7 +394,7 @@ describe('resolveExportModel', () => {
   });
 
   it('lève une erreur en l\'absence totale de modèle dans un contexte navigateur isolé', () => {
-    const scriptPath = path.resolve(__dirname, 'cra-export-orchestrator.js');
+    const scriptPath = path.resolve(__dirname, '../export/cra-export-orchestrator.js');
     const scriptContent = fs.readFileSync(scriptPath, 'utf-8');
 
     const sandbox = {
@@ -412,7 +412,7 @@ describe('resolveExportModel', () => {
   });
 
   it('fonctionne dans un environnement navigateur simulé sans modèle', () => {
-    const scriptPath = path.resolve(__dirname, 'cra-export-orchestrator.js');
+    const scriptPath = path.resolve(__dirname, '../export/cra-export-orchestrator.js');
     const scriptContent = fs.readFileSync(scriptPath, 'utf-8');
 
     const sandbox = {
@@ -535,7 +535,7 @@ describe('resolveRenderer', () => {
   });
 
   it('lève une erreur pour un format sans renderer en environnement navigateur isolé', () => {
-    const scriptPath = path.resolve(__dirname, 'cra-export-orchestrator.js');
+    const scriptPath = path.resolve(__dirname, '../export/cra-export-orchestrator.js');
     const scriptContent = fs.readFileSync(scriptPath, 'utf-8');
 
     const sandbox = {
@@ -749,7 +749,7 @@ describe('validateRequest', () => {
     });
 
     it('refuse lorsque le modèle est absent dans un contexte navigateur isolé', () => {
-      const scriptPath = path.resolve(__dirname, 'cra-export-orchestrator.js');
+      const scriptPath = path.resolve(__dirname, '../export/cra-export-orchestrator.js');
       const scriptContent = fs.readFileSync(scriptPath, 'utf-8');
 
       const sandbox = {
@@ -2490,7 +2490,7 @@ describe('Résolution paresseuse', () => {
     delete globalThis.CraExportPdf;
     delete globalThis.CraExportCsv;
 
-    const scriptPath = path.resolve(__dirname, 'cra-export-orchestrator.js');
+    const scriptPath = path.resolve(__dirname, '../export/cra-export-orchestrator.js');
     const scriptContent = fs.readFileSync(scriptPath, 'utf-8');
 
     const sandbox = {

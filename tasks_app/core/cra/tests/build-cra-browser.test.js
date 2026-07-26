@@ -160,7 +160,7 @@ describe('Build CRA Browser Bundle', () => {
     vm.createContext(context);
     vm.runInContext(content, context);
 
-    const serviceModule = require('./cra-sheet-validation-service');
+    const serviceModule = require('../workflow/cra-sheet-validation-service.js');
     const TaskFlowCra = context.window.TaskFlowCra;
 
     // Vérifier que les fonctions principales sont présentes

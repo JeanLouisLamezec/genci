@@ -13,7 +13,7 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
-const CraExportPdf = require('./cra-export-pdf.js');
+const CraExportPdf = require('../export/cra-export-pdf.js');
 
 const {
   createDocumentDefinition,
@@ -187,7 +187,7 @@ describe('CRA Export PDF - Exports', () => {
   });
 
   test('Export navigateur avec vm', () => {
-    const pdfPath = path.resolve(__dirname, 'cra-export-pdf.js');
+    const pdfPath = path.resolve(__dirname, '../export/cra-export-pdf.js');
     const pdfCode = fs.readFileSync(pdfPath, 'utf-8');
 
     const sandbox = {
@@ -211,7 +211,7 @@ describe('CRA Export PDF - Exports', () => {
   });
 
   test('Export navigateur réussit sans pdfmake, DOM, Grist ou CRAController', () => {
-    const pdfPath = path.resolve(__dirname, 'cra-export-pdf.js');
+    const pdfPath = path.resolve(__dirname, '../export/cra-export-pdf.js');
     const pdfCode = fs.readFileSync(pdfPath, 'utf-8');
 
     const sandbox = {

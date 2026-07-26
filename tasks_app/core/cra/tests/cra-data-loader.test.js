@@ -4,7 +4,7 @@
 
 'use strict';
 
-const CraDataLoader = require('./cra-data-loader.js');
+const CraDataLoader = require('../loader/cra-data-loader.js');
 
 describe('CRA Data Loader', () => {
   beforeEach(() => {

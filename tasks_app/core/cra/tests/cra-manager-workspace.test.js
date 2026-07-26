@@ -22,7 +22,7 @@ const {
   normalizeStatus,
   ACCESSIBLE_MANAGER_STATUSES,
   PENDING_STATUSES
-} = require('./cra-manager-workspace');
+} = require('../manager/cra-manager-workspace.js');
 
 // ============================================================================
 // HELPERS DE NORMALISATION

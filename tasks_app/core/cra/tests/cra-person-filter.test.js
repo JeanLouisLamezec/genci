@@ -10,7 +10,7 @@ const {
   computeVisiblePersonIds,
   resolveDefaultPersonIds,
   applyPersonFilters
-} = require('./cra-person-filter.js');
+} = require('../ui/cra-person-filter.js');
 
 // Données de test
 const mockTeam = [

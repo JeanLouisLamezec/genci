@@ -29,13 +29,13 @@ const {
   localDayKeyFromMs,
   gristDateKey,
   dailyCapacityForPersonAndDate
-} = require('./cra-time-entry-controller.js');
+} = require('../controller/cra-time-entry-controller.js');
 
 describe('CRA Time Entry Controller', () => {
   
   describe('Export navigateur (TODO 1)', () => {
     test('CRAController est disponible dans un environnement navigateur simulé', () => {
-      const scriptPath = path.resolve(__dirname, 'cra-time-entry-controller.js');
+      const scriptPath = path.resolve(__dirname, '../controller/cra-time-entry-controller.js');
       const scriptCode = fs.readFileSync(scriptPath, 'utf-8');
       
       const sandbox = {
@@ -56,7 +56,7 @@ describe('CRA Time Entry Controller', () => {
     });
     
     test('CRAController fonctionne sans objet module', () => {
-      const scriptPath = path.resolve(__dirname, 'cra-time-entry-controller.js');
+      const scriptPath = path.resolve(__dirname, '../controller/cra-time-entry-controller.js');
       const scriptCode = fs.readFileSync(scriptPath, 'utf-8');
       
       const sandbox = {

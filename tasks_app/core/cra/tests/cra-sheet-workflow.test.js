@@ -6,7 +6,7 @@
 
 'use strict';
 
-const workflow = require('./cra-sheet-workflow');
+const workflow = require('../workflow/cra-sheet-workflow.js');
 
 describe('CRA Sheet Workflow - Helpers', () => {
   describe('normalizeRevision', () => {

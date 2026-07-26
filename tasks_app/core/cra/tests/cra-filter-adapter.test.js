@@ -5,7 +5,7 @@
  * Usage: npm test -- cra-filter-adapter.test.js --runInBand
  */
 
-const CraFilterAdapter = require('./cra-filter-adapter.js');
+const CraFilterAdapter = require('../ui/cra-filter-adapter.js');
 
 const {
   normalizeCraFilters,

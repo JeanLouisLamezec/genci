@@ -34,7 +34,7 @@ const {
   listClaimableTeamMembers,
   buildIdentityClaim,
   isAssociationAlreadyApplied
-} = require('./cra-identity-association');
+} = require('../identity/cra-identity-association.js');
 
 // ============================================================================
 // HELPERS DE NORMALISATION

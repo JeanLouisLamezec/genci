@@ -37,15 +37,15 @@ describe('CRA Export - Intégration navigateur', () => {
   
   it('charge séquentiellement les quatre modules sans erreur de redéclaration', () => {
     expect(() => {
-      loadScript('cra-export-model.js');
-      loadScript('cra-export-pdf.js');
-      loadScript('cra-export-csv.js');
-      loadScript('cra-export-orchestrator.js');
+      loadScript('../export/cra-export-model.js');
+      loadScript('../export/cra-export-pdf.js');
+      loadScript('../export/cra-export-csv.js');
+      loadScript('../export/cra-export-orchestrator.js');
     }).not.toThrow();
   });
   
   it('expose CraExportModel dans globalThis après chargement', () => {
-    loadScript('cra-export-model.js');
+    loadScript('../export/cra-export-model.js');
     
     expect(sandbox.globalThis.CraExportModel).toBeDefined();
     expect(typeof sandbox.globalThis.CraExportModel.buildReport).toBe('function');
@@ -54,7 +54,7 @@ describe('CRA Export - Intégration navigateur', () => {
   });
   
   it('expose CraExportPdf dans globalThis après chargement', () => {
-    loadScript('cra-export-pdf.js');
+    loadScript('../export/cra-export-pdf.js');
     
     expect(sandbox.globalThis.CraExportPdf).toBeDefined();
     expect(typeof sandbox.globalThis.CraExportPdf.createDocumentDefinition).toBe('function');
@@ -63,7 +63,7 @@ describe('CRA Export - Intégration navigateur', () => {
   });
   
   it('expose CraExportCsv dans globalThis après chargement', () => {
-    loadScript('cra-export-csv.js');
+    loadScript('../export/cra-export-csv.js');
     
     expect(sandbox.globalThis.CraExportCsv).toBeDefined();
     expect(typeof sandbox.globalThis.CraExportCsv.serialize).toBe('function');
@@ -72,7 +72,7 @@ describe('CRA Export - Intégration navigateur', () => {
   });
   
   it('expose CraExportOrchestrator dans globalThis après chargement', () => {
-    loadScript('cra-export-orchestrator.js');
+    loadScript('../export/cra-export-orchestrator.js');
     
     expect(sandbox.globalThis.CraExportOrchestrator).toBeDefined();
     expect(typeof sandbox.globalThis.CraExportOrchestrator.getFormatOptions).toBe('function');
@@ -81,10 +81,10 @@ describe('CRA Export - Intégration navigateur', () => {
   });
   
   it('charge les quatre modules et vérifie leur présence simultanée', () => {
-    loadScript('cra-export-model.js');
-    loadScript('cra-export-pdf.js');
-    loadScript('cra-export-csv.js');
-    loadScript('cra-export-orchestrator.js');
+    loadScript('../export/cra-export-model.js');
+    loadScript('../export/cra-export-pdf.js');
+    loadScript('../export/cra-export-csv.js');
+    loadScript('../export/cra-export-orchestrator.js');
     
     expect(sandbox.globalThis.CraExportModel).toBeDefined();
     expect(sandbox.globalThis.CraExportPdf).toBeDefined();
@@ -98,10 +98,10 @@ describe('CRA Export - Intégration navigateur', () => {
   });
   
   it('ne produit aucune collision de constantes DATE_ISO_REGEX', () => {
-    loadScript('cra-export-model.js');
-    loadScript('cra-export-pdf.js');
-    loadScript('cra-export-csv.js');
-    loadScript('cra-export-orchestrator.js');
+    loadScript('../export/cra-export-model.js');
+    loadScript('../export/cra-export-pdf.js');
+    loadScript('../export/cra-export-csv.js');
+    loadScript('../export/cra-export-orchestrator.js');
     
     expect(sandbox.globalThis.CraExportModel).toBeDefined();
     expect(sandbox.globalThis.CraExportPdf).toBeDefined();
@@ -110,10 +110,10 @@ describe('CRA Export - Intégration navigateur', () => {
   });
   
   it('permet d\'obtenir les options de format depuis l\'orchestrateur', () => {
-    loadScript('cra-export-model.js');
-    loadScript('cra-export-pdf.js');
-    loadScript('cra-export-csv.js');
-    loadScript('cra-export-orchestrator.js');
+    loadScript('../export/cra-export-model.js');
+    loadScript('../export/cra-export-pdf.js');
+    loadScript('../export/cra-export-csv.js');
+    loadScript('../export/cra-export-orchestrator.js');
     
     const options = sandbox.globalThis.CraExportOrchestrator.getFormatOptions();
     
@@ -125,10 +125,10 @@ describe('CRA Export - Intégration navigateur', () => {
   });
   
   it('exporte CommonJS pour chaque module', () => {
-    const modelModule = require('./cra-export-model.js');
-    const pdfModule = require('./cra-export-pdf.js');
-    const csvModule = require('./cra-export-csv.js');
-    const orchestratorModule = require('./cra-export-orchestrator.js');
+    const modelModule = require('../export/cra-export-model.js');
+    const pdfModule = require('../export/cra-export-pdf.js');
+    const csvModule = require('../export/cra-export-csv.js');
+    const orchestratorModule = require('../export/cra-export-orchestrator.js');
     
     expect(modelModule).toBeDefined();
     expect(typeof modelModule.buildReport).toBe('function');

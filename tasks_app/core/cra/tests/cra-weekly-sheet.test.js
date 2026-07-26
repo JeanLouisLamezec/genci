@@ -30,7 +30,7 @@ const {
   buildSheetCreationActions,
   buildEntryLinkActions,
   buildEnsureWeeklySheetActions
-} = require('./cra-weekly-sheet');
+} = require('../workflow/cra-weekly-sheet.js');
 
 // ============================================================================
 // TESTS : normalizeMemberId

@@ -23,7 +23,7 @@ const {
   cancelPendingClaim,
   getServiceState,
   resetService
-} = require('./cra-identity-claim-service');
+} = require('../identity/cra-identity-claim-service.js');
 
 // ============================================================================
 // HELPERS DE TEST

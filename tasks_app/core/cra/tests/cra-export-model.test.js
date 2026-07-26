@@ -22,9 +22,9 @@ const path = require('path');
 const vm = require('vm');
 
 // Charger le contrôleur CRA en premier (requis par le modèle)
-require('./cra-time-entry-controller.js');
+require('../controller/cra-time-entry-controller.js');
 
-const CraExportModel = require('./cra-export-model.js');
+const CraExportModel = require('../export/cra-export-model.js');
 
 const {
   buildReport,
@@ -133,7 +133,7 @@ describe('CRA Export Model - Exports', () => {
     const controllerPath = path.resolve(__dirname, 'cra-time-entry-controller.js');
     const controllerCode = fs.readFileSync(controllerPath, 'utf-8');
     
-    const modelPath = path.resolve(__dirname, 'cra-export-model.js');
+    const modelPath = path.resolve(__dirname, '../export/cra-export-model.js');
     const modelCode = fs.readFileSync(modelPath, 'utf-8');
     
     const sandbox = {
@@ -155,7 +155,7 @@ describe('CRA Export Model - Exports', () => {
   });
   
   test('Export navigateur avec CRAController vide produit une erreur explicite', () => {
-    const modelPath = path.resolve(__dirname, 'cra-export-model.js');
+    const modelPath = path.resolve(__dirname, '../export/cra-export-model.js');
     const modelCode = fs.readFileSync(modelPath, 'utf-8');
     
     const sandbox = {

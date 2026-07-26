@@ -16,7 +16,7 @@
 'use strict';
 
 const workflow = require('./cra-sheet-workflow');
-const timesheetValidator = require('../timesheets/timesheet-validator');
+const timesheetValidator = require('../../timesheets/timesheet-validator');
 const weeklySheet = require('./cra-weekly-sheet');
 
 const SERVICE_ERROR_CODES = {

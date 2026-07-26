@@ -10,8 +10,8 @@
 
 'use strict';
 
-const service = require('./cra-sheet-validation-service');
-const workflow = require('./cra-sheet-workflow');
+const service = require('../workflow/cra-sheet-validation-service.js');
+const workflow = require('../workflow/cra-sheet-workflow.js');
 const { createMockGrist } = require('../grist/mock-grist');
 
 // ============================================================================

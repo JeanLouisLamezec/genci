@@ -13,7 +13,7 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
-const CraExportCsv = require('./cra-export-csv.js');
+const CraExportCsv = require('../export/cra-export-csv.js');
 
 const {
   serialize,
@@ -207,7 +207,7 @@ describe('CRA Export CSV - Exports', () => {
   });
 
   test('Export navigateur avec vm', () => {
-    const csvPath = path.resolve(__dirname, 'cra-export-csv.js');
+    const csvPath = path.resolve(__dirname, '../export/cra-export-csv.js');
     const csvCode = fs.readFileSync(csvPath, 'utf-8');
 
     const sandbox = {
@@ -233,7 +233,7 @@ describe('CRA Export CSV - Exports', () => {
   });
 
   test('Export navigateur réussit sans document, Blob, URL, Grist, CRAController ou pdfmake', () => {
-    const csvPath = path.resolve(__dirname, 'cra-export-csv.js');
+    const csvPath = path.resolve(__dirname, '../export/cra-export-csv.js');
     const csvCode = fs.readFileSync(csvPath, 'utf-8');
 
     const sandbox = {

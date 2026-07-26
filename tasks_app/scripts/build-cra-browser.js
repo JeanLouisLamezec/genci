@@ -24,14 +24,14 @@ const OUTPUT_FILE = path.join(OUTPUT_DIR, 'taskflow-cra-browser.js');
 // Modules à bundler (dans l'ordre de dépendance)
 const MODULES = [
   { path: path.join(CORE_DIR, 'planning', 'planning-engine.js') },
-  { path: path.join(CORE_DIR, 'cra', 'cra-sheet-workflow.js') },
-  { path: path.join(CORE_DIR, 'cra', 'cra-weekly-sheet.js') },
+  { path: path.join(CORE_DIR, 'cra', 'workflow', 'cra-sheet-workflow.js') },
+  { path: path.join(CORE_DIR, 'cra', 'workflow', 'cra-weekly-sheet.js') },
   { path: path.join(CORE_DIR, 'timesheets', 'timesheet-validator.js') },
-  { path: path.join(CORE_DIR, 'cra', 'cra-sheet-validation-service.js') },
-  { path: path.join(CORE_DIR, 'cra', 'cra-sheet-ui-adapter.js') },
-  { path: path.join(CORE_DIR, 'cra', 'cra-identity-association.js') },
-  { path: path.join(CORE_DIR, 'cra', 'cra-identity-claim-service.js') },
-  { path: path.join(CORE_DIR, 'cra', 'cra-manager-workspace.js') }
+  { path: path.join(CORE_DIR, 'cra', 'workflow', 'cra-sheet-validation-service.js') },
+  { path: path.join(CORE_DIR, 'cra', 'ui', 'cra-sheet-ui-adapter.js') },
+  { path: path.join(CORE_DIR, 'cra', 'identity', 'cra-identity-association.js') },
+  { path: path.join(CORE_DIR, 'cra', 'identity', 'cra-identity-claim-service.js') },
+  { path: path.join(CORE_DIR, 'cra', 'manager', 'cra-manager-workspace.js') }
 ];
 
 // Générer les IDs à partir des chemins
@@ -191,14 +191,14 @@ function build(options = {}) {
   bundleParts.push(`
   
   // Exposer l'API publique
-  var workflow = __require('cra/cra-sheet-workflow');
-  var weeklySheet = __require('cra/cra-weekly-sheet');
+  var workflow = __require('cra/workflow/cra-sheet-workflow');
+  var weeklySheet = __require('cra/workflow/cra-weekly-sheet');
   var validator = __require('timesheets/timesheet-validator');
-  var service = __require('cra/cra-sheet-validation-service');
-  var adapterModule = __require('cra/cra-sheet-ui-adapter');
-  var identityModule = __require('cra/cra-identity-association');
-  var claimService = __require('cra/cra-identity-claim-service');
-  var managerModule = __require('cra/cra-manager-workspace');
+  var service = __require('cra/workflow/cra-sheet-validation-service');
+  var adapterModule = __require('cra/ui/cra-sheet-ui-adapter');
+  var identityModule = __require('cra/identity/cra-identity-association');
+  var claimService = __require('cra/identity/cra-identity-claim-service');
+  var managerModule = __require('cra/manager/cra-manager-workspace');
   
   global.TaskFlowCra = {
     service: {

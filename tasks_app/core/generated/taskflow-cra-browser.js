@@ -812,8 +812,8 @@ return {
 
   }));
 
-  // Module: cra/cra-sheet-workflow
-  moduleFactories.set('cra/cra-sheet-workflow', (function() {
+  // Module: cra/workflow/cra-sheet-workflow
+  moduleFactories.set('cra/workflow/cra-sheet-workflow', (function() {
     var exports = {};
     var __require = function(id) {
       if (!moduleCache.has(id)) {
@@ -3284,8 +3284,8 @@ return {
 
   }));
 
-  // Module: cra/cra-weekly-sheet
-  moduleFactories.set('cra/cra-weekly-sheet', (function() {
+  // Module: cra/workflow/cra-weekly-sheet
+  moduleFactories.set('cra/workflow/cra-weekly-sheet', (function() {
     var exports = {};
     var __require = function(id) {
       if (!moduleCache.has(id)) {
@@ -4186,8 +4186,8 @@ return {
 
   }));
 
-  // Module: cra/cra-sheet-validation-service
-  moduleFactories.set('cra/cra-sheet-validation-service', (function() {
+  // Module: cra/workflow/cra-sheet-validation-service
+  moduleFactories.set('cra/workflow/cra-sheet-validation-service', (function() {
     var exports = {};
     var __require = function(id) {
       if (!moduleCache.has(id)) {
@@ -4213,9 +4213,9 @@ return {
  *
  * @module core/cra/cra-sheet-validation-service
  */
-const workflow = __require('cra/cra-sheet-workflow');
+const workflow = __require('cra/workflow/cra-sheet-workflow');
 const timesheetValidator = __require('timesheets/timesheet-validator');
-const weeklySheet = __require('cra/cra-weekly-sheet');
+const weeklySheet = __require('cra/workflow/cra-weekly-sheet');
 
 const SERVICE_ERROR_CODES = {
   GRIST_API_UNAVAILABLE: 'GRIST_API_UNAVAILABLE',
@@ -5621,8 +5621,8 @@ return {
 
   }));
 
-  // Module: cra/cra-sheet-ui-adapter
-  moduleFactories.set('cra/cra-sheet-ui-adapter', (function() {
+  // Module: cra/ui/cra-sheet-ui-adapter
+  moduleFactories.set('cra/ui/cra-sheet-ui-adapter', (function() {
     var exports = {};
     var __require = function(id) {
       if (!moduleCache.has(id)) {
@@ -6135,8 +6135,8 @@ return {
 
   }));
 
-  // Module: cra/cra-identity-association
-  moduleFactories.set('cra/cra-identity-association', (function() {
+  // Module: cra/identity/cra-identity-association
+  moduleFactories.set('cra/identity/cra-identity-association', (function() {
     var exports = {};
     var __require = function(id) {
       if (!moduleCache.has(id)) {
@@ -6598,8 +6598,8 @@ return {
 
   }));
 
-  // Module: cra/cra-identity-claim-service
-  moduleFactories.set('cra/cra-identity-claim-service', (function() {
+  // Module: cra/identity/cra-identity-claim-service
+  moduleFactories.set('cra/identity/cra-identity-claim-service', (function() {
     var exports = {};
     var __require = function(id) {
       if (!moduleCache.has(id)) {
@@ -6633,7 +6633,7 @@ const {
   buildIdentityClaim,
   resolveCurrentUserIdentity,
   isAssociationAlreadyApplied
-} = __require('cra/cra-identity-association');
+} = __require('cra/identity/cra-identity-association');
 
 // ============================================================================
 // CONSTANTES - Codes d'erreur
@@ -6996,8 +6996,8 @@ return {
 
   }));
 
-  // Module: cra/cra-manager-workspace
-  moduleFactories.set('cra/cra-manager-workspace', (function() {
+  // Module: cra/manager/cra-manager-workspace
+  moduleFactories.set('cra/manager/cra-manager-workspace', (function() {
     var exports = {};
     var __require = function(id) {
       if (!moduleCache.has(id)) {
@@ -7167,14 +7167,14 @@ return {
 
   
   // Exposer l'API publique
-  var workflow = __require('cra/cra-sheet-workflow');
-  var weeklySheet = __require('cra/cra-weekly-sheet');
+  var workflow = __require('cra/workflow/cra-sheet-workflow');
+  var weeklySheet = __require('cra/workflow/cra-weekly-sheet');
   var validator = __require('timesheets/timesheet-validator');
-  var service = __require('cra/cra-sheet-validation-service');
-  var adapterModule = __require('cra/cra-sheet-ui-adapter');
-  var identityModule = __require('cra/cra-identity-association');
-  var claimService = __require('cra/cra-identity-claim-service');
-  var managerModule = __require('cra/cra-manager-workspace');
+  var service = __require('cra/workflow/cra-sheet-validation-service');
+  var adapterModule = __require('cra/ui/cra-sheet-ui-adapter');
+  var identityModule = __require('cra/identity/cra-identity-association');
+  var claimService = __require('cra/identity/cra-identity-claim-service');
+  var managerModule = __require('cra/manager/cra-manager-workspace');
   
   global.TaskFlowCra = {
     service: {

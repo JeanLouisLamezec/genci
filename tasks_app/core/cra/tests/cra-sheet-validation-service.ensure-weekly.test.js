@@ -23,7 +23,7 @@ const {
   releaseWeeklySheetLock,
   clearWeeklySheetLocks,
   SERVICE_ERROR_CODES
-} = require('./cra-sheet-validation-service');
+} = require('../workflow/cra-sheet-validation-service.js');
 
 // ============================================================================
 // HELPERS : MOCK GRIST

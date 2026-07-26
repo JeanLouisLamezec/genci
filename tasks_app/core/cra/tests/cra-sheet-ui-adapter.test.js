@@ -4,7 +4,7 @@
 
 'use strict';
 
-const { createUiAdapter, USER_MESSAGES } = require('./cra-sheet-ui-adapter');
+const { createUiAdapter, USER_MESSAGES } = require('../ui/cra-sheet-ui-adapter.js');
 
 describe('CRA Sheet UI Adapter', () => {
   let mockService;
