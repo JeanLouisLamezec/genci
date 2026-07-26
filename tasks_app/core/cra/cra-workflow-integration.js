@@ -29,105 +29,195 @@
   // CORRECTION : Verrou pour empêcher le double-clic sur submitCurrentWeek
   let submitCurrentWeekPending = false;
   
-  // Helper : obtenir le lundi de la semaine pour une date
-  function getMondayOf(date) {
-    const d = new Date(date);
-    const day = d.getDay();
-    const diff = d.getDate() - day + (day === 0 ? -6 : 1);
-    return new Date(d.setDate(diff));
+  // CORRECTION v20260726-5 : Normaliser un timestamp en millisecondes (Grist secondes ou JS ms)
+  function normalizeDateMs(value) {
+    if (
+      value === null ||
+      value === undefined ||
+      value === ''
+    ) {
+      return null;
+    }
+
+    if (value instanceof Date) {
+      const ms = value.getTime();
+      return Number.isFinite(ms) ? ms : null;
+    }
+
+    if (typeof value === 'number') {
+      if (!Number.isFinite(value)) {
+        return null;
+      }
+
+      // Timestamp Grist en secondes ou timestamp JS en millisecondes.
+      return Math.abs(value) < 100000000000
+        ? value * 1000
+        : value;
+    }
+
+    if (
+      typeof value === 'string' &&
+      /^\d{4}-\d{2}-\d{2}$/.test(value)
+    ) {
+      const [year, month, day] =
+        value.split('-').map(Number);
+
+      // Midi local évite les ambiguïtés autour des changements d'heure.
+      return new Date(
+        year,
+        month - 1,
+        day,
+        12,
+        0,
+        0,
+        0
+      ).getTime();
+    }
+
+    const parsed = new Date(value).getTime();
+
+    return Number.isFinite(parsed)
+      ? parsed
+      : null;
   }
-  
-  // Helper : formater une date en ISO YYYY-MM-DD
-  function toISODate(date) {
-    return date.toISOString().split('T')[0];
-  }
-  
-  // CORRECTION : Formater une date locale en ISO YYYY-MM-DD sans passer par UTC
+
+  // CORRECTION v20260726-5 : Formater une date locale en ISO YYYY-MM-DD sans passer par UTC
   function localDateIso(ms) {
     const date = new Date(ms);
+
+    if (!Number.isFinite(date.getTime())) {
+      return null;
+    }
+
     return [
       date.getFullYear(),
       String(date.getMonth() + 1).padStart(2, '0'),
       String(date.getDate()).padStart(2, '0')
     ].join('-');
   }
-  
-  // Helper : obtenir le lundi canonique depuis un timestamp Grist
-  function getWeekStartIso(dateValue) {
-    if (!dateValue) return null;
-    
-    let date;
-    if (typeof dateValue === 'number') {
-      // Timestamp Grist (secondes)
-      date = new Date(dateValue * 1000);
-    } else if (typeof dateValue === 'string') {
-      date = new Date(dateValue);
-    } else if (dateValue instanceof Date) {
-      date = dateValue;
-    } else {
+
+  // CORRECTION v20260726-5 : Obtenir le lundi de la semaine en millisecondes
+  function mondayOf(value) {
+    const ms = normalizeDateMs(value);
+
+    if (ms === null) {
       return null;
     }
-    
-    if (isNaN(date.getTime())) return null;
-    
-    return toISODate(getMondayOf(date));
+
+    const date = new Date(ms);
+    const dayOffset =
+      (date.getDay() + 6) % 7;
+
+    date.setHours(0, 0, 0, 0);
+    date.setDate(
+      date.getDate() - dayOffset
+    );
+
+    return date.getTime();
+  }
+
+  // CORRECTION v20260726-5 : Obtenir le lundi canonique en ISO local
+  function getWeekStartIso(value) {
+    const mondayMs = mondayOf(value);
+
+    return mondayMs === null
+      ? null
+      : localDateIso(mondayMs);
   }
   
-  // CORRECTION : Helper mondayOf pour compatibilité
-  function mondayOf(ms) {
-    const x = new Date(ms);
-    const dow = (x.getDay() + 6) % 7;
-    x.setHours(0, 0, 0, 0);
-    x.setDate(x.getDate() - dow);
-    return x.getTime();
+  // CORRECTION v20260726-5 : Normaliser un ID membre
+  function normalizeId(value) {
+    const id = Number(value);
+
+    return Number.isInteger(id) && id > 0
+      ? id
+      : null;
   }
-  
-  // Helper : trouver l'unique feuille pour un membre et une semaine
-  function findSheetForMemberWeek(memberId, weekStart, sheets) {
-    if (!memberId || !weekStart || !sheets) {
+
+  // CORRECTION v20260726-5 : Trouver l'unique feuille pour un membre et une semaine
+  function findSheetForMemberWeek(
+    memberId,
+    weekStart,
+    sheets
+  ) {
+    const normalizedMemberId =
+      normalizeId(memberId);
+
+    const expectedWeekIso =
+      getWeekStartIso(weekStart);
+
+    if (
+      normalizedMemberId === null ||
+      !expectedWeekIso ||
+      !Array.isArray(sheets)
+    ) {
       return null;
     }
-    
-    const weekStartIso = toISODate(weekStart);
-    
-    return sheets.find(f => {
-      if (!f.membre || f.membre !== memberId) return false;
-      if (!f.semaine) return false;
-      
-      const fWeekStart = getMondayOf(new Date(f.semaine * 1000));
-      return toISODate(fWeekStart) === weekStartIso;
-    });
+
+    return sheets.find(sheet =>
+      normalizeId(sheet.membre) ===
+        normalizedMemberId &&
+      getWeekStartIso(sheet.semaine) ===
+        expectedWeekIso
+    ) || null;
   }
   
-  // Helper : résoudre la feuille courante pour l'utilisateur connecté
+  // CORRECTION v20260726-5 : Résoudre la feuille courante pour l'utilisateur connecté
   function resolveCurrentUserSheet(state) {
-    if (!state || !state.currentUserMemberId || !state.feuilles) {
-      return { sheet: null, status: 'none', reason: 'MISSING_STATE' };
+    const memberId =
+      normalizeId(state?.currentUserMemberId);
+
+    if (
+      memberId === null ||
+      !Array.isArray(state?.feuilles)
+    ) {
+      return {
+        sheet: null,
+        status: 'none',
+        reason: 'MISSING_STATE'
+      };
     }
-    
-    // S.weekStart est en millisecondes (format JavaScript)
-    const monday = new Date(state.weekStart);
-    const mondayIso = monday.toISOString().split('T')[0];
-    
-    // Trouver toutes les feuilles pour currentUserMemberId et cette semaine
-    const matchingSheets = state.feuilles.filter(f => {
-      if (f.membre !== state.currentUserMemberId) return false;
-      if (!f.semaine) return false;
-      
-      // f.semaine est en secondes Grist, convertir en millisecondes
-      const fWeekStart = getMondayOf(new Date(f.semaine * 1000));
-      return fWeekStart.toISOString().split('T')[0] === mondayIso;
-    });
-    
+
+    const expectedWeekIso =
+      getWeekStartIso(state.weekStart);
+
+    if (!expectedWeekIso) {
+      return {
+        sheet: null,
+        status: 'none',
+        reason: 'INVALID_WEEK'
+      };
+    }
+
+    const matchingSheets =
+      state.feuilles.filter(sheet =>
+        normalizeId(sheet.membre) === memberId &&
+        getWeekStartIso(sheet.semaine) ===
+          expectedWeekIso
+      );
+
     if (matchingSheets.length === 0) {
-      return { sheet: null, status: 'none', reason: 'NO_SHEET_FOR_WEEK' };
+      return {
+        sheet: null,
+        status: 'none',
+        reason: 'NO_SHEET_FOR_WEEK'
+      };
     }
-    
+
     if (matchingSheets.length > 1) {
-      return { sheet: null, status: 'duplicate', reason: 'DUPLICATE_WEEKLY_SHEET', duplicates: matchingSheets };
+      return {
+        sheet: null,
+        status: 'duplicate',
+        reason: 'DUPLICATE_WEEKLY_SHEET',
+        duplicates: matchingSheets
+      };
     }
-    
-    return { sheet: matchingSheets[0], status: 'found', reason: 'SHEET_FOUND' };
+
+    return {
+      sheet: matchingSheets[0],
+      status: 'found',
+      reason: 'SHEET_FOUND'
+    };
   }
   
   // Helper : vérifier si une feuille est accessible au manager par snapshot
@@ -390,6 +480,23 @@
       }
       
       const actorMemberId = state.currentUserMemberId;
+      
+      // LOG DE DIAGNOSTIC v20260726-4
+      console.info('[CRA submit v20260726-4]', {
+        actorMemberId: actorMemberId,
+        weekStartRaw: state.weekStart,
+        weekStartLocal: new Date(state.weekStart).toString(),
+        weekStartIso: getWeekStartIso(state.weekStart),
+        entryCount: state.entries ? state.entries.length : 0,
+        memberEntries: (state.entries || [])
+          .filter(entry => Number(entry.membre) === Number(actorMemberId))
+          .map(entry => ({
+            id: entry.id,
+            date: entry.date,
+            weekIso: getWeekStartIso(entry.date),
+            feuille: entry.feuille
+          }))
+      });
       
       // CORRECTION : Calculer le lundi canonique avec la date locale, pas UTC
       const mondayMs = mondayOf(state.weekStart);

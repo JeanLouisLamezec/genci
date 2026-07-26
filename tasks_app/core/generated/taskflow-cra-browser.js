@@ -1053,50 +1053,114 @@ function validateUnixTimestamp(value) {
  * @returns {string|null} Date ISO YYYY-MM-DD du lundi ou null
  */
 function getWeekStartIso(dateValue) {
-  const date = normalizeDateValue(dateValue);
-  if (!date) return null;
+  const dateIso = gristDateToIso(dateValue);
 
-  const dayOfWeek = date.getUTCDay();
-  const offset = (dayOfWeek === 0) ? 6 : (dayOfWeek - 1);
-  const monday = new Date(Date.UTC(
-    date.getUTCFullYear(),
-    date.getUTCMonth(),
-    date.getUTCDate() - offset
-  ));
+  if (!dateIso || typeof dateIso !== 'string') {
+    return dateIso;
+  }
 
-  return formatDateUTC(monday);
+  const [year, month, day] = dateIso.split('-').map(Number);
+
+  const date = new Date(Date.UTC(year, month - 1, day));
+
+  const offset = (date.getUTCDay() + 6) % 7;
+
+  date.setUTCDate(date.getUTCDate() - offset);
+
+  return formatDateUTC(date);
 }
 
 /**
- * Normalise une valeur de date vers un objet Date UTC
+ * Normalise une valeur de date vers une date civile Europe/Paris
  * @param {*} value - Valeur Grist
- * @returns {Date|null} Date UTC ou null
+ * @returns {string|null} Date ISO YYYY-MM-DD ou null
  */
-function normalizeDateValue(value) {
-  if (value === null || value === undefined || value === '') {
+function gristDateToIso(gristDate) {
+  if (
+    typeof gristDate === 'string' &&
+    /^\d{4}-\d{2}-\d{2}$/.test(gristDate)
+  ) {
+    return gristDate;
+  }
+
+  const ms = normalizeDateMs(gristDate);
+
+  if (ms === null || typeof ms === 'string') {
+    return ms;
+  }
+
+  return formatCivilDate(ms);
+}
+
+/**
+ * Normalise un timestamp Grist (secondes) ou JavaScript (millisecondes) vers millisecondes
+ * @param {*} value - Valeur à normaliser
+ * @returns {number|null} Timestamp en millisecondes ou null
+ */
+function normalizeDateMs(value) {
+  if (
+    value === null ||
+    value === undefined ||
+    value === ''
+  ) {
     return null;
   }
 
-  if (typeof value === 'string') {
-    if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-      const parts = value.split('-').map(Number);
-      return new Date(Date.UTC(parts[0], parts[1] - 1, parts[2]));
-    }
-    const date = new Date(value);
-    return isNaN(date.getTime()) ? null : date;
-  }
-
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    const ms = value < 10000000000 ? value * 1000 : value;
-    const date = new Date(ms);
-    return isNaN(date.getTime()) ? null : date;
-  }
-
   if (value instanceof Date) {
-    return isNaN(value.getTime()) ? null : new Date(value.getTime());
+    const ms = value.getTime();
+    return Number.isFinite(ms) ? ms : null;
   }
 
-  return null;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) {
+      return null;
+    }
+
+    return Math.abs(value) < 100000000000
+      ? value * 1000
+      : value;
+  }
+
+  if (
+    typeof value === 'string' &&
+    /^\d{4}-\d{2}-\d{2}$/.test(value)
+  ) {
+    return value;
+  }
+
+  const ms = new Date(value).getTime();
+  return Number.isFinite(ms) ? ms : null;
+}
+
+/**
+ * Formate un timestamp en date civile ISO (YYYY-MM-DD) Europe/Paris
+ * @param {number} ms - Timestamp en millisecondes
+ * @returns {string|null} Date ISO ou null
+ */
+function formatCivilDate(ms) {
+  if (ms === null || typeof ms === 'string') {
+    return ms;
+  }
+
+  if (!Number.isFinite(ms)) {
+    return null;
+  }
+
+  const parts = new Intl.DateTimeFormat(
+    'en-CA',
+    {
+      timeZone: 'Europe/Paris',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    }
+  ).formatToParts(new Date(ms));
+
+  const values = Object.fromEntries(
+    parts.map(part => [part.type, part.value])
+  );
+
+  return `${values.year}-${values.month}-${values.day}`;
 }
 
 // ============================================================================
@@ -3108,31 +3172,6 @@ function isoToGristDate(isoDate) {
   if (!date) return null;
 
   return Math.floor(date.getTime() / 1000);
-}
-
-/**
- * Convertit une date Grist (secondes) en ISO (YYYY-MM-DD)
- * @param {number} gristDate - Timestamp Grist
- * @returns {string} Date ISO
- */
-function gristDateToIso(gristDate) {
-  if (gristDate === null || gristDate === undefined || gristDate === '') return null;
-
-  if (typeof gristDate === 'string') {
-    if (/^\d{4}-\d{2}-\d{2}$/.test(gristDate)) {
-      return gristDate;
-    }
-    gristDate = Number(gristDate);
-  }
-
-  if (typeof gristDate === 'number' && Number.isFinite(gristDate)) {
-    const date = new Date(gristDate * 1000);
-    if (!isNaN(date.getTime())) {
-      return formatDateUTC(date);
-    }
-  }
-
-  return null;
 }
 
 /**
