@@ -27,7 +27,9 @@ const MODULES = [
   { path: path.join(CORE_DIR, 'cra', 'cra-sheet-workflow.js') },
   { path: path.join(CORE_DIR, 'timesheets', 'timesheet-validator.js') },
   { path: path.join(CORE_DIR, 'cra', 'cra-sheet-validation-service.js') },
-  { path: path.join(CORE_DIR, 'cra', 'cra-sheet-ui-adapter.js') }
+  { path: path.join(CORE_DIR, 'cra', 'cra-sheet-ui-adapter.js') },
+  { path: path.join(CORE_DIR, 'cra', 'cra-identity-association.js') },
+  { path: path.join(CORE_DIR, 'cra', 'cra-identity-claim-service.js') }
 ];
 
 // Générer les IDs à partir des chemins
@@ -191,6 +193,8 @@ function build(options = {}) {
   var validator = __require('timesheets/timesheet-validator');
   var service = __require('cra/cra-sheet-validation-service');
   var adapterModule = __require('cra/cra-sheet-ui-adapter');
+  var identityModule = __require('cra/cra-identity-association');
+  var claimService = __require('cra/cra-identity-claim-service');
   
   global.TaskFlowCra = {
     service: {
@@ -225,6 +229,25 @@ function build(options = {}) {
     validator: {
       validateTimesheet: validator.validateTimesheet,
       ERROR_CODES: validator.ERROR_CODES
+    },
+    
+    // Identité (mode libre provisoire)
+    identity: {
+      IDENTITY_STATUS: identityModule.IDENTITY_STATUS,
+      normalizeGristUserId: identityModule.normalizeGristUserId,
+      normalizeEmail: identityModule.normalizeEmail,
+      isUnassociated: identityModule.isUnassociated,
+      isValidGristUserId: identityModule.isValidGristUserId,
+      resolveCurrentUserIdentity: identityModule.resolveCurrentUserIdentity,
+      listClaimableTeamMembers: identityModule.listClaimableTeamMembers,
+      buildIdentityClaim: identityModule.buildIdentityClaim,
+      isAssociationAlreadyApplied: identityModule.isAssociationAlreadyApplied
+    },
+    
+    claimService: {
+      claimCurrentUserIdentity: claimService.claimCurrentUserIdentity,
+      isClaimPending: claimService.isClaimPending,
+      CLAIM_ERROR_CODES: claimService.CLAIM_ERROR_CODES
     }
   };
   
@@ -260,7 +283,11 @@ function build(options = {}) {
       !context.globalThis.TaskFlowCra.service ||
       typeof context.globalThis.TaskFlowCra.service.submitSheet !== 'function' ||
       typeof context.globalThis.TaskFlowCra.service.updateManagerActual !== 'function' ||
-      typeof context.globalThis.TaskFlowCra.createUiAdapter !== 'function'
+      typeof context.globalThis.TaskFlowCra.createUiAdapter !== 'function' ||
+      !context.globalThis.TaskFlowCra.identity ||
+      typeof context.globalThis.TaskFlowCra.identity.resolveCurrentUserIdentity !== 'function' ||
+      !context.globalThis.TaskFlowCra.claimService ||
+      typeof context.globalThis.TaskFlowCra.claimService.claimCurrentUserIdentity !== 'function'
     ) {
       throw new Error('TaskFlowCra mal exposé');
     }
@@ -270,6 +297,8 @@ function build(options = {}) {
     console.log('   ✓ service.submitSheet disponible');
     console.log('   ✓ service.updateManagerActual disponible');
     console.log('   ✓ createUiAdapter disponible');
+    console.log('   ✓ identity.resolveCurrentUserIdentity disponible');
+    console.log('   ✓ claimService.claimCurrentUserIdentity disponible');
   } catch (e) {
     console.error(`❌ Erreur d'exécution: ${e.message}`);
     process.exit(1);

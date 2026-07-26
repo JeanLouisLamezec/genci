@@ -190,6 +190,25 @@ function normalizeEmail(value) {
 }
 
 /**
+ * Helper : importer le module d'identité (depuis le bundle TaskFlowCra)
+ */
+function getIdentityAssociationModule() {
+  try {
+    // Priorité au bundle TaskFlowCra (recommandé)
+    if (typeof globalThis.TaskFlowCra !== 'undefined' && globalThis.TaskFlowCra.identity) {
+      return globalThis.TaskFlowCra.identity;
+    }
+    // Fallback vers l'ancien nom (pour compatibilité)
+    if (typeof globalThis.CraIdentityAssociation !== 'undefined') {
+      return globalThis.CraIdentityAssociation;
+    }
+  } catch (e) {
+    // Module non chargé
+  }
+  return null;
+}
+
+/**
  * Obtient l'utilisateur Grist actuel (TODO 16)
  * Retourne userId ET email pour l'identification
  * LOGS EXPLICITES : affiche les claims disponibles pour diagnostic
@@ -327,7 +346,7 @@ const CRA_TABLES = {
   team: {
     tableId: 'Team',
     required: true,
-    columns: ['id', 'nom', 'email', 'gristUserId', 'capaciteHebdo', 'indispos', 'entite', 'responsable']
+    columns: ['id', 'nom', 'email', 'gristUserId', 'actif', 'capaciteHebdo', 'indispos', 'entite', 'responsable']
   },
   
   entites: {
@@ -640,6 +659,7 @@ function normalizeCraSnapshot(raw, currentUser) {
     nom: r.nom,
     email: r.email,
     gristUserId: r.gristUserId,
+    actif: r.actif !== false,  // true par défaut si undefined ou null
     entite: workflowNormalizeMemberId(r.entite),
     agentsGeres: [],
     capaciteHebdo: normalizeCapacityValue(r.capaciteHebdo) !== null ? normalizeCapacityValue(r.capaciteHebdo) : 35,
@@ -780,6 +800,33 @@ function normalizeCraSnapshot(raw, currentUser) {
   const matchedUserRow = matchedUser ? team.find(t => t.id === matchedUser.id) : null;
   const currentUserMemberName = matchedUserRow ? matchedUserRow.nom : '';
   
+  // === ÉTAT D'IDENTITÉ (pour association libre) ===
+  let identityState = null;
+  
+  const identityModule = getIdentityAssociationModule();
+  if (identityModule) {
+    try {
+      identityState = identityModule.resolveCurrentUserIdentity({
+        team,
+        currentGristUserId: currentUser?.userId ?? null,
+        currentEmail: currentUser?.email ?? null
+      });
+      
+      console.info('[CRA identity state]', {
+        status: identityState?.status,
+        currentUserMemberId,
+        candidateCount: identityState?.candidates?.length || 0,
+        conflictCodes: identityState?.conflictCodes || []
+      });
+    } catch (e) {
+      console.error('[CRA identity state] Erreur résolution', e);
+      identityState = {
+        status: 'DATA_CONFLICT',
+        error: e.message
+      };
+    }
+  }
+  
   return {
     team,
     entites,
@@ -792,9 +839,11 @@ function normalizeCraSnapshot(raw, currentUser) {
     assignments,
     dailyCapacities,
     // NOUVEAU : Séparation identité
+    currentGristUserId: meUserId,  // userId Grist brut (155719, pas Team.id)
     currentUserMemberId,     // Utilisateur connecté (immuable)
     currentUserMemberName,   // Nom de l'utilisateur connecté
     selectedPersonId,        // Personne actuellement affichée (change avec filtres)
+    identityState,           // État d'association (IDENTIFIED, ASSOCIATION_REQUIRED, etc.)
     // LEGACY : Pour compatibilité temporaire (sera supprimé)
     me: currentUserMemberId, // Alias vers currentUserMemberId
     meName: currentUserMemberName,

@@ -134,6 +134,12 @@ tfoot td.left { text-align: left; color: var(--text-muted); font-weight: 600; }
 .cra-export-button.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
 .cra-export-button:disabled { opacity: .5; cursor: default; }
 .cra-export-button:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+
+/* CRA Association Dialog */
+.cra-association-option { transition: background .15s, border-color .15s; }
+.cra-association-option:hover { background: color-mix(in srgb, var(--primary) 5%, transparent); }
+.cra-association-option[aria-checked="true"] { background: color-mix(in srgb, var(--primary) 8%, transparent); }
+.cra-association-option:focus { outline: 2px solid var(--primary); outline-offset: -2px; }
 </style>
 </head>
 <body>
@@ -5646,6 +5652,274 @@ function render() {
   renderSaisie();
 }
 
+// ============================================================================
+// ASSOCIATION LIBRE - Dialogue et service
+// ============================================================================
+
+let associationInProgress = false;
+let selectedAssociationMemberId = null;
+
+/**
+ * Affiche le dialogue d'association
+ */
+function showAssociationDialog() {
+  if (!S.identityState || S.identityState.status !== 'ASSOCIATION_REQUIRED') {
+    console.warn('[CRA] showAssociationDialog appelé hors état ASSOCIATION_REQUIRED');
+    return;
+  }
+  
+  // Réinitialiser l'état de sélection
+  selectedAssociationMemberId = null;
+  associationInProgress = false;
+  
+  const candidates = S.identityState.candidates || [];
+  
+  // Créer la modale si elle n'existe pas
+  let modal = document.getElementById('craAssociationModal');
+  if (modal) {
+    modal.remove();
+  }
+  
+  modal = document.createElement('div');
+  modal.id = 'craAssociationModal';
+  modal.className = 'modal-ov';
+  modal.setAttribute('role', 'dialog');
+  modal.setAttribute('aria-modal', 'true');
+  modal.setAttribute('aria-labelledby', 'craAssociationTitle');
+  
+  modal.innerHTML = `
+    <div class="modal">
+      <h2 id="craAssociationTitle">Associer votre compte Grist</h2>
+      <p class="csub">
+        Votre compte n'est pas encore associé à un membre de l'équipe.
+        Sélectionnez votre propre profil pour continuer.
+      </p>
+      
+      <div id="craAssociationError" style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:12px;margin-bottom:16px;color:#dc2626;font-size:.85rem;display:none"></div>
+      
+      <div style="margin-bottom:16px;max-height:400px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;">
+        ${candidates.length === 0 ? 
+          '<p style="padding:20px;text-align:center;color:var(--text-muted)">Aucun candidat disponible</p>' :
+          candidates.map(c => `
+            <div class="cra-association-option" data-member-id="${c.id}" style="padding:12px 16px;border-bottom:1px solid var(--border);cursor:pointer;display:flex;align-items:center;gap:12px;" role="radio" aria-checked="false" tabindex="0">
+              <div style="width:20px;height:20px;border:2px solid var(--border);border-radius:50%;flex-shrink:0;"></div>
+              <div style="flex:1">
+                <div style="font-weight:600;font-size:.9rem;">${escapeHtml(c.nom)}</div>
+                <div style="font-size:.8rem;color:var(--text-muted);">${escapeHtml(c.email)}</div>
+              </div>
+            </div>
+          `).join('')
+        }
+      </div>
+      
+      <div class="cacts" style="display:flex;gap:8px;justify-content:flex-end;">
+        <button class="cbtn" id="craAssociationCancel">Annuler</button>
+        <button class="cbtn primary" id="craAssociationConfirm" disabled>Associer mon compte</button>
+      </div>
+    </div>
+  `;
+  
+  document.body.appendChild(modal);
+  
+  // Gestionnaires d'événements
+  const cancelBtn = document.getElementById('craAssociationCancel');
+  const confirmBtn = document.getElementById('craAssociationConfirm');
+  const errorEl = document.getElementById('craAssociationError');
+  const options = modal.querySelectorAll('.cra-association-option');
+  
+  // Annuler
+  cancelBtn.onclick = () => {
+    closeModal();
+  };
+  
+  // Confirmer
+  confirmBtn.onclick = () => {
+    if (selectedAssociationMemberId) {
+      performAssociation(selectedAssociationMemberId);
+    }
+  };
+  
+  // Sélection d'une option
+  options.forEach(option => {
+    option.onclick = () => selectOption(option);
+    option.onkeydown = (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        selectOption(option);
+      }
+    };
+  });
+  
+  // Échap pour fermer
+  const escHandler = (e) => {
+    if (e.key === 'Escape' && !associationInProgress) {
+      closeModal();
+    }
+  };
+  document.addEventListener('keydown', escHandler);
+  
+  // Afficher la modale
+  modal.classList.add('open');
+  modal.setAttribute('aria-hidden', 'false');
+  
+  // Focus sur le premier élément
+  if (options.length > 0) {
+    options[0].focus();
+  }
+  
+  // Fonctions locales
+  function selectOption(selectedOption) {
+    if (associationInProgress) return;
+    
+    // Désélectionner toutes les options
+    options.forEach(opt => {
+      opt.setAttribute('aria-checked', 'false');
+      const circle = opt.firstElementChild;
+      if (circle) circle.style.borderColor = 'var(--border)';
+      opt.style.background = '';
+    });
+    
+    // Sélectionner l'option cliquée
+    selectedOption.setAttribute('aria-checked', 'true');
+    const selectedCircle = selectedOption.firstElementChild;
+    if (selectedCircle) selectedCircle.style.borderColor = 'var(--primary)';
+    selectedOption.style.background = 'color-mix(in srgb, var(--primary) 8%, transparent)';
+    
+    selectedAssociationMemberId = Number(selectedOption.getAttribute('data-member-id'));
+    confirmBtn.disabled = false;
+    confirmBtn.focus();
+  }
+  
+  function closeModal() {
+    if (associationInProgress) return;
+    document.removeEventListener('keydown', escHandler);
+    modal.classList.remove('open');
+    modal.setAttribute('aria-hidden', 'true');
+    setTimeout(() => modal.remove(), 200);
+  }
+  
+  function performAssociation(memberId) {
+    if (associationInProgress) return;
+    associationInProgress = true;
+    
+    // Désactiver l'interface
+    confirmBtn.disabled = true;
+    cancelBtn.disabled = true;
+    options.forEach(opt => opt.style.pointerEvents = 'none');
+    
+    // Afficher l'état de chargement
+    confirmBtn.textContent = 'Association en cours…';
+    errorEl.style.display = 'none';
+    
+    // Obtenir le module de service (depuis le bundle TaskFlowCra)
+    const identityModule = globalThis.TaskFlowCra?.identity;
+    const claimService = globalThis.TaskFlowCra?.claimService;
+    
+    if (!identityModule || !claimService) {
+      showError('Service d\'association indisponible');
+      associationInProgress = false;
+      confirmBtn.disabled = false;
+      cancelBtn.disabled = false;
+      options.forEach(opt => opt.style.pointerEvents = '');
+      confirmBtn.textContent = 'Associer mon compte';
+      return;
+    }
+    
+    // Valider la demande avec S.currentGristUserId (155719, pas S.currentUserMemberId)
+    const validation = identityModule.buildIdentityClaim({
+      team: S.team,
+      selectedTeamMemberId: memberId,
+      currentGristUserId: S.currentGristUserId
+    });
+    
+    if (!validation.allowed) {
+      showError(validation.reason || 'Demande invalide');
+      associationInProgress = false;
+      confirmBtn.disabled = false;
+      cancelBtn.disabled = false;
+      options.forEach(opt => opt.style.pointerEvents = '');
+      confirmBtn.textContent = 'Associer mon compte';
+      return;
+    }
+    
+    // Afficher la confirmation
+    const selectedMember = candidates.find(c => c.id === memberId);
+    if (!confirm(`Votre compte sera associé à :\n\n${selectedMember.nom}\n${selectedMember.email}\n\nCette association ne pourra pas être modifiée depuis le CRA.\n\nConfirmer ?`)) {
+      associationInProgress = false;
+      confirmBtn.disabled = false;
+      cancelBtn.disabled = false;
+      options.forEach(opt => opt.style.pointerEvents = '');
+      confirmBtn.textContent = 'Associer mon compte';
+      return;
+    }
+    
+    // Appel au service
+    claimService.claimCurrentUserIdentity({
+      grist: grist,
+      teamMemberId: memberId,
+      currentGristUserId: S.currentGristUserId,  // Utiliser le userId Grist brut
+      team: S.team,
+      reloadSnapshot: () => {
+        // Recharger via CraDataLoader
+        if (typeof CraDataLoader !== 'undefined' && CraDataLoader.requestCraReload) {
+          return CraDataLoader.requestCraReload({
+            reason: 'identity-association',
+            immediate: true
+          });
+        }
+        return Promise.resolve();
+      }
+    }).then(result => {
+      if (result.success) {
+        // Succès : fermer et recharger
+        associationInProgress = false;  // Libérer AVANT de fermer
+        selectedAssociationMemberId = null;  // Réinitialiser la sélection
+        closeModal();  // Maintenant que associationInProgress = false, ça ferme
+        // Le rechargement mettra à jour S.identityState et S.currentUserMemberId
+        if (typeof notify !== 'undefined') {
+          notify('Compte associé avec succès', 'success');
+        }
+      } else {
+        // Échec : afficher l'erreur
+        let message = 'Échec de l\'association';
+        if (result.code === 'IDENTITY_CLAIM_CONFLICT') {
+          message = 'Cette ligne a été associée entre-temps. Veuillez recharger.';
+        } else if (result.code === 'IDENTITY_CLAIM_WRITE_FAILED') {
+          message = 'Erreur lors de l\'enregistrement. Veuillez réessayer.';
+        } else if (result.reason) {
+          message = result.reason;
+        }
+        showError(message);
+        associationInProgress = false;
+        confirmBtn.disabled = false;
+        cancelBtn.disabled = false;
+        options.forEach(opt => opt.style.pointerEvents = '');
+        confirmBtn.textContent = 'Associer mon compte';
+      }
+    }).catch(e => {
+      showError('Erreur inattendue : ' + (e.message || String(e)));
+      associationInProgress = false;
+      confirmBtn.disabled = false;
+      cancelBtn.disabled = false;
+      options.forEach(opt => opt.style.pointerEvents = '');
+      confirmBtn.textContent = 'Associer mon compte';
+    });
+  }
+  
+  function showError(message) {
+    errorEl.textContent = message;
+    errorEl.style.display = 'block';
+  }
+}
+
+/**
+ * Helper : échapper le HTML
+ */
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
 function updateSubmitBtn() {
   const sb = document.getElementById('submitBtn'), eb = document.getElementById('exportBtn');
   eb.style.display = (S.hasTable && S.visiblePersonIds.length > 0) ? '' : 'none';
@@ -5668,8 +5942,30 @@ function updateSubmitBtn() {
   
   // Utiliser currentUserMemberId (identité réelle), jamais selectedPersonId ou visiblePersonIds[0]
   const currentUserId = S.currentUserMemberId;
+  
+  // Vérifier l'état d'identité pour l'association libre
+  if (S.identityState && S.identityState.status === 'ASSOCIATION_REQUIRED') {
+    // Afficher le bouton d'association
+    sb.textContent = 'Associer mon compte…';
+    sb.disabled = false;
+    sb.className = 'btn primary';
+    sb.onclick = () => {
+      showAssociationDialog();
+    };
+    return;
+  }
+  
+  // Si identityState indique un conflit bloquant
+  if (S.identityState && S.identityState.status !== 'IDENTIFIED' && S.identityState.status !== 'ASSOCIATION_REQUIRED') {
+    sb.textContent = 'Identité impossible';
+    sb.disabled = true;
+    sb.className = 'btn ghost';
+    sb.onclick = null;
+    return;
+  }
+  
   if (!currentUserId) {
-    // Utilisateur non identifié
+    // Utilisateur non identifié (sans candidats)
     sb.textContent = 'Utilisateur non identifié';
     sb.disabled = true;
     sb.className = 'btn ghost';
@@ -5843,8 +6139,9 @@ function renderSaisie() {
               + ' onchange="setCell(' + t.id + ',' + d + ',' + personId + ',this.value)" style="width:100%;font-size:.85rem">';
             if (plannedH > 0 && !cellState.hasExplicitActual) {
               cellHtml += '<div class="planned-indicator">Prévu: <strong>' + fmtQty(plannedH) + '</strong></div>';
-            }
-          }
+  }
+}
+
           cellHtml += '</td>';
           html += cellHtml;
         });
