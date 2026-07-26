@@ -17,6 +17,7 @@
 
 const workflow = require('./cra-sheet-workflow');
 const timesheetValidator = require('../timesheets/timesheet-validator');
+const weeklySheet = require('./cra-weekly-sheet');
 
 const SERVICE_ERROR_CODES = {
   GRIST_API_UNAVAILABLE: 'GRIST_API_UNAVAILABLE',
@@ -29,8 +30,38 @@ const SERVICE_ERROR_CODES = {
   WORKFLOW_STATE_CHANGED: 'WORKFLOW_STATE_CHANGED',
   WORKFLOW_APPLY_FAILED: 'WORKFLOW_APPLY_FAILED',
   WORKFLOW_POSTCONDITION_FAILED: 'WORKFLOW_POSTCONDITION_FAILED',
-  TIME_ENTRY_SCOPE_INCOMPLETE: 'TIME_ENTRY_SCOPE_INCOMPLETE'
+  TIME_ENTRY_SCOPE_INCOMPLETE: 'TIME_ENTRY_SCOPE_INCOMPLETE',
+  WEEKLY_SHEET_DUPLICATE: 'WEEKLY_SHEET_DUPLICATE',
+  WEEKLY_SHEET_CREATE_FAILED: 'WEEKLY_SHEET_CREATE_FAILED',
+  WEEKLY_SHEET_POSTCONDITION_FAILED: 'WEEKLY_SHEET_POSTCONDITION_FAILED',
+  WEEKLY_SHEET_INVALID_MEMBER: 'WEEKLY_SHEET_INVALID_MEMBER',
+  WEEKLY_SHEET_INVALID_WEEK: 'WEEKLY_SHEET_INVALID_WEEK',
+  WEEKLY_SHEET_NO_ENTRIES: 'WEEKLY_SHEET_NO_ENTRIES'
 };
+
+// ============================================================================
+// VERROUILLAGE LOCAL (concurrence intra-widget)
+// ============================================================================
+
+const weeklySheetLocks = new Map();
+
+function acquireWeeklySheetLock(memberId, weekStartIso) {
+  const key = `${memberId}:${weekStartIso}`;
+  if (weeklySheetLocks.has(key)) {
+    return false;
+  }
+  weeklySheetLocks.set(key, true);
+  return true;
+}
+
+function releaseWeeklySheetLock(memberId, weekStartIso) {
+  const key = `${memberId}:${weekStartIso}`;
+  weeklySheetLocks.delete(key);
+}
+
+function clearWeeklySheetLocks() {
+  weeklySheetLocks.clear();
+}
 
 // ============================================================================
 // HELPERS
@@ -78,6 +109,236 @@ function columnarToRows(columnarData) {
     rows.push(rec);
   }
   return rows;
+}
+
+// ============================================================================
+// SERVICE : ENSUREWEEKLYSHEET
+// ============================================================================
+
+/**
+ * Assure l'existence d'une feuille hebdomadaire pour un membre et une semaine
+ *
+ * CONTRAT :
+ * 1. Idempotent : plusieurs appels = même résultat
+ * 2. Verrouillage local par clé memberId:weekStartIso
+ * 3. Relecture post-création pour vérifier l'unicité
+ * 4. Stratégie de repli : refetch + recherche si AddRecord ne retourne pas l'ID
+ * 5. Bloque en cas de doublon détecté
+ *
+ * @param {Object} params - Paramètres
+ * @param {Object} params.grist - API Grist
+ * @param {number} params.memberId - ID du membre
+ * @param {string} params.weekStartIso - Date de début de semaine (YYYY-MM-DD)
+ * @param {Array} params.sheets - Snapshot des feuilles (optionnel, sera rechargé si absent)
+ * @param {Array} params.entries - Snapshot des TimeEntries (optionnel)
+ * @param {boolean} params.createOnlyWhenEntriesExist - Ne créer que si des entrées existent
+ * @returns {Object} { success, created, sheet, sheetId, error, code }
+ */
+async function ensureWeeklySheet(params) {
+  const { grist, memberId, weekStartIso, sheets, entries, createOnlyWhenEntriesExist = false } = params || {};
+
+  // 1. Valider les paramètres de base
+  if (!grist || !grist.docApi || !grist.docApi.fetchTable || !grist.docApi.applyUserActions) {
+    return {
+      success: false,
+      created: false,
+      sheet: null,
+      sheetId: null,
+      error: 'GRIST_API_UNAVAILABLE',
+      code: SERVICE_ERROR_CODES.GRIST_API_UNAVAILABLE
+    };
+  }
+
+  const normalizedMemberId = weeklySheet.normalizeMemberId(memberId);
+  if (normalizedMemberId === null) {
+    return {
+      success: false,
+      created: false,
+      sheet: null,
+      sheetId: null,
+      error: 'INVALID_MEMBER_ID',
+      code: SERVICE_ERROR_CODES.WEEKLY_SHEET_INVALID_MEMBER
+    };
+  }
+
+  if (!weekStartIso || !/^\d{4}-\d{2}-\d{2}$/.test(weekStartIso)) {
+    return {
+      success: false,
+      created: false,
+      sheet: null,
+      sheetId: null,
+      error: 'INVALID_WEEK',
+      code: SERVICE_ERROR_CODES.WEEKLY_SHEET_INVALID_WEEK
+    };
+  }
+
+  // 2. Vérifier le verrou local (concurrence intra-widget)
+  if (!acquireWeeklySheetLock(normalizedMemberId, weekStartIso)) {
+    return {
+      success: false,
+      created: false,
+      sheet: null,
+      sheetId: null,
+      error: 'OPERATION_PENDING',
+      code: 'WEEKLY_SHEET_LOCKED'
+    };
+  }
+
+  try {
+    // 3. Charger les feuilles si non fournies
+    let allSheets = sheets;
+    if (!allSheets) {
+      const sheetsData = await grist.docApi.fetchTable('Feuilles');
+      allSheets = columnarToRows(sheetsData);
+    }
+
+    // 4. Résoudre l'état de la feuille
+    const resolution = weeklySheet.resolveWeeklySheetState({
+      memberId: normalizedMemberId,
+      weekStartIso,
+      sheets: allSheets
+    });
+
+    if (resolution.status === 'FOUND') {
+      // Feuille déjà existante → succès immédiat
+      return {
+        success: true,
+        created: false,
+        sheet: resolution.sheet,
+        sheetId: resolution.sheetId,
+        error: null,
+        code: 'OK'
+      };
+    }
+
+    if (resolution.status === 'DUPLICATE_WEEKLY_SHEET') {
+      // Doublon → échec bloquant
+      return {
+        success: false,
+        created: false,
+        sheet: null,
+        sheetId: null,
+        error: 'DUPLICATE_WEEKLY_SHEET',
+        code: SERVICE_ERROR_CODES.WEEKLY_SHEET_DUPLICATE,
+        duplicates: resolution.duplicates
+      };
+    }
+
+    if (resolution.status === 'CREATION_REQUIRED') {
+      // 5. Vérifier si des entrées existent (si createOnlyWhenEntriesExist = true)
+      if (createOnlyWhenEntriesExist) {
+        let allEntries = entries;
+        if (!allEntries) {
+          const entriesData = await grist.docApi.fetchTable('TimeEntries');
+          allEntries = columnarToRows(entriesData);
+        }
+
+        const memberWeekEntries = weeklySheet.findEntriesForMemberWeek({
+          memberId: normalizedMemberId,
+          weekStartIso,
+          entries: allEntries
+        });
+
+        if (memberWeekEntries.length === 0) {
+          // Aucune entrée → ne pas créer de feuille vide
+          return {
+            success: false,
+            created: false,
+            sheet: null,
+            sheetId: null,
+            error: 'NO_ENTRIES_TO_ATTACH',
+            code: SERVICE_ERROR_CODES.WEEKLY_SHEET_NO_ENTRIES
+          };
+        }
+      }
+
+      // 6. Créer la feuille
+      const creationActions = weeklySheet.buildSheetCreationActions(resolution.creationFields);
+      
+      let addResult;
+      try {
+        addResult = await grist.docApi.applyUserActions(creationActions);
+      } catch (e) {
+        return {
+          success: false,
+          created: false,
+          sheet: null,
+          sheetId: null,
+          error: 'ADD_RECORD_FAILED',
+          code: SERVICE_ERROR_CODES.WEEKLY_SHEET_CREATE_FAILED,
+          details: e.message
+        };
+      }
+
+      // 7. Récupérer l'ID créé
+      // Stratégie 1 : Essayer d'extraire l'ID du retour de applyUserActions
+      // Le format typique est : { id: [123] } pour un AddRecord
+      let createdSheetId = null;
+      if (addResult && addResult.id && Array.isArray(addResult.id) && addResult.id.length > 0) {
+        createdSheetId = weeklySheet.normalizeMemberId(addResult.id[0]);
+      }
+
+      // 8. Relecture post-création pour vérifier l'unicité
+      const refreshSheetsData = await grist.docApi.fetchTable('Feuilles');
+      const refreshSheets = columnarToRows(refreshSheetsData);
+
+      const postResolution = weeklySheet.resolveWeeklySheetState({
+        memberId: normalizedMemberId,
+        weekStartIso,
+        sheets: refreshSheets
+      });
+
+      if (postResolution.status === 'DUPLICATE_WEEKLY_SHEET') {
+        // Doublon détecté après création (concurrence inter-clients)
+        return {
+          success: false,
+          created: false,
+          sheet: null,
+          sheetId: null,
+          error: 'DUPLICATE_AFTER_CREATE',
+          code: SERVICE_ERROR_CODES.WEEKLY_SHEET_DUPLICATE,
+          duplicates: postResolution.duplicates
+        };
+      }
+
+      if (postResolution.status !== 'FOUND') {
+        // Feuille introuvable après création → postcondition échouée
+        return {
+          success: false,
+          created: false,
+          sheet: null,
+          sheetId: null,
+          error: 'POSTCONDITION_FAILED',
+          code: SERVICE_ERROR_CODES.WEEKLY_SHEET_POSTCONDITION_FAILED
+        };
+      }
+
+      // Succès : feuille créée et vérifiée
+      return {
+        success: true,
+        created: true,
+        sheet: postResolution.sheet,
+        sheetId: postResolution.sheetId,
+        error: null,
+        code: 'OK'
+      };
+    }
+
+    // Cas inattendu
+    return {
+      success: false,
+      created: false,
+      sheet: null,
+      sheetId: null,
+      error: 'UNEXPECTED_RESOLUTION_STATUS',
+      code: 'WEEKLY_SHEET_UNKNOWN_ERROR',
+      status: resolution.status
+    };
+
+  } finally {
+    // 9. Libérer le verrou
+    releaseWeeklySheetLock(normalizedMemberId, weekStartIso);
+  }
 }
 
 // ============================================================================
@@ -1147,10 +1408,15 @@ module.exports = {
   openManagerCorrection,
   revalidateSheet,
   updateManagerActual,
+  ensureWeeklySheet,
   loadWorkflowSnapshot,
   verifyTransitionResult,
   buildFingerprint,
   callFunctionalValidator,
   executeTransition,
-  SERVICE_ERROR_CODES
+  SERVICE_ERROR_CODES,
+  // Helpers de verrouillage (exportés pour les tests)
+  acquireWeeklySheetLock,
+  releaseWeeklySheetLock,
+  clearWeeklySheetLocks
 };

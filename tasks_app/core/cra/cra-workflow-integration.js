@@ -26,6 +26,9 @@
   let config = null;
   let adapter = null;
   
+  // CORRECTION : Verrou pour empêcher le double-clic sur submitCurrentWeek
+  let submitCurrentWeekPending = false;
+  
   // Helper : obtenir le lundi de la semaine pour une date
   function getMondayOf(date) {
     const d = new Date(date);
@@ -37,6 +40,46 @@
   // Helper : formater une date en ISO YYYY-MM-DD
   function toISODate(date) {
     return date.toISOString().split('T')[0];
+  }
+  
+  // CORRECTION : Formater une date locale en ISO YYYY-MM-DD sans passer par UTC
+  function localDateIso(ms) {
+    const date = new Date(ms);
+    return [
+      date.getFullYear(),
+      String(date.getMonth() + 1).padStart(2, '0'),
+      String(date.getDate()).padStart(2, '0')
+    ].join('-');
+  }
+  
+  // Helper : obtenir le lundi canonique depuis un timestamp Grist
+  function getWeekStartIso(dateValue) {
+    if (!dateValue) return null;
+    
+    let date;
+    if (typeof dateValue === 'number') {
+      // Timestamp Grist (secondes)
+      date = new Date(dateValue * 1000);
+    } else if (typeof dateValue === 'string') {
+      date = new Date(dateValue);
+    } else if (dateValue instanceof Date) {
+      date = dateValue;
+    } else {
+      return null;
+    }
+    
+    if (isNaN(date.getTime())) return null;
+    
+    return toISODate(getMondayOf(date));
+  }
+  
+  // CORRECTION : Helper mondayOf pour compatibilité
+  function mondayOf(ms) {
+    const x = new Date(ms);
+    const dow = (x.getDay() + 6) % 7;
+    x.setHours(0, 0, 0, 0);
+    x.setDate(x.getDate() - dow);
+    return x.getTime();
   }
   
   // Helper : trouver l'unique feuille pour un membre et une semaine
@@ -326,28 +369,139 @@
   
   // Soumettre la semaine courante
   async function submitCurrentWeek() {
+    // CORRECTION : Vérifier le verrou pour empêcher le double-clic
+    if (submitCurrentWeekPending) {
+      console.warn('[CRA] submitCurrentWeek déjà en cours, ignoré');
+      return { success: false, code: 'OPERATION_PENDING' };
+    }
+    
     if (!config || !adapter) {
       throw new Error('CraWorkflowIntegration non configuré');
     }
     
-    const state = config.getState();
-    if (!state || !state.currentUserMemberId) {
-      if (config.notify) config.notify('Acteur non identifié', 'error');
-      return { success: false, code: 'ACTOR_NOT_IDENTIFIED' };
-    }
+    // Verrouiller
+    submitCurrentWeekPending = true;
     
-    const sheetResult = resolveCurrentUserSheet(state);
-    if (sheetResult.status === 'none') {
-      if (config.notify) config.notify('Aucune feuille trouvée pour cette semaine', 'error');
-      return { success: false, code: 'NO_SHEET' };
+    try {
+      const state = config.getState();
+      if (!state || !state.currentUserMemberId) {
+        if (config.notify) config.notify('Acteur non identifié', 'error');
+        return { success: false, code: 'ACTOR_NOT_IDENTIFIED' };
+      }
+      
+      const actorMemberId = state.currentUserMemberId;
+      
+      // CORRECTION : Calculer le lundi canonique avec la date locale, pas UTC
+      const mondayMs = mondayOf(state.weekStart);
+      const mondayIso = localDateIso(mondayMs);
+      
+      // ÉTAPE 4 : Réparation - Assurer l'existence de la feuille et rattacher les entrées orphelines
+      let sheetId = null;
+      
+      // 1. Essayer de trouver la feuille existante
+      const sheetResult = resolveCurrentUserSheet(state);
+      
+      if (sheetResult.status === 'duplicate') {
+        if (config.notify) config.notify('Plusieurs feuilles existent pour cette semaine', 'error');
+        return { success: false, code: 'DUPLICATE_WEEKLY_SHEET' };
+      }
+      
+      // 2. Si aucune feuille mais des entrées existent, créer la feuille
+      if (sheetResult.status === 'none') {
+        // Vérifier s'il y a des entrées pour cette semaine
+        const memberWeekEntries = (state.entries || []).filter(e => {
+          if (e.membre !== actorMemberId) return false;
+          const entryWeekIso = getWeekStartIso(e.date);
+          return entryWeekIso === mondayIso;
+        });
+        
+        if (memberWeekEntries.length === 0) {
+          // Aucune entrée → pas de feuille à soumettre
+          if (config.notify) config.notify('Aucune saisie à soumettre pour cette semaine', 'error');
+          return { success: false, code: 'NO_TIMESHEET_DATA_TO_SUBMIT' };
+        }
+        
+        // Créer la feuille via ensureWeeklySheet
+        if (config.taskFlowCra && config.taskFlowCra.service && config.taskFlowCra.service.ensureWeeklySheet) {
+          try {
+            const weeklySheetResult = await config.taskFlowCra.service.ensureWeeklySheet({
+              grist: config.grist,
+              memberId: actorMemberId,
+              weekStartIso: mondayIso,
+              sheets: state.feuilles,
+              entries: state.entries,
+              createOnlyWhenEntriesExist: false
+            });
+            
+            if (!weeklySheetResult.success) {
+              if (weeklySheetResult.code === 'WEEKLY_SHEET_DUPLICATE') {
+                if (config.notify) config.notify('Plusieurs feuilles existent pour cette semaine', 'error');
+                return { success: false, code: 'DUPLICATE_WEEKLY_SHEET' };
+              }
+              if (config.notify) config.notify('Création de feuille impossible: ' + (weeklySheetResult.error || 'Erreur'), 'error');
+              return { success: false, code: weeklySheetResult.code || 'WEEKLY_SHEET_CREATE_FAILED' };
+            }
+            
+            sheetId = weeklySheetResult.sheetId;
+            
+            // Recharger les données pour avoir la feuille à jour
+            if (typeof config.reload === 'function') {
+              await config.reload({ reason: 'sheet-created', immediate: true });
+            }
+          } catch (e) {
+            console.error('[CRA] Erreur ensureWeeklySheet:', e);
+            if (config.notify) config.notify('Erreur lors de la création de la feuille', 'error');
+            return { success: false, code: 'WEEKLY_SHEET_CREATE_ERROR' };
+          }
+        } else {
+          if (config.notify) config.notify('Service ensureWeeklySheet indisponible', 'error');
+          return { success: false, code: 'SERVICE_UNAVAILABLE' };
+        }
+      } else {
+        sheetId = sheetResult.sheet.id;
+      }
+      
+      // 3. Si une feuille existe, rattacher les entrées orphelines avant soumission
+      if (sheetId) {
+        try {
+          // Trouver les entrées orphelines du membre pour cette semaine
+          const orphanEntries = (state.entries || []).filter(e => {
+            if (e.membre !== actorMemberId) return false;
+            const entryWeekIso = getWeekStartIso(e.date);
+            if (entryWeekIso !== mondayIso) return false;
+            return e.feuille === null || e.feuille === 0 || e.feuille === undefined;
+          });
+          
+          if (orphanEntries.length > 0) {
+            // Construire les actions de rattachement
+            const linkActions = orphanEntries.map(e => [
+              'UpdateRecord',
+              'TimeEntries',
+              e.id,
+              { feuille: sheetId }
+            ]);
+            
+            // Appliquer les actions
+            await config.grist.docApi.applyUserActions(linkActions);
+            
+            // Recharger pour avoir les données à jour
+            if (typeof config.reload === 'function') {
+              await config.reload({ reason: 'entries-linked', immediate: true });
+            }
+          }
+        } catch (e) {
+          console.error('[CRA] Erreur rattachement entrées:', e);
+          if (config.notify) config.notify('Erreur lors du rattachement des saisies', 'error');
+          return { success: false, code: 'ENTRY_LINK_ERROR' };
+        }
+      }
+      
+      // 4. Soumettre la feuille via l'adaptateur
+      return await adapter.submit(sheetId);
+    } finally {
+      // CORRECTION : Déverrouiller dans tous les cas
+      submitCurrentWeekPending = false;
     }
-    
-    if (sheetResult.status === 'duplicate') {
-      if (config.notify) config.notify('Plusieurs feuilles existent pour cette semaine', 'error');
-      return { success: false, code: 'DUPLICATE_WEEKLY_SHEET' };
-    }
-    
-    return await adapter.submit(sheetResult.sheet.id);
   }
   
   // Retirer la soumission

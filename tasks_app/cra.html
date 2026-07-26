@@ -4941,6 +4941,17 @@ const S = {
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const gristToMs = (ts) => ts ? ts * 1000 : 0;
 const msToGrist = (ms) => Math.floor(ms / 1000);
+
+// CORRECTION : Formater une date locale en ISO YYYY-MM-DD sans passer par UTC
+function localDateIso(ms) {
+  const date = new Date(ms);
+  return [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, '0'),
+    String(date.getDate()).padStart(2, '0')
+  ].join('-');
+}
+
 function refIds(v) { return Array.isArray(v) && v[0] === 'L' ? v.slice(1).map(Number) : []; }
 function mondayOf(ms) { const x = new Date(ms); const dow = (x.getDay() + 6) % 7; x.setHours(0, 0, 0, 0); x.setDate(x.getDate() - dow); return x.getTime(); }
 function weekDays() { 
@@ -5627,17 +5638,45 @@ function loadDemo() {
 function render() {
   document.getElementById('wLabel').textContent = weekLabel();
   document.getElementById('lgUnit').textContent = 'Unite : ' + unitLabel() + (S.unit !== 'heures' ? ' (' + S.hoursPerDay + ' h/jour)' : '');
-  // Onglet "A valider" : visible selon responsableValidation (snapshot)
-  // Étape 5 : Utiliser le manager snapshoté, pas mesGeres
+  // Onglet "A valider" : visible selon responsableValidation ET hiérarchie Team
   const tv = document.getElementById('tabValider');
   const managerId = S.currentUserMemberId;
-  const accessible = S.feuilles.filter(f => 
-    f.responsableValidation === managerId &&
-    ['soumis', 'submitted', 'valide', 'validated', 'correction_manager'].includes(String(f.statut || '').toLowerCase())
-  );
-  const pending = accessible.filter(f => ['soumis', 'submitted'].includes(String(f.statut || '').toLowerCase())).length;
-  tv.style.display = accessible.length ? 'inline-block' : 'none';
-  tv.textContent = 'A valider' + (pending ? ' (' + pending + ')' : '');
+  
+  // Utiliser la fonction pure pour calculer l'état manager
+  const managerState = typeof TaskFlowCra !== 'undefined' && TaskFlowCra.managerWorkspace
+    ? TaskFlowCra.managerWorkspace.resolveManagerWorkspaceState({
+        team: S.team,
+        sheets: S.feuilles,
+        currentUserMemberId: managerId
+      })
+    : {
+        shouldShowManagerTab: false,
+        pendingCount: 0,
+        managesSomeone: false,
+        directReportCount: 0,
+        accessibleSheets: []
+      };
+  
+  // Sauvegarder l'état pour renderValider
+  S.managerWorkspaceState = managerState;
+  
+  // Visibilité de l'onglet
+  tv.style.display = managerState.shouldShowManagerTab ? 'inline-flex' : 'none';
+  
+  // Compteur : uniquement les feuilles soumises
+  tv.textContent = 'A valider' + (managerState.pendingCount > 0 ? ' (' + managerState.pendingCount + ')' : '');
+  
+  // Log de diagnostic
+  if (CRA_PERF_DEBUG || (typeof console !== 'undefined' && console.info)) {
+    console.info('[CRA manager workspace]', {
+      currentUserMemberId: managerId,
+      directReportIds: managerState.directReportIds,
+      directReportCount: managerState.directReportCount,
+      accessibleSheetCount: managerState.accessibleSheets ? managerState.accessibleSheets.length : 0,
+      pendingCount: managerState.pendingCount,
+      shouldShowManagerTab: managerState.shouldShowManagerTab
+    });
+  }
   document.querySelectorAll('#tabSeg button').forEach(b => b.classList.toggle('active', b.dataset.t === S.tab));
   updateSubmitBtn();
   const main = document.getElementById('main');
@@ -6183,17 +6222,51 @@ function renderSaisie() {
 
 function renderValider() {
   const main = document.getElementById('main');
-  // Étape 5 : Utiliser responsableValidation (snapshot) au lieu de mesGeres
-  const managerId = S.currentUserMemberId;
   
-  const subs = S.feuilles.filter(f => {
-    // Utiliser le snapshot responsableValidation
-    if (f.responsableValidation !== managerId) return false;
+  // Utiliser l'état manager calculé
+  const managerState = S.managerWorkspaceState || {
+    accessibleSheets: [],
+    pendingCount: 0,
+    validatedCount: 0,
+    correctionCount: 0,
+    directReportIds: [],
+    directReportCount: 0
+  };
+  
+  // Si aucune feuille accessible, afficher un état vide informatif
+  if (!managerState.accessibleSheets || managerState.accessibleSheets.length === 0) {
+    let message = '<div class="empty-cta">';
     
-    const status = normalizeSheetStatus(f.statut);
-    // Inclure soumis, valide, et correction_manager
-    return ['soumis', 'submitted', 'valide', 'validated', 'correction_manager'].includes(status);
-  }).sort((a, b) => {
+    if (managerState.managesSomeone && managerState.directReportCount > 0) {
+      // Cas A : Il gère des personnes mais aucune feuille soumise
+      const reportNames = S.team
+        .filter(m => managerState.directReportIds.includes(m.id))
+        .slice(0, 5)
+        .map(m => m.nom)
+        .join(', ');
+      
+      const countText = managerState.directReportCount > 5
+        ? managerState.directReportCount + ' personnes'
+        : reportNames;
+      
+      message += '<h3>Aucune feuille à valider</h3>';
+      message += '<p>Vous êtes responsable de : <strong>' + countText + '</strong></p>';
+      message += '<p>Aucune feuille ne vous a encore été soumise.</p>';
+      message += '<p class="csub">Les feuilles apparaîtront ici après leur soumission.</p>';
+    } else {
+      // Cas B : Pas de subordonnés et pas de feuilles
+      message += '<h3>Aucune feuille en attente</h3>';
+      message += '<p>Vous n\'avez actuellement aucune feuille soumise à traiter.</p>';
+      message += '<p class="csub">Les feuilles validées et les corrections restent disponibles ci-dessous si elles existent.</p>';
+    }
+    
+    message += '</div>';
+    main.innerHTML = message;
+    return;
+  }
+  
+  // Trier les feuilles accessibles
+  const subs = managerState.accessibleSheets.sort((a, b) => {
     const statusA = normalizeSheetStatus(a.statut);
     const statusB = normalizeSheetStatus(b.statut);
     // Priorité : soumis > correction_manager > valide
@@ -6201,7 +6274,6 @@ function renderValider() {
     return (priority[statusA] || 99) - (priority[statusB] || 99);
   });
   
-  if (!subs.length) { main.innerHTML = '<div class="empty-cta">Aucune feuille de ton equipe pour l\'instant.</div>'; return; }
   let html = '<table class="grid"><thead><tr><th class="left">Agent</th><th class="left">Semaine</th><th class="total">Total</th><th class="left">Statut</th><th class="left">Action</th></tr></thead><tbody>';
   for (const f of subs) {
     const p = S.team.find(t => t.id === f.membre), wk = gristToMs(f.semaine);
@@ -6296,6 +6368,16 @@ async function setCell(taskId, dayMs, personId, qtyStr) {
     S.feuilles
   );
   
+  // CORRECTION : Bloquer la modification d'une autre personne hors correction manager
+  if (
+    !S.managerCorrectionSheetId &&
+    personId !== S.currentUserMemberId
+  ) {
+    toast('Vous ne pouvez modifier que votre propre feuille');
+    render();
+    return;
+  }
+  
   if (weekLock.locked) {
     toast('Semaine verrouillée - saisie impossible');
     render();
@@ -6319,11 +6401,6 @@ async function setCell(taskId, dayMs, personId, qtyStr) {
   
   const activeAssignment = assignmentResult.assignment;
   
-  // Trouver la feuille actuelle pour la personne et la semaine
-  const currentSheet = S.feuilles.find(f => 
-    f.membre === personId && sameDay(gristToMs(f.semaine), S.weekStart)
-  );
-  
   // Résoudre l'entrée éditable (dayIso déjà déclaré plus haut)
   const entryResult = CRAController.resolveEditableCellEntry(
     S.entries, taskId, dayIso, personId, activeAssignment
@@ -6340,10 +6417,61 @@ async function setCell(taskId, dayMs, personId, qtyStr) {
   // Vérifier si la ligne a des champs de planning
   const hasPlanningData = CRAController.hasPlanningFields(existingEntry);
   
-  // Déterminer l'action à effectuer
-  const actionResult = CRAController.determineEntryAction(
+  // Calcul préliminaire de l'action (sans feuille)
+  let currentSheet = S.feuilles.find(f => 
+    f.membre === personId && sameDay(gristToMs(f.semaine), S.weekStart)
+  );
+  
+  let actionResult = CRAController.determineEntryAction(
     existingEntry, hours, activeAssignment, currentSheet, hasPlanningData
   );
+  
+  // ÉTAPE 3 : Si aucune feuille et qu'on va créer une entrée, assurer l'existence de la feuille
+  if (!currentSheet && actionResult.action === 'create' && !S.alone) {
+    try {
+      // Calculer le lundi canonique (CORRECTION : utiliser la date locale, pas UTC)
+      const mondayMs = mondayOf(S.weekStart);
+      const mondayIso = localDateIso(mondayMs);
+      
+      // Appeler ensureWeeklySheet via TaskFlowCra.service
+      if (globalThis.TaskFlowCra && TaskFlowCra.service && TaskFlowCra.service.ensureWeeklySheet) {
+        const weeklySheetResult = await TaskFlowCra.service.ensureWeeklySheet({
+          grist: grist,
+          memberId: S.currentUserMemberId,
+          weekStartIso: mondayIso,
+          sheets: S.feuilles,
+          entries: S.entries,
+          createOnlyWhenEntriesExist: false
+        });
+        
+        if (weeklySheetResult.success && weeklySheetResult.sheetId) {
+          // Mettre à jour currentSheet avec la feuille créée/trouvée
+          currentSheet = weeklySheetResult.sheet;
+          
+          // Mettre à jour S.feuilles localement
+          if (!S.feuilles.find(f => f.id === weeklySheetResult.sheetId)) {
+            S.feuilles.push(weeklySheetResult.sheet);
+          }
+          
+          // RECALCULER l'action avec la feuille maintenant disponible
+          actionResult = CRAController.determineEntryAction(
+            existingEntry, hours, activeAssignment, currentSheet, hasPlanningData
+          );
+        } else if (weeklySheetResult.code === 'WEEKLY_SHEET_DUPLICATE') {
+          toast('Plusieurs feuilles existent pour cette semaine. Veuillez corriger.');
+          render();
+          return;
+        } else {
+          toast('Création de feuille impossible: ' + (weeklySheetResult.error || 'Erreur inconnue'));
+          render();
+          return;
+        }
+      }
+    } catch (e) {
+      console.error('[CRA] Erreur ensureWeeklySheet:', e);
+      // Continuer sans feuille - la création échouera ou créera sans lien
+    }
+  }
   
   // PHASE 1.1.4 : Gérer le blocage création sans affectation
   if (actionResult.action === 'blocked') {
@@ -6362,12 +6490,20 @@ async function setCell(taskId, dayMs, personId, qtyStr) {
     if (actionResult.action === 'update' && existingEntry) {
       Object.assign(existingEntry, actionResult.fields);
     } else if (actionResult.action === 'create') {
+      // CORRECTION : Vérifier que currentSheet existe
+      if (!currentSheet?.id) {
+        toast('Erreur : feuille introuvable pour cette semaine');
+        render();
+        return;
+      }
+      
       const nid = Math.max(0, ...S.entries.map(e => e.id)) + 1;
       S.entries.push({ 
         id: nid, 
         membre: personId, 
         tache: taskId, 
-        date: msToGrist(dayMs), 
+        date: msToGrist(dayMs),
+        feuille: currentSheet.id,  // CORRECTION : Rattacher explicitement
         ...actionResult.fields 
       });
     } else if (actionResult.action === 'delete' && existingEntry) {
@@ -6386,33 +6522,41 @@ async function setCell(taskId, dayMs, personId, qtyStr) {
       // Mettre à jour localement
       Object.assign(existingEntry, actionResult.fields);
     } else if (actionResult.action === 'create') {
+      // CORRECTION : Vérifier que currentSheet existe et a un ID
+      if (!currentSheet?.id) {
+        toast('Erreur : feuille introuvable pour cette semaine');
+        render();
+        return;
+      }
+      
       const fieldsToCreate = {
         membre: personId,
         tache: taskId,
         date: msToGrist(dayMs),
         heuresPrevues: 0,  // PHASE 1.1.5 : Initialiser explicitement
         revisionPlan: 0,   // PHASE 1.1.5 : Initialiser explicitement
+        feuille: currentSheet.id,  // CORRECTION : Rattacher explicitement à la feuille
         ...actionResult.fields
       };
       
-    // PHASE 1.1.5 : Ajouter référence capacité si disponible
-    const capacityResult = CRAController.dailyCapacityForPersonAndDate(
-      personId,
-      dayMs,
-      S.dailyCapacities || [],
-      S.team || [],
-      S.disponibilites || []
-    );
-    
-    // BUG 5 : Utiliser directement le résultat complet du contrôleur
-    // Ne pas refaire une seconde recherche dans S.dailyCapacities
-    if (capacityResult.capacityRecordId) {
-      fieldsToCreate.capaciteJour = capacityResult.capacityRecordId;
-    }
-    
-    // Utiliser les vraies valeurs retournées par le contrôleur
-    fieldsToCreate.capaciteTheorique = capacityResult.theoreticalCapacity;
-    fieldsToCreate.capaciteDisponible = capacityResult.availableCapacity;
+      // PHASE 1.1.5 : Ajouter référence capacité si disponible
+      const capacityResult = CRAController.dailyCapacityForPersonAndDate(
+        personId,
+        dayMs,
+        S.dailyCapacities || [],
+        S.team || [],
+        S.disponibilites || []
+      );
+      
+      // BUG 5 : Utiliser directement le résultat complet du contrôleur
+      // Ne pas refaire une seconde recherche dans S.dailyCapacities
+      if (capacityResult.capacityRecordId) {
+        fieldsToCreate.capaciteJour = capacityResult.capacityRecordId;
+      }
+      
+      // Utiliser les vraies valeurs retournées par le contrôleur
+      fieldsToCreate.capaciteTheorique = capacityResult.theoreticalCapacity;
+      fieldsToCreate.capaciteDisponible = capacityResult.availableCapacity;
       
       const r = await grist.docApi.applyUserActions([
         ['AddRecord', 'TimeEntries', null, fieldsToCreate]

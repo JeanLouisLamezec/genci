@@ -25,11 +25,13 @@ const OUTPUT_FILE = path.join(OUTPUT_DIR, 'taskflow-cra-browser.js');
 const MODULES = [
   { path: path.join(CORE_DIR, 'planning', 'planning-engine.js') },
   { path: path.join(CORE_DIR, 'cra', 'cra-sheet-workflow.js') },
+  { path: path.join(CORE_DIR, 'cra', 'cra-weekly-sheet.js') },
   { path: path.join(CORE_DIR, 'timesheets', 'timesheet-validator.js') },
   { path: path.join(CORE_DIR, 'cra', 'cra-sheet-validation-service.js') },
   { path: path.join(CORE_DIR, 'cra', 'cra-sheet-ui-adapter.js') },
   { path: path.join(CORE_DIR, 'cra', 'cra-identity-association.js') },
-  { path: path.join(CORE_DIR, 'cra', 'cra-identity-claim-service.js') }
+  { path: path.join(CORE_DIR, 'cra', 'cra-identity-claim-service.js') },
+  { path: path.join(CORE_DIR, 'cra', 'cra-manager-workspace.js') }
 ];
 
 // Générer les IDs à partir des chemins
@@ -190,11 +192,13 @@ function build(options = {}) {
   
   // Exposer l'API publique
   var workflow = __require('cra/cra-sheet-workflow');
+  var weeklySheet = __require('cra/cra-weekly-sheet');
   var validator = __require('timesheets/timesheet-validator');
   var service = __require('cra/cra-sheet-validation-service');
   var adapterModule = __require('cra/cra-sheet-ui-adapter');
   var identityModule = __require('cra/cra-identity-association');
   var claimService = __require('cra/cra-identity-claim-service');
+  var managerModule = __require('cra/cra-manager-workspace');
   
   global.TaskFlowCra = {
     service: {
@@ -204,7 +208,8 @@ function build(options = {}) {
       rejectSheet: service.rejectSheet,
       openManagerCorrection: service.openManagerCorrection,
       updateManagerActual: service.updateManagerActual,
-      revalidateSheet: service.revalidateSheet
+      revalidateSheet: service.revalidateSheet,
+      ensureWeeklySheet: service.ensureWeeklySheet
     },
     
     workflow: {
@@ -221,6 +226,19 @@ function build(options = {}) {
       hasExplicitActual: workflow.hasExplicitActual,
       formatDateUTC: workflow.formatDateUTC,
       gristDateToIso: workflow.gristDateToIso
+    },
+    
+    weeklySheet: {
+      resolveWeeklySheetState: weeklySheet.resolveWeeklySheetState,
+      buildWeeklySheetCreation: weeklySheet.buildWeeklySheetCreation,
+      findEntriesForMemberWeek: weeklySheet.findEntriesForMemberWeek,
+      buildOrphanEntryLinkPlan: weeklySheet.buildOrphanEntryLinkPlan,
+      buildSheetCreationActions: weeklySheet.buildSheetCreationActions,
+      buildEntryLinkActions: weeklySheet.buildEntryLinkActions,
+      buildEnsureWeeklySheetActions: weeklySheet.buildEnsureWeeklySheetActions,
+      normalizeMemberId: weeklySheet.normalizeMemberId,
+      getWeekStartIso: weeklySheet.getWeekStartIso,
+      gristDateToIso: weeklySheet.gristDateToIso
     },
     
     createUiAdapter: adapterModule.createUiAdapter,
@@ -248,6 +266,13 @@ function build(options = {}) {
       claimCurrentUserIdentity: claimService.claimCurrentUserIdentity,
       isClaimPending: claimService.isClaimPending,
       CLAIM_ERROR_CODES: claimService.CLAIM_ERROR_CODES
+    },
+    
+    // Espace manager
+    managerWorkspace: {
+      resolveManagerWorkspaceState: managerModule.resolveManagerWorkspaceState,
+      ACCESSIBLE_MANAGER_STATUSES: managerModule.ACCESSIBLE_MANAGER_STATUSES,
+      PENDING_STATUSES: managerModule.PENDING_STATUSES
     }
   };
   
@@ -283,11 +308,16 @@ function build(options = {}) {
       !context.globalThis.TaskFlowCra.service ||
       typeof context.globalThis.TaskFlowCra.service.submitSheet !== 'function' ||
       typeof context.globalThis.TaskFlowCra.service.updateManagerActual !== 'function' ||
+      typeof context.globalThis.TaskFlowCra.service.ensureWeeklySheet !== 'function' ||
       typeof context.globalThis.TaskFlowCra.createUiAdapter !== 'function' ||
       !context.globalThis.TaskFlowCra.identity ||
       typeof context.globalThis.TaskFlowCra.identity.resolveCurrentUserIdentity !== 'function' ||
       !context.globalThis.TaskFlowCra.claimService ||
-      typeof context.globalThis.TaskFlowCra.claimService.claimCurrentUserIdentity !== 'function'
+      typeof context.globalThis.TaskFlowCra.claimService.claimCurrentUserIdentity !== 'function' ||
+      !context.globalThis.TaskFlowCra.managerWorkspace ||
+      typeof context.globalThis.TaskFlowCra.managerWorkspace.resolveManagerWorkspaceState !== 'function' ||
+      !context.globalThis.TaskFlowCra.weeklySheet ||
+      typeof context.globalThis.TaskFlowCra.weeklySheet.resolveWeeklySheetState !== 'function'
     ) {
       throw new Error('TaskFlowCra mal exposé');
     }
@@ -296,9 +326,12 @@ function build(options = {}) {
     console.log('   ✓ TaskFlowCra correctement exposé');
     console.log('   ✓ service.submitSheet disponible');
     console.log('   ✓ service.updateManagerActual disponible');
+    console.log('   ✓ service.ensureWeeklySheet disponible');
     console.log('   ✓ createUiAdapter disponible');
     console.log('   ✓ identity.resolveCurrentUserIdentity disponible');
     console.log('   ✓ claimService.claimCurrentUserIdentity disponible');
+    console.log('   ✓ managerWorkspace.resolveManagerWorkspaceState disponible');
+    console.log('   ✓ weeklySheet.resolveWeeklySheetState disponible');
   } catch (e) {
     console.error(`❌ Erreur d'exécution: ${e.message}`);
     process.exit(1);
