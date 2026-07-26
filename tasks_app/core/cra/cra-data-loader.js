@@ -156,17 +156,89 @@ function decodeBase64Url(value) {
 }
 
 /**
+ * Décoder le payload d'un JWT de manière défensive
+ * @param {string} token - JWT token
+ * @returns {Object|null} Payload décodé ou null
+ */
+function tryDecodeJwtPayload(token) {
+  const parts = String(token || '').split('.');
+  
+  if (parts.length !== 3) {
+    return null;
+  }
+  
+  try {
+    let payload = parts[1]
+      .replace(/-/g, '+')
+      .replace(/_/g, '/');
+    
+    // Ajouter le padding si nécessaire
+    payload += '='.repeat((4 - payload.length % 4) % 4);
+    
+    return JSON.parse(atob(payload));
+  } catch (error) {
+    console.error('[CRA identity] Échec décodage JWT', error);
+    return null;
+  }
+}
+
+/**
+ * Helper : normaliser un email pour comparaison
+ */
+function normalizeEmail(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+/**
  * Obtient l'utilisateur Grist actuel (TODO 16)
+ * Retourne userId ET email pour l'identification
+ * LOGS EXPLICITES : affiche les claims disponibles pour diagnostic
  */
 async function getCurrentGristUser(grist) {
   try {
-    const tok = await grist.docApi.getAccessToken({ readOnly: true });
-    const p = JSON.parse(decodeBase64Url(tok.token.split('.')[1]));
-    return { userId: p.userId || null };
-  } catch (e) {
-    if (CRA_PERF_DEBUG) {
-      console.debug('[CRA] User identification unavailable:', e.message);
+    const tokenResult = await grist.docApi.getAccessToken({ readOnly: true });
+    
+    if (!tokenResult || !tokenResult.token) {
+      console.error('[CRA identity] Token vide ou manquant');
+      return null;
     }
+    
+    const payload = tryDecodeJwtPayload(tokenResult.token);
+    
+    if (!payload) {
+      console.error('[CRA identity] Jeton non décodable', {
+        segmentCount: String(tokenResult.token || '').split('.').length
+      });
+      return null;
+    }
+    
+    // Extraire userId depuis plusieurs sources possibles
+    const userId = (
+      payload.userId ??
+      payload.user?.id ??
+      payload.sub ??
+      null
+    );
+    
+    // Extraire email depuis plusieurs sources possibles
+    const email = (
+      payload.email ??
+      payload.user?.email ??
+      payload.loginEmail ??
+      null
+    );
+    
+    // Log de diagnostic (NE PAS logger le token lui-même)
+    console.info('[CRA identity]', {
+      source: 'access-token',
+      userId,
+      email: normalizeEmail(email),
+      availableClaims: Object.keys(payload)
+    });
+    
+    return { userId, email };
+  } catch (error) {
+    console.error('[CRA identity] Identification impossible', error);
     return null;
   }
 }
@@ -660,8 +732,42 @@ function normalizeCraSnapshot(raw, currentUser) {
   }));
   
   // 1.2.1 - SÉPARATION IDENTITÉ : Distinguer utilisateur connecté et personne affichée
-  const meUserId = currentUser ? currentUser.userId : null;
-  let matchedUser = team.find(t => t.gristUserId && t.gristUserId === meUserId);
+  const meUserId = workflowNormalizeMemberId(currentUser?.userId);
+  const currentEmail = normalizeEmail(currentUser?.email);
+  
+  // Identification par gristUserId (méthode principale)
+  const matchedByUserId = team.find(member =>
+    workflowNormalizeMemberId(member.gristUserId) === meUserId
+  );
+  
+  // Fallback par email (si le jeton contient l'email)
+  // DÉTECTION DE DOUBLONS : échouer si plusieurs lignes ont le même email
+  const emailMatches = currentEmail
+    ? team.filter(member => normalizeEmail(member.email) === currentEmail)
+    : [];
+  
+  let matchedByEmail = null;
+  if (emailMatches.length > 1) {
+    console.error('[CRA identity] Email Team dupliqué', {
+      email: currentEmail,
+      memberIds: emailMatches.map(member => member.id)
+    });
+    // Ne pas sélectionner silencieusement, retourner null
+  } else if (emailMatches.length === 1) {
+    matchedByEmail = emailMatches[0];
+  }
+  
+  // Utiliser userId en priorité, sinon email
+  const matchedUser = matchedByUserId || matchedByEmail;
+  
+  // Log de diagnostic de correspondance
+  console.info('[CRA identity match]', {
+    currentUserId: currentUser?.userId ?? null,
+    currentEmail: currentEmail || null,
+    matchedByUserId: matchedByUserId?.id ?? null,
+    matchedByEmail: matchedByEmail?.id ?? null,
+    currentUserMemberId: matchedUser?.id ?? null
+  });
   
   // currentUserMemberId : l'utilisateur connecté (immuable, ne change pas avec les filtres)
   // Si identification échoue, reste null (pas de fallback silencieux vers team[0])
