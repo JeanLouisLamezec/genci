@@ -23,7 +23,8 @@
     // =========================================================================
     var DISTRIBUTION_MODES = {
         UNIFORME: 'uniforme',
-        PERSONNALISE: 'personnalise'
+        PERSONNALISE: 'personnalise',
+        PONCTUEL: 'ponctuel'
     };
 
     var DEFAULT_DISTRIBUTION_MODE = DISTRIBUTION_MODES.UNIFORME;
@@ -177,12 +178,12 @@
             return result;
         }
 
-        // Vérifier que la tâche existe
+        // Vérifier que la tâche existe (warning seulement, pas bloquant)
+        // La tâche peut ne pas encore être dans Grist lors de la création
         if (gristContext && gristContext.tasks) {
             var taskExists = gristContext.tasks.some(function(t) { return t.id === taskId; });
             if (!taskExists) {
-                result.errors.push('La tâche ' + taskId + ' n\'existe pas');
-                result.valid = false;
+                result.warnings.push('La tâche ' + taskId + ' n\'existe pas encore dans Grist');
             }
         }
 

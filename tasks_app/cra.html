@@ -6386,11 +6386,22 @@ async function setCell(taskId, dayMs, personId, qtyStr) {
   
   // Résoudre l'affectation active (PHASE 1.1.3 : avec date)
   const dayIso = CRAController.localDayKeyFromMs(dayMs);
+  
+  // PHASE B — MODE PONCTUEL : Récupérer les dates du projet pour étendre la fenêtre de saisie
+  const task = S.tasks.find(t => t.id === taskId);
+  const project = task && task.projet ? S.projects.find(p => p.id === task.projet) : null;
+  const projectContext = project ? {
+    projectStartDate: project.dateDebut,
+    projectEndDate: project.dateFin,
+    allowWeekends: false // Par défaut, interdire les week-ends
+  } : {};
+  
   const assignmentResult = CRAController.resolveActiveAssignment(
     taskId,
     personId,
     dayIso,  // PHASE 1.1.3 : Date pour filtrer les affectations
-    S.assignments
+    S.assignments,
+    projectContext  // PHASE B : Contexte pour le mode ponctuel
   );
   
   if (assignmentResult.status === 'ambiguous') {

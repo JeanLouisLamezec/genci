@@ -30,23 +30,32 @@
  * 
  * CONTRAT :
  * - Une affectation est active si actif !== false
- * - L'affectation doit couvrir la date saisie (dateDebut <= date <= dateFin)
+ * - Pour le mode uniforme : la date saisie doit être dans [dateDebut, dateFin]
+ * - Pour le mode ponctuel : la date saisie doit être dans les dates du projet parent
  * - Retourne 'missing' si aucune affectation active
  * - Retourne 'found' avec l'affectation unique si une seule correspond
  * - Retourne 'ambiguous' si plusieurs affectations actives (blocage)
  * 
  * PHASE 1.1.3 - SENSIBLE À LA DATE :
  * - Ajout du paramètre dateIso
- * - Vérification que dateDebut <= date <= dateFin
+ * - Vérification que dateDebut <= date <= dateFin (mode uniforme)
  * - Empêche de rattacher une saisie à une affectation terminée
+ * 
+ * PHASE B — MODE PONCTUEL :
+ * - Si modeRepartition = 'ponctuel', la fenêtre de saisie est étendue
+ * - La date doit être dans les dates du projet parent (à fournir en contexte)
+ * - Si les dates du projet ne sont pas disponibles, utiliser les dates de l'affectation
  * 
  * @param {number} taskId - ID de la tâche
  * @param {number} personId - ID de la personne
  * @param {string} dateIso - Date ISO (YYYY-MM-DD) à vérifier
  * @param {Array} assignments - Toutes les affectations (TaskAssignments)
+ * @param {Object} [context] - Contexte optionnel avec projectStartDate, projectEndDate
  * @returns {{ status: 'found' | 'missing' | 'ambiguous', assignment: null | object, assignments: Array }}
  */
-function resolveActiveAssignment(taskId, personId, dateIso, assignments) {
+function resolveActiveAssignment(taskId, personId, dateIso, assignments, context) {
+  context = context || {};
+  
   // PHASE 1.1.3 - CORRECTION BORNES INCLUSIVES
   // Utiliser gristDateKey pour comparer des dates civiles (YYYY-MM-DD)
   // et non des timestamps avec fuseaux horaires
@@ -55,8 +64,51 @@ function resolveActiveAssignment(taskId, personId, dateIso, assignments) {
     // Vérifier actif
     if (a.actif === false) return false;
     
-    // Vérifier dates de couverture avec bornes INCLUSIVES
-    // Une affectation qui finit le 15 janvier couvre le 15 janvier toute la journée
+    // Vérifier tâche et membre
+    if (a.tache !== taskId || a.membre !== personId) return false;
+    
+    // PHASE B — MODE PONCTUEL
+    const isPonctuel = (a.modeRepartition === 'ponctuel');
+    
+    if (isPonctuel) {
+      // Mode ponctuel : vérifier les dates du projet parent
+      const projectStart = context.projectStartDate ? gristDateKey(context.projectStartDate) : null;
+      const projectEnd = context.projectEndDate ? gristDateKey(context.projectEndDate) : null;
+      
+      // Si les dates du projet sont disponibles, les utiliser
+      if (projectStart && projectEnd) {
+        if (dateIso < projectStart || dateIso > projectEnd) {
+          return false; // Hors du projet
+        }
+      } else {
+        // Fallback : utiliser les dates de l'affectation
+        if (a.dateDebut != null) {
+          const assignmentStart = gristDateKey(a.dateDebut);
+          if (assignmentStart && dateIso < assignmentStart) {
+            return false;
+          }
+        }
+        if (a.dateFin != null) {
+          const assignmentEnd = gristDateKey(a.dateFin);
+          if (assignmentEnd && dateIso > assignmentEnd) {
+            return false;
+          }
+        }
+      }
+      
+      // Vérifier que ce n'est pas un week-end (sauf si explicitement autorisé)
+      if (!context.allowWeekends) {
+        const dateObj = new Date(dateIso + 'T00:00:00Z');
+        const dayOfWeek = dateObj.getUTCDay();
+        if (dayOfWeek === 0 || dayOfWeek === 6) {
+          return false; // Week-end
+        }
+      }
+      
+      return true; // Date valide pour le mode ponctuel
+    }
+    
+    // Mode uniforme : vérification normale des dates de l'affectation
     if (a.dateDebut != null) {
       const assignmentStart = gristDateKey(a.dateDebut);
       if (assignmentStart && dateIso < assignmentStart) {
@@ -71,8 +123,7 @@ function resolveActiveAssignment(taskId, personId, dateIso, assignments) {
       }
     }
     
-    // Vérifier tâche et membre
-    return a.tache === taskId && a.membre === personId;
+    return true;
   });
   
   if (activeAssignments.length === 0) {

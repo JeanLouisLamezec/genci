@@ -28,7 +28,8 @@ const { buildDesiredMemberDailyCapacities } = require('../../capacity/member-dai
 
 const DISTRIBUTION_MODES = {
   UNIFORME: 'uniforme',
-  PERSONNALISE: 'personnalise'
+  PERSONNALISE: 'personnalise',
+  PONCTUEL: 'ponctuel'
 };
 
 const DEFAULT_DISTRIBUTION_MODE = DISTRIBUTION_MODES.UNIFORME;
@@ -123,6 +124,13 @@ function validateAssignment(assignment, context) {
       warnings.push({
         code: 'PERSONNALISE_MODE_NOT_IMPLEMENTED',
         message: 'Le mode personnalise n\'est pas encore implémenté, traitement en uniforme'
+      });
+    } else if (assignment.modeRepartition === DISTRIBUTION_MODES.PONCTUEL) {
+      // Mode ponctuel : la planification ne génère pas de heuresPrevues automatiquement
+      // La saisie du réalisé peut se faire sur n'importe quelle date du projet
+      warnings.push({
+        code: 'PONCTUEL_MODE',
+        message: 'Mode ponctuel : la saisie du réalisé peut se faire sur d\'autres dates du projet'
       });
     } else {
       warnings.push({
@@ -340,18 +348,35 @@ function planAssignment(assignment, context) {
       });
   }
   
-  // Répartir les heures
-  const distribution = distributeHoursUniformly(
-    assignment.heuresAllouees,
-    eligibleDays,
-    existingPlan
-  );
+  // PHASE B — Mode PONCTUEL : ne pas générer de heuresPrevues automatiquement
+  // La saisie du réalisé se fera manuellement sur n'importe quelle date du projet
+  const isPonctuel = assignment.modeRepartition === DISTRIBUTION_MODES.PONCTUEL;
+  
+  let distribution;
+  if (isPonctuel) {
+    // Mode ponctuel : pas de planification automatique
+    distribution = {
+      planned: {},
+      unallocatedHours: assignment.heuresAllouees,
+      warnings: [{
+        code: 'PONCTUEL_NO_AUTO_PLANNING',
+        message: 'Mode ponctuel : aucune planification automatique, saisie manuelle requise'
+      }]
+    };
+  } else {
+    // Mode uniforme : répartition automatique
+    distribution = distributeHoursUniformly(
+      assignment.heuresAllouees,
+      eligibleDays,
+      existingPlan
+    );
+  }
   
   result.warnings.push(...distribution.warnings);
   result.unallocatedHours = distribution.unallocatedHours;
   
   // Créer les entrées planifiées
-  // CONTRAT : heures = null (pas de réalisé encore), heuresPrevues = planning
+  // CONTRAT : heures = null (pas de réalisé encore), heuresPrevues = planning (sauf mode ponctuel)
   for (const [dateStr, hours] of Object.entries(distribution.planned)) {
     const dayData = eligibleDays.find(d => d.date === dateStr);
     
@@ -360,12 +385,12 @@ function planAssignment(assignment, context) {
       tache: assignment.tache,
       affectation: assignment.id,
       date: dayData.timestamp,
-      heuresPrevues: hours,
+      heuresPrevues: isPonctuel ? 0 : hours, // 0 en mode ponctuel
       heures: null,  // PHASE 1 : null = aucun réalisé encore confirmé
       capaciteTheorique: dayData.capaciteTheorique,
       capaciteDisponible: dayData.capaciteDisponible,
       capaciteJour: dayData.capaciteJourId || null,
-      revisionPlan: 1
+      revisionPlan: isPonctuel ? 0 : 1 // 0 en mode ponctuel (pas de plan)
     });
   }
   

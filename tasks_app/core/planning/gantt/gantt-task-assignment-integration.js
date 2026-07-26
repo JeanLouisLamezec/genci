@@ -561,6 +561,188 @@
         }
         
         /**
+         * Retire un membre d'une tâche avec nettoyage des TimeEntries mutables
+         * PHASE A - Gestion transactionnelle du cycle de vie
+         * @param {number} taskId - ID de la tâche
+         * @param {number} memberId - ID du membre à retirer
+         * @param {Object} options - Options
+         * @returns {Promise<Object>} Résultat du retrait
+         */
+        async function removeMemberFromTask(taskId, memberId, options) {
+            options = options || {};
+            
+            if (!assignmentService || !grist || !grist.docApi) {
+                return { ok: false, code: 'SERVICE_NOT_AVAILABLE' };
+            }
+            
+            if (!taskId || !memberId) {
+                return { ok: false, code: 'INVALID_PARAMS' };
+            }
+            
+            try {
+                console.info('[TaskAssignment lifecycle]', {
+                    phase: 'remove-member',
+                    taskId: taskId,
+                    memberId: memberId
+                });
+                
+                // 1. Charger l'affectation active concernée
+                var assignmentsTable = await grist.docApi.fetchTable('TaskAssignments');
+                var targetAssignment = null;
+                
+                if (assignmentsTable.id) {
+                    for (var i = 0; i < assignmentsTable.id.length; i++) {
+                        if (assignmentsTable.tache[i] === taskId && 
+                            assignmentsTable.membre[i] === memberId &&
+                            assignmentsTable.actif[i] !== false) {
+                            targetAssignment = {
+                                id: assignmentsTable.id[i],
+                                tache: assignmentsTable.tache[i],
+                                membre: assignmentsTable.membre[i],
+                                heuresAllouees: assignmentsTable.heuresAllouees[i],
+                                dateDebut: assignmentsTable.dateDebut[i],
+                                dateFin: assignmentsTable.dateFin[i],
+                                modeRepartition: assignmentsTable.modeRepartition[i],
+                                actif: assignmentsTable.actif[i] !== false
+                            };
+                            break;
+                        }
+                    }
+                }
+                
+                if (!targetAssignment) {
+                    // Aucune affectation active trouvée
+                    return { ok: true, code: 'NO_ACTIVE_ASSIGNMENT' };
+                }
+                
+                // 2. Charger les TimeEntries liés à cette affectation
+                var timeEntriesTable = await grist.docApi.fetchTable('TimeEntries');
+                var mutableTimeEntryIds = [];
+                var lockedTimeEntryIds = [];
+                
+                if (timeEntriesTable.id) {
+                    for (var j = 0; j < timeEntriesTable.id.length; j++) {
+                        var affectationId = timeEntriesTable.affectation ? timeEntriesTable.affectation[j] : null;
+                        var tacheId = timeEntriesTable.tache ? timeEntriesTable.tache[j] : null;
+                        var membreId_entry = timeEntriesTable.membre ? timeEntriesTable.membre[j] : null;
+                        
+                        // Vérifier si lié à cette affectation
+                        var isLinked = (affectationId === targetAssignment.id) ||
+                                      (affectationId == null && tacheId === taskId && membreId_entry === memberId);
+                        
+                        if (isLinked) {
+                            var heures = timeEntriesTable.heures != null ? timeEntriesTable.heures[j] : null;
+                            var feuille = timeEntriesTable.feuille != null && timeEntriesTable.feuille[j] != null ? timeEntriesTable.feuille[j] : null;
+                            var sheetStatus = timeEntriesTable.sheetStatus ? timeEntriesTable.sheetStatus[j] : null;
+                            
+                            // PHASE A - Classification
+                            var hasExplicitActual = (heures != null && heures !== '');
+                            var hasSheet = (feuille != null && feuille !== 0);
+                            var isSubmittedOrValidated = (sheetStatus === 'submitted' || sheetStatus === 'validated' || 
+                                                          sheetStatus === 'soumis' || sheetStatus === 'valide');
+                            
+                            var isLocked = hasExplicitActual || hasSheet || isSubmittedOrValidated;
+                            
+                            if (isLocked) {
+                                lockedTimeEntryIds.push(timeEntriesTable.id[j]);
+                            } else {
+                                mutableTimeEntryIds.push(timeEntriesTable.id[j]);
+                            }
+                        }
+                    }
+                }
+                
+                // 3. Si des TimeEntries verrouillés existent, bloquer le retrait
+                if (lockedTimeEntryIds.length > 0) {
+                    console.warn('[TaskAssignment lifecycle]', {
+                        phase: 'remove-member-blocked',
+                        taskId: taskId,
+                        memberId: memberId,
+                        assignmentId: targetAssignment.id,
+                        lockedTimeEntryIds: lockedTimeEntryIds
+                    });
+                    
+                    return {
+                        ok: false,
+                        code: 'MEMBER_REMOVE_BLOCKED_BY_TIME_ENTRIES',
+                        taskId: taskId,
+                        memberId: memberId,
+                        assignmentId: targetAssignment.id,
+                        lockedTimeEntryIds: lockedTimeEntryIds,
+                        message: 'Ce membre ne peut pas être retiré car il a ' + lockedTimeEntryIds.length + ' ligne(s) de temps verrouillée(s)'
+                    };
+                }
+                
+                // 4. Construire les actions
+                var actions = [];
+                
+                // Supprimer les TimeEntries mutables
+                mutableTimeEntryIds.forEach(function(id) {
+                    actions.push(['RemoveRecord', 'TimeEntries', id]);
+                });
+                
+                // Désactiver l'affectation
+                actions.push(['UpdateRecord', 'TaskAssignments', targetAssignment.id, { actif: false }]);
+                
+                console.info('[TaskAssignment lifecycle]', {
+                    phase: 'remove-member-actions',
+                    mutableTimeEntries: mutableTimeEntryIds.length,
+                    assignmentId: targetAssignment.id,
+                    actions: actions.length
+                });
+                
+                // 5. Exécuter les actions
+                if (actions.length > 0) {
+                    await grist.docApi.applyUserActions(actions);
+                }
+                
+                // 6. Vérification post-condition
+                var checkAssignmentsTable = await grist.docApi.fetchTable('TaskAssignments');
+                var stillActive = false;
+                
+                if (checkAssignmentsTable.id) {
+                    for (var k = 0; k < checkAssignmentsTable.id.length; k++) {
+                        if (checkAssignmentsTable.tache[k] === taskId && 
+                            checkAssignmentsTable.membre[k] === memberId &&
+                            checkAssignmentsTable.actif[k] !== false) {
+                            stillActive = true;
+                            break;
+                        }
+                    }
+                }
+                
+                if (stillActive) {
+                    return {
+                        ok: false,
+                        code: 'REMOVE_MEMBER_POSTCONDITION_FAILED',
+                        message: 'L\'affectation est toujours active après le retrait'
+                    };
+                }
+                
+                return {
+                    ok: true,
+                    taskId: taskId,
+                    memberId: memberId,
+                    assignmentId: targetAssignment.id,
+                    deactivated: true,
+                    deletedTimeEntries: mutableTimeEntryIds.length,
+                    blockedTimeEntries: lockedTimeEntryIds.length
+                };
+                
+            } catch (e) {
+                console.error('[TaskAssignment lifecycle]', {
+                    phase: 'remove-member-error',
+                    error: e.message
+                });
+                return {
+                    ok: false,
+                    code: 'REMOVE_MEMBER_ERROR',
+                    message: e.message
+                };
+            }
+        }
+        
+        /**
          * Supprime des tâches avec leurs affectations et TimeEntries associés
          * @param {Array} taskIds - IDs des tâches à supprimer
          * @param {Object} options - Options (detachChildren, includeDescendants)
@@ -650,24 +832,37 @@
                     for (var m = 0; m < timeEntriesTable.id.length; m++) {
                         var tacheId = timeEntriesTable.tache ? timeEntriesTable.tache[m] : null;
                         var membreId = timeEntriesTable.membre ? timeEntriesTable.membre[m] : null;
+                        var affectationId = timeEntriesTable.affectation ? timeEntriesTable.affectation[m] : null;
                         
                         // Vérifier si ce TimeEntry est lié à une affectation qu'on va supprimer
-                        var linkedAssignment = allAssignments.find(function(a) {
-                            return a.tache === tacheId && a.membre === membreId;
-                        });
+                        // Priorité : utiliser le champ affectation si présent
+                        var linkedAssignment = null;
+                        
+                        if (affectationId != null && affectationId !== 0) {
+                            // TimeEntry avec affectation explicite
+                            linkedAssignment = allAssignments.find(function(a) { return a.id === affectationId; });
+                        } else {
+                            // TimeEntry legacy : chercher par tache + membre
+                            linkedAssignment = allAssignments.find(function(a) {
+                                return a.tache === tacheId && a.membre === membreId;
+                            });
+                        }
                         
                         if (linkedAssignment) {
-                            var heures = timeEntriesTable.heures ? timeEntriesTable.heures[m] : 0;
-                            var feuille = timeEntriesTable.feuille ? timeEntriesTable.feuille[m] : null;
+                            var heures = timeEntriesTable.heures != null ? timeEntriesTable.heures[m] : null;
+                            var feuille = timeEntriesTable.feuille != null && timeEntriesTable.feuille[m] != null ? timeEntriesTable.feuille[m] : null;
                             var sheetStatus = timeEntriesTable.sheetStatus ? timeEntriesTable.sheetStatus[m] : null;
                             
-                            // Vérifier si verrouillé
-                            var isLocked = (
-                                heures > 0 ||
-                                (feuille && feuille !== null) ||
-                                sheetStatus === 'submitted' ||
-                                sheetStatus === 'validated'
-                            );
+                            // PHASE A - Classification des TimeEntries
+                            // Verrouillé si :
+                            // - heures est explicite (même 0)
+                            // - feuille est présente
+                            // - sheetStatus est submitted/validated
+                            var hasExplicitActual = (heures != null && heures !== '');
+                            var hasSheet = (feuille != null && feuille !== 0);
+                            var isSubmittedOrValidated = (sheetStatus === 'submitted' || sheetStatus === 'validated' || sheetStatus === 'soumis' || sheetStatus === 'valide');
+                            
+                            var isLocked = hasExplicitActual || hasSheet || isSubmittedOrValidated;
                             
                             if (isLocked) {
                                 lockedTimeEntryIds.push(timeEntriesTable.id[m]);
@@ -963,6 +1158,7 @@
             syncTaskDatesInternal: syncTaskDatesInternal,
             repairMissingAssignmentsForTask: repairMissingAssignmentsForTask,
             deleteTasksWithAssignments: deleteTasksWithAssignments,
+            removeMemberFromTask: removeMemberFromTask,
             isAvailable: function() { return assignmentService !== null; },
             // Helpers exportés pour tests
             _helpers: {
