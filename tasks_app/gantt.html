@@ -6532,12 +6532,33 @@ if (typeof globalThis !== 'undefined') {
 
             const initialData = cloneTaskData(task);
             
-            // LOT B2 : Charger le mode de répartition depuis TaskAssignments
+            // Initialiser complètement panelState AVANT le fetch asynchrone
+            panelState.isNew = false;
+            panelState.taskId = taskId;
+            panelState.taskIndex = idx >= 0 ? idx : 0;
+            panelState.originalTask = cloneEditableTaskData(initialData);
+            panelState.editData = cloneEditableTaskData(initialData);
+            panelState.assignmentModes = {};
+            panelState.originalAssignmentModes = {};
+
+            renderPanel();
+            openPanel();
+            if (gristReady) grist.setSelectedRows([taskId]);
+            render();
+            
+            // LOT B2 : Charger le mode de répartition depuis TaskAssignments (asynchrone)
             // Le mode appartient à l'affectation (tâche + membre), pas à la tâche
             if (gristReady) {
+                const requestedTaskId = taskId;
                 (async function() {
                     try {
                         var assignmentsTable = await grist.docApi.fetchTable('TaskAssignments');
+                        
+                        // Garde contre les réponses asynchrones obsolètes
+                        if (!panelState.open || panelState.taskId !== requestedTaskId) {
+                            return;
+                        }
+                        
                         var memberModes = {};
                         
                         if (assignmentsTable.id) {
@@ -6550,14 +6571,15 @@ if (typeof globalThis !== 'undefined') {
                             }
                         }
                         
-                        // Stocker les modes par membre dans panelState pour l'UI
-                        panelState.assignmentModes = memberModes;
+                        // Initialiser les modes pour tous les assignés (fallback à 'uniforme')
+                        var finalModes = {};
+                        (initialData.assignees || []).forEach(function(id) {
+                            finalModes[id] = memberModes[id] || 'uniforme';
+                        });
                         
-                        // Si tous les membres ont le même mode, l'utiliser comme mode global
-                        var modeValues = Object.values(memberModes);
-                        if (modeValues.length > 0 && modeValues.every(function(m) { return m === modeValues[0]; })) {
-                            panelState.editData.distributionMode = modeValues[0];
-                        }
+                        // Stocker les modes par membre dans panelState
+                        panelState.assignmentModes = { ...finalModes };
+                        panelState.originalAssignmentModes = { ...finalModes };
                         
                         renderPanel();
                     } catch (e) {
@@ -6565,17 +6587,6 @@ if (typeof globalThis !== 'undefined') {
                     }
                 })();
             }
-
-            panelState.isNew = false;
-            panelState.taskId = taskId;
-            panelState.taskIndex = idx >= 0 ? idx : 0;
-            panelState.originalTask = cloneEditableTaskData(initialData);
-            panelState.editData = cloneEditableTaskData(initialData);
-
-            renderPanel();
-            openPanel();
-            if (gristReady) grist.setSelectedRows([taskId]);
-            render();
         }
 
         function openCreatePanel() { openCreateTaskWithParent(null); }
@@ -6591,7 +6602,10 @@ if (typeof globalThis !== 'undefined') {
                     projet: parent?.projet || (projects.length > 0 ? projects[0].id : null),
                     assignees: [], dependDe: [], tags: [], estimationH: null, tempsPasse: null, subtasks: [],
                     couleur: null, parentTask: parentId || null, charges: []
-                }
+                },
+                assignmentModes: {},
+                originalAssignmentModes: {}
+            };
             };
             renderPanel();
             openPanel();
@@ -6635,8 +6649,7 @@ if (typeof globalThis !== 'undefined') {
                 dateDebut: task.dateDebut, dateEcheance: task.dateEcheance, projet: task.projet || null,
                 assignees: getAssigneesArray(task), dependDe: getDependsOnArray(task), tags: getTagsArray(task),
                 estimationH: task.estimationH || null, tempsPasse: task.tempsPasse || null, subtasks: getSubtasks(task),
-                couleur: task.couleur || null, parentTask: task.parentTask || null, charges: TF.parseCharges(task.charges), dateCloture: task.dateCloture || null,
-                distributionMode: task.distributionMode || 'uniforme'
+                couleur: task.couleur || null, parentTask: task.parentTask || null, charges: TF.parseCharges(task.charges), dateCloture: task.dateCloture || null
             };
         }
 
@@ -6660,8 +6673,7 @@ if (typeof globalThis !== 'undefined') {
                 couleur: data.couleur || null,
                 parentTask: data.parentTask || null,
                 charges: (data.charges || []).map(c => ({ ...c })),
-                dateCloture: data.dateCloture || null,
-                distributionMode: data.distributionMode || 'uniforme'
+                dateCloture: data.dateCloture || null
             };
         }
 
@@ -6857,7 +6869,7 @@ if (typeof globalThis !== 'undefined') {
                                 return '<div class="charge-row" style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><span class="an" style="flex:0 0 120px">'+escapeHtml(getTeamMemberName(id))+'</span><input type="number" min="0" step="0.5" value="'+chargeOf(id)+'" onchange="updateCharge('+id+', this.value)" style="width:70px"><span style="font-size:0.75rem;color:var(--text-muted);margin-right:8px">h</span><select onchange="updateAssignmentMode('+id+', this.value)" style="flex:0 0 140px;font-size:0.78rem"><option value="uniforme" '+(mode==='uniforme'?'selected':'')+'>Régulier</option><option value="ponctuel" '+(mode==='ponctuel'?'selected':'')+'>Ponctuel</option></select></div>'; 
                             }).join('') + '<div style="margin-top:6px;font-size:0.78rem;color:var(--text-muted)">Total : <strong>' + chargeTotalH + '</strong> h</div></div>' : '') + chargeConsolHtml +
                         '</div></div>' : '') +
-(data.type === 'tache' && TASK_COLS.has('distributionMode') && data.assignees.length > 0 ?
+                    (data.type === 'tache' && data.assignees.length > 0 && assignmentIntegration ?
                         '<div class="panel-section"><div class="panel-section-header"><span class="panel-section-title">Type de planification</span></div>' +
                         '<div style="font-size:0.78rem;color:var(--text-muted);padding:8px 0">Le type de planification est défini par personne dans la section "Charge par personne".</div>' +
                         '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
@@ -6943,6 +6955,7 @@ if (typeof globalThis !== 'undefined') {
             const data = panelState.editData; if (!data) return;
             if (value !== 'uniforme' && value !== 'ponctuel') {
                 console.warn('[Gantt] Mode invalide:', value);
+                showToast('Mode invalide (utilisez "Régulier" ou "Ponctuel")', 'error');
                 return;
             }
             if (!panelState.assignmentModes) panelState.assignmentModes = {};
@@ -6953,6 +6966,11 @@ if (typeof globalThis !== 'undefined') {
         }
         function setAllModes(value) {
             const data = panelState.editData; if (!data) return;
+            if (value !== 'uniforme' && value !== 'ponctuel') {
+                console.warn('[Gantt] Mode invalide:', value);
+                showToast('Mode invalide (utilisez "Régulier" ou "Ponctuel")', 'error');
+                return;
+            }
             if (!panelState.assignmentModes) panelState.assignmentModes = {};
             (data.assignees || []).forEach(function(id) {
                 panelState.assignmentModes[id] = value;
@@ -6960,11 +6978,6 @@ if (typeof globalThis !== 'undefined') {
             syncLocalTask();
             if (!panelState.isNew && gristReady) saveTaskToGrist();
             renderPanel();
-        }
-        function updateDistributionMode(value) {
-            const data = panelState.editData; if (!data) return;
-            data.distributionMode = value;
-            syncLocalTask(); if (!panelState.isNew && gristReady) saveTaskToGrist(); renderPanel();
         }
         function updateField(field, value, noSave) {
             const data = panelState.editData;
@@ -7257,6 +7270,24 @@ if (typeof globalThis !== 'undefined') {
                 return true;
             }
 
+            // LOT B2 : Helpers pour les modes par membre
+            function normalizeAssignmentModes(modes, assigneeIds) {
+                var result = {};
+                (assigneeIds || []).forEach(function(memberId) {
+                    var id = Number(memberId);
+                    if (!Number.isInteger(id) || id <= 0) return;
+                    var mode = modes && modes[id] ? modes[id] : 'uniforme';
+                    result[id] = mode === 'ponctuel' ? 'ponctuel' : 'uniforme';
+                });
+                return result;
+            }
+
+            function assignmentModesEqual(a, b, assigneeIds) {
+                var left = normalizeAssignmentModes(a, assigneeIds);
+                var right = normalizeAssignmentModes(b, assigneeIds);
+                return JSON.stringify(left) === JSON.stringify(right);
+            }
+
             const datesChanged =
                 normalizeDate(saveData.dateDebut) !== normalizeDate(originalData.dateDebut) ||
                 normalizeDate(saveData.dateEcheance) !== normalizeDate(originalData.dateEcheance);
@@ -7268,8 +7299,10 @@ if (typeof globalThis !== 'undefined') {
 
             const chargesChanged = JSON.stringify(normalizeChargesValue(saveData.charges)) !== JSON.stringify(normalizeChargesValue(originalData.charges));
 
-            // LOT B2 : Détecter le changement de mode de répartition
-            const modeChanged = saveData.distributionMode !== originalData.distributionMode;
+            // LOT B2 : Détecter le changement de mode de répartition PAR MEMBRE
+            var currentAssignmentModes = normalizeAssignmentModes(panelState.assignmentModes, normalizeAssigneeIds(saveData.assignees));
+            var originalAssignmentModes = normalizeAssignmentModes(panelState.originalAssignmentModes, normalizeAssigneeIds(originalData.assignees));
+            const modeChanged = !assignmentModesEqual(panelState.assignmentModes, panelState.originalAssignmentModes, normalizeAssigneeIds(saveData.assignees));
 
             console.info('[Gantt date sync decision]', {
                 taskId: taskId,
@@ -7312,7 +7345,8 @@ if (typeof globalThis !== 'undefined') {
                         console.info('[Gantt] Sync affectations pour tâche ' + taskId);
                         var syncData = Object.assign({}, saveData, {
                             assignmentsEdited: true,
-                            datesEdited: datesChanged
+                            datesEdited: datesChanged,
+                            assignmentModes: currentAssignmentModes
                         });
                         syncResult = await assignmentIntegration.onTaskUpdated(taskId, syncData);
                     } else {
@@ -7386,7 +7420,43 @@ if (typeof globalThis !== 'undefined') {
                 if (idx !== -1) tasks[idx] = { ...tasks[idx], ...record };
 
                 if (assignmentSyncSuccess && syncResult && syncResult.ok) {
-                    panelState.originalTask = cloneEditableTaskData(saveData);
+                    // LOT B2 : Postcondition — vérifier que les modes ont été correctement persistés
+                    (async function() {
+                        try {
+                            var assignmentsTable = await grist.docApi.fetchTable('TaskAssignments');
+                            var actualModesByMember = {};
+                            
+                            if (assignmentsTable.id) {
+                                for (var i = 0; i < assignmentsTable.id.length; i++) {
+                                    if (assignmentsTable.tache[i] === taskId && assignmentsTable.actif[i] !== false) {
+                                        var memberId = assignmentsTable.membre[i];
+                                        var mode = assignmentsTable.modeRepartition[i] || 'uniforme';
+                                        actualModesByMember[memberId] = mode;
+                                    }
+                                }
+                            }
+                            
+                            // Comparer les modes réels avec les modes attendus
+                            var postconditionOk = assignmentModesEqual(actualModesByMember, currentAssignmentModes, normalizeAssigneeIds(saveData.assignees));
+                            
+                            if (postconditionOk) {
+                                // Succès — mettre à jour originalAssignmentModes
+                                panelState.originalAssignmentModes = { ...currentAssignmentModes };
+                                panelState.originalTask = cloneEditableTaskData(saveData);
+                            } else {
+                                // Échec postcondition — ne pas mettre à jour originalAssignmentModes
+                                console.warn('[Gantt] Postcondition échouée : modes réels != modes attendus');
+                                console.warn('[Gantt] Attendus:', currentAssignmentModes);
+                                console.warn('[Gantt] Réels:', actualModesByMember);
+                                showToast('Affectations enregistrées, mais vérification des modes échouée', 'warning');
+                            }
+                        } catch (e) {
+                            console.warn('[Gantt] Erreur vérification postcondition modes:', e);
+                            // En cas d'erreur, mettre à jour quand même pour ne pas bloquer l'UX
+                            panelState.originalAssignmentModes = { ...currentAssignmentModes };
+                            panelState.originalTask = cloneEditableTaskData(saveData);
+                        }
+                    })();
                 }
             } catch (e) {
                 console.error(e);
@@ -7437,7 +7507,11 @@ if (typeof globalThis !== 'undefined') {
                     }
                     
                     // 3. Synchroniser les affectations
-                    var syncResult = await assignmentIntegration.onTaskCreated(taskId, data);
+                    // LOT B2 : Transmettre assignmentModes normalisés
+                    var createData = Object.assign({}, data, {
+                        assignmentModes: normalizeAssignmentModes(panelState.assignmentModes, normalizeAssigneeIds(data.assignees))
+                    });
+                    var syncResult = await assignmentIntegration.onTaskCreated(taskId, createData);
                     console.log('[Gantt] Synchronisation TaskAssignments', syncResult);
                     
                     if (!syncResult.ok) {
