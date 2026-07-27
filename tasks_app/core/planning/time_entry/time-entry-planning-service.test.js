@@ -299,3 +299,89 @@ describe('Time Entry Planning Service - Conservation exacte', () => {
     expect(Math.round(total * 100) / 100).toBe(7);
   });
 });
+
+describe('Time Entry Planning Service - Mode PONCTUEL (Gate 1)', () => {
+  function dateToTimestamp(dateStr) {
+    const d = new Date(dateStr + 'T00:00:00Z');
+    return Math.floor(d.getTime() / 1000);
+  }
+
+  const assignmentPonctuel = {
+    id: 10,
+    tache: 6,
+    membre: 1,
+    heuresAllouees: 8,
+    dateDebut: dateToTimestamp('2026-07-23'),
+    dateFin: dateToTimestamp('2026-07-24'),
+    modeRepartition: 'ponctuel',
+    actif: true
+  };
+
+  const contextPonctuel = {
+    members: [{ id: 1, nom: 'Jason' }],
+    tasks: [{ id: 6, titre: 'Intervention juridique' }],
+    capacities: [
+      { id: 1, membre: 1, date: '2026-07-23', capaciteDisponible: 7, capaciteTheorique: 7 },
+      { id: 2, membre: 1, date: '2026-07-24', capaciteDisponible: 7, capaciteTheorique: 7 }
+    ],
+    existingEntries: []
+  };
+
+  test('G1.1 — Mode ponctuel génère du prévu dans la fenêtre initiale', () => {
+    const result = planAssignment(assignmentPonctuel, contextPonctuel);
+
+    expect(result.errors).toBeUndefined();
+    expect(result.plannedEntries.length).toBe(2);
+    
+    const total = result.plannedEntries.reduce((sum, e) => sum + e.heuresPrevues, 0);
+    expect(Math.round(total * 100) / 100).toBe(8);
+    
+    result.plannedEntries.forEach(entry => {
+      expect(entry.heures).toBeNull();
+      expect(entry.affectation).toBe(10);
+    });
+    
+    expect(result.unallocatedHours).toBe(0);
+  });
+
+  test('G1.2 — Mode uniforme génère le même prévu', () => {
+    const assignmentUniforme = { ...assignmentPonctuel, modeRepartition: 'uniforme' };
+    const resultUniforme = planAssignment(assignmentUniforme, contextPonctuel);
+    const resultPonctuel = planAssignment(assignmentPonctuel, contextPonctuel);
+
+    expect(resultUniforme.plannedEntries.length).toBe(resultPonctuel.plannedEntries.length);
+    
+    const totalUniforme = resultUniforme.plannedEntries.reduce((sum, e) => sum + e.heuresPrevues, 0);
+    const totalPonctuel = resultPonctuel.plannedEntries.reduce((sum, e) => sum + e.heuresPrevues, 0);
+    
+    expect(Math.round(totalUniforme * 100) / 100).toBe(Math.round(totalPonctuel * 100) / 100);
+  });
+
+  test('G1.3 — Mode ponctuel avec avertissement', () => {
+    const result = planAssignment(assignmentPonctuel, contextPonctuel);
+
+    expect(result.warnings).toContainEqual(expect.objectContaining({
+      code: 'PONCTUEL_MODE'
+    }));
+  });
+
+  test('G1.4 — Dates des entrées dans la fenêtre 23-24 juillet', () => {
+    const result = planAssignment(assignmentPonctuel, contextPonctuel);
+
+    const dates = result.plannedEntries.map(e => {
+      return new Date(e.date * 1000).toISOString().split('T')[0];
+    });
+
+    dates.forEach(date => {
+      expect(date >= '2026-07-23' && date <= '2026-07-24').toBe(true);
+    });
+  });
+
+  test('G1.5 — Chaque entrée a revisionPlan = 1', () => {
+    const result = planAssignment(assignmentPonctuel, contextPonctuel);
+
+    result.plannedEntries.forEach(entry => {
+      expect(entry.revisionPlan).toBe(1);
+    });
+  });
+});

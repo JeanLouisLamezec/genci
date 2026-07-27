@@ -6852,14 +6852,18 @@ if (typeof globalThis !== 'undefined') {
                                 '<div class="tc-box"><div class="tcl">Passé</div><div class="tcv"><input type="number" min="0" step="0.5" value="' + (passe || '') + '" placeholder="0" ' + (CRA_ACTIVE ? 'readonly title="Saisi via la Feuille de temps" ' : '') + 'onchange="updateField(\'tempsPasse\', parseFloat(this.value) || null)"><small>h</small></div></div>' +
                             '</div>' +
                             (estim > 0 ? '<div class="tc-bar"><i class="' + (timeOver ? 'over' : '') + '" style="width:' + timePercent + '%"></i></div><div class="tc-foot"><span>' + Math.round((passe/estim)*100) + '% consommé</span><span>reste ' + Math.max(estim-passe,0) + ' h</span></div>' : '') +
-                            ((data.assignees.length && TASK_COLS.has('charges')) ? '<div style="margin-top:13px"><div class="prop-label" style="margin-bottom:6px">Charge par personne</div>' + data.assignees.map(function(id){ return '<div class="charge-row"><span class="an">'+escapeHtml(getTeamMemberName(id))+'</span><input type="number" min="0" step="0.5" value="'+chargeOf(id)+'" onchange="updateCharge('+id+', this.value)"><span style="font-size:0.75rem;color:var(--text-muted)">h</span></div>'; }).join('') + '<div style="margin-top:6px;font-size:0.78rem;color:var(--text-muted)">Total : <strong>' + chargeTotalH + '</strong> h</div></div>' : '') + chargeConsolHtml +
+                            ((data.assignees.length && TASK_COLS.has('charges')) ? '<div style="margin-top:13px"><div class="prop-label" style="margin-bottom:6px">Charge par personne</div>' + data.assignees.map(function(id){ 
+                                var mode = panelState.assignmentModes && panelState.assignmentModes[id] ? panelState.assignmentModes[id] : 'uniforme';
+                                return '<div class="charge-row" style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><span class="an" style="flex:0 0 120px">'+escapeHtml(getTeamMemberName(id))+'</span><input type="number" min="0" step="0.5" value="'+chargeOf(id)+'" onchange="updateCharge('+id+', this.value)" style="width:70px"><span style="font-size:0.75rem;color:var(--text-muted);margin-right:8px">h</span><select onchange="updateAssignmentMode('+id+', this.value)" style="flex:0 0 140px;font-size:0.78rem"><option value="uniforme" '+(mode==='uniforme'?'selected':'')+'>Régulier</option><option value="ponctuel" '+(mode==='ponctuel'?'selected':'')+'>Ponctuel</option></select></div>'; 
+                            }).join('') + '<div style="margin-top:6px;font-size:0.78rem;color:var(--text-muted)">Total : <strong>' + chargeTotalH + '</strong> h</div></div>' : '') + chargeConsolHtml +
                         '</div></div>' : '') +
-(data.type === 'tache' && TASK_COLS.has('distributionMode') ?
+(data.type === 'tache' && TASK_COLS.has('distributionMode') && data.assignees.length > 0 ?
                         '<div class="panel-section"><div class="panel-section-header"><span class="panel-section-title">Type de planification</span></div>' +
-                        '<div class="form-group"><select class="form-control" onchange="updateDistributionMode(this.value)">' +
-                            '<option value="uniforme" ' + (data.distributionMode === 'uniforme' ? 'selected' : '') + '>Régulier (répartition auto)</option>' +
-                            '<option value="ponctuel" ' + (data.distributionMode === 'ponctuel' ? 'selected' : '') + '>Intervention ponctuelle (saisie libre CRA)</option>' +
-                        '</select></div></div>' : '') +
+                        '<div style="font-size:0.78rem;color:var(--text-muted);padding:8px 0">Le type de planification est défini par personne dans la section "Charge par personne".</div>' +
+                        '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
+                            '<button class="btn" style="padding:6px 12px;font-size:0.78rem" onclick="setAllModes(\'uniforme\')">Appliquer Régulier à tous</button>' +
+                            '<button class="btn" style="padding:6px 12px;font-size:0.78rem" onclick="setAllModes(\'ponctuel\')">Appliquer Ponctuel à tous</button>' +
+                        '</div></div>' : '') +
                     (data.type === 'tache' ?
                         '<div class="prop-row pr-prog"><span class="prop-label">Progression</span><div class="prop-value">' +
                             '<div class="progress-inline-wrap"><div class="progress-bar-mini"><div class="progress-bar-mini-fill" id="progressBarFill" style="width:' + data.progression + '%"></div></div><span class="progress-pct-label" id="progressValue">' + data.progression + '%</span></div>' +
@@ -6934,6 +6938,28 @@ if (typeof globalThis !== 'undefined') {
             const existing = data.charges.find(c => c.teamId === memberId);
             if (existing) existing.heures = h; else data.charges.push({ teamId: memberId, heures: h });
             syncLocalTask(); if (!panelState.isNew && gristReady) saveTaskToGrist(); renderPanel();
+        }
+        function updateAssignmentMode(memberId, value) {
+            const data = panelState.editData; if (!data) return;
+            if (value !== 'uniforme' && value !== 'ponctuel') {
+                console.warn('[Gantt] Mode invalide:', value);
+                return;
+            }
+            if (!panelState.assignmentModes) panelState.assignmentModes = {};
+            panelState.assignmentModes[memberId] = value;
+            syncLocalTask();
+            if (!panelState.isNew && gristReady) saveTaskToGrist();
+            renderPanel();
+        }
+        function setAllModes(value) {
+            const data = panelState.editData; if (!data) return;
+            if (!panelState.assignmentModes) panelState.assignmentModes = {};
+            (data.assignees || []).forEach(function(id) {
+                panelState.assignmentModes[id] = value;
+            });
+            syncLocalTask();
+            if (!panelState.isNew && gristReady) saveTaskToGrist();
+            renderPanel();
         }
         function updateDistributionMode(value) {
             const data = panelState.editData; if (!data) return;

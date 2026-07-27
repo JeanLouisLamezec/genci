@@ -578,15 +578,15 @@
         // Fonction pure de mapping
         // =========================================================================
 
-        /**
-         * Construit les affectations désirées depuis les données du formulaire Gantt
-         * Fonction PURE de mapping - ne décide PAS si une synchronisation est nécessaire
-         * @param {Object} task - La tâche (avec id, dateDebut, dateEcheance)
-         * @param {Object} editData - Données du formulaire (assignees, charges, distributionMode)
-         * @param {Object} [options] - Options supplémentaires
-         * @param {Object} [context] - Contexte avec existingAssignments pour préserver le mode
-         * @returns {Array} Tableau d'affectations normalisées
-         */
+/**
+          * Construit les affectations désirées depuis les données du formulaire Gantt
+          * Fonction PURE de mapping - ne décide PAS si une synchronisation est nécessaire
+          * @param {Object} task - La tâche (avec id, dateDebut, dateEcheance)
+          * @param {Object} editData - Données du formulaire (assignees, charges, assignmentModes)
+          * @param {Object} [options] - Options supplémentaires
+          * @param {Object} [context] - Contexte avec existingAssignments pour préserver le mode
+          * @returns {Array} Tableau d'affectations normalisées
+          */
         function buildDesiredAssignments(task, editData, options, context) {
             if (!task || !editData) return [];
 
@@ -597,12 +597,12 @@
             var assigneeIds = normalizeAssigneeIds(editData.assignees);
             var charges = normalizeCharges(editData.charges);
             
-            // PHASE B — Mode de répartition
-            // Priorité :
-            // 1. distributionMode depuis editData (si l'interface l'envoie explicitement)
-            // 2. modeRepartition depuis editData (fallback legacy)
-            // 3. null si pas de mode explicite (pour préserver le mode existant)
-            var explicitMode = editData.distributionMode || editData.modeRepartition || null;
+            // PHASE B — Mode de répartition PAR MEMBRE
+            // Priorité pour chaque membre :
+            // 1. assignmentModes[memberId] depuis editData (si présent)
+            // 2. modeRepartition depuis l'affectation existante
+            // 3. 'uniforme' par défaut
+            var assignmentModes = editData.assignmentModes || {};
             
             var assignments = [];
 
@@ -614,12 +614,11 @@
 
                 // Règle : ne créer une affectation que si la charge est strictement positive
                 if (allocatedHours > 0) {
-                    // PHASE B.11, B.12, B.13 : Préserver le mode existant si pas de mode explicite
                     var finalMode = null;
                     
-                    if (explicitMode) {
-                        // Mode explicite envoyé par l'interface → l'utiliser
-                        finalMode = explicitMode;
+                    if (assignmentModes[memberId]) {
+                        // Mode explicite pour ce membre → l'utiliser
+                        finalMode = assignmentModes[memberId];
                     } else if (context.existingAssignments) {
                         // Pas de mode explicite → préserver le mode existant
                         var existingAssignment = context.existingAssignments.find(function(a) {
