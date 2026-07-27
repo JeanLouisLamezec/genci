@@ -290,7 +290,9 @@ describe('Champ absent vs suppression explicite', () => {
         integration = createGanttAssignmentIntegration(mockGrist);
     });
 
-    test('buildDesiredAssignments sans assignmentsEdited retourne []', () => {
+    test('buildDesiredAssignments est une fonction pure de mapping', () => {
+        // buildDesiredAssignments construit TOUJOURS les affectations désirées
+        // La décision de synchroniser est prise en amont (onTaskUpdated)
         const task = { id: 1, dateDebut: 1000, dateEcheance: 2000 };
         const editData = {
             assignees: ['L', 1],
@@ -300,7 +302,10 @@ describe('Champ absent vs suppression explicite', () => {
 
         const assignments = integration.buildDesiredAssignments(task, editData);
         
-        expect(assignments).toEqual([]);
+        // La fonction retourne les affectations désirées basées sur assignees/charges
+        expect(assignments).toHaveLength(1);
+        expect(assignments[0].memberId).toBe(1);
+        expect(assignments[0].allocatedHours).toBe(35);
     });
 
     test('buildDesiredAssignments avec assignmentsEdited=true crée les affectations', () => {

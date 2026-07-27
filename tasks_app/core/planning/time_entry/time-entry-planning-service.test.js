@@ -99,20 +99,20 @@ describe('Time Entry Planning Service - Validation', () => {
     }));
   });
 
-  test('mode personnalise (warning)', () => {
+  test('mode personnalise (erreur)', () => {
     const assignment = { ...validAssignment, modeRepartition: 'personnalise' };
     const result = validateAssignment(assignment, context);
-    expect(result.valid).toBe(true);
-    expect(result.warnings).toContainEqual(expect.objectContaining({
-      code: 'PERSONNALISE_MODE_NOT_IMPLEMENTED'
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContainEqual(expect.objectContaining({
+      code: 'UNKNOWN_DISTRIBUTION_MODE'
     }));
   });
 
-  test('mode inconnu (warning)', () => {
+  test('mode inconnu (erreur)', () => {
     const assignment = { ...validAssignment, modeRepartition: 'inconnu' };
     const result = validateAssignment(assignment, context);
-    expect(result.valid).toBe(true);
-    expect(result.warnings).toContainEqual(expect.objectContaining({
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContainEqual(expect.objectContaining({
       code: 'UNKNOWN_DISTRIBUTION_MODE'
     }));
   });

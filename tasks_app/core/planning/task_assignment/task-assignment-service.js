@@ -23,7 +23,6 @@
     // =========================================================================
     var DISTRIBUTION_MODES = {
         UNIFORME: 'uniforme',
-        PERSONNALISE: 'personnalise',
         PONCTUEL: 'ponctuel'
     };
 
@@ -140,8 +139,8 @@
         // distributionMode
         if (assignment.distributionMode != null && 
             !Object.values(DISTRIBUTION_MODES).includes(assignment.distributionMode)) {
-            result.warnings.push('modeRepartition inconnu : ' + assignment.distributionMode + 
-                               ', utilisation de la valeur par défaut : ' + DEFAULT_DISTRIBUTION_MODE);
+            result.errors.push('modeRepartition invalide : ' + assignment.distributionMode + ' (valeurs valides : uniforme, ponctuel)');
+            result.valid = false;
         }
 
         // Unicité : vérifier les véritables doublons (plusieurs lignes actives pour même membre)

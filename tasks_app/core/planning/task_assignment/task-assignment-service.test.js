@@ -117,12 +117,14 @@ describe('Validation métier', () => {
 
     describe('validateDesiredAssignments', () => {
         test('tâche inexistante', () => {
+            // Une tâche inexistante génère un warning, pas une erreur
+            // Car la tâche peut ne pas encore être dans Grist lors de la création
             const result = service.validateDesiredAssignments(999, [], {
                 tasks: [{ id: 1 }],
                 members: [{ id: 1 }]
             });
-            expect(result.valid).toBe(false);
-            expect(result.errors).toContainEqual(expect.stringContaining('n\'existe pas'));
+            expect(result.valid).toBe(true);
+            expect(result.warnings).toContainEqual(expect.stringContaining('n\'existe pas'));
         });
 
         test('membre inexistant', () => {
@@ -192,15 +194,15 @@ describe('Validation métier', () => {
             expect(result.errors).toContainEqual(expect.stringContaining('Doublons détectés'));
         });
 
-        test('mode de répartition inconnu (warning)', () => {
+        test('mode de répartition inconnu (erreur)', () => {
             const result = service.validateDesiredAssignments(1, [
                 { memberId: 1, allocatedHours: 35, startDate: 1000, endDate: 2000, distributionMode: 'inconnu' }
             ], {
                 tasks: [{ id: 1 }],
                 members: [{ id: 1 }]
             });
-            expect(result.valid).toBe(true);
-            expect(result.warnings).toContainEqual(expect.stringContaining('inconnu'));
+            expect(result.valid).toBe(false);
+            expect(result.errors).toContainEqual(expect.stringContaining('invalide'));
         });
 
         test('validation réussie', () => {

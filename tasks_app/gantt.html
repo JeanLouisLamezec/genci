@@ -6531,6 +6531,40 @@ if (typeof globalThis !== 'undefined') {
             const idx = panelState.taskList.findIndex(t => t.id === taskId);
 
             const initialData = cloneTaskData(task);
+            
+            // LOT B2 : Charger le mode de répartition depuis TaskAssignments
+            // Le mode appartient à l'affectation (tâche + membre), pas à la tâche
+            if (gristReady) {
+                (async function() {
+                    try {
+                        var assignmentsTable = await grist.docApi.fetchTable('TaskAssignments');
+                        var memberModes = {};
+                        
+                        if (assignmentsTable.id) {
+                            for (var i = 0; i < assignmentsTable.id.length; i++) {
+                                if (assignmentsTable.tache[i] === taskId && assignmentsTable.actif[i] !== false) {
+                                    var memberId = assignmentsTable.membre[i];
+                                    var mode = assignmentsTable.modeRepartition[i] || 'uniforme';
+                                    memberModes[memberId] = mode;
+                                }
+                            }
+                        }
+                        
+                        // Stocker les modes par membre dans panelState pour l'UI
+                        panelState.assignmentModes = memberModes;
+                        
+                        // Si tous les membres ont le même mode, l'utiliser comme mode global
+                        var modeValues = Object.values(memberModes);
+                        if (modeValues.length > 0 && modeValues.every(function(m) { return m === modeValues[0]; })) {
+                            panelState.editData.distributionMode = modeValues[0];
+                        }
+                        
+                        renderPanel();
+                    } catch (e) {
+                        console.warn('[Gantt] Erreur chargement modes TaskAssignments:', e);
+                    }
+                })();
+            }
 
             panelState.isNew = false;
             panelState.taskId = taskId;
@@ -6820,11 +6854,11 @@ if (typeof globalThis !== 'undefined') {
                             (estim > 0 ? '<div class="tc-bar"><i class="' + (timeOver ? 'over' : '') + '" style="width:' + timePercent + '%"></i></div><div class="tc-foot"><span>' + Math.round((passe/estim)*100) + '% consommé</span><span>reste ' + Math.max(estim-passe,0) + ' h</span></div>' : '') +
                             ((data.assignees.length && TASK_COLS.has('charges')) ? '<div style="margin-top:13px"><div class="prop-label" style="margin-bottom:6px">Charge par personne</div>' + data.assignees.map(function(id){ return '<div class="charge-row"><span class="an">'+escapeHtml(getTeamMemberName(id))+'</span><input type="number" min="0" step="0.5" value="'+chargeOf(id)+'" onchange="updateCharge('+id+', this.value)"><span style="font-size:0.75rem;color:var(--text-muted)">h</span></div>'; }).join('') + '<div style="margin-top:6px;font-size:0.78rem;color:var(--text-muted)">Total : <strong>' + chargeTotalH + '</strong> h</div></div>' : '') + chargeConsolHtml +
                         '</div></div>' : '') +
-                    (data.type === 'tache' && TASK_COLS.has('distributionMode') ?
+(data.type === 'tache' && TASK_COLS.has('distributionMode') ?
                         '<div class="panel-section"><div class="panel-section-header"><span class="panel-section-title">Type de planification</span></div>' +
                         '<div class="form-group"><select class="form-control" onchange="updateDistributionMode(this.value)">' +
-                            '<option value="prevues" ' + (data.distributionMode === 'prevues' ? 'selected' : '') + '>Selon heures prévues (répartition auto)</option>' +
-                            '<option value="ponctuelle" ' + (data.distributionMode === 'ponctuelle' ? 'selected' : '') + '>Intervention ponctuelle (saisie libre CRA)</option>' +
+                            '<option value="uniforme" ' + (data.distributionMode === 'uniforme' ? 'selected' : '') + '>Régulier (répartition auto)</option>' +
+                            '<option value="ponctuel" ' + (data.distributionMode === 'ponctuel' ? 'selected' : '') + '>Intervention ponctuelle (saisie libre CRA)</option>' +
                         '</select></div></div>' : '') +
                     (data.type === 'tache' ?
                         '<div class="prop-row pr-prog"><span class="prop-label">Progression</span><div class="prop-value">' +
@@ -7208,6 +7242,9 @@ if (typeof globalThis !== 'undefined') {
 
             const chargesChanged = JSON.stringify(normalizeChargesValue(saveData.charges)) !== JSON.stringify(normalizeChargesValue(originalData.charges));
 
+            // LOT B2 : Détecter le changement de mode de répartition
+            const modeChanged = saveData.distributionMode !== originalData.distributionMode;
+
             console.info('[Gantt date sync decision]', {
                 taskId: taskId,
                 originalDates: {
@@ -7220,7 +7257,8 @@ if (typeof globalThis !== 'undefined') {
                 },
                 datesChanged: datesChanged,
                 assigneesChanged: assigneesChanged,
-                chargesChanged: chargesChanged
+                chargesChanged: chargesChanged,
+                modeChanged: modeChanged
             });
 
             const record = {
@@ -7230,7 +7268,7 @@ if (typeof globalThis !== 'undefined') {
                 tags: toGristChoiceList(saveData.tags), estimationH: saveData.estimationH, tempsPasse: saveData.tempsPasse,
                 subtasks: subtasksToJson(saveData.subtasks), couleur: saveData.couleur || null,
                 parentTask: saveData.parentTask || null,
-                charges: TF.chargesToJson((saveData.charges || []).filter(c => saveData.assignees.includes(c.teamId))), dateCloture: saveData.dateCloture || null, distributionMode: saveData.distributionMode || "prevues"
+                charges: TF.chargesToJson((saveData.charges || []).filter(c => saveData.assignees.includes(c.teamId))), dateCloture: saveData.dateCloture || null
             };
 
             try {
@@ -7241,10 +7279,10 @@ if (typeof globalThis !== 'undefined') {
                 var syncResult = null;
                 
                 if (assignmentIntegration) {
-                    if (datesChanged && !assigneesChanged && !chargesChanged) {
+                    if (datesChanged && !assigneesChanged && !chargesChanged && !modeChanged) {
                         console.info('[Gantt] Sync dates uniquement pour tâche ' + taskId);
                         syncResult = await assignmentIntegration.syncTaskDates(taskId, saveData.dateDebut, saveData.dateEcheance);
-                    } else if (assigneesChanged || chargesChanged) {
+                    } else if (assigneesChanged || chargesChanged || modeChanged) {
                         console.info('[Gantt] Sync affectations pour tâche ' + taskId);
                         var syncData = Object.assign({}, saveData, {
                             assignmentsEdited: true,
@@ -7252,7 +7290,7 @@ if (typeof globalThis !== 'undefined') {
                         });
                         syncResult = await assignmentIntegration.onTaskUpdated(taskId, syncData);
                     } else {
-                        console.info('[Gantt] Aucun changement affectation/date pour tâche ' + taskId);
+                        console.info('[Gantt] Aucun changement affectation/date/mode pour tâche ' + taskId);
                         syncResult = { ok: true, code: 'NO_ASSIGNMENT_CHANGE' };
                     }
 

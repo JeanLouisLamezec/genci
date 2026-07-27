@@ -1274,8 +1274,9 @@ describe('Scénarios Jason — Anomalies fonctionnelles', () => {
             expect(taskAssignmentsTable.modeRepartition[0]).toBe('uniforme');
         });
 
-        test('Scénario B5 — PONCTUEL : planification ne génère pas de heuresPrevues', async () => {
-            // CONTEXTE : Affectation ponctuelle → pas de planification automatique
+        test('Scénario B5 — PONCTUEL : planification génère heuresPrevues comme uniforme', async () => {
+            // CONTEXTE : Affectation ponctuelle → planification normale dans la fenêtre initiale
+            // La différence : le réalisé peut être saisi hors fenêtre (dates du projet)
             // 0. Ajouter la tâche
             tasksTable.id.push(6);
             tasksTable.titre.push('Intervention ponctuelle B5');
@@ -1301,7 +1302,7 @@ describe('Scénarios Jason — Anomalies fonctionnelles', () => {
             expect(taskAssignmentsTable.dateDebut[0]).toBe(1784505600);
             expect(taskAssignmentsTable.dateFin[0]).toBe(1784678400);
 
-            // 2. Vérifier via planAssignment : mode ponctuel = pas de heuresPrevues
+            // 2. Vérifier via planAssignment : mode ponctuel = planification normale
             const { planAssignment } = require('../time_entry/time-entry-planning-service');
             
             // Capacités pour Jason (membre 1)
@@ -1329,9 +1330,19 @@ describe('Scénarios Jason — Anomalies fonctionnelles', () => {
                 members: [{ id: 1 }]
             });
 
-            // PHASE B.2 : Mode ponctuel → heuresPrevues = 0, pas de planification auto
-            expect(planResult.plannedEntries.length).toBe(0);
-            expect(planResult.unallocatedHours).toBe(8); // Toutes les heures sont non réparties
+            // PHASE B.2 : Mode ponctuel → planification normale (comme uniforme)
+            // La différence : le réalisé peut être saisi hors fenêtre
+            expect(planResult.plannedEntries.length).toBeGreaterThan(0);
+            expect(planResult.unallocatedHours).toBeLessThanOrEqual(0.01); // Quasiment 0
+            
+            // Vérifier que les heuresPrevues sont bien générées
+            const totalPrevues = planResult.plannedEntries.reduce((sum, e) => sum + e.heuresPrevues, 0);
+            expect(totalPrevues).toBeCloseTo(8, 2);
+            
+            // Vérifier que revisionPlan = 1 (planifié)
+            planResult.plannedEntries.forEach(e => {
+                expect(e.revisionPlan).toBe(1);
+            });
         });
 
         test('Scénario B6 — Mode ponctuel conserve heuresPrevues existantes', async () => {
