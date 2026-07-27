@@ -331,67 +331,6 @@
             return entries;
         }
         
-        /**
-         * Inspecte les TimeEntries d'un membre retiré avec classification centralisée
-         * @param {number} taskId - ID de la tâche
-         * @param {number} memberId - ID du membre
-         * @param {number} assignmentId - ID de l'affectation
-         * @param {boolean} includeLegacy - true pour inclure legacy
-         * @returns {Promise<{ok: boolean, code?: string, lockedEntries: Object[], mutableEntries: number[], conflict?: boolean}>}
-         */
-        async function inspectMemberRemoval(taskId, memberId, assignmentId, includeLegacy) {
-            var entries = await findLinkedTimeEntries(assignmentId, taskId, memberId, includeLegacy);
-            
-            if (entries.length === 0) {
-                return { ok: true, lockedEntries: [], mutableEntries: [] };
-            }
-            
-            // Charger les feuilles
-            var sheetsById = await loadSheetsMap();
-            
-            var lockedEntries = [];
-            var mutableEntries = [];
-            var conflicts = [];
-            
-            for (var i = 0; i < entries.length; i++) {
-                var entry = entries[i];
-                var classification = classifyTimeEntry(entry, sheetsById, { allowLegacy: includeLegacy });
-                
-                if (classification.status === 'MUTABLE') {
-                    mutableEntries.push(entry.id);
-                } else if (classification.status === 'PROTECTED') {
-                    lockedEntries.push({ id: entry.id, reason: classification.reason });
-                } else if (classification.status === 'CONFLICT') {
-                    conflicts.push({ id: entry.id, reason: classification.reason });
-                }
-            }
-            
-            // PHASE A.5 : Conflits → blocage fail-closed
-            if (conflicts.length > 0) {
-                return {
-                    ok: false,
-                    code: 'MEMBER_REMOVE_CONFLICT',
-                    conflicts: conflicts,
-                    conflict: true
-                };
-            }
-            
-            if (lockedEntries.length > 0) {
-                return {
-                    ok: false,
-                    code: 'MEMBER_REMOVE_BLOCKED_BY_PROTECTED_TIME',
-                    lockedEntries: lockedEntries,
-                    mutableEntries: mutableEntries
-                };
-            }
-            
-            return {
-                ok: true,
-                lockedEntries: [],
-                mutableEntries: mutableEntries
-            };
-        }
-
         // =========================================================================
         // PHASE A — PRÉCONTRÔLE DU NETTOYAGE
         // =========================================================================
@@ -399,11 +338,12 @@
         /**
          * Inspecte les TimeEntries d'un membre retiré et détermine si le retrait est possible
          * PHASE A : Charge les Feuilles et résout le vrai statut
+         * Utilise exclusivement : findLinkedTimeEntries(), loadSheetsMap(), classifyTimeEntry()
          * @param {number} taskId - ID de la tâche
          * @param {number} memberId - ID du membre
          * @param {number} assignmentId - ID de l'affectation à désactiver
          * @param {boolean} includeLegacy - true pour inclure les TimeEntries legacy
-         * @returns {Promise<{ok: boolean, code?: string, lockedEntries: number[], reason?: string}>}
+         * @returns {Promise<{ok: boolean, code?: string, lockedEntries: Object[], mutableEntries: number[], conflicts: Object[]}>}
          */
         async function inspectMemberRemoval(taskId, memberId, assignmentId, includeLegacy) {
             var entries = await findLinkedTimeEntries(assignmentId, taskId, memberId, includeLegacy);

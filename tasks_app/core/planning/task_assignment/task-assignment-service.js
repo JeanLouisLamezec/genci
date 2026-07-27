@@ -445,6 +445,8 @@
          * @param {number} taskId - ID de la tâche
          * @param {Array} desiredAssignments - Affectations désirées (format normalisé)
          * @param {Object} syncOptions - Options de synchronisation
+         *   - returnActionsOnly: true pour retourner les actions sans les exécuter
+         *   - updateLegacy: false pour skip mise à jour Tasks (défaut true)
          * @returns {Promise<Object>} Résultat de la synchronisation
          */
         async function syncTaskAssignments(taskId, desiredAssignments, syncOptions) {
@@ -574,6 +576,22 @@
                     actions.push(['UpdateRecord', 'TaskAssignments', a.id, { actif: false }]);
                     deactivatedIds.push(a.id);
                 });
+
+                // 7bis. Mode returnActionsOnly : retourner les actions sans exécuter
+                if (syncOptions.returnActionsOnly === true) {
+                    return {
+                        ok: true,
+                        actions: actions,
+                        createdIds: createdIds,
+                        updatedIds: updatedIds,
+                        deactivatedIds: deactivatedIds,
+                        unchangedIds: diff.unchanged,
+                        warnings: diff.warnings,
+                        conflicts: diff.conflicts,
+                        actionsExecuted: 0,
+                        dryRun: true
+                    };
+                }
 
                 // 7. Exécuter les actions et capturer les IDs créés
                 if (actions.length > 0) {

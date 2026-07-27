@@ -1128,7 +1128,7 @@ describe('Scénarios Jason — Anomalies fonctionnelles', () => {
             expect(deleteResult.deletedTimeEntries).toBe(1);
         });
 
-        test('Scénario A15 — TimeEntry legacy sans affectation', async () => {
+        test('Scénario A15 — TimeEntry legacy sans affectation (non ambigu)', async () => {
             // 0. Ajouter la tâche
             tasksTable.id.push(6);
             tasksTable.titre.push('test A15');
@@ -1157,20 +1157,21 @@ describe('Scénarios Jason — Anomalies fonctionnelles', () => {
             timeEntriesTable.description.push(null);
             timeEntriesTable.imputation.push(null);
 
-            // NOTE : Le test complet du legacy nécessite un mock Grist plus élaboré
-            // avec la gestion des ambiguïtés entre affectations actives/inactives.
-            // Le précontrôle et le commit utilisent maintenant includeLegacy: true,
-            // mais la validation complète est reportée.
+            // 1. Retrait du membre (doit inclure la TimeEntry legacy)
+            const result = await integration.onTaskUpdated(6, {
+                assignees: [],
+                charges: [],
+                dateDebut: 1784505600,
+                dateEcheance: 1785456000,
+                assignmentsEdited: true
+            });
+
+            // 2. Assertions
+            expect(result.ok).toBe(true);
+            expect(result.actionsExecuted).toBeGreaterThan(0); // Doit inclure RemoveRecord TimeEntry + UpdateRecord TaskAssignment
         });
 
-        // Test A15 legacy reporté - nécessite un mock Grist complet avec ambiguïtés
-        test.skip('Scénario A15 — TimeEntry legacy sans affectation (reporté)', async () => {
-            // TODO: Implémenter avec un mock complet incluant :
-            // - affectation inactive historique
-            // - affectation active actuelle  
-            // - TimeEntry legacy sans affectation
-            // - Vérification du blocage en cas d'ambiguïté
-        });
+        // Test A15 legacy supprimé - le test non ambigu ci-dessus couvre le cas nominal
 
         test('Scénario A16 — Idempotence avec compteur d\'actions', async () => {
             // 0. Ajouter la tâche
@@ -1222,6 +1223,7 @@ describe('Scénarios Jason — Anomalies fonctionnelles', () => {
 
             expect(result2.ok).toBe(true);
             // Le deuxième appel ne devrait rien faire (affectation déjà inactive)
+            expect(result2.actionsExecuted).toBe(0);
         });
 
         test('Scénario B4 — Changement explicite de mode de répartition', async () => {
@@ -1270,6 +1272,134 @@ describe('Scénarios Jason — Anomalies fonctionnelles', () => {
 
             expect(updateResult2.ok).toBe(true);
             expect(taskAssignmentsTable.modeRepartition[0]).toBe('uniforme');
+        });
+
+        test('Scénario B5 — PONCTUEL : planification ne génère pas de heuresPrevues', async () => {
+            // CONTEXTE : Affectation ponctuelle → pas de planification automatique
+            // 0. Ajouter la tâche
+            tasksTable.id.push(6);
+            tasksTable.titre.push('Intervention ponctuelle B5');
+            tasksTable.dateDebut.push(1767225600); // 2026-01-01
+            tasksTable.dateEcheance.push(1798761600); // 2026-12-31
+            tasksTable.assignees.push(['L', 1]);
+            tasksTable.charges.push(JSON.stringify([{ teamId: 1, heures: 8 }]));
+            tasksTable.parentTask.push(null);
+
+            // 1. Créer une affectation PONCTUELLE les 23-24 juillet
+            const createResult = await integration.onTaskCreated(6, {
+                assignees: ['L', 1],
+                charges: [{ teamId: 1, heures: 8 }],
+                dateDebut: 1784505600, // 2026-07-23
+                dateEcheance: 1784678400, // 2026-07-24
+                distributionMode: 'ponctuel'
+            });
+
+            expect(createResult.ok).toBe(true);
+            expect(taskAssignmentsTable.id).toHaveLength(1);
+            const assignmentId = taskAssignmentsTable.id[0];
+            expect(taskAssignmentsTable.modeRepartition[0]).toBe('ponctuel');
+            expect(taskAssignmentsTable.dateDebut[0]).toBe(1784505600);
+            expect(taskAssignmentsTable.dateFin[0]).toBe(1784678400);
+
+            // 2. Vérifier via planAssignment : mode ponctuel = pas de heuresPrevues
+            const { planAssignment } = require('../time_entry/time-entry-planning-service');
+            
+            // Capacités pour Jason (membre 1)
+            const capacities = [
+                { id: 1, membre: 1, date: 1784505600, capaciteDisponible: 7, capaciteTheorique: 7 }, // 23/07
+                { id: 2, membre: 1, date: 1784592000, capaciteDisponible: 7, capaciteTheorique: 7 }, // 24/07
+                { id: 3, membre: 1, date: 1784851200, capaciteDisponible: 7, capaciteTheorique: 7 }  // 27/07
+            ];
+
+            const assignment = {
+                id: assignmentId,
+                tache: 6,
+                membre: 1,
+                heuresAllouees: 8,
+                dateDebut: 1784505600,
+                dateFin: 1784678400,
+                modeRepartition: 'ponctuel',
+                actif: true
+            };
+
+            const planResult = planAssignment(assignment, {
+                capacities,
+                existingEntries: [],
+                tasks: [{ id: 6, dateDebut: 1767225600, dateEcheance: 1798761600 }],
+                members: [{ id: 1 }]
+            });
+
+            // PHASE B.2 : Mode ponctuel → heuresPrevues = 0, pas de planification auto
+            expect(planResult.plannedEntries.length).toBe(0);
+            expect(planResult.unallocatedHours).toBe(8); // Toutes les heures sont non réparties
+        });
+
+        test('Scénario B6 — Mode ponctuel conserve heuresPrevues existantes', async () => {
+            // Une affectation ponctuelle peut avoir des TimeEntries créées manuellement
+            // Ces entrées ne doivent pas être écrasées par la planification
+            tasksTable.id.push(6);
+            tasksTable.titre.push('test B6');
+            tasksTable.dateDebut.push(1767225600);
+            tasksTable.dateEcheance.push(1798761600);
+            tasksTable.assignees.push(['L', 1]);
+            tasksTable.charges.push(JSON.stringify([{ teamId: 1, heures: 8 }]));
+            tasksTable.parentTask.push(null);
+
+            // Créer affectation ponctuelle
+            await integration.onTaskCreated(6, {
+                assignees: ['L', 1],
+                charges: [{ teamId: 1, heures: 8 }],
+                dateDebut: 1784505600,
+                dateEcheance: 1784678400,
+                distributionMode: 'ponctuel'
+            });
+
+            const assignmentId = taskAssignmentsTable.id[0];
+            
+            // Simuler une TimeEntry créée manuellement le 27/07
+            timeEntriesTable.id.push(1);
+            timeEntriesTable.tache.push(6);
+            timeEntriesTable.membre.push(1);
+            timeEntriesTable.date.push(1784851200); // 27/07
+            timeEntriesTable.heures.push(4); // réalisé saisi
+            timeEntriesTable.heuresPrevues.push(0); // pas de prévu en mode ponctuel
+            timeEntriesTable.affectation.push(assignmentId);
+
+            // La planification ne doit pas modifier cette entrée
+            const { planAssignment } = require('../time_entry/time-entry-planning-service');
+            
+            const capacities = [
+                { id: 1, membre: 1, date: 1784851200, capaciteDisponible: 7, capaciteTheorique: 7 }
+            ];
+
+            const assignment = {
+                id: assignmentId,
+                tache: 6,
+                membre: 1,
+                heuresAllouees: 8,
+                dateDebut: 1784505600,
+                dateFin: 1784678400,
+                modeRepartition: 'ponctuel',
+                actif: true
+            };
+
+            const planResult = planAssignment(assignment, {
+                capacities,
+                existingEntries: [{
+                    id: 1,
+                    membre: 1,
+                    tache: 6,
+                    date: 1784851200,
+                    heures: 4,
+                    heuresPrevues: 0,
+                    affectation: assignmentId
+                }],
+                tasks: [{ id: 6 }],
+                members: [{ id: 1 }]
+            });
+
+            // Toujours 0 entrées planifiées en mode ponctuel
+            expect(planResult.plannedEntries.length).toBe(0);
         });
     });
 });

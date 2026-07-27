@@ -6601,7 +6601,8 @@ if (typeof globalThis !== 'undefined') {
                 dateDebut: task.dateDebut, dateEcheance: task.dateEcheance, projet: task.projet || null,
                 assignees: getAssigneesArray(task), dependDe: getDependsOnArray(task), tags: getTagsArray(task),
                 estimationH: task.estimationH || null, tempsPasse: task.tempsPasse || null, subtasks: getSubtasks(task),
-                couleur: task.couleur || null, parentTask: task.parentTask || null, charges: TF.parseCharges(task.charges), dateCloture: task.dateCloture || null
+                couleur: task.couleur || null, parentTask: task.parentTask || null, charges: TF.parseCharges(task.charges), dateCloture: task.dateCloture || null,
+                distributionMode: task.distributionMode || 'uniforme'
             };
         }
 
@@ -6625,7 +6626,8 @@ if (typeof globalThis !== 'undefined') {
                 couleur: data.couleur || null,
                 parentTask: data.parentTask || null,
                 charges: (data.charges || []).map(c => ({ ...c })),
-                dateCloture: data.dateCloture || null
+                dateCloture: data.dateCloture || null,
+                distributionMode: data.distributionMode || 'uniforme'
             };
         }
 
@@ -6818,6 +6820,12 @@ if (typeof globalThis !== 'undefined') {
                             (estim > 0 ? '<div class="tc-bar"><i class="' + (timeOver ? 'over' : '') + '" style="width:' + timePercent + '%"></i></div><div class="tc-foot"><span>' + Math.round((passe/estim)*100) + '% consommé</span><span>reste ' + Math.max(estim-passe,0) + ' h</span></div>' : '') +
                             ((data.assignees.length && TASK_COLS.has('charges')) ? '<div style="margin-top:13px"><div class="prop-label" style="margin-bottom:6px">Charge par personne</div>' + data.assignees.map(function(id){ return '<div class="charge-row"><span class="an">'+escapeHtml(getTeamMemberName(id))+'</span><input type="number" min="0" step="0.5" value="'+chargeOf(id)+'" onchange="updateCharge('+id+', this.value)"><span style="font-size:0.75rem;color:var(--text-muted)">h</span></div>'; }).join('') + '<div style="margin-top:6px;font-size:0.78rem;color:var(--text-muted)">Total : <strong>' + chargeTotalH + '</strong> h</div></div>' : '') + chargeConsolHtml +
                         '</div></div>' : '') +
+                    (data.type === 'tache' && TASK_COLS.has('distributionMode') ?
+                        '<div class="panel-section"><div class="panel-section-header"><span class="panel-section-title">Type de planification</span></div>' +
+                        '<div class="form-group"><select class="form-control" onchange="updateDistributionMode(this.value)">' +
+                            '<option value="prevues" ' + (data.distributionMode === 'prevues' ? 'selected' : '') + '>Selon heures prévues (répartition auto)</option>' +
+                            '<option value="ponctuelle" ' + (data.distributionMode === 'ponctuelle' ? 'selected' : '') + '>Intervention ponctuelle (saisie libre CRA)</option>' +
+                        '</select></div></div>' : '') +
                     (data.type === 'tache' ?
                         '<div class="prop-row pr-prog"><span class="prop-label">Progression</span><div class="prop-value">' +
                             '<div class="progress-inline-wrap"><div class="progress-bar-mini"><div class="progress-bar-mini-fill" id="progressBarFill" style="width:' + data.progression + '%"></div></div><span class="progress-pct-label" id="progressValue">' + data.progression + '%</span></div>' +
@@ -6891,6 +6899,11 @@ if (typeof globalThis !== 'undefined') {
             const h = Math.max(0, Number(value) || 0);
             const existing = data.charges.find(c => c.teamId === memberId);
             if (existing) existing.heures = h; else data.charges.push({ teamId: memberId, heures: h });
+            syncLocalTask(); if (!panelState.isNew && gristReady) saveTaskToGrist(); renderPanel();
+        }
+        function updateDistributionMode(value) {
+            const data = panelState.editData; if (!data) return;
+            data.distributionMode = value;
             syncLocalTask(); if (!panelState.isNew && gristReady) saveTaskToGrist(); renderPanel();
         }
         function updateField(field, value, noSave) {
@@ -7217,7 +7230,7 @@ if (typeof globalThis !== 'undefined') {
                 tags: toGristChoiceList(saveData.tags), estimationH: saveData.estimationH, tempsPasse: saveData.tempsPasse,
                 subtasks: subtasksToJson(saveData.subtasks), couleur: saveData.couleur || null,
                 parentTask: saveData.parentTask || null,
-                charges: TF.chargesToJson((saveData.charges || []).filter(c => saveData.assignees.includes(c.teamId))), dateCloture: saveData.dateCloture || null
+                charges: TF.chargesToJson((saveData.charges || []).filter(c => saveData.assignees.includes(c.teamId))), dateCloture: saveData.dateCloture || null, distributionMode: saveData.distributionMode || "prevues"
             };
 
             try {
