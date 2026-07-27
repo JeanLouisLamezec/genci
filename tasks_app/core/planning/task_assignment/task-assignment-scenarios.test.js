@@ -68,7 +68,6 @@ describe('Scénarios Jason — Anomalies fonctionnelles', () => {
             heuresPrevues: [],
             affectation: [],
             feuille: [],
-            sheetStatus: [],
             description: [],
             imputation: [],
             capaciteJour: [],
@@ -157,7 +156,6 @@ describe('Scénarios Jason — Anomalies fonctionnelles', () => {
                                 timeEntriesTable.heuresPrevues.push(data.heuresPrevues || 0);
                                 timeEntriesTable.affectation.push(data.affectation || null);
                                 timeEntriesTable.feuille.push(data.feuille || null);
-                                timeEntriesTable.sheetStatus.push(data.sheetStatus || null);
                                 timeEntriesTable.description.push(data.description || '');
                                 timeEntriesTable.imputation.push(data.imputation || '');
                                 timeEntriesTable.capaciteJour.push(data.capaciteJour || null);
@@ -270,7 +268,6 @@ describe('Scénarios Jason — Anomalies fonctionnelles', () => {
                                     timeEntriesTable.heuresPrevues.splice(idx, 1);
                                     timeEntriesTable.affectation.splice(idx, 1);
                                     timeEntriesTable.feuille.splice(idx, 1);
-                                    timeEntriesTable.sheetStatus.splice(idx, 1);
                                     timeEntriesTable.description.splice(idx, 1);
                                     timeEntriesTable.imputation.splice(idx, 1);
                                     timeEntriesTable.capaciteJour.splice(idx, 1);
@@ -312,7 +309,16 @@ describe('Scénarios Jason — Anomalies fonctionnelles', () => {
     // ========================================================================
     describe('PHASE A — Suppression et nettoyage', () => {
         test('Scénario A1 — Tâche avec uniquement du prévu mutable (heures=null)', async () => {
-            // 1. Créer une tâche "test Jason"
+            // 0. Ajouter la tâche manuellement (elle est créée par le widget Gantt en amont)
+            tasksTable.id.push(6);
+            tasksTable.titre.push('test Jason A1');
+            tasksTable.dateDebut.push(1784505600);
+            tasksTable.dateEcheance.push(1785456000);
+            tasksTable.assignees.push(['L', 1]);
+            tasksTable.charges.push(JSON.stringify([{ teamId: 1, heures: 10 }]));
+            tasksTable.parentTask.push(null);
+
+            // 1. Synchroniser les affectations
             const createResult = await integration.onTaskCreated(6, {
                 assignees: ['L', 1],
                 charges: [{ teamId: 1, heures: 10 }],
@@ -332,7 +338,6 @@ describe('Scénarios Jason — Anomalies fonctionnelles', () => {
             timeEntriesTable.heuresPrevues.push(2);
             timeEntriesTable.affectation.push(taskAssignmentsTable.id[0]);
             timeEntriesTable.feuille.push(null);
-            timeEntriesTable.sheetStatus.push(null);
 
             timeEntriesTable.id.push(2);
             timeEntriesTable.tache.push(6);
@@ -342,7 +347,6 @@ describe('Scénarios Jason — Anomalies fonctionnelles', () => {
             timeEntriesTable.heuresPrevues.push(2);
             timeEntriesTable.affectation.push(taskAssignmentsTable.id[0]);
             timeEntriesTable.feuille.push(null);
-            timeEntriesTable.sheetStatus.push(null);
 
             expect(timeEntriesTable.id).toHaveLength(2);
 
@@ -361,6 +365,15 @@ describe('Scénarios Jason — Anomalies fonctionnelles', () => {
         });
 
         test('Scénario A2 — Retrait du membre (désactivation affectation)', async () => {
+            // 0. Ajouter la tâche manuellement
+            tasksTable.id.push(6);
+            tasksTable.titre.push('test Jason A2');
+            tasksTable.dateDebut.push(1784505600);
+            tasksTable.dateEcheance.push(1785456000);
+            tasksTable.assignees.push(['L', 1]);
+            tasksTable.charges.push(JSON.stringify([{ teamId: 1, heures: 10 }]));
+            tasksTable.parentTask.push(null);
+
             // 1. Créer une tâche avec affectation
             await integration.onTaskCreated(6, {
                 assignees: ['L', 1],
@@ -395,12 +408,21 @@ describe('Scénarios Jason — Anomalies fonctionnelles', () => {
             expect(assignmentIdx).toBeGreaterThan(-1);
             expect(taskAssignmentsTable.actif[assignmentIdx]).toBe(false);
 
-            // TODO PHASE A : Le prévu mutable doit être supprimé
-            // expect(timeEntriesTable.id).toHaveLength(0);
+            // PHASE A.2 : Le prévu mutable doit être supprimé
+            expect(timeEntriesTable.id).toHaveLength(0);
         });
 
         test('Scénario A3 — Réalisé explicite bloque la suppression', async () => {
-            // 1. Créer une tâche
+            // 0. Ajouter la tâche manuellement (elle est créée par le widget Gantt en amont)
+            tasksTable.id.push(6);
+            tasksTable.titre.push('test Jason A3');
+            tasksTable.dateDebut.push(1784505600);
+            tasksTable.dateEcheance.push(1785456000);
+            tasksTable.assignees.push(['L', 1]);
+            tasksTable.charges.push(JSON.stringify([{ teamId: 1, heures: 10 }]));
+            tasksTable.parentTask.push(null);
+
+            // 1. Synchroniser les affectations (appelé par le widget après création)
             const createResult = await integration.onTaskCreated(6, {
                 assignees: ['L', 1],
                 charges: [{ teamId: 1, heures: 10 }],
@@ -412,6 +434,10 @@ describe('Scénarios Jason — Anomalies fonctionnelles', () => {
             expect(taskAssignmentsTable.id).toHaveLength(1);
             const assignmentId = taskAssignmentsTable.id[0];
 
+            // Debug : vérifier l'état après création
+            console.log('Après création - tasksTable.id:', tasksTable.id);
+            console.log('Après création - taskAssignmentsTable.id:', taskAssignmentsTable.id);
+
             // 2. Ajouter un TimeEntry avec heures = 2 (réalisé explicite)
             timeEntriesTable.id.push(1);
             timeEntriesTable.tache.push(6);
@@ -421,14 +447,23 @@ describe('Scénarios Jason — Anomalies fonctionnelles', () => {
             timeEntriesTable.heuresPrevues.push(2);
             timeEntriesTable.affectation.push(assignmentId);
             timeEntriesTable.feuille.push(null);
-            timeEntriesTable.sheetStatus.push(null);
 
             // Debug : vérifier que les données sont bien présentes
             expect(timeEntriesTable.heures[0]).toBe(2);
             expect(timeEntriesTable.affectation[0]).toBe(assignmentId);
 
+            console.log('Avant suppression - tasksTable.id:', tasksTable.id);
+            console.log('Avant suppression - timeEntriesTable:', {
+                id: timeEntriesTable.id,
+                heures: timeEntriesTable.heures,
+                affectation: timeEntriesTable.affectation
+            });
+
             // 3. Tenter de supprimer
             const deleteResult = await integration.deleteTasksWithAssignments([6]);
+
+            console.log('Résultat suppression:', deleteResult);
+            console.log('Après suppression - tasksTable.id:', tasksTable.id);
 
             expect(deleteResult.ok).toBe(false);
             expect(deleteResult.code).toBe('TASK_DELETE_BLOCKED_BY_TIME_ENTRIES');
@@ -463,7 +498,6 @@ describe('Scénarios Jason — Anomalies fonctionnelles', () => {
             timeEntriesTable.heuresPrevues.push(2);
             timeEntriesTable.affectation.push(taskAssignmentsTable.id[0]);
             timeEntriesTable.feuille.push(1); // lié à une feuille
-            timeEntriesTable.sheetStatus.push('validated');
 
             // 4. Tenter de supprimer
             const deleteResult = await integration.deleteTasksWithAssignments([6]);
@@ -501,49 +535,381 @@ describe('Scénarios Jason — Anomalies fonctionnelles', () => {
             expect(deleteResult.ok).toBe(true);
             expect(deleteResult.deletedTimeEntries).toBe(1);
         });
+
+        test('Scénario A6 — Feuille brouillon avec heures=null permet le retrait', async () => {
+            // 0. Ajouter la tâche
+            tasksTable.id.push(6);
+            tasksTable.titre.push('test A6');
+            tasksTable.dateDebut.push(1784505600);
+            tasksTable.dateEcheance.push(1785456000);
+            tasksTable.assignees.push(['L', 1]);
+            tasksTable.charges.push(JSON.stringify([{ teamId: 1, heures: 10 }]));
+            tasksTable.parentTask.push(null);
+
+            await integration.onTaskCreated(6, {
+                assignees: ['L', 1],
+                charges: [{ teamId: 1, heures: 10 }],
+                dateDebut: 1784505600,
+                dateEcheance: 1785456000
+            });
+
+            // Créer une feuille brouillon
+            sheetsTable.id.push(1);
+            sheetsTable.membre.push(1);
+            sheetsTable.semaine.push(1784332800);
+            sheetsTable.statut.push('brouillon');
+
+            // TimeEntry avec feuille brouillon et heures=null
+            timeEntriesTable.id.push(1);
+            timeEntriesTable.tache.push(6);
+            timeEntriesTable.membre.push(1);
+            timeEntriesTable.date.push(1784592000);
+            timeEntriesTable.heures.push(null);
+            timeEntriesTable.heuresPrevues.push(2);
+            timeEntriesTable.affectation.push(taskAssignmentsTable.id[0]);
+            timeEntriesTable.feuille.push(1);
+
+            // Retirer le membre
+            const updateResult = await integration.onTaskUpdated(6, {
+                assignees: [],
+                charges: [],
+                dateDebut: 1784505600,
+                dateEcheance: 1785456000,
+                assignmentsEdited: true
+            });
+
+            expect(updateResult.ok).toBe(true);
+
+            // Vérifier : affectation désactivée et TimeEntry supprimée
+            const assignmentIdx = taskAssignmentsTable.id.indexOf(1);
+            expect(taskAssignmentsTable.actif[assignmentIdx]).toBe(false);
+            expect(timeEntriesTable.id).toHaveLength(0);
+        });
+
+        test('Scénario A7 — Feuille rejetée avec heures=null permet le retrait', async () => {
+            // 0. Ajouter la tâche
+            tasksTable.id.push(6);
+            tasksTable.titre.push('test A7');
+            tasksTable.dateDebut.push(1784505600);
+            tasksTable.dateEcheance.push(1785456000);
+            tasksTable.assignees.push(['L', 1]);
+            tasksTable.charges.push(JSON.stringify([{ teamId: 1, heures: 10 }]));
+            tasksTable.parentTask.push(null);
+
+            await integration.onTaskCreated(6, {
+                assignees: ['L', 1],
+                charges: [{ teamId: 1, heures: 10 }],
+                dateDebut: 1784505600,
+                dateEcheance: 1785456000
+            });
+
+            // Créer une feuille rejetée
+            sheetsTable.id.push(1);
+            sheetsTable.membre.push(1);
+            sheetsTable.semaine.push(1784332800);
+            sheetsTable.statut.push('rejete');
+
+            // TimeEntry avec feuille rejetée et heures=null
+            timeEntriesTable.id.push(1);
+            timeEntriesTable.tache.push(6);
+            timeEntriesTable.membre.push(1);
+            timeEntriesTable.date.push(1784592000);
+            timeEntriesTable.heures.push(null);
+            timeEntriesTable.heuresPrevues.push(2);
+            timeEntriesTable.affectation.push(taskAssignmentsTable.id[0]);
+            timeEntriesTable.feuille.push(1);
+
+            // Retirer le membre
+            const updateResult = await integration.onTaskUpdated(6, {
+                assignees: [],
+                charges: [],
+                dateDebut: 1784505600,
+                dateEcheance: 1785456000,
+                assignmentsEdited: true
+            });
+
+            expect(updateResult.ok).toBe(true);
+
+            // Vérifier : affectation désactivée et TimeEntry supprimée
+            const assignmentIdx = taskAssignmentsTable.id.indexOf(1);
+            expect(taskAssignmentsTable.actif[assignmentIdx]).toBe(false);
+            expect(timeEntriesTable.id).toHaveLength(0);
+        });
+
+        test('Scénario A8 — Heures = 0 explicite bloque le retrait', async () => {
+            // 0. Ajouter la tâche
+            tasksTable.id.push(6);
+            tasksTable.titre.push('test A8');
+            tasksTable.dateDebut.push(1784505600);
+            tasksTable.dateEcheance.push(1785456000);
+            tasksTable.assignees.push(['L', 1]);
+            tasksTable.charges.push(JSON.stringify([{ teamId: 1, heures: 10 }]));
+            tasksTable.parentTask.push(null);
+
+            await integration.onTaskCreated(6, {
+                assignees: ['L', 1],
+                charges: [{ teamId: 1, heures: 10 }],
+                dateDebut: 1784505600,
+                dateEcheance: 1785456000
+            });
+
+            // TimeEntry avec heures = 0 (explicite)
+            timeEntriesTable.id.push(1);
+            timeEntriesTable.tache.push(6);
+            timeEntriesTable.membre.push(1);
+            timeEntriesTable.date.push(1784592000);
+            timeEntriesTable.heures.push(0); // zéro explicite
+            timeEntriesTable.heuresPrevues.push(2);
+            timeEntriesTable.affectation.push(taskAssignmentsTable.id[0]);
+
+            // Retirer le membre → doit être bloqué
+            const updateResult = await integration.onTaskUpdated(6, {
+                assignees: [],
+                charges: [],
+                dateDebut: 1784505600,
+                dateEcheance: 1785456000,
+                assignmentsEdited: true
+            });
+
+            expect(updateResult.ok).toBe(false);
+            expect(updateResult.code).toBe('MEMBER_REMOVAL_BLOCKED_BY_PROTECTED_TIME');
+
+            // Vérifier : zéro écriture
+            expect(taskAssignmentsTable.actif[0]).toBe(true); // Toujours actif
+            expect(timeEntriesTable.id).toHaveLength(1); // TimeEntry intacte
+        });
+
+        test('Scénario A9 — Heures positives bloquent le retrait', async () => {
+            // 0. Ajouter la tâche
+            tasksTable.id.push(6);
+            tasksTable.titre.push('test A9');
+            tasksTable.dateDebut.push(1784505600);
+            tasksTable.dateEcheance.push(1785456000);
+            tasksTable.assignees.push(['L', 1]);
+            tasksTable.charges.push(JSON.stringify([{ teamId: 1, heures: 10 }]));
+            tasksTable.parentTask.push(null);
+
+            await integration.onTaskCreated(6, {
+                assignees: ['L', 1],
+                charges: [{ teamId: 1, heures: 10 }],
+                dateDebut: 1784505600,
+                dateEcheance: 1785456000
+            });
+
+            // TimeEntry avec heures = 3
+            timeEntriesTable.id.push(1);
+            timeEntriesTable.tache.push(6);
+            timeEntriesTable.membre.push(1);
+            timeEntriesTable.date.push(1784592000);
+            timeEntriesTable.heures.push(3);
+            timeEntriesTable.heuresPrevues.push(2);
+            timeEntriesTable.affectation.push(taskAssignmentsTable.id[0]);
+
+            // Retirer le membre → doit être bloqué
+            const updateResult = await integration.onTaskUpdated(6, {
+                assignees: [],
+                charges: [],
+                dateDebut: 1784505600,
+                dateEcheance: 1785456000,
+                assignmentsEdited: true
+            });
+
+            expect(updateResult.ok).toBe(false);
+            expect(updateResult.code).toBe('MEMBER_REMOVAL_BLOCKED_BY_PROTECTED_TIME');
+
+            // Vérifier : zéro écriture
+            expect(taskAssignmentsTable.actif[0]).toBe(true);
+            expect(timeEntriesTable.id).toHaveLength(1);
+        });
+
+        test('Scénario A10 — Feuille soumise bloque le retrait', async () => {
+            // 0. Ajouter la tâche
+            tasksTable.id.push(6);
+            tasksTable.titre.push('test A10');
+            tasksTable.dateDebut.push(1784505600);
+            tasksTable.dateEcheance.push(1785456000);
+            tasksTable.assignees.push(['L', 1]);
+            tasksTable.charges.push(JSON.stringify([{ teamId: 1, heures: 10 }]));
+            tasksTable.parentTask.push(null);
+
+            await integration.onTaskCreated(6, {
+                assignees: ['L', 1],
+                charges: [{ teamId: 1, heures: 10 }],
+                dateDebut: 1784505600,
+                dateEcheance: 1785456000
+            });
+
+            // Créer une feuille soumise
+            sheetsTable.id.push(1);
+            sheetsTable.membre.push(1);
+            sheetsTable.semaine.push(1784332800);
+            sheetsTable.statut.push('soumis');
+
+            // TimeEntry avec feuille soumise (même avec heures=null)
+            timeEntriesTable.id.push(1);
+            timeEntriesTable.tache.push(6);
+            timeEntriesTable.membre.push(1);
+            timeEntriesTable.date.push(1784592000);
+            timeEntriesTable.heures.push(null);
+            timeEntriesTable.heuresPrevues.push(2);
+            timeEntriesTable.affectation.push(taskAssignmentsTable.id[0]);
+            timeEntriesTable.feuille.push(1);
+
+            // Retirer le membre → doit être bloqué
+            const updateResult = await integration.onTaskUpdated(6, {
+                assignees: [],
+                charges: [],
+                dateDebut: 1784505600,
+                dateEcheance: 1785456000,
+                assignmentsEdited: true
+            });
+
+            expect(updateResult.ok).toBe(false);
+            expect(updateResult.code).toBe('MEMBER_REMOVAL_BLOCKED_BY_PROTECTED_TIME');
+
+            // Vérifier : zéro écriture
+            expect(taskAssignmentsTable.actif[0]).toBe(true);
+            expect(timeEntriesTable.id).toHaveLength(1);
+        });
+
+        test('Scénario A11 — Plusieurs affectations historiques', async () => {
+            // 0. Ajouter la tâche
+            tasksTable.id.push(6);
+            tasksTable.titre.push('test A11');
+            tasksTable.dateDebut.push(1784505600);
+            tasksTable.dateEcheance.push(1785456000);
+            tasksTable.assignees.push(['L', 1, 'L', 2]);
+            tasksTable.charges.push(JSON.stringify([{ teamId: 1, heures: 10 }, { teamId: 2, heures: 5 }]));
+            tasksTable.parentTask.push(null);
+
+            await integration.onTaskCreated(6, {
+                assignees: ['L', 1, 'L', 2],
+                charges: [{ teamId: 1, heures: 10 }, { teamId: 2, heures: 5 }],
+                dateDebut: 1784505600,
+                dateEcheance: 1785456000
+            });
+
+            expect(taskAssignmentsTable.id).toHaveLength(2);
+
+            // Membre 1 : TimeEntry protégée
+            timeEntriesTable.id.push(1);
+            timeEntriesTable.tache.push(6);
+            timeEntriesTable.membre.push(1);
+            timeEntriesTable.date.push(1784592000);
+            timeEntriesTable.heures.push(2);
+            timeEntriesTable.heuresPrevues.push(2);
+            timeEntriesTable.affectation.push(taskAssignmentsTable.id[0]);
+
+            // Membre 2 : TimeEntry mutable
+            timeEntriesTable.id.push(2);
+            timeEntriesTable.tache.push(6);
+            timeEntriesTable.membre.push(2);
+            timeEntriesTable.date.push(1784592000);
+            timeEntriesTable.heures.push(null);
+            timeEntriesTable.heuresPrevues.push(1);
+            timeEntriesTable.affectation.push(taskAssignmentsTable.id[1]);
+
+            // Retirer les deux membres → doit être bloqué à cause du membre 1
+            const updateResult = await integration.onTaskUpdated(6, {
+                assignees: [],
+                charges: [],
+                dateDebut: 1784505600,
+                dateEcheance: 1785456000,
+                assignmentsEdited: true
+            });
+
+            expect(updateResult.ok).toBe(false);
+            expect(updateResult.code).toBe('MEMBER_REMOVAL_BLOCKED_BY_PROTECTED_TIME');
+
+            // Vérifier : zéro écriture pour TOUT LE MONDE
+            expect(taskAssignmentsTable.actif[0]).toBe(true);
+            expect(taskAssignmentsTable.actif[1]).toBe(true);
+            expect(timeEntriesTable.id).toHaveLength(2);
+        });
+
+        test('Scénario A12 — Idempotence du retrait', async () => {
+            // 0. Ajouter la tâche
+            tasksTable.id.push(6);
+            tasksTable.titre.push('test A12');
+            tasksTable.dateDebut.push(1784505600);
+            tasksTable.dateEcheance.push(1785456000);
+            tasksTable.assignees.push(['L', 1]);
+            tasksTable.charges.push(JSON.stringify([{ teamId: 1, heures: 10 }]));
+            tasksTable.parentTask.push(null);
+
+            await integration.onTaskCreated(6, {
+                assignees: ['L', 1],
+                charges: [{ teamId: 1, heures: 10 }],
+                dateDebut: 1784505600,
+                dateEcheance: 1785456000
+            });
+
+            // TimeEntry mutable
+            timeEntriesTable.id.push(1);
+            timeEntriesTable.tache.push(6);
+            timeEntriesTable.membre.push(1);
+            timeEntriesTable.date.push(1784592000);
+            timeEntriesTable.heures.push(null);
+            timeEntriesTable.heuresPrevues.push(2);
+            timeEntriesTable.affectation.push(taskAssignmentsTable.id[0]);
+
+            // Premier retrait
+            const result1 = await integration.onTaskUpdated(6, {
+                assignees: [],
+                charges: [],
+                dateDebut: 1784505600,
+                dateEcheance: 1785456000,
+                assignmentsEdited: true
+            });
+
+            expect(result1.ok).toBe(true);
+            expect(taskAssignmentsTable.actif[0]).toBe(false);
+            expect(timeEntriesTable.id).toHaveLength(0);
+
+            // Deuxième retrait (idempotence)
+            const result2 = await integration.onTaskUpdated(6, {
+                assignees: [],
+                charges: [],
+                dateDebut: 1784505600,
+                dateEcheance: 1785456000,
+                assignmentsEdited: true
+            });
+
+            expect(result2.ok).toBe(true);
+            // L'affectation est déjà désactivée, pas d'erreur
+        });
     });
 
     // ========================================================================
     // PHASE B — MODE D'INTERVENTION PONCTUELLE
     // ========================================================================
     describe('PHASE B — Intervention ponctuelle', () => {
-        test('Scénario B1 — Saisie sur une date hors planification ponctuelle', () => {
-            // 1. Créer une affectation ponctuelle
-            // projet : 01/01/2026 → 31/12/2026
-            // affectation : 23/07/2026 → 24/07/2026
-            // modeRepartition : ponctuel
-            
-            const assignment = {
-                id: 1,
-                tache: 6,
-                membre: 1,
-                heuresAllouees: 8,
-                dateDebut: 1784851200, // 2026-07-23
-                dateFin: 1784937600,  // 2026-07-24
-                modeRepartition: 'ponctuel',
-                actif: true
-            };
+        test('Scénario B1 — Création réelle d\'une affectation ponctuelle depuis l\'interface', async () => {
+            // 0. Ajouter la tâche manuellement
+            tasksTable.id.push(6);
+            tasksTable.titre.push('test ponctuel B1');
+            tasksTable.dateDebut.push(1784505600);
+            tasksTable.dateEcheance.push(1785456000);
+            tasksTable.assignees.push(['L', 1]);
+            tasksTable.charges.push(JSON.stringify([{ teamId: 1, heures: 8 }]));
+            tasksTable.parentTask.push(null);
 
-            // 2. Capacités du membre
-            const capacities = [
-                { id: 1, membre: 1, date: 1785110400, capaciteDisponible: 7, capaciteTheorique: 7 }, // 2026-07-27 (lundi)
-                { id: 2, membre: 1, date: 1785196800, capaciteDisponible: 7, capaciteTheorique: 7 }  // 2026-07-28
-            ];
-
-            // 3. Aucune entrée existante
-            const existingEntries = [];
-
-            // 4. Planifier — TODO PHASE B : le mode ponctuel doit permettre la saisie sur d'autres dates
-            const result = planAssignment(assignment, {
-                capacities,
-                existingEntries,
-                tasks: [{ id: 6 }],
-                members: [{ id: 1 }]
+            // 1. Créer une affectation avec modeRepartition = 'ponctuel'
+            const createResult = await integration.onTaskCreated(6, {
+                assignees: ['L', 1],
+                charges: [{ teamId: 1, heures: 8 }],
+                dateDebut: 1784505600,
+                dateEcheance: 1785456000,
+                distributionMode: 'ponctuel' // PHASE B : mode ponctuel
             });
 
-            // TODO: Le mode ponctuel ne doit pas générer de heuresPrevues automatiquement
-            // ou doit permettre une fenêtre de saisie étendue
-            expect(result).toBeDefined();
+            expect(createResult.ok).toBe(true);
+            expect(taskAssignmentsTable.id).toHaveLength(1);
+
+            // 2. Vérifier que modeRepartition = 'ponctuel' dans TaskAssignments
+            const assignmentIdx = taskAssignmentsTable.id.indexOf(1);
+            expect(assignmentIdx).toBeGreaterThan(-1);
+            expect(taskAssignmentsTable.modeRepartition[assignmentIdx]).toBe('ponctuel');
         });
 
         test('Scénario B2 — Mode uniforme conserve le comportement actuel', () => {
@@ -575,6 +941,42 @@ describe('Scénarios Jason — Anomalies fonctionnelles', () => {
 
             expect(result.plannedEntries.length).toBeGreaterThan(0);
             expect(result.unallocatedHours).toBeLessThanOrEqual(0.01);
+        });
+
+        test('Scénario B3 — Modification de charge conserve le mode ponctuel', async () => {
+            // 0. Ajouter la tâche
+            tasksTable.id.push(6);
+            tasksTable.titre.push('test B3');
+            tasksTable.dateDebut.push(1784505600);
+            tasksTable.dateEcheance.push(1785456000);
+            tasksTable.assignees.push(['L', 1]);
+            tasksTable.charges.push(JSON.stringify([{ teamId: 1, heures: 8 }]));
+            tasksTable.parentTask.push(null);
+
+            // 1. Créer avec mode ponctuel
+            await integration.onTaskCreated(6, {
+                assignees: ['L', 1],
+                charges: [{ teamId: 1, heures: 8 }],
+                dateDebut: 1784505600,
+                dateEcheance: 1785456000,
+                distributionMode: 'ponctuel'
+            });
+
+            expect(taskAssignmentsTable.modeRepartition[0]).toBe('ponctuel');
+
+            // 2. Modifier la charge (sans changer le mode explicitement)
+            const updateResult = await integration.onTaskUpdated(6, {
+                assignees: ['L', 1],
+                charges: [{ teamId: 1, heures: 12 }], // Changement de charge
+                dateDebut: 1784505600,
+                dateEcheance: 1785456000,
+                assignmentsEdited: true
+            });
+
+            expect(updateResult.ok).toBe(true);
+
+            // 3. Vérifier que le mode est toujours 'ponctuel' (PHASE B.14)
+            expect(taskAssignmentsTable.modeRepartition[0]).toBe('ponctuel');
         });
     });
 
@@ -640,6 +1042,234 @@ describe('Scénarios Jason — Anomalies fonctionnelles', () => {
             // - heures déplacées vers les autres périodes
             // - aucune surcharge
             expect(result).toBeDefined();
+        });
+
+        // ========================================================================
+        // TESTS COMPLÉMENTAIRES PHASE A — Scénarios avancés
+        // ========================================================================
+        test('Scénario A13 — Suppression de tâche avec feuille brouillon (heures=null)', async () => {
+            // 0. Ajouter la tâche
+            tasksTable.id.push(6);
+            tasksTable.titre.push('test A13');
+            tasksTable.dateDebut.push(1784505600);
+            tasksTable.dateEcheance.push(1785456000);
+            tasksTable.assignees.push(['L', 1]);
+            tasksTable.charges.push(JSON.stringify([{ teamId: 1, heures: 10 }]));
+            tasksTable.parentTask.push(null);
+
+            await integration.onTaskCreated(6, {
+                assignees: ['L', 1],
+                charges: [{ teamId: 1, heures: 10 }],
+                dateDebut: 1784505600,
+                dateEcheance: 1785456000
+            });
+
+            // Feuille brouillon
+            sheetsTable.id.push(1);
+            sheetsTable.membre.push(1);
+            sheetsTable.semaine.push(1784332800);
+            sheetsTable.statut.push('brouillon');
+
+            // TimeEntry avec feuille brouillon et heures=null
+            timeEntriesTable.id.push(1);
+            timeEntriesTable.tache.push(6);
+            timeEntriesTable.membre.push(1);
+            timeEntriesTable.date.push(1784592000);
+            timeEntriesTable.heures.push(null);
+            timeEntriesTable.heuresPrevues.push(2);
+            timeEntriesTable.affectation.push(taskAssignmentsTable.id[0]);
+            timeEntriesTable.feuille.push(1);
+
+            // Supprimer → devrait réussir (brouillon + heures=null = mutable)
+            const deleteResult = await integration.deleteTasksWithAssignments([6]);
+
+
+            expect(deleteResult.ok).toBe(true);
+            expect(deleteResult.deletedTimeEntries).toBe(1);
+        });
+
+        test('Scénario A14 — Suppression avec feuille rejetée (heures=null)', async () => {
+            // 0. Ajouter la tâche
+            tasksTable.id.push(6);
+            tasksTable.titre.push('test A14');
+            tasksTable.dateDebut.push(1784505600);
+            tasksTable.dateEcheance.push(1785456000);
+            tasksTable.assignees.push(['L', 1]);
+            tasksTable.charges.push(JSON.stringify([{ teamId: 1, heures: 10 }]));
+            tasksTable.parentTask.push(null);
+
+            await integration.onTaskCreated(6, {
+                assignees: ['L', 1],
+                charges: [{ teamId: 1, heures: 10 }],
+                dateDebut: 1784505600,
+                dateEcheance: 1785456000
+            });
+
+            // Feuille rejetée
+            sheetsTable.id.push(1);
+            sheetsTable.membre.push(1);
+            sheetsTable.semaine.push(1784332800);
+            sheetsTable.statut.push('rejete');
+
+            // TimeEntry avec feuille rejetée et heures=null
+            timeEntriesTable.id.push(1);
+            timeEntriesTable.tache.push(6);
+            timeEntriesTable.membre.push(1);
+            timeEntriesTable.date.push(1784592000);
+            timeEntriesTable.heures.push(null);
+            timeEntriesTable.heuresPrevues.push(2);
+            timeEntriesTable.affectation.push(taskAssignmentsTable.id[0]);
+            timeEntriesTable.feuille.push(1);
+
+            // Supprimer → devrait réussir
+            const deleteResult = await integration.deleteTasksWithAssignments([6]);
+
+            expect(deleteResult.ok).toBe(true);
+            expect(deleteResult.deletedTimeEntries).toBe(1);
+        });
+
+        test('Scénario A15 — TimeEntry legacy sans affectation', async () => {
+            // 0. Ajouter la tâche
+            tasksTable.id.push(6);
+            tasksTable.titre.push('test A15');
+            tasksTable.dateDebut.push(1784505600);
+            tasksTable.dateEcheance.push(1785456000);
+            tasksTable.assignees.push(['L', 1]);
+            tasksTable.charges.push(JSON.stringify([{ teamId: 1, heures: 10 }]));
+            tasksTable.parentTask.push(null);
+
+            await integration.onTaskCreated(6, {
+                assignees: ['L', 1],
+                charges: [{ teamId: 1, heures: 10 }],
+                dateDebut: 1784505600,
+                dateEcheance: 1785456000
+            });
+
+            // TimeEntry legacy SANS affectation
+            timeEntriesTable.id.push(1);
+            timeEntriesTable.tache.push(6);
+            timeEntriesTable.membre.push(1);
+            timeEntriesTable.date.push(1784592000);
+            timeEntriesTable.heures.push(null);
+            timeEntriesTable.heuresPrevues.push(2);
+            timeEntriesTable.affectation.push(null); // PAS d'affectation
+            timeEntriesTable.feuille.push(null);
+            timeEntriesTable.description.push(null);
+            timeEntriesTable.imputation.push(null);
+
+            // NOTE : Le test complet du legacy nécessite un mock Grist plus élaboré
+            // avec la gestion des ambiguïtés entre affectations actives/inactives.
+            // Le précontrôle et le commit utilisent maintenant includeLegacy: true,
+            // mais la validation complète est reportée.
+        });
+
+        // Test A15 legacy reporté - nécessite un mock Grist complet avec ambiguïtés
+        test.skip('Scénario A15 — TimeEntry legacy sans affectation (reporté)', async () => {
+            // TODO: Implémenter avec un mock complet incluant :
+            // - affectation inactive historique
+            // - affectation active actuelle  
+            // - TimeEntry legacy sans affectation
+            // - Vérification du blocage en cas d'ambiguïté
+        });
+
+        test('Scénario A16 — Idempotence avec compteur d\'actions', async () => {
+            // 0. Ajouter la tâche
+            tasksTable.id.push(6);
+            tasksTable.titre.push('test A16');
+            tasksTable.dateDebut.push(1784505600);
+            tasksTable.dateEcheance.push(1785456000);
+            tasksTable.assignees.push(['L', 1]);
+            tasksTable.charges.push(JSON.stringify([{ teamId: 1, heures: 10 }]));
+            tasksTable.parentTask.push(null);
+
+            await integration.onTaskCreated(6, {
+                assignees: ['L', 1],
+                charges: [{ teamId: 1, heures: 10 }],
+                dateDebut: 1784505600,
+                dateEcheance: 1785456000
+            });
+
+            // TimeEntry mutable
+            timeEntriesTable.id.push(1);
+            timeEntriesTable.tache.push(6);
+            timeEntriesTable.membre.push(1);
+            timeEntriesTable.date.push(1784592000);
+            timeEntriesTable.heures.push(null);
+            timeEntriesTable.heuresPrevues.push(2);
+            timeEntriesTable.affectation.push(taskAssignmentsTable.id[0]);
+
+            // Premier retrait
+            const result1 = await integration.onTaskUpdated(6, {
+                assignees: [],
+                charges: [],
+                dateDebut: 1784505600,
+                dateEcheance: 1785456000,
+                assignmentsEdited: true
+            });
+
+            expect(result1.ok).toBe(true);
+            const actionsCount1 = result1.actionsExecuted || 0;
+            expect(actionsCount1).toBeGreaterThan(0);
+
+            // Deuxième retrait (idempotence)
+            const result2 = await integration.onTaskUpdated(6, {
+                assignees: [],
+                charges: [],
+                dateDebut: 1784505600,
+                dateEcheance: 1785456000,
+                assignmentsEdited: true
+            });
+
+            expect(result2.ok).toBe(true);
+            // Le deuxième appel ne devrait rien faire (affectation déjà inactive)
+        });
+
+        test('Scénario B4 — Changement explicite de mode de répartition', async () => {
+            // 0. Ajouter la tâche
+            tasksTable.id.push(6);
+            tasksTable.titre.push('test B4');
+            tasksTable.dateDebut.push(1784505600);
+            tasksTable.dateEcheance.push(1785456000);
+            tasksTable.assignees.push(['L', 1]);
+            tasksTable.charges.push(JSON.stringify([{ teamId: 1, heures: 8 }]));
+            tasksTable.parentTask.push(null);
+
+            // 1. Créer avec mode uniforme
+            await integration.onTaskCreated(6, {
+                assignees: ['L', 1],
+                charges: [{ teamId: 1, heures: 8 }],
+                dateDebut: 1784505600,
+                dateEcheance: 1785456000,
+                distributionMode: 'uniforme'
+            });
+
+            expect(taskAssignmentsTable.modeRepartition[0]).toBe('uniforme');
+
+            // 2. Changer explicitement vers ponctuel
+            const updateResult = await integration.onTaskUpdated(6, {
+                assignees: ['L', 1],
+                charges: [{ teamId: 1, heures: 8 }],
+                dateDebut: 1784505600,
+                dateEcheance: 1785456000,
+                assignmentsEdited: true,
+                distributionMode: 'ponctuel' // Changement explicite
+            });
+
+            expect(updateResult.ok).toBe(true);
+            expect(taskAssignmentsTable.modeRepartition[0]).toBe('ponctuel');
+
+            // 3. Rechanger vers uniforme
+            const updateResult2 = await integration.onTaskUpdated(6, {
+                assignees: ['L', 1],
+                charges: [{ teamId: 1, heures: 8 }],
+                dateDebut: 1784505600,
+                dateEcheance: 1785456000,
+                assignmentsEdited: true,
+                distributionMode: 'uniforme'
+            });
+
+            expect(updateResult2.ok).toBe(true);
+            expect(taskAssignmentsTable.modeRepartition[0]).toBe('uniforme');
         });
     });
 });
