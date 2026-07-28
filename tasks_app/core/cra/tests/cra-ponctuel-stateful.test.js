@@ -819,10 +819,6 @@ describe('CRA — Mode ponctuel : saisie hors dates prévues (stateful)', () => 
       
       expect(result.ok).toBe(true);
     });
-    
-    test('B3.7 — supprimé (dépendance planificateur retirée)', () => {
-      expect(true).toBe(true);
-    });
   });
   
   describe('Tests B3.8 à B3.19 — Corrections du lot B3', () => {
@@ -1515,6 +1511,316 @@ describe('CRA — Mode ponctuel : saisie hors dates prévues (stateful)', () => 
         expect(controllerCode).not.toMatch(/replanMembers/);
         expect(controllerCode).not.toMatch(/memberPlanningOrchestrator/);
         expect(controllerCode).not.toMatch(/ganttAutoPlanning/);
+      });
+    });
+    
+    describe('B3.20 — dates civiles impossibles', () => {
+      const invalidDates = [
+        '2026-02-29',
+        '2026-02-31',
+        '2026-04-31',
+        '2026-13-01',
+        '2026-00-10'
+      ];
+      
+      test.each(invalidDates)('parseStrictIsoDate rejette %s', (value) => {
+        expect(parseStrictIsoDate(value)).toBe(null);
+        expect(gristDateFromIso(value)).toBe(null);
+        expect(weekStartIsoFromDateIso(value)).toBe(null);
+      });
+      
+      test.each(invalidDates)('resolveActiveAssignment rejette %s', (value) => {
+        const result = resolveActiveAssignment(TASK_ID, MEMBER_ID, value, [], {});
+        expect(result.status).toBe('invalid');
+        expect(result.code).toBe('INVALID_ENTRY_DATE');
+      });
+      
+      test('saveCraCellChange rejette date invalide', async () => {
+        const dependencies = {
+          tasks: [{ id: TASK_ID }],
+          projects: [],
+          assignments: [],
+          entries: [],
+          sheets: [],
+          dailyCapacities: [],
+          team: [],
+          grist: { docApi: { applyUserActions: jest.fn() } }
+        };
+        
+        const result = await saveCraCellChange({
+          taskId: TASK_ID,
+          personId: MEMBER_ID,
+          dateIso: '2026-02-31',
+          hours: 4
+        }, dependencies);
+        
+        expect(result.ok).toBe(false);
+        expect(result.code).toBe('INVALID_ENTRY_DATE');
+      });
+    });
+    
+    describe('B3.21 — année bissextile', () => {
+      test('2024-02-29 est valide', () => {
+        const date = parseStrictIsoDate('2024-02-29');
+        expect(date).toBeInstanceOf(Date);
+        expect(date.getUTCFullYear()).toBe(2024);
+        expect(date.getUTCMonth()).toBe(1);
+        expect(date.getUTCDate()).toBe(29);
+        
+        const timestamp = gristDateFromIso('2024-02-29');
+        expect(timestamp).toBe(Date.UTC(2024, 1, 29) / 1000);
+      });
+      
+      test('2026-02-29 est invalide', () => {
+        expect(parseStrictIsoDate('2026-02-29')).toBe(null);
+      });
+    });
+    
+    describe('B3.22 — aucune borne temporelle', () => {
+      test('affectation sans dates projet ni dates affectation', async () => {
+        const assignments = [{
+          id: 10,
+          tache: TASK_ID,
+          membre: MEMBER_ID,
+          modeRepartition: 'ponctuel',
+          actif: true
+        }];
+        
+        const result = resolveActiveAssignment(
+          TASK_ID,
+          MEMBER_ID,
+          REALISATION_DATE,
+          assignments,
+          {}
+        );
+        
+        expect(result.status).toBe('missing');
+        
+        const dependencies = {
+          tasks: [{ id: TASK_ID, projet: 1 }],
+          projects: [{ id: 1 }],
+          assignments,
+          entries: [],
+          sheets: [],
+          dailyCapacities: [],
+          team: [{ id: MEMBER_ID }],
+          grist: { docApi: { applyUserActions: jest.fn() } }
+        };
+        
+        const saveResult = await saveCraCellChange({
+          taskId: TASK_ID,
+          personId: MEMBER_ID,
+          dateIso: REALISATION_DATE,
+          hours: 4
+        }, dependencies);
+        
+        expect(saveResult.ok).toBe(false);
+        expect(saveResult.code).toBe('MISSING_ACTIVE_ASSIGNMENT');
+      });
+    });
+    
+    describe('B3.23 — une seule borne temporelle', () => {
+      test('seulement dateDebut', () => {
+        const assignments = [{
+          id: 10,
+          tache: TASK_ID,
+          membre: MEMBER_ID,
+          dateDebut: dateToTimestamp('2026-01-01'),
+          modeRepartition: 'ponctuel',
+          actif: true
+        }];
+        
+        const result = resolveActiveAssignment(
+          TASK_ID,
+          MEMBER_ID,
+          REALISATION_DATE,
+          assignments,
+          {}
+        );
+        
+        expect(result.status).toBe('found');
+      });
+      
+      test('seulement dateFin', () => {
+        const assignments = [{
+          id: 10,
+          tache: TASK_ID,
+          membre: MEMBER_ID,
+          dateFin: dateToTimestamp('2026-12-31'),
+          modeRepartition: 'ponctuel',
+          actif: true
+        }];
+        
+        const result = resolveActiveAssignment(
+          TASK_ID,
+          MEMBER_ID,
+          REALISATION_DATE,
+          assignments,
+          {}
+        );
+        
+        expect(result.status).toBe('found');
+      });
+      
+      test('seulement dateDebut future', () => {
+        const assignments = [{
+          id: 10,
+          tache: TASK_ID,
+          membre: MEMBER_ID,
+          dateDebut: dateToTimestamp('2026-08-01'),
+          modeRepartition: 'ponctuel',
+          actif: true
+        }];
+        
+        const result = resolveActiveAssignment(
+          TASK_ID,
+          MEMBER_ID,
+          REALISATION_DATE,
+          assignments,
+          {}
+        );
+        
+        expect(result.status).toBe('missing');
+      });
+      
+      test('seulement dateFin passée', () => {
+        const assignments = [{
+          id: 10,
+          tache: TASK_ID,
+          membre: MEMBER_ID,
+          dateFin: dateToTimestamp('2026-07-01'),
+          modeRepartition: 'ponctuel',
+          actif: true
+        }];
+        
+        const result = resolveActiveAssignment(
+          TASK_ID,
+          MEMBER_ID,
+          REALISATION_DATE,
+          assignments,
+          {}
+        );
+        
+        expect(result.status).toBe('missing');
+      });
+    });
+    
+    describe('B3.24 — règle week-end par mode', () => {
+      const samedi = '2026-07-25';
+      
+      const assignmentsUniforme = [{
+        id: 10,
+        tache: TASK_ID,
+        membre: MEMBER_ID,
+        dateDebut: dateToTimestamp('2026-07-20'),
+        dateFin: dateToTimestamp('2026-07-31'),
+        modeRepartition: 'uniforme',
+        actif: true
+      }];
+      
+      const assignmentsPonctuel = [{
+        id: 10,
+        tache: TASK_ID,
+        membre: MEMBER_ID,
+        dateDebut: dateToTimestamp('2026-07-20'),
+        dateFin: dateToTimestamp('2026-07-31'),
+        modeRepartition: 'ponctuel',
+        actif: true
+      }];
+      
+      test('mode uniforme accepte week-end', () => {
+        const result = resolveActiveAssignment(
+          TASK_ID,
+          MEMBER_ID,
+          samedi,
+          assignmentsUniforme,
+          {}
+        );
+        
+        expect(result.status).toBe('found');
+      });
+      
+      test('mode ponctuel refuse week-end par défaut', () => {
+        const result = resolveActiveAssignment(
+          TASK_ID,
+          MEMBER_ID,
+          samedi,
+          assignmentsPonctuel,
+          { allowWeekends: false }
+        );
+        
+        expect(result.status).toBe('missing');
+      });
+      
+      test('mode ponctuel accepte week-end si allowWeekends=true', () => {
+        const result = resolveActiveAssignment(
+          TASK_ID,
+          MEMBER_ID,
+          samedi,
+          assignmentsPonctuel,
+          { allowWeekends: true }
+        );
+        
+        expect(result.status).toBe('found');
+      });
+    });
+    
+    describe('B3.25 — mode démonstration cohérent', () => {
+      test('loadDemo définit currentUserMemberId et selectedPersonId', () => {
+        const fs = require('fs');
+        const path = require('path');
+        
+        const craPath = path.join(__dirname, '../../../cra.html');
+        const craContent = fs.readFileSync(craPath, 'utf8');
+        
+        const loadDemoStart = craContent.indexOf('function loadDemo()');
+        const loadDemoEnd = craContent.indexOf('render();', loadDemoStart);
+        
+        expect(loadDemoStart).toBeGreaterThan(-1);
+        expect(loadDemoEnd).toBeGreaterThan(loadDemoStart);
+        
+        const loadDemoBlock = craContent.substring(loadDemoStart, loadDemoEnd);
+        
+        expect(loadDemoBlock).toContain('S.currentUserMemberId = 1');
+        expect(loadDemoBlock).toContain('S.selectedPersonId = 1');
+      });
+      
+      test('loadDemo crée affectation pour tâche 6', () => {
+        const fs = require('fs');
+        const path = require('path');
+        
+        const craPath = path.join(__dirname, '../../../cra.html');
+        const craContent = fs.readFileSync(craPath, 'utf8');
+        
+        const loadDemoStart = craContent.indexOf('function loadDemo()');
+        const loadDemoEnd = craContent.indexOf('render();', loadDemoStart);
+        
+        expect(loadDemoStart).toBeGreaterThan(-1);
+        expect(loadDemoEnd).toBeGreaterThan(loadDemoStart);
+        
+        const loadDemoBlock = craContent.substring(loadDemoStart, loadDemoEnd);
+        
+        expect(loadDemoBlock).toContain('tache: 6');
+        expect(loadDemoBlock).toContain('membre: 1');
+      });
+      
+      test('setCell utilise createDemoGristAdapter quand S.alone', () => {
+        const fs = require('fs');
+        const path = require('path');
+        
+        const craPath = path.join(__dirname, '../../../cra.html');
+        const craContent = fs.readFileSync(craPath, 'utf8');
+        
+        const setCellStart = craContent.indexOf('async function setCell(');
+        const setCellEnd = craContent.indexOf('window.setCell = setCell;');
+        
+        expect(setCellStart).toBeGreaterThan(-1);
+        expect(setCellEnd).toBeGreaterThan(setCellStart);
+        
+        const setCellBlock = craContent.substring(setCellStart, setCellEnd);
+        
+        expect(setCellBlock).toContain('S.alone');
+        expect(setCellBlock).toContain('createDemoGristAdapter');
       });
     });
   });

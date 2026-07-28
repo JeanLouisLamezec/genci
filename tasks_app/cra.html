@@ -11,7 +11,8 @@
 <script src="core/cra/controller/cra-time-entry-controller.js"></script>
 <script src="core/cra/loader/cra-data-loader.js"></script>
 
-<script src="core/cra/workflow/cra-workflow-integration.js?v=20260726-9"></script>
+<script src="core/generated/taskflow-cra-browser.js?v=20260728-1"></script>
+<script src="core/cra/workflow/cra-workflow-integration.js?v=20260728-1"></script>
 <script src="core/cra/export/cra-export-model.js"></script>
 <script src="core/cra/export/cra-export-pdf.js"></script>
 <script src="core/cra/export/cra-export-csv.js"></script>
@@ -5609,6 +5610,8 @@ function loadDemo() {
   S.alone = true; S.gOk = false; S.hasTable = true;
   S.team = [{ id: 1, nom: 'Alice Martin', capaciteHebdo: 35 }, { id: 2, nom: 'Bob Durant', capaciteHebdo: 35 }, { id: 3, nom: 'Claire Bernard', capaciteHebdo: 35 }];
   S.me = 1; S.meName = 'Alice Martin';
+  S.currentUserMemberId = 1;
+  S.selectedPersonId = 1;
   S.projects = [{ id: 1, nom: 'Refonte Portail' }, { id: 2, nom: 'App Mobile' }];
   S.tasks = [
     { id: 1, titre: 'Analyse besoins', projet: 1, assignees: ['L', 1] },
@@ -5654,6 +5657,16 @@ function loadDemo() {
       dateDebut: d(0),
       dateFin: d(4),
       heuresAllouees: 20,
+      modeRepartition: 'uniforme',
+      actif: true
+    },
+    {
+      id: 104,
+      tache: 6,
+      membre: 1,
+      dateDebut: d(0),
+      dateFin: d(4),
+      heuresAllouees: 10,
       modeRepartition: 'uniforme',
       actif: true
     }

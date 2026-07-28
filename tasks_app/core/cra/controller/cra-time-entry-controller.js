@@ -56,6 +56,16 @@
 function resolveActiveAssignment(taskId, personId, dateIso, assignments, context) {
   context = context || {};
   
+  const dateObj = parseStrictIsoDate(dateIso);
+  if (!dateObj) {
+    return {
+      status: 'invalid',
+      assignment: null,
+      assignments: [],
+      code: 'INVALID_ENTRY_DATE'
+    };
+  }
+  
   // ÉTAPE 1 : Filtrer les affectations par tâche, membre et actif
   const candidateAssignments = (assignments || []).filter(a => {
     if (a.actif === false) return false;
@@ -134,9 +144,8 @@ function resolveActiveAssignment(taskId, personId, dateIso, assignments, context
       return false;
     }
     
-    // Vérifier que ce n'est pas un week-end (sauf si explicitement autorisé)
-    if (!context.allowWeekends) {
-      const dateObj = new Date(dateIso + 'T00:00:00Z');
+    // MODE PONCTUEL SEULEMENT : Vérifier que ce n'est pas un week-end
+    if (isPonctuel && !context.allowWeekends) {
       const dayOfWeek = dateObj.getUTCDay();
       if (dayOfWeek === 0 || dayOfWeek === 6) {
         return false;
@@ -1071,7 +1080,7 @@ async function saveCraCellChange(input, dependencies) {
     return {
       ok: false,
       action: 'blocked',
-      code: 'INVALID_DISTRIBUTION_MODE'
+      code: assignmentResult.code || 'INVALID_DISTRIBUTION_MODE'
     };
   }
   

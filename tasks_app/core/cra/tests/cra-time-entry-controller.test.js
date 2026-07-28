@@ -381,6 +381,47 @@ describe('CRA Time Entry Controller', () => {
       expect(result.status).toBe('found');
       expect(result.assignment).toEqual(assignments[0]);
     });
+    
+    test('refuse date civile impossible', () => {
+      const assignments = [
+        { id: 1, tache: 1, membre: 1, actif: true, dateDebut: 1704844800, dateFin: 1705708800 }
+      ];
+      
+      const result = resolveActiveAssignment(1, 1, '2024-02-31', assignments);
+      
+      expect(result.status).toBe('invalid');
+      expect(result.code).toBe('INVALID_ENTRY_DATE');
+    });
+    
+    test('refuse affectation sans aucune borne', () => {
+      const assignments = [
+        { id: 1, tache: 1, membre: 1, actif: true, modeRepartition: 'ponctuel' }
+      ];
+      
+      const result = resolveActiveAssignment(1, 1, '2024-01-15', assignments, {});
+      
+      expect(result.status).toBe('missing');
+    });
+    
+    test('accepte affectation avec seulement dateDebut', () => {
+      const assignments = [
+        { id: 1, tache: 1, membre: 1, actif: true, dateDebut: 1704067200 }
+      ];
+      
+      const result = resolveActiveAssignment(1, 1, '2024-01-15', assignments, {});
+      
+      expect(result.status).toBe('found');
+    });
+    
+    test('mode uniforme ne reçoit pas restriction week-end', () => {
+      const assignments = [
+        { id: 1, tache: 1, membre: 1, actif: true, dateDebut: 1704844800, dateFin: 1705708800 }
+      ];
+      
+      const result = resolveActiveAssignment(1, 1, '2024-01-20', assignments, {});
+      
+      expect(result.status).toBe('found');
+    });
   });
   
   describe('resolveEditableCellEntry', () => {
