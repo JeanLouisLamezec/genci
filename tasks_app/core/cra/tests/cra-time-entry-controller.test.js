@@ -370,13 +370,13 @@ describe('CRA Time Entry Controller', () => {
     });
     
     test('inclut exactement la date de fin (PHASE 1.1.3 - bornes inclusives)', () => {
-      // Affectation du 10/01 au 20/01
+      // Affectation du 10/01 au 19/01 (vendredi)
       const assignments = [
-        { id: 1, tache: 1, membre: 1, actif: true, dateDebut: 1704844800, dateFin: 1705708800 }
+        { id: 1, tache: 1, membre: 1, actif: true, dateDebut: 1704844800, dateFin: 1705622400 }
       ];
       
-      // Date = 20/01 (dernier jour) - DOIT ÊTRE INCLUSE
-      const result = resolveActiveAssignment(1, 1, '2024-01-20', assignments);
+      // Date = 19/01 (dernier jour, vendredi) - DOIT ÊTRE INCLUSE
+      const result = resolveActiveAssignment(1, 1, '2024-01-19', assignments);
       
       expect(result.status).toBe('found');
       expect(result.assignment).toEqual(assignments[0]);

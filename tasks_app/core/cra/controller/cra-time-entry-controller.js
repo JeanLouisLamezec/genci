@@ -88,56 +88,58 @@ function resolveActiveAssignment(taskId, personId, dateIso, assignments, context
     // PHASE B — MODE PONCTUEL
     const isPonctuel = (mode === 'ponctuel');
     
+    // Calculer les bornes effectives
+    let lowerBound = null;
+    let upperBound = null;
+    
     if (isPonctuel) {
-      // Mode ponctuel : vérifier les dates du projet parent
+      // Mode ponctuel : priorité aux dates du projet
       const projectStart = context.projectStartDate ? gristDateKey(context.projectStartDate) : null;
       const projectEnd = context.projectEndDate ? gristDateKey(context.projectEndDate) : null;
       
-      // Si les dates du projet sont disponibles, les utiliser
-      if (projectStart && projectEnd) {
-        if (dateIso < projectStart || dateIso > projectEnd) {
-          return false; // Hors du projet
-        }
-      } else {
-        // Fallback : utiliser les dates de l'affectation
-        if (a.dateDebut != null) {
-          const assignmentStart = gristDateKey(a.dateDebut);
-          if (assignmentStart && dateIso < assignmentStart) {
-            return false;
-          }
-        }
-        if (a.dateFin != null) {
-          const assignmentEnd = gristDateKey(a.dateFin);
-          if (assignmentEnd && dateIso > assignmentEnd) {
-            return false;
-          }
-        }
-      }
+      if (projectStart) lowerBound = projectStart;
+      if (projectEnd) upperBound = projectEnd;
       
-      // Vérifier que ce n'est pas un week-end (sauf si explicitement autorisé)
-      if (!context.allowWeekends) {
-        const dateObj = new Date(dateIso + 'T00:00:00Z');
-        const dayOfWeek = dateObj.getUTCDay();
-        if (dayOfWeek === 0 || dayOfWeek === 6) {
-          return false; // Week-end
-        }
+      // Fallback sur dates affectation si projet indisponible
+      if (!lowerBound && a.dateDebut != null) {
+        const assignmentStart = gristDateKey(a.dateDebut);
+        if (assignmentStart) lowerBound = assignmentStart;
       }
-      
-      return true; // Date valide pour le mode ponctuel
-    }
-    
-    // Mode uniforme : vérification normale des dates de l'affectation
-    if (a.dateDebut != null) {
-      const assignmentStart = gristDateKey(a.dateDebut);
-      if (assignmentStart && dateIso < assignmentStart) {
-        return false; // Date avant le début
+      if (!upperBound && a.dateFin != null) {
+        const assignmentEnd = gristDateKey(a.dateFin);
+        if (assignmentEnd) upperBound = assignmentEnd;
+      }
+    } else {
+      // Mode uniforme : bornes = dates affectation
+      if (a.dateDebut != null) {
+        const assignmentStart = gristDateKey(a.dateDebut);
+        if (assignmentStart) lowerBound = assignmentStart;
+      }
+      if (a.dateFin != null) {
+        const assignmentEnd = gristDateKey(a.dateFin);
+        if (assignmentEnd) upperBound = assignmentEnd;
       }
     }
     
-    if (a.dateFin != null) {
-      const assignmentEnd = gristDateKey(a.dateFin);
-      if (assignmentEnd && dateIso > assignmentEnd) {
-        return false; // Date après la fin (fin inclusive)
+    // Rejeter si aucune borne connue
+    if (lowerBound === null && upperBound === null) {
+      return false;
+    }
+    
+    // Vérifier la date par rapport aux bornes
+    if (lowerBound !== null && dateIso < lowerBound) {
+      return false;
+    }
+    if (upperBound !== null && dateIso > upperBound) {
+      return false;
+    }
+    
+    // Vérifier que ce n'est pas un week-end (sauf si explicitement autorisé)
+    if (!context.allowWeekends) {
+      const dateObj = new Date(dateIso + 'T00:00:00Z');
+      const dayOfWeek = dateObj.getUTCDay();
+      if (dayOfWeek === 0 || dayOfWeek === 6) {
+        return false;
       }
     }
     
@@ -544,11 +546,12 @@ function localDayKeyFromMs(ms) {
 }
 
 /**
- * Calcule le lundi de la semaine ISO pour une date donnée
+ * Parse une date ISO de manière stricte
+ * Rejette les dates civiles invalides (2026-02-31, 2026-02-29 non bissextile, etc.)
  * @param {string} dateIso - Date ISO (YYYY-MM-DD)
- * @returns {string|null} Lundi de la semaine (YYYY-MM-DD) ou null si invalide
+ * @returns {Date|null} Date UTC ou null si invalide
  */
-function weekStartIsoFromDateIso(dateIso) {
+function parseStrictIsoDate(dateIso) {
   if (
     typeof dateIso !== 'string' ||
     !/^\d{4}-\d{2}-\d{2}$/.test(dateIso)
@@ -556,9 +559,35 @@ function weekStartIsoFromDateIso(dateIso) {
     return null;
   }
 
-  const date = new Date(dateIso + 'T00:00:00Z');
+  const parts = dateIso.split('-');
+  const year = Number(parts[0]);
+  const month = Number(parts[1]);
+  const day = Number(parts[2]);
 
-  if (Number.isNaN(date.getTime())) {
+  const date = new Date(
+    Date.UTC(year, month - 1, day)
+  );
+
+  if (
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month - 1 ||
+    date.getUTCDate() !== day
+  ) {
+    return null;
+  }
+
+  return date;
+}
+
+/**
+ * Calcule le lundi de la semaine ISO pour une date donnée
+ * @param {string} dateIso - Date ISO (YYYY-MM-DD)
+ * @returns {string|null} Lundi de la semaine (YYYY-MM-DD) ou null si invalide
+ */
+function weekStartIsoFromDateIso(dateIso) {
+  const date = parseStrictIsoDate(dateIso);
+  
+  if (!date) {
     return null;
   }
 
@@ -576,20 +605,13 @@ function weekStartIsoFromDateIso(dateIso) {
  * @returns {number|null} Timestamp en secondes ou null si invalide
  */
 function gristDateFromIso(dateIso) {
-  if (
-    typeof dateIso !== 'string' ||
-    !/^\d{4}-\d{2}-\d{2}$/.test(dateIso)
-  ) {
+  const date = parseStrictIsoDate(dateIso);
+  
+  if (!date) {
     return null;
   }
 
-  const ms = Date.parse(dateIso + 'T00:00:00Z');
-
-  if (!Number.isFinite(ms)) {
-    return null;
-  }
-
-  return Math.floor(ms / 1000);
+  return Math.floor(date.getTime() / 1000);
 }
 
 /**
@@ -1274,6 +1296,7 @@ const CRAController = {
   isPersonWeekLocked,
   localDayKeyFromMs,
   gristDateKey,
+  parseStrictIsoDate,
   weekStartIsoFromDateIso,
   gristDateFromIso,
   extractAddedRecordId,

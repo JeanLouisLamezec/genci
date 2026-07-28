@@ -5607,7 +5607,7 @@ function isIndispo(dayMs, indispos) {
 // ---- Demo -----------------------------------------------------------------
 function loadDemo() {
   S.alone = true; S.gOk = false; S.hasTable = true;
-  S.team = [{ id: 1, nom: 'Alice Martin' }, { id: 2, nom: 'Bob Durant' }, { id: 3, nom: 'Claire Bernard' }];
+  S.team = [{ id: 1, nom: 'Alice Martin', capaciteHebdo: 35 }, { id: 2, nom: 'Bob Durant', capaciteHebdo: 35 }, { id: 3, nom: 'Claire Bernard', capaciteHebdo: 35 }];
   S.me = 1; S.meName = 'Alice Martin';
   S.projects = [{ id: 1, nom: 'Refonte Portail' }, { id: 2, nom: 'App Mobile' }];
   S.tasks = [
@@ -5626,9 +5626,42 @@ function loadDemo() {
     { id: 5, membre: 2, tache: 2, date: d(0), heures: 6 },
     { id: 6, membre: 2, tache: 2, date: d(1), heures: 7 },
   ];
+  S.assignments = [
+    {
+      id: 101,
+      tache: 1,
+      membre: 1,
+      dateDebut: d(0),
+      dateFin: d(4),
+      heuresAllouees: 20,
+      modeRepartition: 'uniforme',
+      actif: true
+    },
+    {
+      id: 102,
+      tache: 2,
+      membre: 1,
+      dateDebut: d(0),
+      dateFin: d(4),
+      heuresAllouees: 20,
+      modeRepartition: 'uniforme',
+      actif: true
+    },
+    {
+      id: 103,
+      tache: 2,
+      membre: 2,
+      dateDebut: d(0),
+      dateFin: d(4),
+      heuresAllouees: 20,
+      modeRepartition: 'uniforme',
+      actif: true
+    }
+  ];
   S.feuilles = [
-    { id: 1, membre: 2, semaine: msToGrist(S.weekStart), statut: 'soumis' },
-    { id: 2, membre: 3, semaine: msToGrist(S.weekStart), statut: 'soumis' },
+    { id: 1, membre: 1, semaine: msToGrist(S.weekStart), statut: 'brouillon' },
+    { id: 2, membre: 2, semaine: msToGrist(S.weekStart), statut: 'soumis' },
+    { id: 3, membre: 3, semaine: msToGrist(S.weekStart), statut: 'soumis' },
   ];
   S.mesGeres = [2, 3];   // demo : Alice supervise Bob + Claire
   render();
@@ -6307,6 +6340,39 @@ function weekLabel() {
 }
 
 // ---- Saisie d'une cellule -------------------------------------------------
+
+/**
+ * Crée un adaptateur Grist minimal pour le mode démo (S.alone)
+ * Simule applyUserActions sans appeler l'API Grist réelle
+ */
+function createDemoGristAdapter() {
+  return {
+    docApi: {
+      applyUserActions: function(actions) {
+        const retValues = [];
+        for (const action of actions) {
+          const [type, tableName, recordId, data] = action;
+          
+          if (type === 'AddRecord' && tableName === 'TimeEntries') {
+            // Générer un ID déterministe
+            const maxId = S.entries.length > 0 ? Math.max.apply(null, S.entries.map(function(e) { return e.id; })) : 0;
+            const newId = maxId + 1;
+            retValues.push(newId);
+          } else if (type === 'UpdateRecord' && tableName === 'TimeEntries') {
+            retValues.push(null);
+          } else if (type === 'RemoveRecord' && tableName === 'TimeEntries') {
+            retValues.push(null);
+          } else {
+            // Tables non supportées en mode démo
+            throw new Error('Table non supportée en mode démo: ' + tableName);
+          }
+        }
+        return Promise.resolve({ retValues: retValues });
+      }
+    }
+  };
+}
+
 async function setCell(taskId, dayMs, personId, qtyStr) {
   // ROUTAGE MODE CORRECTION MANAGER
   if (S.managerCorrectionSheetId) {
@@ -6367,6 +6433,9 @@ async function setCell(taskId, dayMs, personId, qtyStr) {
   // PRÉPARER LES DÉPENDANCES POUR LE CONTRÔLEUR
   const dayIso = CRAController.localDayKeyFromMs(dayMs);
   
+  // Utiliser l'adaptateur démo si S.alone est vrai
+  const effectiveGrist = S.alone ? createDemoGristAdapter() : grist;
+  
   // APPELER LA FONCTION TESTABLE DU CONTRÔLEUR
   // C'est le vrai parcours de sauvegarde du CRA
   const result = await CRAController.saveCraCellChange({
@@ -6383,7 +6452,7 @@ async function setCell(taskId, dayMs, personId, qtyStr) {
     sheets: S.feuilles,
     dailyCapacities: S.dailyCapacities || [],
     team: S.team || [],
-    grist: grist
+    grist: effectiveGrist
   });
   
   // TRAITER LE RÉSULTAT
