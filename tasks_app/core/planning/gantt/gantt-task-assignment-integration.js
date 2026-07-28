@@ -579,14 +579,14 @@
         // =========================================================================
 
 /**
-          * Construit les affectations désirées depuis les données du formulaire Gantt
-          * Fonction PURE de mapping - ne décide PAS si une synchronisation est nécessaire
-          * @param {Object} task - La tâche (avec id, dateDebut, dateEcheance)
-          * @param {Object} editData - Données du formulaire (assignees, charges, assignmentModes)
-          * @param {Object} [options] - Options supplémentaires
-          * @param {Object} [context] - Contexte avec existingAssignments pour préserver le mode
-          * @returns {Array} Tableau d'affectations normalisées
-          */
+         * Construit les affectations désirées depuis les données du formulaire Gantt
+         * Fonction PURE de mapping - ne décide PAS si une synchronisation est nécessaire
+         * @param {Object} task - La tâche (avec id, dateDebut, dateEcheance)
+         * @param {Object} editData - Données du formulaire (assignees, charges, assignmentModes)
+         * @param {Object} [options] - Options supplémentaires
+         * @param {Object} [context] - Contexte avec existingAssignments pour préserver le mode
+         * @returns {Array|{ok: false, code: string, errors: Array}} Tableau d'affectations normalisées ou erreur de validation
+         */
         function buildDesiredAssignments(task, editData, options, context) {
             if (!task || !editData) return [];
 
@@ -605,6 +605,7 @@
             var assignmentModes = editData.assignmentModes || {};
             
             var assignments = [];
+            var validationErrors = [];
 
             // Pour chaque assigné, créer une affectation si une charge est définie
             assigneeIds.forEach(function(memberId) {
@@ -615,22 +616,45 @@
                 // Règle : ne créer une affectation que si la charge est strictement positive
                 if (allocatedHours > 0) {
                     var finalMode = null;
+                    var hasExplicitMode = Object.prototype.hasOwnProperty.call(assignmentModes, memberId);
                     
-                    if (assignmentModes[memberId]) {
-                        // Mode explicite pour ce membre → l'utiliser
-                        finalMode = assignmentModes[memberId];
+                    if (hasExplicitMode) {
+                        // Mode explicite pour ce membre — validation stricte
+                        var explicitMode = assignmentModes[memberId];
+                        if (explicitMode !== 'uniforme' && explicitMode !== 'ponctuel') {
+                            validationErrors.push({
+                                memberId: memberId,
+                                value: explicitMode,
+                                code: 'INVALID_DISTRIBUTION_MODE'
+                            });
+                            return; // Skip this member
+                        }
+                        finalMode = explicitMode;
                     } else if (context.existingAssignments) {
                         // Pas de mode explicite → préserver le mode existant
                         var existingAssignment = context.existingAssignments.find(function(a) {
                             return a.membre === memberId && a.actif !== false;
                         });
                         
-                        if (existingAssignment && existingAssignment.modeRepartition) {
-                            finalMode = existingAssignment.modeRepartition;
+                        if (existingAssignment) {
+                            var existingMode = existingAssignment.modeRepartition;
+                            // Valider le mode existant
+                            if (existingMode && existingMode !== 'uniforme' && existingMode !== 'ponctuel') {
+                                validationErrors.push({
+                                    memberId: memberId,
+                                    value: existingMode,
+                                    code: 'INVALID_DISTRIBUTION_MODE'
+                                });
+                                return; // Skip this member
+                            }
+                            // Si mode existant est null/undefined/vide, fallback à uniforme
+                            if (existingMode) {
+                                finalMode = existingMode;
+                            }
                         }
                     }
                     
-                    // Fallback à 'uniforme' si aucun mode déterminé
+                    // Fallback à 'uniforme' si aucun mode déterminé (pas de mode explicite, pas d'existant)
                     if (!finalMode) {
                         finalMode = 'uniforme';
                     }
@@ -646,6 +670,15 @@
                     });
                 }
             });
+
+            // Retourner les erreurs de validation si présentes
+            if (validationErrors.length > 0) {
+                return {
+                    ok: false,
+                    code: 'INVALID_DISTRIBUTION_MODE',
+                    errors: validationErrors
+                };
+            }
 
             return assignments;
         }
@@ -678,6 +711,12 @@
                     };
 
                     var desiredAssignments = buildDesiredAssignments(taskData, editData);
+                    
+                    // Validation échouée — retour immédiat, zéro écriture
+                    if (desiredAssignments && desiredAssignments.ok === false) {
+                        log('Validation des modes échouée : ' + JSON.stringify(desiredAssignments));
+                        return desiredAssignments;
+                    }
                     
                     console.info('[TaskAssignment lifecycle]', {
                         phase: 'create',
@@ -829,6 +868,12 @@
                         var desiredAssignments = buildDesiredAssignments(taskData, editData, { assignmentsEdited: true }, {
                             existingAssignments: existingAssignments
                         });
+
+                        // Validation échouée — retour immédiat, zéro écriture
+                        if (desiredAssignments && desiredAssignments.ok === false) {
+                            log('Validation des modes échouée : ' + JSON.stringify(desiredAssignments));
+                            return desiredAssignments;
+                        }
 
                         // PHASE A.1 : Précontrôle AVANT toute synchronisation
                         var precheckResult = await precheckMemberRemovals(taskId, existingAssignments, desiredAssignments);

@@ -26,9 +26,6 @@
             /* Layout */
             --row-height: 44px; --task-list-width: 260px; --cell-width: 34px; --panel-width: 400px;
         }
-            /* Layout */
-            --row-height: 44px; --task-list-width: 260px; --cell-width: 34px; --panel-width: 400px;
-        }
         * { margin: 0; padding: 0; box-sizing: border-box; }
         html, body { height: 100%; overflow: hidden; }
         body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); display: flex; flex-direction: column; }
@@ -6603,11 +6600,10 @@ if (typeof globalThis !== 'undefined') {
                     assignees: [], dependDe: [], tags: [], estimationH: null, tempsPasse: null, subtasks: [],
                     couleur: null, parentTask: parentId || null, charges: []
                 },
-                assignmentModes: {},
-                originalAssignmentModes: {}
-            };
-            };
-            renderPanel();
+assignmentModes: {},
+            originalAssignmentModes: {}
+        };
+        renderPanel();
             openPanel();
             render();
             setTimeout(() => { const el = document.getElementById('taskTitle'); if (el) el.focus(); }, 100);
@@ -6675,6 +6671,158 @@ if (typeof globalThis !== 'undefined') {
                 charges: (data.charges || []).map(c => ({ ...c })),
                 dateCloture: data.dateCloture || null
             };
+        }
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // HELPERS COMMUNS (LOT B2)
+        // ═══════════════════════════════════════════════════════════════════════
+        function normalizeAssigneeIds(value) {
+            if (!Array.isArray(value)) return [];
+            return value
+                .filter(function(v) { return v !== 'L'; })
+                .map(function(v) { return Number(v); })
+                .filter(function(v) { return Number.isInteger(v) && v > 0; })
+                .sort(function(a, b) { return a - b; });
+        }
+
+        function normalizeAssignmentModes(modes, assigneeIds) {
+            var normalized = {};
+            var errors = [];
+            (assigneeIds || []).forEach(function(memberId) {
+                var id = Number(memberId);
+                if (!Number.isInteger(id) || id <= 0) return;
+                var hasExplicitValue = modes && Object.prototype.hasOwnProperty.call(modes, id);
+                var mode = hasExplicitValue ? modes[id] : 'uniforme';
+                if (mode !== 'uniforme' && mode !== 'ponctuel') {
+                    errors.push({
+                        memberId: id,
+                        value: mode,
+                        code: 'INVALID_DISTRIBUTION_MODE'
+                    });
+                    return;
+                }
+                normalized[id] = mode;
+            });
+            return {
+                ok: errors.length === 0,
+                modes: normalized,
+                errors: errors
+            };
+        }
+
+        function assignmentModesEqual(a, b, assigneeIds) {
+            var left = normalizeAssignmentModes(a, assigneeIds);
+            var right = normalizeAssignmentModes(b, assigneeIds);
+            if (!left.ok || !right.ok) return false;
+            return JSON.stringify(left.modes) === JSON.stringify(right.modes);
+        }
+
+        async function verifyPersistedAssignmentModes(taskId, expectedModes, assigneeIds) {
+            try {
+                var assignmentsTable = await grist.docApi.fetchTable('TaskAssignments');
+                var assignmentsByMember = {};
+                var actualModesByMember = {};
+                var errors = [];
+
+                // Collecter toutes les affectations actives par membre
+                if (assignmentsTable.id) {
+                    for (var i = 0; i < assignmentsTable.id.length; i++) {
+                        if (assignmentsTable.tache[i] === taskId && assignmentsTable.actif[i] !== false) {
+                            var memberId = assignmentsTable.membre[i];
+                            var mode = assignmentsTable.modeRepartition[i] || 'uniforme';
+
+                            if (!assignmentsByMember[memberId]) {
+                                assignmentsByMember[memberId] = [];
+                            }
+                            assignmentsByMember[memberId].push({
+                                id: assignmentsTable.id[i],
+                                mode: mode
+                            });
+                        }
+                    }
+                }
+
+                // Vérifier chaque membre attendu
+                for (var j = 0; j < assigneeIds.length; j++) {
+                    var memberId = assigneeIds[j];
+                    var memberAssignments = assignmentsByMember[memberId];
+
+                    if (!memberAssignments || memberAssignments.length === 0) {
+                        // MISSING_ACTIVE_ASSIGNMENT
+                        errors.push({
+                            code: 'MISSING_ACTIVE_ASSIGNMENT',
+                            memberId: memberId,
+                            expectedMode: expectedModes[memberId]
+                        });
+                    } else if (memberAssignments.length > 1) {
+                        // DUPLICATE_ACTIVE_ASSIGNMENTS
+                        errors.push({
+                            code: 'DUPLICATE_ACTIVE_ASSIGNMENTS',
+                            memberId: memberId,
+                            count: memberAssignments.length,
+                            assignmentIds: memberAssignments.map(function(a) { return a.id; })
+                        });
+                    } else {
+                        // Exactement une affectation — vérifier le mode
+                        var actualMode = memberAssignments[0].mode;
+                        actualModesByMember[memberId] = actualMode;
+
+                        if (actualMode !== 'uniforme' && actualMode !== 'ponctuel') {
+                            // INVALID_DISTRIBUTION_MODE
+                            errors.push({
+                                code: 'INVALID_DISTRIBUTION_MODE',
+                                memberId: memberId,
+                                actualMode: actualMode
+                            });
+                        } else if (expectedModes[memberId] && actualMode !== expectedModes[memberId]) {
+                            // Mode mismatch
+                            errors.push({
+                                code: 'ASSIGNMENT_MODE_MISMATCH',
+                                memberId: memberId,
+                                expectedMode: expectedModes[memberId],
+                                actualMode: actualMode
+                            });
+                        }
+                    }
+                }
+
+                // Vérifier les affectations inattendues (membres non dans assigneeIds)
+                var expectedMemberIds = {};
+                for (var k = 0; k < assigneeIds.length; k++) {
+                    expectedMemberIds[assigneeIds[k]] = true;
+                }
+
+                Object.keys(assignmentsByMember).forEach(function(memberId) {
+                    var mid = Number(memberId);
+                    if (!expectedMemberIds[mid]) {
+                        // UNEXPECTED_ACTIVE_ASSIGNMENT
+                        errors.push({
+                            code: 'UNEXPECTED_ACTIVE_ASSIGNMENT',
+                            memberId: mid,
+                            assignmentIds: assignmentsByMember[memberId].map(function(a) { return a.id; })
+                        });
+                    }
+                });
+
+                if (errors.length === 0) {
+                    return { ok: true, actualModes: actualModesByMember };
+                } else {
+                    return {
+                        ok: false,
+                        code: 'ASSIGNMENT_MODE_POSTCONDITION_FAILED',
+                        errors: errors,
+                        actualModes: actualModesByMember,
+                        expectedModes: expectedModes
+                    };
+                }
+            } catch (e) {
+                console.warn('[Gantt] Erreur vérification postcondition modes:', e);
+                return {
+                    ok: false,
+                    code: 'ASSIGNMENT_MODE_POSTCONDITION_FAILED',
+                    error: e.message
+                };
+            }
         }
 
         // FIX: Synchroniser editData vers le task local dans tasks[]
@@ -7270,24 +7418,6 @@ if (typeof globalThis !== 'undefined') {
                 return true;
             }
 
-            // LOT B2 : Helpers pour les modes par membre
-            function normalizeAssignmentModes(modes, assigneeIds) {
-                var result = {};
-                (assigneeIds || []).forEach(function(memberId) {
-                    var id = Number(memberId);
-                    if (!Number.isInteger(id) || id <= 0) return;
-                    var mode = modes && modes[id] ? modes[id] : 'uniforme';
-                    result[id] = mode === 'ponctuel' ? 'ponctuel' : 'uniforme';
-                });
-                return result;
-            }
-
-            function assignmentModesEqual(a, b, assigneeIds) {
-                var left = normalizeAssignmentModes(a, assigneeIds);
-                var right = normalizeAssignmentModes(b, assigneeIds);
-                return JSON.stringify(left) === JSON.stringify(right);
-            }
-
             const datesChanged =
                 normalizeDate(saveData.dateDebut) !== normalizeDate(originalData.dateDebut) ||
                 normalizeDate(saveData.dateEcheance) !== normalizeDate(originalData.dateEcheance);
@@ -7300,8 +7430,18 @@ if (typeof globalThis !== 'undefined') {
             const chargesChanged = JSON.stringify(normalizeChargesValue(saveData.charges)) !== JSON.stringify(normalizeChargesValue(originalData.charges));
 
             // LOT B2 : Détecter le changement de mode de répartition PAR MEMBRE
-            var currentAssignmentModes = normalizeAssignmentModes(panelState.assignmentModes, normalizeAssigneeIds(saveData.assignees));
-            var originalAssignmentModes = normalizeAssignmentModes(panelState.originalAssignmentModes, normalizeAssigneeIds(originalData.assignees));
+            var currentModesResult = normalizeAssignmentModes(panelState.assignmentModes, normalizeAssigneeIds(saveData.assignees));
+            var originalModesResult = normalizeAssignmentModes(panelState.originalAssignmentModes, normalizeAssigneeIds(originalData.assignees));
+
+            // Validation fail-closed : bloquer si mode invalide
+            if (!currentModesResult.ok) {
+                console.error('[Gantt] Modes invalides:', currentModesResult.errors);
+                showToast('Mode de répartition invalide (utilisez "Régulier" ou "Ponctuel")', 'error');
+                return;
+            }
+
+            var currentAssignmentModes = currentModesResult.modes;
+            var originalAssignmentModes = originalModesResult.modes;
             const modeChanged = !assignmentModesEqual(panelState.assignmentModes, panelState.originalAssignmentModes, normalizeAssigneeIds(saveData.assignees));
 
             console.info('[Gantt date sync decision]', {
@@ -7396,67 +7536,41 @@ if (typeof globalThis !== 'undefined') {
                 }
                 
                 if (assignmentSyncSuccess) {
-                    // Utiliser le résultat de la planification automatique si disponible
+                    // LOT B2 : Vérifier la postcondition AVANT d'afficher le succès
+                    var verification = await verifyPersistedAssignmentModes(
+                        taskId,
+                        currentAssignmentModes,
+                        normalizeAssigneeIds(saveData.assignees)
+                    );
+
+                    if (!verification.ok) {
+                        // Échec postcondition — retour immédiat, aucun succès visuel
+                        console.warn('[Gantt] Postcondition échouée :', verification);
+                        showToast('Impossible de confirmer l\'enregistrement des types de planification', 'error');
+                        return;
+                    }
+                    // Succès — mettre à jour originalAssignmentModes et afficher le message approprié
+                    panelState.originalAssignmentModes = { ...currentAssignmentModes };
+                    panelState.originalTask = cloneEditableTaskData(saveData);
+
+                    // Messages de succès incluant modeChanged
                     if (syncResult && syncResult.planningResult) {
                         showPlanningResult(syncResult.planningResult);
+                    } else if (datesChanged && (assigneesChanged || chargesChanged || modeChanged)) {
+                        showToast('Dates et affectations enregistrées', 'success');
+                    } else if (datesChanged) {
+                        showToast('Dates enregistrées', 'success');
+                    } else if (assigneesChanged || chargesChanged || modeChanged) {
+                        showToast('Affectations enregistrées', 'success');
                     } else {
-                        // Messages par défaut si pas de résultat de planification
-                        if (datesChanged && (assigneesChanged || chargesChanged)) {
-                            showToast('Dates et affectations enregistrées', 'success');
-                        } else if (datesChanged) {
-                            showToast('Dates enregistrées', 'success');
-                        } else if (assigneesChanged || chargesChanged) {
-                            showToast('Affectations enregistrées', 'success');
-                        } else {
-                            showToast('Tâche enregistrée', 'success');
-                        }
+                        showToast('Tâche enregistrée', 'success');
                     }
+
+                    showSaveIndicator();
+                    const idx = tasks.findIndex(t => t.id === taskId);
+                    if (idx !== -1) tasks[idx] = { ...tasks[idx], ...record };
                 } else {
                     showToast('Tâche enregistrée, mais échec synchronisation : ' + syncErrorMessage, 'warning');
-                }
-                
-                showSaveIndicator();
-                const idx = tasks.findIndex(t => t.id === taskId);
-                if (idx !== -1) tasks[idx] = { ...tasks[idx], ...record };
-
-                if (assignmentSyncSuccess && syncResult && syncResult.ok) {
-                    // LOT B2 : Postcondition — vérifier que les modes ont été correctement persistés
-                    (async function() {
-                        try {
-                            var assignmentsTable = await grist.docApi.fetchTable('TaskAssignments');
-                            var actualModesByMember = {};
-                            
-                            if (assignmentsTable.id) {
-                                for (var i = 0; i < assignmentsTable.id.length; i++) {
-                                    if (assignmentsTable.tache[i] === taskId && assignmentsTable.actif[i] !== false) {
-                                        var memberId = assignmentsTable.membre[i];
-                                        var mode = assignmentsTable.modeRepartition[i] || 'uniforme';
-                                        actualModesByMember[memberId] = mode;
-                                    }
-                                }
-                            }
-                            
-                            // Comparer les modes réels avec les modes attendus
-                            var postconditionOk = assignmentModesEqual(actualModesByMember, currentAssignmentModes, normalizeAssigneeIds(saveData.assignees));
-                            
-                            if (postconditionOk) {
-                                // Succès — mettre à jour originalAssignmentModes
-                                panelState.originalAssignmentModes = { ...currentAssignmentModes };
-                                panelState.originalTask = cloneEditableTaskData(saveData);
-                            } else {
-                                // Échec postcondition — ne pas mettre à jour originalAssignmentModes
-                                console.warn('[Gantt] Postcondition échouée : modes réels != modes attendus');
-                                console.warn('[Gantt] Attendus:', currentAssignmentModes);
-                                console.warn('[Gantt] Réels:', actualModesByMember);
-                                showToast('Affectations enregistrées, mais vérification des modes échouée', 'warning');
-                            }
-                        } catch (e) {
-                            console.warn('[Gantt] Erreur vérification postcondition modes:', e);
-                            // En cas d'erreur, mettre à jour quand même pour ne pas bloquer l'UX
-                            panelState.originalAssignmentModes = { ...currentAssignmentModes };
-                            panelState.originalTask = cloneEditableTaskData(saveData);
-                        }
-                    })();
                 }
             } catch (e) {
                 console.error(e);
@@ -7474,6 +7588,16 @@ if (typeof globalThis !== 'undefined') {
                 showToast('La date de début ne peut pas dépasser la date de fin', 'error');
                 return;
             }
+
+            // LOT B2 : Validation fail-closed des modes AVANT création
+            var assigneeIds = normalizeAssigneeIds(data.assignees);
+            var normalizedModesResult = normalizeAssignmentModes(panelState.assignmentModes, assigneeIds);
+            if (!normalizedModesResult.ok) {
+                console.warn('[Gantt] Modes invalides détectés avant création:', normalizedModesResult.errors);
+                showToast('Modes de répartition invalides : ' + normalizedModesResult.errors.map(function(e) { return 'membre ' + e.memberId + ' (' + e.value + ')'; }).join(', '), 'error');
+                return;
+            }
+            var currentAssignmentModes = normalizedModesResult.modes;
 
             const record = {
                 titre: data.titre, description: data.description || '', type: data.type || 'tache',
@@ -7509,7 +7633,7 @@ if (typeof globalThis !== 'undefined') {
                     // 3. Synchroniser les affectations
                     // LOT B2 : Transmettre assignmentModes normalisés
                     var createData = Object.assign({}, data, {
-                        assignmentModes: normalizeAssignmentModes(panelState.assignmentModes, normalizeAssigneeIds(data.assignees))
+                        assignmentModes: currentAssignmentModes
                     });
                     var syncResult = await assignmentIntegration.onTaskCreated(taskId, createData);
                     console.log('[Gantt] Synchronisation TaskAssignments', syncResult);
@@ -7521,7 +7645,21 @@ if (typeof globalThis !== 'undefined') {
                         return;
                     }
                     
-                    // 4. La planification automatique est gérée par onTaskCreated
+                    // 4. LOT B2 : Vérifier la postcondition AVANT toast de succès
+                    var verification = await verifyPersistedAssignmentModes(
+                        taskId,
+                        currentAssignmentModes,
+                        assigneeIds
+                    );
+
+                    if (!verification.ok) {
+                        console.warn('[Gantt] Postcondition échouée après création:', verification);
+                        showToast('Impossible de confirmer l\'enregistrement des types de planification', 'error');
+                        await loadAllData();
+                        return;
+                    }
+
+                    // 5. La planification automatique est gérée par onTaskCreated
                     // Utiliser le résultat de la planification si disponible
                     if (syncResult && syncResult.planningResult) {
                         showPlanningResult(syncResult.planningResult);
