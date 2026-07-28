@@ -6404,8 +6404,20 @@ async function setCell(taskId, dayMs, personId, qtyStr) {
     projectContext  // PHASE B : Contexte pour le mode ponctuel
   );
   
+  if (assignmentResult.status === 'invalid') {
+    toast('Type de planification invalide sur l\'affectation');
+    render();
+    return;
+  }
+  
   if (assignmentResult.status === 'ambiguous') {
     toast('Erreur : plusieurs affectations actives pour cette tâche. Veuillez corriger le planning.');
+    render();
+    return;
+  }
+  
+  if (assignmentResult.status === 'missing') {
+    toast('Aucune affectation autorisée pour cette date');
     render();
     return;
   }

@@ -56,19 +56,37 @@
 function resolveActiveAssignment(taskId, personId, dateIso, assignments, context) {
   context = context || {};
   
-  // PHASE 1.1.3 - CORRECTION BORNES INCLUSIVES
-  // Utiliser gristDateKey pour comparer des dates civiles (YYYY-MM-DD)
-  // et non des timestamps avec fuseaux horaires
-  
-  const activeAssignments = (assignments || []).filter(a => {
-    // Vérifier actif
+  // ÉTAPE 1 : Filtrer les affectations par tâche, membre et actif
+  const candidateAssignments = (assignments || []).filter(a => {
     if (a.actif === false) return false;
-    
-    // Vérifier tâche et membre
     if (a.tache !== taskId || a.membre !== personId) return false;
+    return true;
+  });
+  
+  // ÉTAPE 2 : Vérifier si une affectation candidate a un mode invalide
+  const validModes = ['uniforme', 'ponctuel'];
+  const hasInvalidMode = candidateAssignments.some(a => {
+    // Absence de mode = uniforme (rétrocompatibilité)
+    if (!a.modeRepartition) return false;
+    return !validModes.includes(a.modeRepartition);
+  });
+  
+  if (hasInvalidMode) {
+    return {
+      status: 'invalid',
+      assignment: null,
+      assignments: candidateAssignments,
+      code: 'INVALID_DISTRIBUTION_MODE'
+    };
+  }
+  
+  // ÉTAPE 3 : Filtrer par date selon le mode
+  const activeAssignments = candidateAssignments.filter(a => {
+    // Rétrocompatibilité : absence de mode = uniforme
+    const mode = a.modeRepartition || 'uniforme';
     
     // PHASE B — MODE PONCTUEL
-    const isPonctuel = (a.modeRepartition === 'ponctuel');
+    const isPonctuel = (mode === 'ponctuel');
     
     if (isPonctuel) {
       // Mode ponctuel : vérifier les dates du projet parent
@@ -872,6 +890,210 @@ function dailyCapacityForPersonAndDate(personId, dayMs, dailyCapacities, team, a
   return result;
 }
 
+/**
+ * Sauvegarde une saisie CRA en suivant le vrai parcours métier
+ * 
+ * Fonction testable utilisée par setCell() et les tests stateful.
+ * 
+ * @param {Object} input - Paramètres de saisie
+ * @param {number} input.taskId - ID de la tâche
+ * @param {number} input.personId - ID de la personne
+ * @param {string} input.dateIso - Date ISO (YYYY-MM-DD)
+ * @param {number} input.hours - Heures saisies
+ * @param {Object} input.dependencies - Dépendances injectées
+ * @param {Array} input.dependencies.tasks - Toutes les tâches
+ * @param {Array} input.dependencies.projects - Tous les projets
+ * @param {Array} input.dependencies.assignments - Toutes les affectations
+ * @param {Array} input.dependencies.entries - Toutes les TimeEntries
+ * @param {Array} input.dependencies.sheets - Toutes les feuilles
+ * @param {Array} input.dependencies.dailyCapacities - Toutes les capacités quotidiennes
+ * @param {Array} input.dependencies.team - Équipe
+ * @param {Object} input.grist - API Grist injectée (docApi)
+ * @param {boolean} [input.allowWeekends=false] - Autoriser les week-ends
+ * @returns {Promise<Object>} Résultat structuré
+ */
+async function saveCraCellChange(input, dependencies) {
+  const { taskId, personId, dateIso, hours } = input;
+  const { tasks, projects, assignments, entries, sheets, dailyCapacities, team, grist } = dependencies;
+  const allowWeekends = input.allowWeekends || false;
+  
+  // ÉTAPE 1 : Retrouver la tâche et le projet
+  const task = (tasks || []).find(t => t.id === taskId);
+  if (!task) {
+    return {
+      ok: false,
+      action: 'blocked',
+      code: 'TASK_NOT_FOUND'
+    };
+  }
+  
+  const project = task.projet ? (projects || []).find(p => p.id === task.projet) : null;
+  
+  // ÉTAPE 2 : Construire le contexte projet
+  const projectContext = {
+    projectStartDate: project ? project.dateDebut : null,
+    projectEndDate: project ? project.dateFin : null,
+    allowWeekends: allowWeekends
+  };
+  
+  // ÉTAPE 3 : Résoudre l'affectation active
+  const assignmentResult = resolveActiveAssignment(
+    taskId,
+    personId,
+    dateIso,
+    assignments,
+    projectContext
+  );
+  
+  if (assignmentResult.status === 'invalid') {
+    return {
+      ok: false,
+      action: 'blocked',
+      code: 'INVALID_DISTRIBUTION_MODE'
+    };
+  }
+  
+  if (assignmentResult.status === 'ambiguous') {
+    return {
+      ok: false,
+      action: 'blocked',
+      code: 'AMBIGUOUS_ACTIVE_ASSIGNMENT'
+    };
+  }
+  
+  if (assignmentResult.status === 'missing') {
+    return {
+      ok: false,
+      action: 'blocked',
+      code: 'MISSING_ACTIVE_ASSIGNMENT'
+    };
+  }
+  
+  const activeAssignment = assignmentResult.assignment;
+  
+  // ÉTAPE 4 : Résoudre l'entrée éditable
+  const entryResult = resolveEditableCellEntry(
+    entries, taskId, dateIso, personId, activeAssignment
+  );
+  
+  if (entryResult.status === 'multiple') {
+    return {
+      ok: false,
+      action: 'blocked',
+      code: 'DUPLICATE_TIME_ENTRY'
+    };
+  }
+  
+  const existingEntry = entryResult.entry;
+  const hasPlanningData = hasPlanningFields(existingEntry);
+  
+  // ÉTAPE 5 : Retrouver la feuille
+  let currentSheet = (sheets || []).find(f => {
+    const sheetDate = gristDateKey(f.semaine);
+    return f.membre === personId && sheetDate === dateIso;
+  });
+  
+  // ÉTAPE 6 : Déterminer l'action
+  let actionResult = determineEntryAction(
+    existingEntry, hours, activeAssignment, currentSheet, hasPlanningData
+  );
+  
+  if (actionResult.action === 'blocked') {
+    return {
+      ok: false,
+      action: 'blocked',
+      code: actionResult.reason
+    };
+  }
+  
+  if (actionResult.action === 'none') {
+    return {
+      ok: true,
+      action: 'none',
+      entryId: existingEntry ? existingEntry.id : null,
+      assignmentId: activeAssignment.id,
+      sheetId: currentSheet ? currentSheet.id : null,
+      fields: {},
+      actionsExecuted: 0
+    };
+  }
+  
+  // ÉTAPE 7 : Construire et appliquer l'action
+  let entryId = existingEntry ? existingEntry.id : null;
+  let actionsExecuted = 0;
+  
+  if (actionResult.action === 'delete' && existingEntry) {
+    if (grist && grist.docApi) {
+      await grist.docApi.applyUserActions([
+        ['RemoveRecord', 'TimeEntries', existingEntry.id]
+      ]);
+    }
+    actionsExecuted = 1;
+  } else if (actionResult.action === 'update' && existingEntry) {
+    if (grist && grist.docApi) {
+      await grist.docApi.applyUserActions([
+        ['UpdateRecord', 'TimeEntries', existingEntry.id, actionResult.fields]
+      ]);
+    }
+    entryId = existingEntry.id;
+    actionsExecuted = 1;
+  } else if (actionResult.action === 'create') {
+    if (!currentSheet || !currentSheet.id) {
+      return {
+        ok: false,
+        action: 'blocked',
+        code: 'MISSING_WEEKLY_SHEET'
+      };
+    }
+    
+    // Obtenir la capacité quotidienne
+    const dayMs = new Date(dateIso + 'T00:00:00Z').getTime();
+    const capacityResult = dailyCapacityForPersonAndDate(
+      personId,
+      dayMs,
+      dailyCapacities || [],
+      team || [],
+      []
+    );
+    
+    const fieldsToCreate = {
+      membre: personId,
+      tache: taskId,
+      date: dateIso,
+      heures: hours,
+      heuresPrevues: 0,
+      revisionPlan: 0,
+      affectation: activeAssignment.id,
+      feuille: currentSheet.id,
+      capaciteJour: capacityResult.capacityRecordId,
+      capaciteTheorique: capacityResult.theoreticalCapacity,
+      capaciteDisponible: capacityResult.availableCapacity
+    };
+    
+    if (grist && grist.docApi) {
+      const r = await grist.docApi.applyUserActions([
+        ['AddRecord', 'TimeEntries', null, fieldsToCreate]
+      ]);
+      
+      // Extraire l'ID créé
+      if (r && r.retValues && r.retValues[0]) {
+        entryId = r.retValues[0];
+      }
+      actionsExecuted = 1;
+    }
+  }
+  
+  return {
+    ok: true,
+    action: actionResult.action,
+    entryId: entryId,
+    assignmentId: activeAssignment.id,
+    sheetId: currentSheet ? currentSheet.id : null,
+    fields: actionResult.fields,
+    actionsExecuted: actionsExecuted
+  };
+}
+
 const CRAController = {
   resolveActiveAssignment,
   resolveEditableCellEntry,
@@ -883,13 +1105,12 @@ const CRAController = {
   localDayKeyFromMs,
   gristDateKey,
   dailyCapacityForPersonAndDate,
-  // PHASE 3 : helpers métier exportés
   hasExplicitActualHours,
   effectiveDisplayedHours,
   isPrefilledFromPlanning,
   buildSubmissionEntryPatch,
-  // PHASE 4 : état de cellule
-  buildCellDisplayState
+  buildCellDisplayState,
+  saveCraCellChange
 };
 
 if (typeof globalThis !== 'undefined') {

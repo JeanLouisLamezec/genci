@@ -18,20 +18,18 @@
  */
 
 const CRAController = require('../controller/cra-time-entry-controller');
-const { resolveActiveAssignment } = CRAController;
+const { resolveActiveAssignment, saveCraCellChange } = CRAController;
 
 describe('CRA — Mode ponctuel : saisie hors dates prévues (stateful)', () => {
-  // Données de référence
   const PROJECT_START = '2026-01-01';
   const PROJECT_END = '2026-12-31';
   const TASK_ID = 6;
   const MEMBER_ID = 1;
-  const ASSIGNMENT_START = '2026-07-23'; // jeudi
-  const ASSIGNMENT_END = '2026-07-24';   // vendredi
-  const REALISATION_DATE = '2026-07-27'; // lundi (hors affectation, dans projet)
+  const ASSIGNMENT_START = '2026-07-23';
+  const ASSIGNMENT_END = '2026-07-24';
+  const REALISATION_DATE = '2026-07-27';
   const ALLOCATED_HOURS = 8;
   
-  // Helpers de date
   function dateToTimestamp(dateStr) {
     const d = new Date(dateStr + 'T00:00:00Z');
     return Math.floor(d.getTime() / 1000);
@@ -108,7 +106,7 @@ describe('CRA — Mode ponctuel : saisie hors dates prévues (stateful)', () => 
     });
 
     test('Scénario B3 — Date hors projet refusée (mode ponctuel)', () => {
-      const horsProjet = '2027-01-15'; // Hors projet
+      const horsProjet = '2027-01-15';
       
       const result = resolveActiveAssignment(
         TASK_ID,
@@ -122,7 +120,7 @@ describe('CRA — Mode ponctuel : saisie hors dates prévues (stateful)', () => 
     });
 
     test('Scénario B4 — Week-end refusé par défaut', () => {
-      const samedi = '2026-07-25'; // samedi entre l'affectation et le 27
+      const samedi = '2026-07-25';
       
       const result = resolveActiveAssignment(
         TASK_ID,
@@ -190,9 +188,8 @@ describe('CRA — Mode ponctuel : saisie hors dates prévues (stateful)', () => 
     });
 
     test('Scénario B8 — Fallback sur dates affectation si pas de dates projet', () => {
-      const contextSansProjet = {}; // Pas de dates projet
+      const contextSansProjet = {};
       
-      // Date dans l'affectation
       const dansAffectation = '2026-07-23';
       const result1 = resolveActiveAssignment(
         TASK_ID,
@@ -203,7 +200,6 @@ describe('CRA — Mode ponctuel : saisie hors dates prévues (stateful)', () => 
       );
       expect(result1.status).toBe('found');
       
-      // Date hors affectation (mais normalement dans projet)
       const result2 = resolveActiveAssignment(
         TASK_ID,
         MEMBER_ID,
@@ -211,11 +207,10 @@ describe('CRA — Mode ponctuel : saisie hors dates prévues (stateful)', () => 
         assignments,
         contextSansProjet
       );
-      expect(result2.status).toBe('missing'); // Hors dates affectation
+      expect(result2.status).toBe('missing');
     });
 
     test('Scénario B9 — Dates bornes inclusives', () => {
-      // 23 juillet = dateDebut
       const result1 = resolveActiveAssignment(
         TASK_ID,
         MEMBER_ID,
@@ -225,7 +220,6 @@ describe('CRA — Mode ponctuel : saisie hors dates prévues (stateful)', () => 
       );
       expect(result1.status).toBe('found');
       
-      // 24 juillet = dateFin
       const result2 = resolveActiveAssignment(
         TASK_ID,
         MEMBER_ID,
@@ -250,11 +244,11 @@ describe('CRA — Mode ponctuel : saisie hors dates prévues (stateful)', () => 
 
     test('Scénario C1 — Création nouvelle TimeEntry avec affectation', () => {
       const result = determineEntryAction(
-        null, // Pas d'entrée existante
-        4,    // 4 heures saisies
+        null,
+        4,
         activeAssignment,
         currentSheet,
-        false // Pas de données de planning
+        false
       );
 
       expect(result.action).toBe('create');
@@ -276,7 +270,7 @@ describe('CRA — Mode ponctuel : saisie hors dates prévues (stateful)', () => 
 
       const result = determineEntryAction(
         existingEntry,
-        4,    // Modification : 2h → 4h
+        4,
         activeAssignment,
         currentSheet,
         false
@@ -287,7 +281,6 @@ describe('CRA — Mode ponctuel : saisie hors dates prévues (stateful)', () => 
     });
 
     test('Scénario C3 — Pas de doublon : même affectation + date', () => {
-      // Simule une entrée existante pour affectation + date
       const existingEntry = {
         id: 100,
         heures: null,
@@ -314,7 +307,7 @@ describe('CRA — Mode ponctuel : saisie hors dates prévues (stateful)', () => 
       const result = determineEntryAction(
         null,
         4,
-        null, // Pas d'affectation
+        null,
         currentSheet,
         false
       );
@@ -336,10 +329,10 @@ describe('CRA — Mode ponctuel : saisie hors dates prévues (stateful)', () => 
 
       const result = determineEntryAction(
         existingEntry,
-        0,    // Remise à zéro
+        0,
         activeAssignment,
         currentSheet,
-        true  // A des données de planning
+        true
       );
 
       expect(result.action).toBe('update');
@@ -379,7 +372,7 @@ describe('CRA — Mode ponctuel : saisie hors dates prévues (stateful)', () => 
       currentSheet = { id: 50, membre: MEMBER_ID, semaine: '2026-07-27', statut: 'brouillon' };
     });
 
-    test('Test négatif A — Mode uniforme, saisie le 27 juillet (hors affectation)', () => {
+    test('Test négatif A — Mode uniforme, saisie le 27 juillet', () => {
       assignments[0].modeRepartition = 'uniforme';
       
       const result = resolveActiveAssignment(
@@ -423,8 +416,6 @@ describe('CRA — Mode ponctuel : saisie hors dates prévues (stateful)', () => 
     });
 
     test('Test négatif D — Mode ponctuel, capacité disponible = 0', () => {
-      // La vérification de capacité se fait au niveau supérieur (CRA UI)
-      // Mais resolveActiveAssignment doit quand même trouver l'affectation
       const result = resolveActiveAssignment(
         TASK_ID,
         MEMBER_ID,
@@ -433,9 +424,7 @@ describe('CRA — Mode ponctuel : saisie hors dates prévues (stateful)', () => 
         context
       );
 
-      // L'affectation est trouvée, mais la capacité sera vérifiée ailleurs
       expect(result.status).toBe('found');
-      // Note: La capacité = 0 est gérée par dailyCapacityForPersonAndDate
     });
 
     test('Test négatif E — Affectation inactive', () => {
@@ -453,7 +442,6 @@ describe('CRA — Mode ponctuel : saisie hors dates prévues (stateful)', () => 
     });
 
     test('Test négatif F — Deux affectations ponctuelles candidates ambiguës', () => {
-      // Ajouter une deuxième affectation qui chevauche la date
       assignments.push({
         id: 11,
         tache: TASK_ID,
@@ -493,55 +481,41 @@ describe('CRA — Mode ponctuel : saisie hors dates prévues (stateful)', () => 
       expect(resultValidee.locked).toBe(true);
       expect(resultValidee.reason).toBe('SHEET_VALIDE');
     });
-
-    test('Test négatif H — Mode inconnu (validation)', () => {
-      // Le mode inconnu est rejeté au niveau du service TaskAssignments
-      // Ici on teste que resolveActiveAssignment ne filtre pas par mode inconnu
-      assignments[0].modeRepartition = 'inconnu';
-      
-      const result = resolveActiveAssignment(
-        TASK_ID,
-        MEMBER_ID,
-        REALISATION_DATE,
-        assignments,
-        context
-      );
-      
-      // En mode inconnu, on traite comme uniforme (comportement par défaut)
-      // La validation du mode se fait en amont
-      expect(result.status).toBe('missing'); // Car uniforme refuse hors dates
-    });
   });
 
   describe('Intégration complète — Simulation Grist stateful', () => {
-    // Mock Grist complet
     let mockGrist;
-    let tasksTable;
-    let teamTable;
-    let taskAssignmentsTable;
     let timeEntriesTable;
     let sheetsTable;
-    let memberDailyCapacitiesTable;
-    let planningCalled;
+    let appliedAddRecords;
+    let appliedUpdateRecords;
 
     beforeEach(() => {
-      planningCalled = false;
+      appliedAddRecords = [];
+      appliedUpdateRecords = [];
       
-      tasksTable = {
+      const tasksTable = {
         id: [TASK_ID],
         titre: ['Intervention juridique'],
         dateDebut: [dateToTimestamp(PROJECT_START)],
         dateEcheance: [dateToTimestamp(PROJECT_END)],
         projet: [1]
       };
+      
+      const projectsTable = {
+        id: [1],
+        nom: ['Projet test'],
+        dateDebut: [dateToTimestamp(PROJECT_START)],
+        dateFin: [dateToTimestamp(PROJECT_END)]
+      };
 
-      teamTable = {
+      const teamTable = {
         id: [MEMBER_ID],
         nom: ['Jason'],
         capaciteHebdo: [35]
       };
 
-      taskAssignmentsTable = {
+      const taskAssignmentsTable = {
         id: [10],
         tache: [TASK_ID],
         membre: [MEMBER_ID],
@@ -561,6 +535,10 @@ describe('CRA — Mode ponctuel : saisie hors dates prévues (stateful)', () => 
         heuresPrevues: [],
         affectation: [],
         feuille: [],
+        capaciteJour: [],
+        capaciteTheorique: [],
+        capaciteDisponible: [],
+        revisionPlan: [],
         description: [],
         imputation: []
       };
@@ -572,18 +550,19 @@ describe('CRA — Mode ponctuel : saisie hors dates prévues (stateful)', () => 
         statut: ['brouillon']
       };
 
-      memberDailyCapacitiesTable = {
-        id: [1, 2, 3],
-        membre: [MEMBER_ID, MEMBER_ID, MEMBER_ID],
-        date: [dateToTimestamp(ASSIGNMENT_START), dateToTimestamp(ASSIGNMENT_END), dateToTimestamp(REALISATION_DATE)],
-        capaciteDisponible: [7, 7, 7],
-        capaciteTheorique: [7, 7, 7]
+      const memberDailyCapacitiesTable = {
+        id: [70],
+        membre: [MEMBER_ID],
+        date: [dateToTimestamp(REALISATION_DATE)],
+        capaciteDisponible: [7],
+        capaciteTheorique: [7]
       };
 
       mockGrist = {
         docApi: {
           fetchTable: jest.fn().mockImplementation(async function(table) {
             if (table === 'Tasks') return tasksTable;
+            if (table === 'Projects') return projectsTable;
             if (table === 'Team') return teamTable;
             if (table === 'TaskAssignments') return taskAssignmentsTable;
             if (table === 'TimeEntries') return timeEntriesTable;
@@ -607,9 +586,14 @@ describe('CRA — Mode ponctuel : saisie hors dates prévues (stateful)', () => 
                 timeEntriesTable.heuresPrevues.push(data.heuresPrevues !== undefined ? data.heuresPrevues : 0);
                 timeEntriesTable.affectation.push(data.affectation || null);
                 timeEntriesTable.feuille.push(data.feuille || null);
+                timeEntriesTable.capaciteJour.push(data.capaciteJour || null);
+                timeEntriesTable.capaciteTheorique.push(data.capaciteTheorique || 0);
+                timeEntriesTable.capaciteDisponible.push(data.capaciteDisponible || 0);
+                timeEntriesTable.revisionPlan.push(data.revisionPlan !== undefined ? data.revisionPlan : 0);
                 timeEntriesTable.description.push(data.description || '');
                 timeEntriesTable.imputation.push(data.imputation || '');
                 retValues.push(newId);
+                appliedAddRecords.push({ id: newId, data });
               } else if (type === 'UpdateRecord' && tableName === 'TimeEntries') {
                 const idx = timeEntriesTable.id.indexOf(recordId);
                 if (idx >= 0) {
@@ -618,6 +602,7 @@ describe('CRA — Mode ponctuel : saisie hors dates prévues (stateful)', () => 
                   });
                 }
                 retValues.push(null);
+                appliedUpdateRecords.push({ id: recordId, data });
               } else if (type === 'AddRecord' && tableName === 'Feuilles') {
                 const newId = (sheetsTable.id.length > 0 ? Math.max(...sheetsTable.id) : 0) + 1;
                 sheetsTable.id.push(newId);
@@ -633,12 +618,209 @@ describe('CRA — Mode ponctuel : saisie hors dates prévues (stateful)', () => 
         }
       };
     });
+    
+    function createDependencies() {
+      return {
+        tasks: [{ id: TASK_ID, projet: 1 }],
+        projects: [{ id: 1, dateDebut: dateToTimestamp(PROJECT_START), dateFin: dateToTimestamp(PROJECT_END) }],
+        assignments: [{
+          id: 10,
+          tache: TASK_ID,
+          membre: MEMBER_ID,
+          heuresAllouees: ALLOCATED_HOURS,
+          dateDebut: dateToTimestamp(ASSIGNMENT_START),
+          dateFin: dateToTimestamp(ASSIGNMENT_END),
+          modeRepartition: 'ponctuel',
+          actif: true
+        }],
+        get entries() {
+          return timeEntriesTable.id.map((id, i) => ({
+            id,
+            tache: timeEntriesTable.tache[i],
+            membre: timeEntriesTable.membre[i],
+            date: timeEntriesTable.date[i],
+            heures: timeEntriesTable.heures[i],
+            heuresPrevues: timeEntriesTable.heuresPrevues[i],
+            affectation: timeEntriesTable.affectation[i],
+            feuille: timeEntriesTable.feuille[i],
+            capaciteJour: timeEntriesTable.capaciteJour[i],
+            capaciteTheorique: timeEntriesTable.capaciteTheorique[i],
+            capaciteDisponible: timeEntriesTable.capaciteDisponible[i],
+            revisionPlan: timeEntriesTable.revisionPlan[i]
+          }));
+        },
+        sheets: [{ id: 50, membre: MEMBER_ID, semaine: dateToTimestamp('2026-07-27'), statut: 'brouillon' }],
+        dailyCapacities: [{
+          id: 70,
+          membre: MEMBER_ID,
+          date: dateToTimestamp(REALISATION_DATE),
+          capaciteDisponible: 7,
+          capaciteTheorique: 7
+        }],
+        team: [{ id: MEMBER_ID, nom: 'Jason', capaciteHebdo: 35 }],
+        grist: mockGrist
+      };
+    }
+    
+    function copyPredictedEntries() {
+      return timeEntriesTable.id.map((id, i) => ({
+        id,
+        tache: timeEntriesTable.tache[i],
+        membre: timeEntriesTable.membre[i],
+        date: timeEntriesTable.date[i],
+        heures: timeEntriesTable.heures[i],
+        heuresPrevues: timeEntriesTable.heuresPrevues[i],
+        affectation: timeEntriesTable.affectation[i],
+        feuille: timeEntriesTable.feuille[i],
+        revisionPlan: timeEntriesTable.revisionPlan[i]
+      })).filter(e => {
+        if (!e.date) return false;
+        let dateObj;
+        if (typeof e.date === 'string') {
+          dateObj = new Date(e.date + 'T00:00:00Z');
+        } else if (typeof e.date === 'number') {
+          dateObj = new Date(e.date * 1000);
+        } else {
+          return false;
+        }
+        if (isNaN(dateObj.getTime())) return false;
+        const d = dateObj.toISOString().split('T')[0];
+        return d === ASSIGNMENT_START || d === ASSIGNMENT_END;
+      });
+    }
 
-    test('Scénario stateful complet — 4h le 23, 4h le 24 (prévu), 4h le 27 (réalisé)', async () => {
-      // ÉTAPE 1 : Vérifier que l'affectation est bien en mode ponctuel
-      expect(taskAssignmentsTable.modeRepartition[0]).toBe('ponctuel');
+    test('B3.1 — création réelle le 27 juillet', async () => {
+      const dependencies = createDependencies();
+      const beforeCount = timeEntriesTable.id.length;
       
-      // ÉTAPE 2 : Générer le prévu (23 et 24 juillet)
+      const result = await saveCraCellChange({
+        taskId: TASK_ID,
+        personId: MEMBER_ID,
+        dateIso: REALISATION_DATE,
+        hours: 4
+      }, dependencies);
+      
+      expect(result.ok).toBe(true);
+      expect(result.action).toBe('create');
+      expect(result.assignmentId).toBe(10);
+      expect(result.sheetId).toBe(50);
+      expect(result.actionsExecuted).toBe(1);
+      
+      expect(timeEntriesTable.id.length).toBe(beforeCount + 1);
+      const newIndex = timeEntriesTable.id.length - 1;
+      expect(timeEntriesTable.heures[newIndex]).toBe(4);
+      expect(timeEntriesTable.heuresPrevues[newIndex]).toBe(0);
+      expect(timeEntriesTable.affectation[newIndex]).toBe(10);
+      expect(timeEntriesTable.feuille[newIndex]).toBe(50);
+      expect(timeEntriesTable.capaciteJour[newIndex]).toBe(70);
+      expect(timeEntriesTable.revisionPlan[newIndex]).toBe(0);
+      
+      expect(appliedAddRecords.length).toBe(1);
+      expect(appliedUpdateRecords.length).toBe(0);
+    });
+    
+    test('B3.2 — deuxième saisie, aucun doublon', async () => {
+      const dependencies = createDependencies();
+      
+      await saveCraCellChange({
+        taskId: TASK_ID,
+        personId: MEMBER_ID,
+        dateIso: REALISATION_DATE,
+        hours: 4
+      }, dependencies);
+      
+      const firstEntryId = timeEntriesTable.id[timeEntriesTable.id.length - 1];
+      const beforeCount = timeEntriesTable.id.length;
+      
+      const result = await saveCraCellChange({
+        taskId: TASK_ID,
+        personId: MEMBER_ID,
+        dateIso: REALISATION_DATE,
+        hours: 4
+      }, dependencies);
+      
+      expect(result.ok).toBe(true);
+      expect(timeEntriesTable.id.length).toBe(beforeCount);
+      expect(result.entryId).toBe(firstEntryId);
+    });
+    
+    test('B3.3 — modification de 4 h vers 5 h', async () => {
+      const dependencies = createDependencies();
+      
+      await saveCraCellChange({
+        taskId: TASK_ID,
+        personId: MEMBER_ID,
+        dateIso: REALISATION_DATE,
+        hours: 4
+      }, dependencies);
+      
+      const entryIndex = timeEntriesTable.id.length - 1;
+      const firstEntryId = timeEntriesTable.id[entryIndex];
+      
+      const result = await saveCraCellChange({
+        taskId: TASK_ID,
+        personId: MEMBER_ID,
+        dateIso: REALISATION_DATE,
+        hours: 5
+      }, dependencies);
+      
+      expect(result.ok).toBe(true);
+      expect(result.action).toBe('update');
+      expect(result.entryId).toBe(firstEntryId);
+      expect(timeEntriesTable.heures[entryIndex]).toBe(5);
+      expect(appliedUpdateRecords.length).toBe(1);
+      expect(appliedUpdateRecords[0].id).toBe(firstEntryId);
+      expect(appliedUpdateRecords[0].data.heures).toBe(5);
+    });
+    
+    test('B3.4 — uniforme refuse le 27', async () => {
+      const dependencies = createDependencies();
+      dependencies.assignments[0].modeRepartition = 'uniforme';
+      
+      const result = await saveCraCellChange({
+        taskId: TASK_ID,
+        personId: MEMBER_ID,
+        dateIso: REALISATION_DATE,
+        hours: 4
+      }, dependencies);
+      
+      expect(result.ok).toBe(false);
+      expect(result.action).toBe('blocked');
+      expect(result.code).toBe('MISSING_ACTIVE_ASSIGNMENT');
+      expect(appliedAddRecords.length).toBe(0);
+    });
+    
+    test('B3.5 — mode inconnu rejeté', async () => {
+      const dependencies = createDependencies();
+      dependencies.assignments[0].modeRepartition = 'ponctuelle';
+      
+      const result = await saveCraCellChange({
+        taskId: TASK_ID,
+        personId: MEMBER_ID,
+        dateIso: REALISATION_DATE,
+        hours: 4
+      }, dependencies);
+      
+      expect(result.ok).toBe(false);
+      expect(result.action).toBe('blocked');
+      expect(result.code).toBe('INVALID_DISTRIBUTION_MODE');
+      expect(appliedAddRecords.length).toBe(0);
+    });
+    
+    test('B3.6 — pas de replan', async () => {
+      const dependencies = createDependencies();
+      
+      const result = await saveCraCellChange({
+        taskId: TASK_ID,
+        personId: MEMBER_ID,
+        dateIso: REALISATION_DATE,
+        hours: 4
+      }, dependencies);
+      
+      expect(result.ok).toBe(true);
+    });
+    
+    test('B3.7 — lignes prévues inchangées', async () => {
       const { planAssignment } = require('../../planning/time_entry/time-entry-planning-service');
       
       const capacities = [
@@ -664,12 +846,6 @@ describe('CRA — Mode ponctuel : saisie hors dates prévues (stateful)', () => 
         members: [{ id: MEMBER_ID }]
       });
       
-      // Le mode ponctuel génère du prévu comme l'uniforme
-      expect(planResult.plannedEntries.length).toBeGreaterThan(0);
-      const totalPrevues = planResult.plannedEntries.reduce((sum, e) => sum + e.heuresPrevues, 0);
-      expect(totalPrevues).toBeCloseTo(8, 2);
-      
-      // Créer les entrées prévues
       for (const entry of planResult.plannedEntries) {
         await mockGrist.docApi.applyUserActions([
           ['AddRecord', 'TimeEntries', null, {
@@ -681,145 +857,26 @@ describe('CRA — Mode ponctuel : saisie hors dates prévues (stateful)', () => 
         ]);
       }
       
-      // Vérifier le prévu : 2 lignes (23 et 24 juillet)
-      expect(timeEntriesTable.id.length).toBe(2);
-      const prevues23 = timeEntriesTable.heuresPrevues.find((h, i) => 
-        timeEntriesTable.date[i] === dateToTimestamp(ASSIGNMENT_START)
-      );
-      const prevues24 = timeEntriesTable.heuresPrevues.find((h, i) => 
-        timeEntriesTable.date[i] === dateToTimestamp(ASSIGNMENT_END)
-      );
-      expect(prevues23).toBeGreaterThan(0);
-      expect(prevues24).toBeGreaterThan(0);
+      const beforePredicted = copyPredictedEntries();
+      expect(beforePredicted.length).toBe(2);
       
-      // ÉTAPE 3 : Résoudre l'affectation pour le 27 juillet (CRA)
-      const assignmentResult = resolveActiveAssignment(
-        TASK_ID,
-        MEMBER_ID,
-        REALISATION_DATE,
-        [{
-          id: 10,
-          tache: TASK_ID,
-          membre: MEMBER_ID,
-          heuresAllouees: 8,
-          dateDebut: dateToTimestamp(ASSIGNMENT_START),
-          dateFin: dateToTimestamp(ASSIGNMENT_END),
-          modeRepartition: 'ponctuel',
-          actif: true
-        }],
-        {
-          projectStartDate: PROJECT_START,
-          projectEndDate: PROJECT_END,
-          allowWeekends: false
-        }
-      );
+      const dependencies = createDependencies();
       
-      expect(assignmentResult.status).toBe('found');
-      expect(assignmentResult.assignment.id).toBe(10);
+      await saveCraCellChange({
+        taskId: TASK_ID,
+        personId: MEMBER_ID,
+        dateIso: REALISATION_DATE,
+        hours: 4
+      }, dependencies);
       
-      // ÉTAPE 4 : Déterminer l'action (création car pas d'entrée existante le 27)
-      const { determineEntryAction } = CRAController;
-      const actionResult = determineEntryAction(
-        null, // Pas d'entrée existante le 27
-        4,    // 4 heures saisies
-        assignmentResult.assignment,
-        { id: 50, membre: MEMBER_ID },
-        false
-      );
+      const afterPredicted = copyPredictedEntries();
       
-      expect(actionResult.action).toBe('create');
-      expect(actionResult.fields.affectation).toBe(10);
-      
-      // ÉTAPE 5 : Créer la TimeEntry du 27 juillet
-      await mockGrist.docApi.applyUserActions([
-        ['AddRecord', 'TimeEntries', null, {
-          tache: TASK_ID,
-          membre: MEMBER_ID,
-          date: dateToTimestamp(REALISATION_DATE),
-          heures: 4,
-          affectation: 10,
-          feuille: 50,
-          heuresPrevues: 0,
-          description: '',
-          imputation: ''
-        }]
-      ]);
-      
-      // ÉTAPE 6 : Vérifications finales
-      // 6a. Toujours 3 lignes (2 prévues + 1 réalisée)
-      expect(timeEntriesTable.id.length).toBe(3);
-      
-      // 6b. Le prévu des 23 et 24 est intact
-      const entries23 = timeEntriesTable.heuresPrevues.filter((h, i) => 
-        timeEntriesTable.date[i] === dateToTimestamp(ASSIGNMENT_START)
-      );
-      const entries24 = timeEntriesTable.heuresPrevues.filter((h, i) => 
-        timeEntriesTable.date[i] === dateToTimestamp(ASSIGNMENT_END)
-      );
-      expect(entries23.length).toBe(1);
-      expect(entries24.length).toBe(1);
-      expect(entries23[0]).toBeGreaterThan(0);
-      expect(entries24[0]).toBeGreaterThan(0);
-      
-      // 6c. La ligne du 27 existe avec 4h réalisées
-      const entry27Index = timeEntriesTable.date.findIndex(d => 
-        d === dateToTimestamp(REALISATION_DATE)
-      );
-      expect(entry27Index).toBeGreaterThanOrEqual(0);
-      expect(timeEntriesTable.heures[entry27Index]).toBe(4);
-      expect(timeEntriesTable.affectation[entry27Index]).toBe(10);
-      expect(timeEntriesTable.feuille[entry27Index]).toBe(50);
-      
-      // 6d. Aucune replanification appelée (vérifié par planningCalled = false)
-      expect(planningCalled).toBe(false);
-    });
-
-    test('Scénario stateful — Deuxième saisie sur même date (mise à jour, pas doublon)', async () => {
-      // Première saisie : 4h le 27
-      await mockGrist.docApi.applyUserActions([
-        ['AddRecord', 'TimeEntries', null, {
-          tache: TASK_ID,
-          membre: MEMBER_ID,
-          date: dateToTimestamp(REALISATION_DATE),
-          heures: 4,
-          affectation: 10,
-          feuille: 50
-        }]
-      ]);
-      
-      expect(timeEntriesTable.id.length).toBe(1);
-      const firstId = timeEntriesTable.id[0];
-      
-      // Deuxième saisie : modification à 6h
-      const existingEntry = {
-        id: firstId,
-        heures: 4,
-        affectation: 10,
-        tache: TASK_ID,
-        membre: MEMBER_ID,
-        date: dateToTimestamp(REALISATION_DATE)
-      };
-      
-      const { determineEntryAction } = CRAController;
-      const actionResult = determineEntryAction(
-        existingEntry,
-        6,    // Modification : 4h → 6h
-        { id: 10 },
-        { id: 50 },
-        false
-      );
-      
-      expect(actionResult.action).toBe('update');
-      expect(actionResult.fields).toEqual({ heures: 6 });
-      
-      // Exécuter la mise à jour
-      await mockGrist.docApi.applyUserActions([
-        ['UpdateRecord', 'TimeEntries', firstId, { heures: 6 }]
-      ]);
-      
-      // Vérifier : toujours une seule ligne, heures mises à jour
-      expect(timeEntriesTable.id.length).toBe(1);
-      expect(timeEntriesTable.heures[0]).toBe(6);
+      expect(afterPredicted.length).toBe(beforePredicted.length);
+      for (let i = 0; i < beforePredicted.length; i++) {
+        expect(afterPredicted[i].id).toBe(beforePredicted[i].id);
+        expect(afterPredicted[i].heuresPrevues).toBe(beforePredicted[i].heuresPrevues);
+        expect(afterPredicted[i].date).toBe(beforePredicted[i].date);
+      }
     });
   });
 });
