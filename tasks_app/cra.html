@@ -6309,12 +6309,9 @@ function weekLabel() {
 // ---- Saisie d'une cellule -------------------------------------------------
 async function setCell(taskId, dayMs, personId, qtyStr) {
   // ROUTAGE MODE CORRECTION MANAGER
-  // Si on est en mode correction manager, router vers updateManagerActual
   if (S.managerCorrectionSheetId) {
-    // Vérifier que la feuille est bien en correction_manager
     const correctionSheet = S.feuilles.find(f => f.id === S.managerCorrectionSheetId);
     if (correctionSheet && normalizeSheetStatus(correctionSheet.statut) === 'correction_manager') {
-      // Trouver la TimeEntry existante pour cette cellule
       const dayIso = CRAController.localDayKeyFromMs(dayMs);
       const existingEntry = S.entries.find(e => 
         e.membre === personId && 
@@ -6329,7 +6326,6 @@ async function setCell(taskId, dayMs, personId, qtyStr) {
         return;
       }
       
-      // Parser la saisie avec le parseur manager (distingue vide et zéro)
       const parseResult = parseManagerHoursInput(qtyStr);
       if (!parseResult.valid) {
         toast(parseResult.error || 'Valeur invalide');
@@ -6337,7 +6333,6 @@ async function setCell(taskId, dayMs, personId, qtyStr) {
         return;
       }
       
-      // Appeler updateManagerActual via CraWorkflowIntegration
       if (typeof CraWorkflowIntegration !== 'undefined' && CraWorkflowIntegration.updateManagerActual) {
         await CraWorkflowIntegration.updateManagerActual(S.managerCorrectionSheetId, existingEntry.id, parseResult.hours);
       } else {
@@ -6345,7 +6340,6 @@ async function setCell(taskId, dayMs, personId, qtyStr) {
       }
       return;
     } else {
-      // La feuille n'est plus en correction_manager, quitter le mode
       S.managerCorrectionSheetId = null;
     }
   }
@@ -6353,26 +6347,19 @@ async function setCell(taskId, dayMs, personId, qtyStr) {
   const hours = qtyToHours(qtyStr);
   const cap = dayCapacityForPerson(dayMs, personId);
   
-  // CORRECTION : Bloquer uniquement les saisies positives sur jour indisponible
-  // Autoriser la remise à zéro (hours = 0) même si capacité = 0
   if (cap === 0 && hours > 0) {
     toast('Impossible de saisir du temps sur un jour en congé/indisponibilité');
     render();
     return;
   }
   
-  // Vérifier le verrouillage de la semaine
   const weekLock = CRAController.isPersonWeekLocked(
     personId,
     CRAController.localDayKeyFromMs(S.weekStart),
     S.feuilles
   );
   
-  // CORRECTION : Bloquer la modification d'une autre personne hors correction manager
-  if (
-    !S.managerCorrectionSheetId &&
-    personId !== S.currentUserMemberId
-  ) {
+  if (!S.managerCorrectionSheetId && personId !== S.currentUserMemberId) {
     toast('Vous ne pouvez modifier que votre propre feuille');
     render();
     return;
@@ -6384,227 +6371,81 @@ async function setCell(taskId, dayMs, personId, qtyStr) {
     return;
   }
   
-  // Résoudre l'affectation active (PHASE 1.1.3 : avec date)
+  // PRÉPARER LES DÉPENDANCES POUR LE CONTRÔLEUR
   const dayIso = CRAController.localDayKeyFromMs(dayMs);
   
-  // PHASE B — MODE PONCTUEL : Récupérer les dates du projet pour étendre la fenêtre de saisie
-  const task = S.tasks.find(t => t.id === taskId);
-  const project = task && task.projet ? S.projects.find(p => p.id === task.projet) : null;
-  const projectContext = project ? {
-    projectStartDate: project.dateDebut,
-    projectEndDate: project.dateFin,
-    allowWeekends: false // Par défaut, interdire les week-ends
-  } : {};
+  // APPELER LA FONCTION TESTABLE DU CONTRÔLEUR
+  // C'est le vrai parcours de sauvegarde du CRA
+  const result = await CRAController.saveCraCellChange({
+    taskId: taskId,
+    personId: personId,
+    dateIso: dayIso,
+    hours: hours,
+    allowWeekends: false
+  }, {
+    tasks: S.tasks,
+    projects: S.projects,
+    assignments: S.assignments,
+    entries: S.entries,
+    sheets: S.feuilles,
+    dailyCapacities: S.dailyCapacities || [],
+    team: S.team || [],
+    grist: grist
+  });
   
-  const assignmentResult = CRAController.resolveActiveAssignment(
-    taskId,
-    personId,
-    dayIso,  // PHASE 1.1.3 : Date pour filtrer les affectations
-    S.assignments,
-    projectContext  // PHASE B : Contexte pour le mode ponctuel
-  );
-  
-  if (assignmentResult.status === 'invalid') {
-    toast('Type de planification invalide sur l\'affectation');
-    render();
-    return;
-  }
-  
-  if (assignmentResult.status === 'ambiguous') {
-    toast('Erreur : plusieurs affectations actives pour cette tâche. Veuillez corriger le planning.');
-    render();
-    return;
-  }
-  
-  if (assignmentResult.status === 'missing') {
-    toast('Aucune affectation autorisée pour cette date');
-    render();
-    return;
-  }
-  
-  const activeAssignment = assignmentResult.assignment;
-  
-  // Résoudre l'entrée éditable (dayIso déjà déclaré plus haut)
-  const entryResult = CRAController.resolveEditableCellEntry(
-    S.entries, taskId, dayIso, personId, activeAssignment
-  );
-  
-  if (entryResult.status === 'multiple') {
-    toast('Erreur : plusieurs entrées pour cette cellule. Veuillez corriger manuellement.');
-    render();
-    return;
-  }
-  
-  const existingEntry = entryResult.entry;
-  
-  // Vérifier si la ligne a des champs de planning
-  const hasPlanningData = CRAController.hasPlanningFields(existingEntry);
-  
-  // Calcul préliminaire de l'action (sans feuille)
-  let currentSheet = S.feuilles.find(f => 
-    f.membre === personId && sameDay(gristToMs(f.semaine), S.weekStart)
-  );
-  
-  let actionResult = CRAController.determineEntryAction(
-    existingEntry, hours, activeAssignment, currentSheet, hasPlanningData
-  );
-  
-  // ÉTAPE 3 : Si aucune feuille et qu'on va créer une entrée, assurer l'existence de la feuille
-  if (!currentSheet && actionResult.action === 'create' && !S.alone) {
-    try {
-      // Calculer le lundi canonique (CORRECTION : utiliser la date locale, pas UTC)
-      const mondayMs = mondayOf(S.weekStart);
-      const mondayIso = localDateIso(mondayMs);
-      
-      // Appeler ensureWeeklySheet via TaskFlowCra.service
-      if (globalThis.TaskFlowCra && TaskFlowCra.service && TaskFlowCra.service.ensureWeeklySheet) {
-        const weeklySheetResult = await TaskFlowCra.service.ensureWeeklySheet({
-          grist: grist,
-          memberId: S.currentUserMemberId,
-          weekStartIso: mondayIso,
-          sheets: S.feuilles,
-          entries: S.entries,
-          createOnlyWhenEntriesExist: false
-        });
-        
-        if (weeklySheetResult.success && weeklySheetResult.sheetId) {
-          // Mettre à jour currentSheet avec la feuille créée/trouvée
-          currentSheet = weeklySheetResult.sheet;
-          
-          // Mettre à jour S.feuilles localement
-          if (!S.feuilles.find(f => f.id === weeklySheetResult.sheetId)) {
-            S.feuilles.push(weeklySheetResult.sheet);
-          }
-          
-          // RECALCULER l'action avec la feuille maintenant disponible
-          actionResult = CRAController.determineEntryAction(
-            existingEntry, hours, activeAssignment, currentSheet, hasPlanningData
-          );
-        } else if (weeklySheetResult.code === 'WEEKLY_SHEET_DUPLICATE') {
-          toast('Plusieurs feuilles existent pour cette semaine. Veuillez corriger.');
-          render();
-          return;
-        } else {
-          toast('Création de feuille impossible: ' + (weeklySheetResult.error || 'Erreur inconnue'));
-          render();
-          return;
-        }
-      }
-    } catch (e) {
-      console.error('[CRA] Erreur ensureWeeklySheet:', e);
-      // Continuer sans feuille - la création échouera ou créera sans lien
-    }
-  }
-  
-  // PHASE 1.1.4 : Gérer le blocage création sans affectation
-  if (actionResult.action === 'blocked') {
-    if (actionResult.reason === 'MISSING_ACTIVE_ASSIGNMENT') {
-      toast('Aucune affectation active pour cette tâche et cette personne à cette date');
+  // TRAITER LE RÉSULTAT
+  if (!result.ok) {
+    if (result.code === 'INVALID_DISTRIBUTION_MODE') {
+      toast('Type de planification invalide sur l\'affectation');
+    } else if (result.code === 'AMBIGUOUS_ACTIVE_ASSIGNMENT') {
+      toast('Erreur : plusieurs affectations actives pour cette tâche');
+    } else if (result.code === 'MISSING_ACTIVE_ASSIGNMENT') {
+      toast('Aucune affectation autorisée pour cette date');
+    } else if (result.code === 'DUPLICATE_TIME_ENTRY') {
+      toast('Erreur : plusieurs entrées pour cette cellule');
+    } else if (result.code === 'MISSING_WEEKLY_SHEET') {
+      toast('Erreur : feuille introuvable pour cette semaine');
     } else {
-      toast('Action bloquée : ' + actionResult.reason);
+      toast('Action bloquée : ' + (result.code || 'erreur inconnue'));
     }
     render();
     return;
   }
   
-  // Exécuter l'action
+  // METTRE À JOUR L'ÉTAT LOCAL APRÈS SUCCÈS
   if (S.alone) {
-    // Mode démo
-    if (actionResult.action === 'update' && existingEntry) {
-      Object.assign(existingEntry, actionResult.fields);
-    } else if (actionResult.action === 'create') {
-      // CORRECTION : Vérifier que currentSheet existe
-      if (!currentSheet?.id) {
-        toast('Erreur : feuille introuvable pour cette semaine');
-        render();
-        return;
-      }
-      
-      const nid = Math.max(0, ...S.entries.map(e => e.id)) + 1;
-      S.entries.push({ 
-        id: nid, 
-        membre: personId, 
-        tache: taskId, 
-        date: msToGrist(dayMs),
-        feuille: currentSheet.id,  // CORRECTION : Rattacher explicitement
-        ...actionResult.fields 
-      });
-    } else if (actionResult.action === 'delete' && existingEntry) {
-      S.entries = S.entries.filter(e => e !== existingEntry);
+    // Mode démo : mise à jour locale seulement
+    if (result.action === 'update') {
+      const entry = S.entries.find(e => e.id === result.entryId);
+      if (entry) Object.assign(entry, result.fields);
+    } else if (result.action === 'create') {
+      const nid = result.entryId || (Math.max(0, ...S.entries.map(e => e.id)) + 1);
+      S.entries.push({ id: nid, membre: personId, tache: taskId, date: msToGrist(dayMs), ...result.fields });
+    } else if (result.action === 'delete') {
+      S.entries = S.entries.filter(e => e.id !== result.entryId);
     }
     buildCraIndexes();
     render();
     return;
   }
   
-  try {
-    if (actionResult.action === 'update' && existingEntry) {
-      await grist.docApi.applyUserActions([
-        ['UpdateRecord', 'TimeEntries', existingEntry.id, actionResult.fields]
-      ]);
-      // Mettre à jour localement
-      Object.assign(existingEntry, actionResult.fields);
-    } else if (actionResult.action === 'create') {
-      // CORRECTION : Vérifier que currentSheet existe et a un ID
-      if (!currentSheet?.id) {
-        toast('Erreur : feuille introuvable pour cette semaine');
-        render();
-        return;
-      }
-      
-      const fieldsToCreate = {
-        membre: personId,
-        tache: taskId,
-        date: msToGrist(dayMs),
-        heuresPrevues: 0,  // PHASE 1.1.5 : Initialiser explicitement
-        revisionPlan: 0,   // PHASE 1.1.5 : Initialiser explicitement
-        feuille: currentSheet.id,  // CORRECTION : Rattacher explicitement à la feuille
-        ...actionResult.fields
-      };
-      
-      // PHASE 1.1.5 : Ajouter référence capacité si disponible
-      const capacityResult = CRAController.dailyCapacityForPersonAndDate(
-        personId,
-        dayMs,
-        S.dailyCapacities || [],
-        S.team || [],
-        S.disponibilites || []
-      );
-      
-      // BUG 5 : Utiliser directement le résultat complet du contrôleur
-      // Ne pas refaire une seconde recherche dans S.dailyCapacities
-      if (capacityResult.capacityRecordId) {
-        fieldsToCreate.capaciteJour = capacityResult.capacityRecordId;
-      }
-      
-      // Utiliser les vraies valeurs retournées par le contrôleur
-      fieldsToCreate.capaciteTheorique = capacityResult.theoreticalCapacity;
-      fieldsToCreate.capaciteDisponible = capacityResult.availableCapacity;
-      
-      const r = await grist.docApi.applyUserActions([
-        ['AddRecord', 'TimeEntries', null, fieldsToCreate]
-      ]);
-      
-      // Utiliser getAddedRecordId() pour extraire l'ID de manière robuste
-      const entryId = getAddedRecordId(r, 'TimeEntry ' + dayIso);
-      S.entries.push({ id: entryId, ...fieldsToCreate });
-    } else if (actionResult.action === 'delete' && existingEntry) {
-      await grist.docApi.applyUserActions([
-        ['RemoveRecord', 'TimeEntries', existingEntry.id]
-      ]);
-      S.entries = S.entries.filter(e => e !== existingEntry);
-    }
-    
-    // PHASE 1.1.6 : SUPPRESSION écriture Tasks.tempsPasse
-    // Cette écriture sort du contrat du CRA et sera gérée par une formule Grist ou un service dédié
-    
-    // Reconstruire les index après modification locale
-    buildCraIndexes();
-    render();
-  } catch (e) { 
-    toast('Ecriture refusee : ' + (e.message || e)); 
-    render(); 
+  // EN MODE GRIST : LA SAUVEGARDE A DÉJÀ ÉTÉ FAITE PAR saveCraCellChange
+  // Mettre à jour localement pour affichage immédiat
+  if (result.action === 'update') {
+    const entry = S.entries.find(e => e.id === result.entryId);
+    if (entry) Object.assign(entry, result.fields);
+  } else if (result.action === 'create') {
+    S.entries.push({ id: result.entryId, membre: personId, tache: taskId, date: msToGrist(dayMs), ...result.fields });
+  } else if (result.action === 'delete') {
+    S.entries = S.entries.filter(e => e.id !== result.entryId);
   }
+  
+  // PHASE 1.1.6 : SUPPRESSION écriture Tasks.tempsPasse
+  // Cette écriture sort du contrat du CRA et sera gérée par une formule Grist ou un service dédié
+  
+  // Reconstruire les index après modification locale
+  buildCraIndexes();
+  render();
 }
 window.setCell = setCell;
 

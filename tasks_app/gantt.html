@@ -7471,24 +7471,58 @@ assignmentModes: {},
             };
 
             try {
-                await grist.docApi.applyUserActions([['UpdateRecord', 'Tasks', taskId, pruneTaskRecord(record)]]);
-                
                 var assignmentSyncSuccess = true;
                 var syncErrorMessage = null;
                 var syncResult = null;
                 
+                // PHASE A.11 : PRÉCONTRÔLE AVANT TOUTE ÉCRITURE
+                // Si des affectations/modes changent, on précontrôle AVANT d'écrire dans Tasks
+                if (assignmentIntegration && (assigneesChanged || chargesChanged || modeChanged)) {
+                    console.info('[Gantt] Précontrôle affectations pour tâche ' + taskId);
+                    var syncData = Object.assign({}, saveData, {
+                        assignmentsEdited: true,
+                        datesEdited: datesChanged,
+                        assignmentModes: currentAssignmentModes
+                    });
+                    
+                    syncResult = await assignmentIntegration.onTaskUpdated(taskId, syncData);
+                    
+                    if (!syncResult.ok) {
+                        console.warn('[Gantt] Précontrôle échoué:', syncResult);
+                        assignmentSyncSuccess = false;
+                        syncErrorMessage = syncResult.message || syncResult.code;
+                        
+                        // Messages d'erreur explicites
+                        var removalDetails = syncResult.details;
+                        if (removalDetails && removalDetails.length > 0) {
+                            var blockedMembers = removalDetails.map(function(d) {
+                                var member = team.find(m => m.id === d.memberId);
+                                return member ? member.nom : 'Membre ' + d.memberId;
+                            }).join(', ');
+                            var lockedCount = removalDetails.reduce(function(sum, d) {
+                                return sum + (d.lockedEntries ? d.lockedEntries.length : 0);
+                            }, 0);
+                            showToast('Retrait impossible : ' + blockedMembers + ' a des temps protégés (' + lockedCount + ' entrées)', 'error');
+                        } else if (syncResult.conflict) {
+                            showToast('Conflit de données : impossible de vérifier les temps', 'error');
+                        } else {
+                            showToast('Modification refusée : ' + syncErrorMessage, 'error');
+                        }
+                        
+                        return; // Zéro écriture
+                    }
+                }
+                
+                // Écriture dans Tasks APRÈS précontrôle réussi
+                await grist.docApi.applyUserActions([['UpdateRecord', 'Tasks', taskId, pruneTaskRecord(record)]]);
+                
                 if (assignmentIntegration) {
+                    // Si on arrive ici, le précontrôle a déjà été fait si nécessaire
                     if (datesChanged && !assigneesChanged && !chargesChanged && !modeChanged) {
                         console.info('[Gantt] Sync dates uniquement pour tâche ' + taskId);
                         syncResult = await assignmentIntegration.syncTaskDates(taskId, saveData.dateDebut, saveData.dateEcheance);
-                    } else if (assigneesChanged || chargesChanged || modeChanged) {
-                        console.info('[Gantt] Sync affectations pour tâche ' + taskId);
-                        var syncData = Object.assign({}, saveData, {
-                            assignmentsEdited: true,
-                            datesEdited: datesChanged,
-                            assignmentModes: currentAssignmentModes
-                        });
-                        syncResult = await assignmentIntegration.onTaskUpdated(taskId, syncData);
+                    } else if (syncResult && syncResult.ok) {
+                        console.info('[Gantt] Sync affectations terminée pour tâche ' + taskId);
                     } else {
                         console.info('[Gantt] Aucun changement affectation/date/mode pour tâche ' + taskId);
                         syncResult = { ok: true, code: 'NO_ASSIGNMENT_CHANGE' };
@@ -7703,32 +7737,31 @@ assignmentModes: {},
 
             if (gristReady) {
                 try {
-                    // Utiliser l'intégration réelle pour supprimer avec les données liées
-                    if (assignmentIntegration && assignmentIntegration.deleteTasksWithAssignments) {
-                        const result = await assignmentIntegration.deleteTasksWithAssignments([panelState.taskId], {
-                            detachChildren: detachChildren,
-                            includeDescendants: includeDescendants
-                        });
-                        
-                        console.log('[Gantt] Suppression TaskAssignments', result);
-                        
-                        if (!result.ok) {
-                            if (result.code === 'TASK_DELETE_BLOCKED_BY_TIME_ENTRIES') {
-                                showToast('Suppression impossible : cette tâche contient des temps saisis ou validés', 'error');
-                            } else {
-                                showToast('La tâche n\'a pas été supprimée : ' + (result.message || 'erreur inconnue'), 'error');
-                            }
-                            await loadAllData();
-                            return;
-                        }
-                        
-                        showToast(ids.length > 1 ? `${result.deletedTasks} tâches et données liées supprimées` : 'Tâche et données liées supprimées', 'success');
-                    } else {
-                        // Fallback vers l'ancienne méthode (sans nettoyage TaskAssignments)
-                        const actions = ids.map(id => ['RemoveRecord', 'Tasks', id]);
-                        await grist.docApi.applyUserActions(actions);
-                        showToast(ids.length > 1 ? `${ids.length} tâches supprimées` : 'Supprimée', 'success');
+                    // FAIL-CLOSED : Utiliser UNIQUEMENT l'intégration pour supprimer avec les données liées
+                    if (!assignmentIntegration || !assignmentIntegration.deleteTasksWithAssignments) {
+                        showToast('Suppression impossible : service indisponible', 'error');
+                        await loadAllData();
+                        return;
                     }
+                    
+                    const result = await assignmentIntegration.deleteTasksWithAssignments([panelState.taskId], {
+                        detachChildren: detachChildren,
+                        includeDescendants: includeDescendants
+                    });
+                    
+                    console.log('[Gantt] Suppression TaskAssignments', result);
+                    
+                    if (!result.ok) {
+                        if (result.code === 'TASK_DELETE_BLOCKED_BY_TIME_ENTRIES') {
+                            showToast('Suppression impossible : cette tâche contient des temps saisis ou validés', 'error');
+                        } else {
+                            showToast('La tâche n\'a pas été supprimée : ' + (result.message || 'erreur inconnue'), 'error');
+                        }
+                        await loadAllData();
+                        return;
+                    }
+                    
+                    showToast(ids.length > 1 ? `${result.deletedTasks} tâches et données liées supprimées` : 'Tâche et données liées supprimées', 'success');
                     
                     closePanel();
                     await loadAllData();
@@ -7737,8 +7770,8 @@ assignmentModes: {},
                     showToast('Erreur suppression', 'error');
                 }
             } else {
-                tasks = tasks.filter(t => !ids.includes(t.id));
-                showToast('Supprimée', 'success');
+                // Mode démo : pas de suppression possible sans service
+                showToast('Suppression impossible en mode démo', 'error');
                 closePanel();
                 render();
             }
