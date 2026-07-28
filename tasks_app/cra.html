@@ -6345,13 +6345,6 @@ async function setCell(taskId, dayMs, personId, qtyStr) {
   }
   
   const hours = qtyToHours(qtyStr);
-  const cap = dayCapacityForPerson(dayMs, personId);
-  
-  if (cap === 0 && hours > 0) {
-    toast('Impossible de saisir du temps sur un jour en congé/indisponibilité');
-    render();
-    return;
-  }
   
   const weekLock = CRAController.isPersonWeekLocked(
     personId,
@@ -6405,6 +6398,16 @@ async function setCell(taskId, dayMs, personId, qtyStr) {
       toast('Erreur : plusieurs entrées pour cette cellule');
     } else if (result.code === 'MISSING_WEEKLY_SHEET') {
       toast('Erreur : feuille introuvable pour cette semaine');
+    } else if (result.code === 'INVALID_ENTRY_DATE') {
+      toast('Date de saisie invalide');
+    } else if (result.code === 'DUPLICATE_WEEKLY_SHEET') {
+      toast('Plusieurs feuilles existent pour cette personne et cette semaine');
+    } else if (result.code === 'GRIST_API_UNAVAILABLE') {
+      toast('API Grist indisponible');
+    } else if (result.code === 'TIME_ENTRY_WRITE_FAILED') {
+      toast('Écriture de la saisie impossible');
+    } else if (result.code === 'TIME_ENTRY_ID_NOT_RETURNED') {
+      toast('La saisie a été envoyée mais son identifiant n\'a pas été retourné');
     } else {
       toast('Action bloquée : ' + (result.code || 'erreur inconnue'));
     }
@@ -6417,10 +6420,19 @@ async function setCell(taskId, dayMs, personId, qtyStr) {
     // Mode démo : mise à jour locale seulement
     if (result.action === 'update') {
       const entry = S.entries.find(e => e.id === result.entryId);
-      if (entry) Object.assign(entry, result.fields);
+      if (!entry) {
+        toast('Entrée enregistrée mais cache local incohérent');
+        render();
+        return;
+      }
+      Object.assign(entry, result.fields);
     } else if (result.action === 'create') {
-      const nid = result.entryId || (Math.max(0, ...S.entries.map(e => e.id)) + 1);
-      S.entries.push({ id: nid, membre: personId, tache: taskId, date: msToGrist(dayMs), ...result.fields });
+      if (result.entryId === null || result.entryId === undefined) {
+        toast('Entrée créée mais ID non retourné');
+        render();
+        return;
+      }
+      S.entries.push({ id: result.entryId, ...result.fields });
     } else if (result.action === 'delete') {
       S.entries = S.entries.filter(e => e.id !== result.entryId);
     }
@@ -6433,9 +6445,19 @@ async function setCell(taskId, dayMs, personId, qtyStr) {
   // Mettre à jour localement pour affichage immédiat
   if (result.action === 'update') {
     const entry = S.entries.find(e => e.id === result.entryId);
-    if (entry) Object.assign(entry, result.fields);
+    if (!entry) {
+      toast('Entrée enregistrée mais cache local incohérent');
+      render();
+      return;
+    }
+    Object.assign(entry, result.fields);
   } else if (result.action === 'create') {
-    S.entries.push({ id: result.entryId, membre: personId, tache: taskId, date: msToGrist(dayMs), ...result.fields });
+    if (result.entryId === null || result.entryId === undefined) {
+      toast('Entrée créée mais ID non retourné');
+      render();
+      return;
+    }
+    S.entries.push({ id: result.entryId, ...result.fields });
   } else if (result.action === 'delete') {
     S.entries = S.entries.filter(e => e.id !== result.entryId);
   }

@@ -544,6 +544,97 @@ function localDayKeyFromMs(ms) {
 }
 
 /**
+ * Calcule le lundi de la semaine ISO pour une date donnée
+ * @param {string} dateIso - Date ISO (YYYY-MM-DD)
+ * @returns {string|null} Lundi de la semaine (YYYY-MM-DD) ou null si invalide
+ */
+function weekStartIsoFromDateIso(dateIso) {
+  if (
+    typeof dateIso !== 'string' ||
+    !/^\d{4}-\d{2}-\d{2}$/.test(dateIso)
+  ) {
+    return null;
+  }
+
+  const date = new Date(dateIso + 'T00:00:00Z');
+
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+
+  const day = date.getUTCDay();
+  const daysFromMonday = day === 0 ? 6 : day - 1;
+
+  date.setUTCDate(date.getUTCDate() - daysFromMonday);
+
+  return date.toISOString().slice(0, 10);
+}
+
+/**
+ * Convertit une date ISO vers un timestamp Grist en secondes
+ * @param {string} dateIso - Date ISO (YYYY-MM-DD)
+ * @returns {number|null} Timestamp en secondes ou null si invalide
+ */
+function gristDateFromIso(dateIso) {
+  if (
+    typeof dateIso !== 'string' ||
+    !/^\d{4}-\d{2}-\d{2}$/.test(dateIso)
+  ) {
+    return null;
+  }
+
+  const ms = Date.parse(dateIso + 'T00:00:00Z');
+
+  if (!Number.isFinite(ms)) {
+    return null;
+  }
+
+  return Math.floor(ms / 1000);
+}
+
+/**
+ * Extrait l'ID d'un enregistrement ajouté depuis le résultat de applyUserActions
+ * @param {*} result - Résultat brut de applyUserActions
+ * @returns {number|null} ID numérique ou null si extraction échoue
+ */
+function extractAddedRecordId(result) {
+  let value = result;
+
+  if (
+    value &&
+    Array.isArray(value.retValues) &&
+    value.retValues.length > 0
+  ) {
+    value = value.retValues[0];
+  } else if (
+    value &&
+    Array.isArray(value.id) &&
+    value.id.length > 0
+  ) {
+    value = value.id[0];
+  } else if (Array.isArray(value)) {
+    value = value[0];
+  }
+
+  if (
+    value &&
+    typeof value === 'object' &&
+    value.id !== undefined
+  ) {
+    value = value.id;
+  }
+
+  const id = Number(value);
+
+  return (
+    Number.isInteger(id) &&
+    id > 0
+  )
+    ? id
+    : null;
+}
+
+/**
  * Convertit une date Grist (secondes Unix) vers une clé ISO YYYY-MM-DD
  * Les dates Grist sont stockées en secondes Unix mais représentent un jour civil
  * @param {*} value - Valeur Grist (nombre de secondes ou string ISO)
@@ -917,7 +1008,18 @@ async function saveCraCellChange(input, dependencies) {
   const { tasks, projects, assignments, entries, sheets, dailyCapacities, team, grist } = dependencies;
   const allowWeekends = input.allowWeekends || false;
   
-  // ÉTAPE 1 : Retrouver la tâche et le projet
+  if (
+    !grist ||
+    !grist.docApi ||
+    typeof grist.docApi.applyUserActions !== 'function'
+  ) {
+    return {
+      ok: false,
+      action: 'blocked',
+      code: 'GRIST_API_UNAVAILABLE'
+    };
+  }
+  
   const task = (tasks || []).find(t => t.id === taskId);
   if (!task) {
     return {
@@ -929,14 +1031,12 @@ async function saveCraCellChange(input, dependencies) {
   
   const project = task.projet ? (projects || []).find(p => p.id === task.projet) : null;
   
-  // ÉTAPE 2 : Construire le contexte projet
   const projectContext = {
     projectStartDate: project ? project.dateDebut : null,
     projectEndDate: project ? project.dateFin : null,
     allowWeekends: allowWeekends
   };
   
-  // ÉTAPE 3 : Résoudre l'affectation active
   const assignmentResult = resolveActiveAssignment(
     taskId,
     personId,
@@ -971,7 +1071,6 @@ async function saveCraCellChange(input, dependencies) {
   
   const activeAssignment = assignmentResult.assignment;
   
-  // ÉTAPE 4 : Résoudre l'entrée éditable
   const entryResult = resolveEditableCellEntry(
     entries, taskId, dateIso, personId, activeAssignment
   );
@@ -987,13 +1086,44 @@ async function saveCraCellChange(input, dependencies) {
   const existingEntry = entryResult.entry;
   const hasPlanningData = hasPlanningFields(existingEntry);
   
-  // ÉTAPE 5 : Retrouver la feuille
-  let currentSheet = (sheets || []).find(f => {
-    const sheetDate = gristDateKey(f.semaine);
-    return f.membre === personId && sheetDate === dateIso;
+  const weekStartIso = weekStartIsoFromDateIso(dateIso);
+  
+  if (!weekStartIso) {
+    return {
+      ok: false,
+      action: 'blocked',
+      code: 'INVALID_ENTRY_DATE'
+    };
+  }
+  
+  const matchingSheets = (sheets || []).filter(function(sheet) {
+    return (
+      Number(sheet.membre) === Number(personId) &&
+      gristDateKey(sheet.semaine) === weekStartIso
+    );
   });
   
-  // ÉTAPE 6 : Déterminer l'action
+  let currentSheet = null;
+  
+  if (matchingSheets.length === 0) {
+    return {
+      ok: false,
+      action: 'blocked',
+      code: 'MISSING_WEEKLY_SHEET'
+    };
+  }
+  
+  if (matchingSheets.length === 1) {
+    currentSheet = matchingSheets[0];
+  } else {
+    return {
+      ok: false,
+      action: 'blocked',
+      code: 'DUPLICATE_WEEKLY_SHEET',
+      sheetIds: matchingSheets.map(function(s) { return s.id; })
+    };
+  }
+  
   let actionResult = determineEntryAction(
     existingEntry, hours, activeAssignment, currentSheet, hasPlanningData
   );
@@ -1018,35 +1148,51 @@ async function saveCraCellChange(input, dependencies) {
     };
   }
   
-  // ÉTAPE 7 : Construire et appliquer l'action
   let entryId = existingEntry ? existingEntry.id : null;
   let actionsExecuted = 0;
   
   if (actionResult.action === 'delete' && existingEntry) {
-    if (grist && grist.docApi) {
+    try {
       await grist.docApi.applyUserActions([
         ['RemoveRecord', 'TimeEntries', existingEntry.id]
       ]);
-    }
-    actionsExecuted = 1;
-  } else if (actionResult.action === 'update' && existingEntry) {
-    if (grist && grist.docApi) {
-      await grist.docApi.applyUserActions([
-        ['UpdateRecord', 'TimeEntries', existingEntry.id, actionResult.fields]
-      ]);
-    }
-    entryId = existingEntry.id;
-    actionsExecuted = 1;
-  } else if (actionResult.action === 'create') {
-    if (!currentSheet || !currentSheet.id) {
+      actionsExecuted = 1;
+    } catch (error) {
       return {
         ok: false,
         action: 'blocked',
-        code: 'MISSING_WEEKLY_SHEET'
+        code: 'TIME_ENTRY_WRITE_FAILED',
+        error: error.message || String(error),
+        actionsExecuted: 0
+      };
+    }
+  } else if (actionResult.action === 'update' && existingEntry) {
+    try {
+      await grist.docApi.applyUserActions([
+        ['UpdateRecord', 'TimeEntries', existingEntry.id, actionResult.fields]
+      ]);
+      entryId = existingEntry.id;
+      actionsExecuted = 1;
+    } catch (error) {
+      return {
+        ok: false,
+        action: 'blocked',
+        code: 'TIME_ENTRY_WRITE_FAILED',
+        error: error.message || String(error),
+        actionsExecuted: 0
+      };
+    }
+  } else if (actionResult.action === 'create') {
+    const gristDate = gristDateFromIso(dateIso);
+    
+    if (gristDate === null) {
+      return {
+        ok: false,
+        action: 'blocked',
+        code: 'INVALID_ENTRY_DATE'
       };
     }
     
-    // Obtenir la capacité quotidienne
     const dayMs = new Date(dateIso + 'T00:00:00Z').getTime();
     const capacityResult = dailyCapacityForPersonAndDate(
       personId,
@@ -1059,7 +1205,7 @@ async function saveCraCellChange(input, dependencies) {
     const fieldsToCreate = {
       membre: personId,
       tache: taskId,
-      date: dateIso,
+      date: gristDate,
       heures: hours,
       heuresPrevues: 0,
       revisionPlan: 0,
@@ -1070,16 +1216,40 @@ async function saveCraCellChange(input, dependencies) {
       capaciteDisponible: capacityResult.availableCapacity
     };
     
-    if (grist && grist.docApi) {
+    try {
       const r = await grist.docApi.applyUserActions([
         ['AddRecord', 'TimeEntries', null, fieldsToCreate]
       ]);
       
-      // Extraire l'ID créé
-      if (r && r.retValues && r.retValues[0]) {
-        entryId = r.retValues[0];
+      entryId = extractAddedRecordId(r);
+      
+      if (entryId === null) {
+        return {
+          ok: false,
+          action: 'blocked',
+          code: 'TIME_ENTRY_ID_NOT_RETURNED'
+        };
       }
+      
       actionsExecuted = 1;
+      
+      return {
+        ok: true,
+        action: 'create',
+        entryId: entryId,
+        assignmentId: activeAssignment.id,
+        sheetId: currentSheet.id,
+        fields: fieldsToCreate,
+        actionsExecuted: 1
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        action: 'blocked',
+        code: 'TIME_ENTRY_WRITE_FAILED',
+        error: error.message || String(error),
+        actionsExecuted: 0
+      };
     }
   }
   
@@ -1104,6 +1274,9 @@ const CRAController = {
   isPersonWeekLocked,
   localDayKeyFromMs,
   gristDateKey,
+  weekStartIsoFromDateIso,
+  gristDateFromIso,
+  extractAddedRecordId,
   dailyCapacityForPersonAndDate,
   hasExplicitActualHours,
   effectiveDisplayedHours,

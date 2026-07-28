@@ -879,4 +879,677 @@ describe('CRA — Mode ponctuel : saisie hors dates prévues (stateful)', () => 
       }
     });
   });
+  
+  describe('Tests B3.8 à B3.19 — Corrections du lot B3', () => {
+    const {
+      weekStartIsoFromDateIso,
+      gristDateFromIso,
+      extractAddedRecordId
+    } = CRAController;
+    
+    describe('B3.8 — setCell utilise le contrôleur', () => {
+      test('setCell appelle CRAController.saveCraCellChange', () => {
+        expect(typeof CRAController.saveCraCellChange).toBe('function');
+      });
+    });
+    
+    describe('B3.9 — capacité zéro autorisée', () => {
+      let mockGrist;
+      let timeEntriesTable;
+      
+      beforeEach(() => {
+        timeEntriesTable = {
+          id: [],
+          tache: [],
+          membre: [],
+          date: [],
+          heures: [],
+          heuresPrevues: [],
+          affectation: [],
+          feuille: [],
+          capaciteJour: [],
+          capaciteTheorique: [],
+          capaciteDisponible: [],
+          revisionPlan: []
+        };
+        
+        mockGrist = {
+          docApi: {
+            fetchTable: jest.fn().mockImplementation(async function(table) {
+              if (table === 'TimeEntries') return timeEntriesTable;
+              if (table === 'MemberDailyCapacities') {
+                return {
+                  id: [70],
+                  membre: [MEMBER_ID],
+                  date: [dateToTimestamp(REALISATION_DATE)],
+                  capaciteDisponible: [0],
+                  capaciteTheorique: [7]
+                };
+              }
+              return { id: [] };
+            }),
+            applyUserActions: jest.fn().mockImplementation(async function(actions) {
+              const retValues = [];
+              for (const action of actions) {
+                const [type, tableName, recordId, data] = action;
+                if (type === 'AddRecord' && tableName === 'TimeEntries') {
+                  const newId = (timeEntriesTable.id.length > 0 ? Math.max(...timeEntriesTable.id) : 0) + 1;
+                  timeEntriesTable.id.push(newId);
+                  timeEntriesTable.tache.push(data.tache || null);
+                  timeEntriesTable.membre.push(data.membre || null);
+                  timeEntriesTable.date.push(data.date || null);
+                  timeEntriesTable.heures.push(data.heures !== undefined ? data.heures : null);
+                  timeEntriesTable.heuresPrevues.push(data.heuresPrevues !== undefined ? data.heuresPrevues : 0);
+                  timeEntriesTable.affectation.push(data.affectation || null);
+                  timeEntriesTable.feuille.push(data.feuille || null);
+                  timeEntriesTable.capaciteJour.push(data.capaciteJour || null);
+                  timeEntriesTable.capaciteTheorique.push(data.capaciteTheorique || 0);
+                  timeEntriesTable.capaciteDisponible.push(data.capaciteDisponible || 0);
+                  timeEntriesTable.revisionPlan.push(data.revisionPlan !== undefined ? data.revisionPlan : 0);
+                  retValues.push(newId);
+                }
+              }
+              return { retValues };
+            })
+          }
+        };
+      });
+      
+      function createDependencies() {
+        return {
+          tasks: [{ id: TASK_ID, projet: 1 }],
+          projects: [{ id: 1, dateDebut: dateToTimestamp(PROJECT_START), dateFin: dateToTimestamp(PROJECT_END) }],
+          assignments: [{
+            id: 10,
+            tache: TASK_ID,
+            membre: MEMBER_ID,
+            heuresAllouees: ALLOCATED_HOURS,
+            dateDebut: dateToTimestamp(ASSIGNMENT_START),
+            dateFin: dateToTimestamp(ASSIGNMENT_END),
+            modeRepartition: 'ponctuel',
+            actif: true
+          }],
+          entries: [],
+          sheets: [{ id: 50, membre: MEMBER_ID, semaine: dateToTimestamp('2026-07-27'), statut: 'brouillon' }],
+          dailyCapacities: [{
+            id: 70,
+            membre: MEMBER_ID,
+            date: dateToTimestamp(REALISATION_DATE),
+            capaciteDisponible: 0,
+            capaciteTheorique: 7
+          }],
+          team: [{ id: MEMBER_ID, nom: 'Jason', capaciteHebdo: 35 }],
+          grist: mockGrist
+        };
+      }
+      
+      test('capacité zéro autorisée', async () => {
+        const dependencies = createDependencies();
+        
+        const result = await saveCraCellChange({
+          taskId: TASK_ID,
+          personId: MEMBER_ID,
+          dateIso: REALISATION_DATE,
+          hours: 4
+        }, dependencies);
+        
+        expect(result.ok).toBe(true);
+        expect(result.action).toBe('create');
+        expect(result.fields.capaciteDisponible).toBe(0);
+        expect(result.fields.capaciteTheorique).toBe(7);
+      });
+    });
+    
+    describe('B3.10 — mardi réutilise la feuille du lundi', () => {
+      let mockGrist;
+      let timeEntriesTable;
+      
+      beforeEach(() => {
+        timeEntriesTable = { id: [] };
+        
+        mockGrist = {
+          docApi: {
+            fetchTable: jest.fn().mockImplementation(async function(table) {
+              if (table === 'TimeEntries') return timeEntriesTable;
+              return { id: [] };
+            }),
+            applyUserActions: jest.fn().mockImplementation(async function(actions) {
+              const retValues = [];
+              for (const action of actions) {
+                const [type, tableName, recordId, data] = action;
+                if (type === 'AddRecord' && tableName === 'TimeEntries') {
+                  const newId = (timeEntriesTable.id.length > 0 ? Math.max(...timeEntriesTable.id) : 0) + 1;
+                  timeEntriesTable.id.push(newId);
+                  retValues.push(newId);
+                }
+              }
+              return { retValues };
+            })
+          }
+        };
+      });
+      
+      test('mardi 28/07 réutilise feuille du lundi 27/07', async () => {
+        const dependencies = {
+          tasks: [{ id: TASK_ID, projet: 1 }],
+          projects: [{ id: 1, dateDebut: dateToTimestamp(PROJECT_START), dateFin: dateToTimestamp(PROJECT_END) }],
+          assignments: [{
+            id: 10,
+            tache: TASK_ID,
+            membre: MEMBER_ID,
+            heuresAllouees: ALLOCATED_HOURS,
+            dateDebut: dateToTimestamp(ASSIGNMENT_START),
+            dateFin: dateToTimestamp(ASSIGNMENT_END),
+            modeRepartition: 'ponctuel',
+            actif: true
+          }],
+          entries: [],
+          sheets: [{ id: 50, membre: MEMBER_ID, semaine: dateToTimestamp('2026-07-27'), statut: 'brouillon' }],
+          dailyCapacities: [],
+          team: [{ id: MEMBER_ID }],
+          grist: mockGrist
+        };
+        
+        const result = await saveCraCellChange({
+          taskId: TASK_ID,
+          personId: MEMBER_ID,
+          dateIso: '2026-07-28',
+          hours: 4
+        }, dependencies);
+        
+        expect(result.ok).toBe(true);
+        expect(result.sheetId).toBe(50);
+        expect(result.fields.feuille).toBe(50);
+      });
+    });
+    
+    describe('B3.11 — doublon de feuilles bloqué', () => {
+      test('deux feuilles pour même semaine bloquent', async () => {
+        const dependencies = {
+          tasks: [{ id: TASK_ID, projet: 1 }],
+          projects: [{ id: 1, dateDebut: dateToTimestamp(PROJECT_START), dateFin: dateToTimestamp(PROJECT_END) }],
+          assignments: [{
+            id: 10,
+            tache: TASK_ID,
+            membre: MEMBER_ID,
+            heuresAllouees: ALLOCATED_HOURS,
+            dateDebut: dateToTimestamp(ASSIGNMENT_START),
+            dateFin: dateToTimestamp(ASSIGNMENT_END),
+            modeRepartition: 'ponctuel',
+            actif: true
+          }],
+          entries: [],
+          sheets: [
+            { id: 50, membre: MEMBER_ID, semaine: dateToTimestamp('2026-07-27'), statut: 'brouillon' },
+            { id: 51, membre: MEMBER_ID, semaine: dateToTimestamp('2026-07-27'), statut: 'brouillon' }
+          ],
+          dailyCapacities: [],
+          team: [{ id: MEMBER_ID }],
+          grist: { docApi: { applyUserActions: jest.fn() } }
+        };
+        
+        const result = await saveCraCellChange({
+          taskId: TASK_ID,
+          personId: MEMBER_ID,
+          dateIso: REALISATION_DATE,
+          hours: 4
+        }, dependencies);
+        
+        expect(result.ok).toBe(false);
+        expect(result.code).toBe('DUPLICATE_WEEKLY_SHEET');
+        expect(result.sheetIds).toEqual([50, 51]);
+      });
+    });
+    
+    describe('B3.12 — format date Grist', () => {
+      test('gristDateFromIso retourne timestamp secondes', () => {
+        const result = gristDateFromIso('2026-07-27');
+        const expected = Date.UTC(2026, 6, 27) / 1000;
+        expect(result).toBe(expected);
+      });
+      
+      test('gristDateFromIso rejette format invalide', () => {
+        expect(gristDateFromIso('27/07/2026')).toBe(null);
+        expect(gristDateFromIso('invalid')).toBe(null);
+        expect(gristDateFromIso(null)).toBe(null);
+      });
+      
+      test('weekStartIsoFromDateIso calcule correctement', () => {
+        expect(weekStartIsoFromDateIso('2026-07-27')).toBe('2026-07-27');
+        expect(weekStartIsoFromDateIso('2026-07-28')).toBe('2026-07-27');
+        expect(weekStartIsoFromDateIso('2026-07-31')).toBe('2026-07-27');
+        expect(weekStartIsoFromDateIso('2026-08-02')).toBe('2026-07-27');
+        expect(weekStartIsoFromDateIso('invalid')).toBe(null);
+      });
+    });
+    
+    describe('B3.13 — extraction des IDs', () => {
+      test('retValues: [101]', () => {
+        expect(extractAddedRecordId({ retValues: [101] })).toBe(101);
+      });
+      
+      test('id: [101]', () => {
+        expect(extractAddedRecordId({ id: [101] })).toBe(101);
+      });
+      
+      test('[101]', () => {
+        expect(extractAddedRecordId([101])).toBe(101);
+      });
+      
+      test('101', () => {
+        expect(extractAddedRecordId(101)).toBe(101);
+      });
+      
+      test('{ id: 101 }', () => {
+        expect(extractAddedRecordId({ id: 101 })).toBe(101);
+      });
+      
+      test('null', () => {
+        expect(extractAddedRecordId(null)).toBe(null);
+      });
+      
+      test('{}', () => {
+        expect(extractAddedRecordId({})).toBe(null);
+      });
+      
+      test('{ retValues: [] }', () => {
+        expect(extractAddedRecordId({ retValues: [] })).toBe(null);
+      });
+      
+      test('{ id: [] }', () => {
+        expect(extractAddedRecordId({ id: [] })).toBe(null);
+      });
+    });
+    
+    describe('B3.14 — ID absent après AddRecord', () => {
+      test('applyUserActions retourne {}', async () => {
+        const mockGrist = {
+          docApi: {
+            applyUserActions: jest.fn().mockResolvedValue({})
+          }
+        };
+        
+        const dependencies = {
+          tasks: [{ id: TASK_ID, projet: 1 }],
+          projects: [{ id: 1 }],
+          assignments: [{
+            id: 10,
+            tache: TASK_ID,
+            membre: MEMBER_ID,
+            modeRepartition: 'ponctuel',
+            actif: true
+          }],
+          entries: [],
+          sheets: [{ id: 50, membre: MEMBER_ID, semaine: dateToTimestamp('2026-07-27') }],
+          dailyCapacities: [],
+          team: [{ id: MEMBER_ID }],
+          grist: mockGrist
+        };
+        
+        const result = await saveCraCellChange({
+          taskId: TASK_ID,
+          personId: MEMBER_ID,
+          dateIso: REALISATION_DATE,
+          hours: 4
+        }, dependencies);
+        
+        expect(result.ok).toBe(false);
+        expect(result.code).toBe('TIME_ENTRY_ID_NOT_RETURNED');
+      });
+    });
+    
+    describe('B3.15 — erreur d\'écriture', () => {
+      test('applyUserActions lève Error', async () => {
+        const mockGrist = {
+          docApi: {
+            applyUserActions: jest.fn().mockRejectedValue(new Error('write failed'))
+          }
+        };
+        
+        const dependencies = {
+          tasks: [{ id: TASK_ID, projet: 1 }],
+          projects: [{ id: 1 }],
+          assignments: [{
+            id: 10,
+            tache: TASK_ID,
+            membre: MEMBER_ID,
+            modeRepartition: 'ponctuel',
+            actif: true
+          }],
+          entries: [{
+            id: 100,
+            tache: TASK_ID,
+            membre: MEMBER_ID,
+            date: gristDateFromIso(REALISATION_DATE),
+            heures: 2,
+            affectation: 10
+          }],
+          sheets: [{ id: 50, membre: MEMBER_ID, semaine: dateToTimestamp('2026-07-27') }],
+          dailyCapacities: [],
+          team: [{ id: MEMBER_ID }],
+          grist: mockGrist
+        };
+        
+        const result = await saveCraCellChange({
+          taskId: TASK_ID,
+          personId: MEMBER_ID,
+          dateIso: REALISATION_DATE,
+          hours: 4
+        }, dependencies);
+        
+        expect(result.ok).toBe(false);
+        expect(result.code).toBe('TIME_ENTRY_WRITE_FAILED');
+        expect(result.actionsExecuted).toBe(0);
+      });
+    });
+    
+    describe('B3.16 — API Grist absente', () => {
+      test('grist = null', async () => {
+        const dependencies = {
+          tasks: [{ id: TASK_ID }],
+          projects: [],
+          assignments: [],
+          entries: [],
+          sheets: [],
+          dailyCapacities: [],
+          team: [],
+          grist: null
+        };
+        
+        const result = await saveCraCellChange({
+          taskId: TASK_ID,
+          personId: MEMBER_ID,
+          dateIso: REALISATION_DATE,
+          hours: 4
+        }, dependencies);
+        
+        expect(result.ok).toBe(false);
+        expect(result.code).toBe('GRIST_API_UNAVAILABLE');
+      });
+      
+      test('grist = { docApi: {} }', async () => {
+        const dependencies = {
+          tasks: [{ id: TASK_ID }],
+          projects: [],
+          assignments: [],
+          entries: [],
+          sheets: [],
+          dailyCapacities: [],
+          team: [],
+          grist: { docApi: {} }
+        };
+        
+        const result = await saveCraCellChange({
+          taskId: TASK_ID,
+          personId: MEMBER_ID,
+          dateIso: REALISATION_DATE,
+          hours: 4
+        }, dependencies);
+        
+        expect(result.ok).toBe(false);
+        expect(result.code).toBe('GRIST_API_UNAVAILABLE');
+      });
+    });
+    
+    describe('B3.17 — champs complets après création', () => {
+      let mockGrist;
+      let timeEntriesTable;
+      
+      beforeEach(() => {
+        timeEntriesTable = { id: [] };
+        
+        mockGrist = {
+          docApi: {
+            fetchTable: jest.fn().mockImplementation(async function(table) {
+              if (table === 'MemberDailyCapacities') {
+                return {
+                  id: [70],
+                  membre: [MEMBER_ID],
+                  date: [dateToTimestamp(REALISATION_DATE)],
+                  capaciteDisponible: [7],
+                  capaciteTheorique: [7]
+                };
+              }
+              return { id: [] };
+            }),
+            applyUserActions: jest.fn().mockImplementation(async function(actions) {
+              const retValues = [];
+              for (const action of actions) {
+                const [type, tableName, recordId, data] = action;
+                if (type === 'AddRecord' && tableName === 'TimeEntries') {
+                  const newId = (timeEntriesTable.id.length > 0 ? Math.max(...timeEntriesTable.id) : 0) + 1;
+                  timeEntriesTable.id.push(newId);
+                  retValues.push(newId);
+                }
+              }
+              return { retValues };
+            })
+          }
+        };
+      });
+      
+      test('champs complets après création', async () => {
+        const dependencies = {
+          tasks: [{ id: TASK_ID, projet: 1 }],
+          projects: [{ id: 1 }],
+          assignments: [{
+            id: 10,
+            tache: TASK_ID,
+            membre: MEMBER_ID,
+            modeRepartition: 'ponctuel',
+            actif: true
+          }],
+          entries: [],
+          sheets: [{ id: 50, membre: MEMBER_ID, semaine: dateToTimestamp('2026-07-27') }],
+          dailyCapacities: [{
+            id: 70,
+            membre: MEMBER_ID,
+            date: dateToTimestamp(REALISATION_DATE),
+            capaciteDisponible: 7,
+            capaciteTheorique: 7
+          }],
+          team: [{ id: MEMBER_ID }],
+          grist: mockGrist
+        };
+        
+        const result = await saveCraCellChange({
+          taskId: TASK_ID,
+          personId: MEMBER_ID,
+          dateIso: REALISATION_DATE,
+          hours: 4
+        }, dependencies);
+        
+        expect(result.ok).toBe(true);
+        expect(result.fields).toEqual({
+          membre: MEMBER_ID,
+          tache: TASK_ID,
+          date: Date.UTC(2026, 6, 27) / 1000,
+          heures: 4,
+          heuresPrevues: 0,
+          revisionPlan: 0,
+          affectation: 10,
+          feuille: 50,
+          capaciteJour: 70,
+          capaciteTheorique: 7,
+          capaciteDisponible: 7
+        });
+      });
+    });
+    
+    describe('B3.18 — prévision strictement protégée', () => {
+      test('lignes 21 et 22 inchangées', async () => {
+        const timeEntriesTable = {
+          id: [21, 22],
+          tache: [TASK_ID, TASK_ID],
+          membre: [MEMBER_ID, MEMBER_ID],
+          date: [dateToTimestamp('2026-07-23'), dateToTimestamp('2026-07-24')],
+          heures: [null, null],
+          heuresPrevues: [4, 4],
+          affectation: [10, 10],
+          feuille: [50, 50],
+          revisionPlan: [1, 1]
+        };
+        
+        const mockGrist = {
+          docApi: {
+            fetchTable: jest.fn().mockImplementation(async function(table) {
+              if (table === 'TimeEntries') return timeEntriesTable;
+              if (table === 'MemberDailyCapacities') {
+                return {
+                  id: [70],
+                  membre: [MEMBER_ID],
+                  date: [dateToTimestamp(REALISATION_DATE)],
+                  capaciteDisponible: [7]
+                };
+              }
+              return { id: [] };
+            }),
+            applyUserActions: jest.fn().mockImplementation(async function(actions) {
+              const retValues = [];
+              for (const action of actions) {
+                const [type, tableName, recordId, data] = action;
+                if (type === 'AddRecord' && tableName === 'TimeEntries') {
+                  const newId = (timeEntriesTable.id.length > 0 ? Math.max(...timeEntriesTable.id) : 0) + 1;
+                  timeEntriesTable.id.push(newId);
+                  retValues.push(newId);
+                } else if (type === 'UpdateRecord' && tableName === 'TimeEntries') {
+                  const idx = timeEntriesTable.id.indexOf(recordId);
+                  if (idx >= 0) {
+                    Object.keys(data).forEach(key => {
+                      if (timeEntriesTable[key]) timeEntriesTable[key][idx] = data[key];
+                    });
+                  }
+                }
+              }
+              return { retValues };
+            })
+          }
+        };
+        
+        const before21 = {
+          id: timeEntriesTable.id[0],
+          heuresPrevues: timeEntriesTable.heuresPrevues[0],
+          date: timeEntriesTable.date[0]
+        };
+        const before22 = {
+          id: timeEntriesTable.id[1],
+          heuresPrevues: timeEntriesTable.heuresPrevues[1],
+          date: timeEntriesTable.date[1]
+        };
+        
+        const dependencies = {
+          tasks: [{ id: TASK_ID, projet: 1 }],
+          projects: [{ id: 1 }],
+          assignments: [{
+            id: 10,
+            tache: TASK_ID,
+            membre: MEMBER_ID,
+            modeRepartition: 'ponctuel',
+            actif: true
+          }],
+          get entries() {
+            return timeEntriesTable.id.map((id, i) => ({
+              id,
+              tache: timeEntriesTable.tache[i],
+              membre: timeEntriesTable.membre[i],
+              date: timeEntriesTable.date[i],
+              heures: timeEntriesTable.heures[i],
+              heuresPrevues: timeEntriesTable.heuresPrevues[i],
+              affectation: timeEntriesTable.affectation[i],
+              feuille: timeEntriesTable.feuille[i]
+            }));
+          },
+          sheets: [{ id: 50, membre: MEMBER_ID, semaine: dateToTimestamp('2026-07-27') }],
+          dailyCapacities: [{
+            id: 70,
+            membre: MEMBER_ID,
+            date: dateToTimestamp(REALISATION_DATE),
+            capaciteDisponible: 7
+          }],
+          team: [{ id: MEMBER_ID }],
+          grist: mockGrist
+        };
+        
+        await saveCraCellChange({
+          taskId: TASK_ID,
+          personId: MEMBER_ID,
+          dateIso: REALISATION_DATE,
+          hours: 4
+        }, dependencies);
+        
+        const after21 = {
+          id: timeEntriesTable.id[0],
+          heuresPrevues: timeEntriesTable.heuresPrevues[0],
+          date: timeEntriesTable.date[0]
+        };
+        const after22 = {
+          id: timeEntriesTable.id[1],
+          heuresPrevues: timeEntriesTable.heuresPrevues[1],
+          date: timeEntriesTable.date[1]
+        };
+        
+        expect(after21).toEqual(before21);
+        expect(after22).toEqual(before22);
+      });
+    });
+    
+    describe('B3.19 — absence de replan', () => {
+      test('aucun appel de replan dans saveCraCellChange', async () => {
+        const mockGrist = {
+          docApi: {
+            fetchTable: jest.fn().mockImplementation(async function(table) {
+              if (table === 'MemberDailyCapacities') {
+                return {
+                  id: [70],
+                  membre: [MEMBER_ID],
+                  date: [dateToTimestamp(REALISATION_DATE)],
+                  capaciteDisponible: [7]
+                };
+              }
+              return { id: [] };
+            }),
+            applyUserActions: jest.fn().mockResolvedValue({ retValues: [101] })
+          }
+        };
+        
+        const dependencies = {
+          tasks: [{ id: TASK_ID, projet: 1 }],
+          projects: [{ id: 1 }],
+          assignments: [{
+            id: 10,
+            tache: TASK_ID,
+            membre: MEMBER_ID,
+            modeRepartition: 'ponctuel',
+            actif: true
+          }],
+          entries: [],
+          sheets: [{ id: 50, membre: MEMBER_ID, semaine: dateToTimestamp('2026-07-27') }],
+          dailyCapacities: [{
+            id: 70,
+            membre: MEMBER_ID,
+            date: dateToTimestamp(REALISATION_DATE),
+            capaciteDisponible: 7
+          }],
+          team: [{ id: MEMBER_ID }],
+          grist: mockGrist
+        };
+        
+        const result = await saveCraCellChange({
+          taskId: TASK_ID,
+          personId: MEMBER_ID,
+          dateIso: REALISATION_DATE,
+          hours: 4
+        }, dependencies);
+        
+        expect(result.ok).toBe(true);
+        
+        const controllerCode = CRAController.saveCraCellChange.toString();
+        expect(controllerCode).not.toMatch(/planAssignment/);
+        expect(controllerCode).not.toMatch(/reconcileAssignmentPlan/);
+        expect(controllerCode).not.toMatch(/replanMembers/);
+        expect(controllerCode).not.toMatch(/memberPlanningOrchestrator/);
+        expect(controllerCode).not.toMatch(/ganttAutoPlanning/);
+      });
+    });
+  });
 });
