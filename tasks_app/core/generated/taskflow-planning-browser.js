@@ -4765,38 +4765,54 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
     
     /**
      * Génère un fingerprint pour détecter les changements
-     * Version améliorée : inclut les heures allouées, dates, et réalisés
+     * Version améliorée : inclut les champs du domaine réellement chargés
+     * - Affectations : ID, heuresAllouees, dates
+     * - TimeEntries : ID, affectation, date, prévu, réalisé, statut, révision
+     * - Capacités : ID, date, capacité, ratio, source, révision
+     * - Disponibilités : ID, dates, ratio
      */
     function generateFingerprint(data, registry) {
-      var parts = [
-        data.member.capaciteHebdo,
-        data.assignments.length
-      ];
+      var parts = [];
       
-      // Ajouter les heures allouées et dates pour chaque affectation
-      data.assignments.forEach(function(a) {
-        parts.push(a.id + ':' + a.heuresAllouees + ':' + a.dateDebut + ':' + a.dateFin);
+      // Trier pour ordre déterministe
+      var sortedAssignments = data.assignments.slice().sort(function(a, b) {
+        return a.id - b.id;
       });
       
-      // Ajouter le résumé des TimeEntries (nombre + total heures)
-      var totalPlanned = 0;
-      var totalActual = 0;
-      var actualCount = 0;
-      data.timeEntries.forEach(function(e) {
-        totalPlanned += Number(e.heuresPrevues || 0);
-        if (e.heures !== null && e.heures !== undefined && e.heures !== '') {
-          totalActual += Number(e.heures);
-          actualCount++;
-        }
+      // Affectations : ID, heuresAllouees, dates
+      sortedAssignments.forEach(function(a) {
+        parts.push('A:' + a.id + ':' + a.heuresAllouees + ':' + (a.dateDebut || 'null') + ':' + (a.dateFin || 'null'));
       });
-      parts.push(data.timeEntries.length + ':' + totalPlanned + ':' + totalActual + ':' + actualCount);
       
-      // Ajouter le résumé des capacités
-      var totalCapacity = 0;
-      data.capacities.forEach(function(c) {
-        totalCapacity += Number(c.capaciteDisponible || 0);
+      // TimeEntries : trier par ID pour ordre déterministe
+      var sortedEntries = data.timeEntries.slice().sort(function(a, b) {
+        return a.id - b.id;
       });
-      parts.push(data.capacities.length + ':' + totalCapacity);
+      
+      sortedEntries.forEach(function(e) {
+        var actual = e.actualHours === null || e.actualHours === undefined || e.actualHours === '' ? 'null' : e.actualHours;
+        var sheet = e.sheetStatus || 'none';
+        var feuille = e.feuille || 'none';
+        parts.push('E:' + e.id + ':' + (e.assignmentId || 'null') + ':' + e.date + ':' + e.plannedHours + ':' + actual + ':' + sheet + ':' + feuille + ':' + e.revisionPlan);
+      });
+      
+      // Capacités : trier par date
+      var sortedCapacities = data.capacities.slice().sort(function(a, b) {
+        return a.date.localeCompare(b.date);
+      });
+      
+      sortedCapacities.forEach(function(c) {
+        parts.push('C:' + c.id + ':' + c.date + ':' + c.capaciteTheorique + ':' + c.capaciteDisponible + ':' + c.disponibiliteRatio + ':' + c.source + ':' + c.revision);
+      });
+      
+      // Disponibilités : trier par ID
+      var sortedDisponibilites = data.disponibilites.slice().sort(function(a, b) {
+        return a.id - b.id;
+      });
+      
+      sortedDisponibilites.forEach(function(d) {
+        parts.push('D:' + d.id + ':' + (d.dateDebut || 'null') + ':' + (d.dateFin || 'null') + ':' + (d.dispo || 'null'));
+      });
       
       return parts.join('|');
     }
@@ -5238,6 +5254,19 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
         
         log('Nouvelle réconciliation : ' + refreshedReconciliation.creates.length + ' créations, ' + 
             refreshedReconciliation.updates.length + ' updates, ' + refreshedReconciliation.deletes.length + ' suppressions');
+        
+        // 0.1 - Vérifier les conflits après rechargement
+        if (refreshedReconciliation.conflicts && refreshedReconciliation.conflicts.length > 0) {
+          log('Conflits détectés après rechargement : ' + refreshedReconciliation.conflicts.length);
+          return {
+            success: false,
+            code: 'TIME_ENTRY_CONFLICT_AFTER_RELOAD',
+            conflicts: refreshedReconciliation.conflicts,
+            phases: phases,
+            capacitiesWritten: true,
+            timeEntriesWritten: false
+          };
+        }
         
         // Convertir en actions Grist
         var existingEntriesMap = new Map();

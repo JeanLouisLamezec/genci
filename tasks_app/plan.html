@@ -283,6 +283,23 @@ body.panel-open #app { margin-right: min(380px, 92vw); }
 <script>
 "use strict";
 
+// Diagnostic : ce script inline est-il exécuté ?
+window.__PLAN_INLINE_STARTED__ = true;
+console.info('[Plan] Inline script STARTED');
+
+// Intercepteur d'erreurs global pour diagnostiquer les problèmes d'exécution
+window.addEventListener('error', function(e) {
+  console.error('[Plan] ERREUR GLOBALE:', e.message, 'à la ligne', e.lineno, 'col:', e.colno);
+  console.error('[Plan] Fichier:', e.filename);
+  if (e.error) {
+    console.error('[Plan] Stack:', e.error.stack);
+  }
+});
+
+window.addEventListener('unhandledrejection', function(e) {
+  console.error('[Plan] PROMESSE REJETÉE NON GÉRÉE:', e.reason);
+});
+
 // <taskflow-core> -- GENERE par scripts/build-taskflow.js, NE PAS EDITER ICI
 /* ============================================================================
  * taskflow-core.js — Module commun aux widgets TaskFlow
@@ -5004,7 +5021,7 @@ const progById = (id) => S.programmes.find(p => p.id === id);
 function progKeyOf(t) { const p = projById(t.projet); if (!p) return '0'; return String(p.programme || p.portefeuille || '0'); }
 const groupLabel = (g) => g === 'project' ? 'Projet' : g === 'role' ? 'Rôle' : g === 'programme' ? 'Programme' : 'Personne';
 const activeTeam = () => S.team.filter(m => m.actif !== false);
-const isTerminal = (t) => TF.isTerminal(statusCfg, t.statut);
+const isTaskTerminal = (t) => TF.isTerminal(statusCfg, t.statut);
 const capOf = (m) => (Number(m && m.capaciteHebdo) > 0 ? Number(m.capaciteHebdo) : 35);
 const plabel = (p) => S.granularity === 'month' ? (p.slice(5) + '/' + p.slice(2, 4)) : ('S' + p.slice(6));
 const MOIS = ['janv', 'févr', 'mars', 'avr', 'mai', 'juin', 'juil', 'août', 'sept', 'oct', 'nov', 'déc'];
@@ -5058,7 +5075,7 @@ function updateCanonState() {
 }
 
 function planTasks() {
-  let ts = S.includeDone ? S.tasks : S.tasks.filter(t => !isTerminal(t));
+  let ts = S.includeDone ? S.tasks : S.tasks.filter(t => !isTaskTerminal(t));
   const f = S.extFilters;  // filtres partagés diffusés par la suite (onOptions)
   if (f) {
     if (f.project != null && f.project !== '') ts = ts.filter(t => String(t.projet) === String(f.project));
@@ -5093,7 +5110,7 @@ function realCharges(t) {
   if (!tot || !tp) return []; return cs.map(c => ({ teamId: c.teamId, heures: c.heures * tp / tot }));
 }
 // Réalisé : tempsPasse réparti (mesure) ; à défaut, pour une tâche CLÔTURÉE, réalisé estimé = prévu (étalé sur la période réelle via dateCloture, cf render).
-function realisedCharges(t) { const rc = realCharges(t); if (rc.length) return rc; return isTerminal(t) ? effCharges(t) : []; }
+function realisedCharges(t) { const rc = realCharges(t); if (rc.length) return rc; return isTaskTerminal(t) ? effCharges(t) : []; }
 function chargesFor(t) {
   if (S.mode === 'realise') return realisedCharges(t);
   if (S.mode === 'reste') { const rm = {}; for (const c of realisedCharges(t)) rm[c.teamId] = c.heures; return effCharges(t).map(c => ({ teamId: c.teamId, heures: Math.max(c.heures - (rm[c.teamId] || 0), 0) })).filter(c => c.heures > 0); }
@@ -7197,14 +7214,35 @@ async function initGrist() {
   }
 }
 
-bindToolbar();
+// NOTE : Le bootstrap est maintenant externalisé dans core/planning/view/plan-app.js
+// Ne PAS appeler initGrist() ou loadGrist() ici.
+// startPlan() dans plan-app.js gère l'initialisation complète.
 
-if (window.self === window.top) {
-  appMode = 'demo';
-  loadDemo();
-} else {
-  initGrist();
-}
+// Diagnostic : le script inline a terminé son exécution
+window.__PLAN_INLINE_COMPLETE__ = true;
+console.info('[Plan] Inline script COMPLETE');
+
+// Export pour le script externe
+window.__PlanFunctions = {
+  bindToolbar: bindToolbar,
+  loadDemo: loadDemo,
+  initGrist: initGrist,
+  loadGrist: loadGrist,
+  render: render,
+  initPlanningService: initPlanningService,
+  initFilterManager: initFilterManager,
+  buildDispoIndex: buildDispoIndex,
+  S: typeof S !== 'undefined' ? S : {},
+  TF: typeof TF !== 'undefined' ? TF : null,
+  grist: typeof grist !== 'undefined' ? grist : null,
+  toast: typeof toast === 'function' ? toast : null,
+  escapeHtml: typeof escapeHtml === 'function' ? escapeHtml : null
+};
+
+// Indiquer que le script inline est chargé
+window.__PLAN_INLINE_LOADED__ = true;
+console.info('[Plan] Script inline chargé, fonctions exportées');
 </script>
+<script src="core/planning/view/plan-app.js"></script>
 </body>
 </html>
