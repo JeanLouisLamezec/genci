@@ -329,29 +329,6 @@ function formatCanonMatrixForRender(byMemberPeriod, groupBy, mode) {
   
   return matrix;
 }
-        byMemberId[memberId2] = {};
-      }
-      byMemberId[memberId2][periodKey2] = agg2;
-    }
-    
-    // Ensuite, créer les clés composites selon le groupement
-    // Cette logique dépend de keyFn() du widget Plan
-    // Pour une migration complète, il faudrait connaître la fonction keyFn()
-    
-    // Version simplifiée : on garde par memberId
-    for (var memberId3 in byMemberId) {
-      for (var periodKey3 in byMemberId[memberId3]) {
-        var matrixKey3 = memberId3;
-        if (!matrix[matrixKey3]) {
-          matrix[matrixKey3] = {};
-        }
-        matrix[matrixKey3][periodKey3] = byMemberId[memberId3][periodKey3].plannedHours;
-      }
-    }
-  }
-  
-  return matrix;
-}
 
 /**
  * Calcule la capacité pour une ligne/ressource sur une période
