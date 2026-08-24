@@ -82,16 +82,25 @@ class FilterManager {
 
   /**
    * Initialise l'UI avec les conteneurs fournis
-   * @param {Object} containers - { assignee: HTMLElement, team: HTMLElement, project: HTMLElement, task: HTMLElement }
+   * @param {Object} containers - { team: HTMLElement, assignee: HTMLElement, programme: HTMLElement, project: HTMLElement, task: HTMLElement }
    * @param {HTMLElement} filterPanel - L'élément parent .filter-panel
    */
    initUI(containers, filterPanel) {
+    // Ordre visuel commun à tous les widgets. Déplacer les conteneurs ne
+    // modifie ni leurs listeners, ni les clés utilisées par le filtrage.
+    const displayOrder = ['team', 'assignee', 'programme', 'project', 'task'];
+    const orderedContainers = displayOrder.map(type => containers[type]).filter(Boolean);
+    const commonParent = orderedContainers.length ? orderedContainers[0].parentElement : null;
+    if (commonParent && orderedContainers.every(container => container.parentElement === commonParent)) {
+      orderedContainers.forEach(container => commonParent.appendChild(container));
+    }
+
     this.ui = {
-      assignee: containers.assignee ? this._createFilterSection(containers.assignee, 'assignee', 'Personnes', this.data.team || []) : null,
       team: containers.team ? this._createFilterSection(containers.team, 'team', 'Équipes', this.data.entites || []) : null,
+      assignee: containers.assignee ? this._createFilterSection(containers.assignee, 'assignee', 'Personnes', this.data.team || []) : null,
+      programme: containers.programme ? this._createFilterSection(containers.programme, 'programme', 'Programmes', this.data.programmes || []) : null,
       project: containers.project ? this._createFilterSection(containers.project, 'project', 'Projets', this.data.projects || []) : null,
-      task: containers.task ? this._createFilterSection(containers.task, 'task', 'Tâches', this.data.tasks || []) : null,
-      programme: containers.programme ? this._createFilterSection(containers.programme, 'programme', 'Programmes', this.data.programmes || []) : null
+      task: containers.task ? this._createFilterSection(containers.task, 'task', 'Tâches', this.data.tasks || []) : null
     };
     
     this.filterPanel = filterPanel;

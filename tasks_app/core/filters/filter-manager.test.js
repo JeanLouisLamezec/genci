@@ -294,6 +294,29 @@ describe('FilterManager - Synchronisation UI', () => {
     expect(fm.ui.task).toBeDefined();
   });
 
+  test('doit afficher les sections dans l’ordre Équipe, Personne, Programme, Projet, Tâche', () => {
+    const fm = createFilterManager();
+    const panel = document.createElement('div');
+    const containers = {
+      assignee: document.createElement('div'),
+      team: document.createElement('div'),
+      project: document.createElement('div'),
+      programme: document.createElement('div'),
+      task: document.createElement('div')
+    };
+
+    Object.values(containers).forEach(container => panel.appendChild(container));
+    fm.initUI(containers, panel);
+
+    expect(Array.from(panel.children)).toEqual([
+      containers.team,
+      containers.assignee,
+      containers.programme,
+      containers.project,
+      containers.task
+    ]);
+  });
+
   test('doit mettre à jour le compteur de filtres', () => {
     const fm = createFilterManager({
       initialFilters: { programme: ['1', '2'] }

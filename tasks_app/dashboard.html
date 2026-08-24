@@ -5240,18 +5240,18 @@ function renderFilterPanel() {
                 ${PERIODE_OPTIONS.map(([v,l]) => `<button class="filter-btn ${filters.periode===v?'active':''}" onclick="setPeriode('${v}')">${l}</button>`).join('')}
             </div>
         </div>`;
+    if (team.length) html += `
+        <div class="filter-section">
+            <div class="filter-section-label">Personnes</div>
+            <div class="filter-checkboxes">
+                ${team.filter(m=>m.actif!==false).map(m => `<span class="filter-check ${filters.assignes.includes(String(m.id))?'active':''}" onclick="toggleFilterAssigne(${m.id})">${escapeHtml(m.nom)}</span>`).join('')}
+            </div>
+        </div>`;
     if (projects.length) html += `
         <div class="filter-section">
             <div class="filter-section-label">Projet</div>
             <div class="filter-checkboxes">
                 ${projects.filter(p=>p.actif!==false).map(p => `<span class="filter-check ${filters.projets.includes(String(p.id))?'active':''}" onclick="toggleFilterProjet(${p.id})"><span style="color:${p.couleur||'#6366f1'}">●</span> ${escapeHtml(p.nom)}</span>`).join('')}
-            </div>
-        </div>`;
-    if (team.length) html += `
-        <div class="filter-section">
-            <div class="filter-section-label">Assigné</div>
-            <div class="filter-checkboxes">
-                ${team.filter(m=>m.actif!==false).map(m => `<span class="filter-check ${filters.assignes.includes(String(m.id))?'active':''}" onclick="toggleFilterAssigne(${m.id})">${escapeHtml(m.nom)}</span>`).join('')}
             </div>
         </div>`;
     html += `

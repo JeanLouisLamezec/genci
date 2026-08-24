@@ -5780,7 +5780,7 @@ if (typeof globalThis !== 'undefined') {
             const assHtml = team2.length ? team2.map(m => `<div class="filter-option" onclick="toggleFilterValue('assignee', ${m.id})"><input type="checkbox" ${filters.assignee.includes(m.id)?'checked':''}>${escapeHtml(m.nom)}</div>`).join('') : '<div class="filter-option muted">Aucun membre</div>';
             const total = filters.project.length + filters.priority.length + filters.assignee.length;
             const menu = document.getElementById('filterAllMenu');
-            if (menu) menu.innerHTML = grp('Projets', projHtml, true) + grp('Priorités', prioHtml) + grp('Équipe', assHtml) + (total ? '<div class="fm-foot"><span class="fm-clear" onclick="clearAllCalFilters()">Tout effacer</span></div>' : '');
+            if (menu) menu.innerHTML = grp('Personnes', assHtml, true) + grp('Projets', projHtml) + grp('Priorités', prioHtml) + (total ? '<div class="fm-foot"><span class="fm-clear" onclick="clearAllCalFilters()">Tout effacer</span></div>' : '');
             const cnt = document.getElementById('filterCount'); if (cnt) { cnt.textContent = total; cnt.style.display = total ? 'inline-flex' : 'none'; }
             const fbtn = document.getElementById('filterBtn'); if (fbtn) fbtn.classList.toggle('has-filter', total > 0);
             const ms = document.getElementById('moreSubsToggle'); if (ms) { ms.classList.toggle('on', showSubtasks); const off = workLevel !== 'all'; ms.style.opacity = off ? '0.45' : ''; ms.style.pointerEvents = off ? 'none' : ''; ms.title = off ? 'Indisponible : le filtre « Niveau » prime sur ce reglage' : ''; }

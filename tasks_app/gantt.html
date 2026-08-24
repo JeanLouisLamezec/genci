@@ -7,6 +7,7 @@
     <script src="https://docs.getgrist.com/grist-plugin-api.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
     <script src="core/filters/filter-manager.js"></script>
+    <script src="core/gantt/gantt-visible-tree.js"></script>
     <script src="core/planning/task_assignment/task-assignment-service.js"></script>
     <script src="core/planning/gantt/gantt-task-assignment-integration.js"></script>
     <script src="core/planning/gantt/gantt-auto-planning-integration.js"></script>
@@ -128,6 +129,12 @@
         .task-row.dimmed { opacity: 0.4; }
         .task-row.dimmed:hover { opacity: 0.7; }
         .task-row.parent .task-name { font-weight: 600; }
+        .project-row { display: flex; align-items: center; gap: 8px; height: var(--row-height); padding: 0 12px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--bg) 72%, var(--card-bg)); cursor: pointer; }
+        .project-row:hover { background: var(--primary-light); }
+        .project-row .project-color { width: 4px; height: 26px; border-radius: 3px; flex-shrink: 0; }
+        .project-row .project-name { min-width: 0; flex: 1; font-size: 0.8rem; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .project-row .project-count { flex-shrink: 0; font-size: 0.65rem; color: var(--text-muted); }
+        .grid-row.project-grid-row { background: color-mix(in srgb, var(--bg) 72%, var(--card-bg)); }
         .gantt-bar.dimmed, .gantt-milestone.dimmed { opacity: 0.4; }
         /* Barre parent = bande-résumé plus fine + chevrons */
         .gantt-bar.parent { height: 8px !important; margin-top: 8px; }
@@ -602,10 +609,10 @@
                 <button class="filter-btn" id="btnFilterToggle"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon></svg> Filtres <span class="filter-count" style="display:none"></span>▾</button>
                 <div class="filter-panel" id="filterPanel">
                     <div class="filter-sections">
-                    <div id="filterPersonContainer"></div>
                     <div id="filterTeamContainer"></div>
-                    <div id="filterProjectContainer"></div>
+                    <div id="filterPersonContainer"></div>
                     <div id="filterProgramContainer"></div>
+                    <div id="filterProjectContainer"></div>
                     <div id="filterTaskContainer"></div>
                   </div>
                   <div class="filter-actions">
@@ -623,7 +630,7 @@
     <div class="main-content">
         <div class="gantt-wrapper" id="ganttWrapper">
             <div class="gantt-header">
-                <div class="task-list-header"><span>Tâches</span><span id="taskCount" style="font-size:0.7rem;color:var(--text-muted);">0</span></div>
+                <div class="task-list-header"><span>Projets et tâches</span><span id="taskCount" style="font-size:0.7rem;color:var(--text-muted);">0</span></div>
                 <div class="timeline-header" id="timelineHeader">
                     <div class="timeline-header-scroll" id="timelineHeaderScroll">
                         <div class="timeline-header-months" id="monthsHeader"></div>
@@ -5377,6 +5384,9 @@ if (typeof globalThis !== 'undefined') {
         // WBS-02: état expand/collapse par tâche parente
         let expandedTasks = new Set();
         try { expandedTasks = new Set(JSON.parse(localStorage.getItem('taskflow_gantt_expanded') || '[]').map(Number).filter(n => !isNaN(n))); } catch (e) {}
+        // Les projets sont ouverts par défaut ; on persiste uniquement ceux que l'utilisateur replie.
+        let collapsedProjects = new Set();
+        try { collapsedProjects = new Set(JSON.parse(localStorage.getItem('taskflow_gantt_collapsed_projects') || '[]').map(String)); } catch (e) {}
         let sortableInstance = null;
         let filters = { assignee: [], team: [], project: [], programme: [], task: [] };  // Filtres unifiés avec Kanban/Plan
         let dragState = { active: false, type: null, taskId: null, startX: 0, originalLeft: 0, originalWidth: 0, originalStart: null, originalEnd: null };
@@ -5471,12 +5481,13 @@ if (typeof globalThis !== 'undefined') {
         // GEN-03: Export functions
         // WBS-02: déplie toute la hiérarchie temporairement pour l'export, retourne l'état précédent
         function _expandAllForExport() {
-            const prev = new Set(expandedTasks);
+            const prev = { tasks: new Set(expandedTasks), projects: new Set(collapsedProjects) };
             for (const t of tasks) if (hasChildren(t)) expandedTasks.add(t.id);
+            collapsedProjects.clear();
             render();
             return prev;
         }
-        function _restoreExpandState(prev) { expandedTasks = prev; render(); }
+        function _restoreExpandState(prev) { expandedTasks = prev.tasks; collapsedProjects = prev.projects; render(); }
         function exportPrint() {
             document.querySelectorAll('.filter-menu').forEach(m => m.classList.remove('open'));
             const prev = _expandAllForExport();
@@ -5647,6 +5658,12 @@ if (typeof globalThis !== 'undefined') {
             localStorage.setItem('taskflow_gantt_expanded', JSON.stringify([...expandedTasks]));
             render();
         }
+        function toggleProject(projectKey) {
+            const key = String(projectKey);
+            if (collapsedProjects.has(key)) collapsedProjects.delete(key); else collapsedProjects.add(key);
+            localStorage.setItem('taskflow_gantt_collapsed_projects', JSON.stringify([...collapsedProjects]));
+            render();
+        }
         // Tri au sein d'une fratrie selon sortMode
         function sortFratrie(arr) {
             if (sortMode === 'priority') {
@@ -5657,36 +5674,19 @@ if (typeof globalThis !== 'undefined') {
             }
             return arr.slice(); // 'manual' — respecte l'ordre dans tasks[]
         }
-        // Construit la liste aplatie des tâches visibles (DFS) avec respect filtres + expand/collapse
-        // Renvoie [{task, depth, dimmed}]
+        // Construit la liste unique Projet -> Tâche -> Sous-tâche en combinant
+        // les filtres métier et la fenêtre temporelle courante.
         function buildVisibleTasks() {
-            const filtered = getFilteredTasks();
-            // Affichage en arbre avec toutes les tâches filtrées
-            const directMatches = new Set(filtered.map(t => t.id));
-            // branches = tâches dont elles-mêmes OU un ancêtre OU un descendant match
-            const branchTasks = new Set();
-            for (const t of filtered) {
-                let cur = t, guard = 0;
-                while (cur && guard++ < 64) {
-                    branchTasks.add(cur.id);
-                    cur = cur.parentTask ? tasks.find(x => x.id === cur.parentTask) : null;
-                }
-                for (const d of getAllDescendants(t.id)) branchTasks.add(d.id);
-            }
-            // Racines (tâches sans parent existant)
-            const rootsAll = tasks.filter(t => !t.parentTask || !tasks.find(x => x.id === t.parentTask));
-            const roots = sortFratrie(rootsAll.filter(t => branchTasks.has(t.id)));
-            const visible = [];
-            const walk = (node, depth) => {
-                const dimmed = !directMatches.has(node.id);
-                visible.push({ task: node, depth, dimmed });
-                if (hasChildren(node) && expandedTasks.has(node.id)) {
-                    const kids = sortFratrie(getChildren(node.id).filter(k => branchTasks.has(k.id)));
-                    for (const k of kids) walk(k, depth + 1);
-                }
-            };
-            for (const r of roots) walk(r, 0);
-            return visible;
+            const rangeStart = getViewStartDate();
+            const rangeEndExclusive = addDays(rangeStart, getTotalDays());
+            currentVisibleModel = GanttVisibleTree.buildVisibleRows({
+                tasks, projects, filteredTasks: getFilteredTasks(),
+                rangeStart, rangeEndExclusive,
+                expandedTaskIds: expandedTasks,
+                collapsedProjectIds: collapsedProjects,
+                sortTasks: sortFratrie
+            });
+            return currentVisibleModel.rows;
         }
 
         // Dependency cycle detection
@@ -6199,13 +6199,26 @@ if (typeof globalThis !== 'undefined') {
 
         // WBS-02: liste aplatie visible, partagée entre renderTaskList et renderTimeline
         let currentVisible = [];
+        let currentVisibleModel = { rows: [], projectCount: 0, taskCount: 0 };
         function renderTaskList() {
             currentVisible = buildVisibleTasks();
-            panelState.taskList = currentVisible.map(v => v.task);
-            document.getElementById('taskCount').textContent = currentVisible.length;
+            panelState.taskList = currentVisible.filter(row => row.kind === 'task').map(row => row.task);
+            document.getElementById('taskCount').textContent = currentVisibleModel.projectCount + ' projets · ' + currentVisibleModel.taskCount + ' tâches';
 
             let html = '';
-            currentVisible.forEach(({ task: t, depth, dimmed }) => {
+            currentVisible.forEach((row) => {
+                if (row.kind === 'project') {
+                    const key = escapeHtml(String(row.key));
+                    const chevron = '<span class="tree-chevron' + (!row.collapsed ? ' expanded' : '') + '">▶</span>';
+                    html += '<div class="project-row" data-kind="project" data-project-key="' + key + '" onclick="toggleProject(this.dataset.projectKey)">' +
+                        chevron +
+                        '<span class="project-color" style="background:' + escapeHtml(row.color) + '"></span>' +
+                        '<span class="project-name">' + escapeHtml(row.label) + '</span>' +
+                        '<span class="project-count">' + row.taskCount + ' tâche' + (row.taskCount > 1 ? 's' : '') + '</span>' +
+                    '</div>';
+                    return;
+                }
+                const { task: t, depth, dimmed } = row;
                 const p = getTaskPriority(t);
                 const isParent = hasChildren(t);
                 // Dates affichées : agrégées si parent sans dates propres, sinon dates du parent
@@ -6228,7 +6241,7 @@ if (typeof globalThis !== 'undefined') {
                 const indent = depth * 18;
                 const classes = ['task-row', selected ? 'selected' : '', dimmed ? 'dimmed' : '', isParent ? 'parent' : ''].filter(Boolean).join(' ');
 
-                html += '<div class="' + classes + '" data-id="' + t.id + '" onclick="openTaskPanel(' + t.id + ')" style="padding-left:' + (12 + indent) + 'px">' +
+                html += '<div class="' + classes + '" data-kind="task" data-project-key="' + escapeHtml(String(row.projectKey)) + '" data-id="' + t.id + '" onclick="openTaskPanel(' + t.id + ')" style="padding-left:' + (12 + indent) + 'px">' +
                     '<span class="drag-handle">☰</span>' +
                     chevron +
                     '<div class="task-priority-bar p' + p + '"></div>' +
@@ -6250,23 +6263,30 @@ if (typeof globalThis !== 'undefined') {
             if (sortMode === 'manual') {
                 if (sortableInstance) sortableInstance.destroy();
                 sortableInstance = new Sortable(document.getElementById('taskList'), {
-                    animation: 150, handle: '.drag-handle', ghostClass: 'sortable-ghost', chosenClass: 'sortable-chosen',
+                    animation: 150, handle: '.drag-handle', draggable: '.task-row', ghostClass: 'sortable-ghost', chosenClass: 'sortable-chosen',
                     onEnd: (evt) => {
                         const id = parseInt(evt.item.dataset.id);
                         const movedTask = tasks.find(t => t.id === id);
                         if (!movedTask) return;
                         // Vérifier que le voisin visuel est dans la même fratrie, sinon annuler
-                        const newSiblingId = parseInt(evt.item.nextElementSibling?.dataset.id || evt.item.previousElementSibling?.dataset.id);
-                        const sibling = tasks.find(t => t.id === newSiblingId);
-                        if (sibling && (sibling.parentTask || null) !== (movedTask.parentTask || null)) {
-                            showToast('Le drag manuel est limité à la même fratrie', 'info');
+                        const nextRow = evt.item.nextElementSibling;
+                        const previousRow = evt.item.previousElementSibling;
+                        const neighborRow = nextRow?.dataset.kind === 'task' ? nextRow : (previousRow?.dataset.kind === 'task' ? previousRow : null);
+                        const sameProject = neighborRow && neighborRow.dataset.projectKey === evt.item.dataset.projectKey;
+                        const siblingId = neighborRow ? parseInt(neighborRow.dataset.id) : null;
+                        const sibling = tasks.find(t => t.id === siblingId);
+                        if (!sibling || !sameProject || (sibling.parentTask || null) !== (movedTask.parentTask || null)) {
+                            showToast('Le drag manuel est limité au même projet et à la même fratrie', 'info');
                             render();
                             return;
                         }
                         const newIndex = evt.newIndex, oldIndex = evt.oldIndex;
                         if (newIndex !== oldIndex) {
-                            const [moved] = tasks.splice(tasks.findIndex(t => t.id === id), 1);
-                            tasks.splice(newIndex, 0, moved);
+                            const movedIndex = tasks.findIndex(t => t.id === id);
+                            const [moved] = tasks.splice(movedIndex, 1);
+                            const siblingIndex = tasks.findIndex(t => t.id === sibling.id);
+                            const insertIndex = neighborRow === nextRow ? siblingIndex : siblingIndex + 1;
+                            tasks.splice(insertIndex, 0, moved);
                             render();
                         }
                     }
@@ -6275,9 +6295,12 @@ if (typeof globalThis !== 'undefined') {
         }
 
         function renderTimeline() {
-            // WBS-02: utiliser currentVisible (ordre DFS) au lieu d'une liste plate filtrée
-            const ft = currentVisible.map(v => v.task);
-            const dimmedSet = new Set(currentVisible.filter(v => v.dimmed).map(v => v.task.id));
+            // La liste et la timeline partagent strictement les mêmes lignes.
+            const taskRows = currentVisible.filter(row => row.kind === 'task');
+            const ft = taskRows.map(row => row.task);
+            const taskIndexMap = {};
+            currentVisible.forEach((row, index) => { if (row.kind === 'task') taskIndexMap[row.task.id] = index; });
+            const dimmedSet = new Set(taskRows.filter(row => row.dimmed).map(row => row.task.id));
             const start = effectiveStart;
             const totalDays = effectiveDays;
             const cfg = VIEW_CONFIG[currentView];
@@ -6299,8 +6322,8 @@ if (typeof globalThis !== 'undefined') {
             const pxPerDay = effectivePxPerDay;
 
             let gridHtml = '';
-            ft.forEach(() => {
-                gridHtml += '<div class="grid-row">';
+            currentVisible.forEach((row) => {
+                gridHtml += '<div class="grid-row' + (row.kind === 'project' ? ' project-grid-row' : '') + '">';
                 if (cfg.unit === 'month') {
                     const effEnd = addDays(start, totalDays);
                     let cur = new Date(start.getFullYear(), start.getMonth(), 1);
@@ -6332,7 +6355,7 @@ if (typeof globalThis !== 'undefined') {
             const grid = document.getElementById('timelineGrid');
             grid.innerHTML = gridHtml;
             grid.style.width = totalWidth + 'px';
-            grid.style.height = (ft.length * 44) + 'px';
+            grid.style.height = (currentVisible.length * 44) + 'px';
 
             // Ligne aujourd'hui
             const today = new Date();
@@ -6345,7 +6368,9 @@ if (typeof globalThis !== 'undefined') {
             }
 
             // Barres et jalons — ordre Y = currentVisible (DFS avec expand/collapse)
-            ft.forEach((t, idx) => {
+            currentVisible.forEach((row, idx) => {
+                if (row.kind !== 'task') return;
+                const t = row.task;
                 const isParent = hasChildren(t);
                 // Dates effectives : agrégées si parent sans dates propres, sinon dates du parent
                 let tStart = gristToDate(t.dateDebut), tEnd = gristToDate(t.dateEcheance);
@@ -6400,10 +6425,10 @@ if (typeof globalThis !== 'undefined') {
                 }
             });
 
-            renderDependencies(ft, start, pxPerDay);
+            renderDependencies(ft, start, pxPerDay, taskIndexMap);
         }
 
-        function renderDependencies(ft, start, pxPerDay) {
+        function renderDependencies(ft, start, pxPerDay, taskIndexMap) {
             const existing = document.querySelector('.dependencies-layer');
             if (existing) existing.remove();
 
@@ -6411,9 +6436,6 @@ if (typeof globalThis !== 'undefined') {
             svg.classList.add('dependencies-layer');
             svg.style.width = '100%';
             svg.style.height = '100%';
-
-            const taskIndexMap = {};
-            ft.forEach((t, i) => taskIndexMap[t.id] = i);
 
             ft.forEach(t => {
                 const deps = getDependsOnArray(t);
@@ -8323,6 +8345,10 @@ assignmentModes: {},
                     if (rec?.id && rec.id !== selectedTaskId) {
                         selectedTaskId = rec.id;
                         let cur = tasks.find(t => t.id === rec.id), guard = 0;
+                        const selectedProjectKey = cur && projects.some(p => String(p.id) === String(cur.projet))
+                            ? String(cur.projet)
+                            : GanttVisibleTree.WITHOUT_PROJECT;
+                        collapsedProjects.delete(selectedProjectKey);
                         while (cur?.parentTask && guard++ < 64) {
                             expandedTasks.add(cur.parentTask);
                             cur = tasks.find(t => t.id === cur.parentTask);
