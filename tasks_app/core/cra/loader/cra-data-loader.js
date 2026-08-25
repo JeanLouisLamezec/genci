@@ -364,7 +364,7 @@ const CRA_TABLES = {
   projects: {
     tableId: 'Projects',
     required: true,
-    columns: ['id', 'nom', 'programme']
+    columns: ['id', 'nom', 'programme', 'dateDebut', 'dateFin']
   },
   
   programmes: {
@@ -687,7 +687,9 @@ function normalizeCraSnapshot(raw, currentUser) {
   const projects = columnarToRows(raw.projects).map(r => ({
     id: r.id,
     nom: r.nom,
-    programme: Number(r.programme) || null
+    programme: Number(r.programme) || null,
+    dateDebut: r.dateDebut,
+    dateFin: r.dateFin
   }));
   
   const programmes = raw.programmes ? columnarToRows(raw.programmes) : [];

@@ -43,7 +43,23 @@
     var createMemberPlanningOrchestrator = global.createMemberPlanningOrchestrator;
 
     if (!createGanttAutoPlanningIntegration) {
-        throw new Error('createGanttAutoPlanningIntegration is not defined in global scope');
+        createGanttAutoPlanningIntegration = require('./gantt-auto-planning-integration.js').createGanttAutoPlanningIntegration;
+    }
+
+    if (!createMemberPlanningOrchestrator) {
+        createMemberPlanningOrchestrator = require('../member/member-planning-orchestrator.js').createMemberPlanningOrchestrator;
+        global.createMemberPlanningOrchestrator = createMemberPlanningOrchestrator;
+    }
+
+    function createPlanningApiStub(previewResult, commitResult) {
+        return {
+            createMemberPlanningOrchestrator: function() {
+                return {
+                    previewMember: function() { return Promise.resolve(previewResult); },
+                    commitMember: function() { return Promise.resolve(commitResult || { success: true, totalActionsExecuted: 1 }); }
+                };
+            }
+        };
     }
 
     describe('Gantt Auto Planning - API publique', function() {
@@ -59,6 +75,48 @@
 
             expect(integration.autoPlanMembersAfterTaskSync).toBeDefined();
             expect(integration.determineReplanFromDate).toBeDefined();
+        });
+
+        it('transmet uniquement les IDs des affectations synchronisées', async function() {
+            var capturedOptions = null;
+            var planningApi = {
+                createMemberPlanningOrchestrator: function() {
+                    return {
+                        previewMember: function(memberId, options) {
+                            capturedOptions = options;
+                            return Promise.resolve({
+                                success: true,
+                                canCommit: true,
+                                code: 'SUCCESS',
+                                capacityActions: [],
+                                timeEntryActions: []
+                            });
+                        },
+                        commitMember: function() {
+                            return Promise.resolve({ success: true, totalActionsExecuted: 0 });
+                        }
+                    };
+                }
+            };
+            var mockGrist = { docApi: {} };
+            var integration = createGanttAutoPlanningIntegration(mockGrist, { planningApi: planningApi });
+
+            await integration.autoPlanMembersAfterTaskSync({
+                taskId: 22,
+                assignments: [{
+                    id: 16,
+                    tache: 22,
+                    membre: 1,
+                    heuresAllouees: 21,
+                    dateDebut: 1787650723,
+                    dateFin: 1810166400,
+                    modeRepartition: 'uniforme',
+                    actif: true
+                }],
+                operation: 'update'
+            });
+
+            expect(capturedOptions.targetAssignmentIds).toEqual([16]);
         });
     });
 
@@ -109,7 +167,17 @@
                 }
             };
 
-            var integration = createGanttAutoPlanningIntegration(mockGrist, { logEnabled: false });
+            var integration = createGanttAutoPlanningIntegration(mockGrist, {
+                logEnabled: false,
+                todayIso: '2026-07-01',
+                planningApi: createPlanningApiStub({
+                    success: true,
+                    canCommit: true,
+                    code: 'SUCCESS',
+                    capacityActions: [],
+                    timeEntryActions: [['AddRecord', 'TimeEntries', null, {}]]
+                })
+            });
 
             var assignments = [{
                 id: 1,
@@ -155,7 +223,16 @@
                 }
             };
 
-            var integration = createGanttAutoPlanningIntegration(mockGrist);
+            var integration = createGanttAutoPlanningIntegration(mockGrist, {
+                todayIso: '2026-07-01',
+                planningApi: createPlanningApiStub({
+                    success: true,
+                    canCommit: true,
+                    code: 'SUCCESS',
+                    capacityActions: [],
+                    timeEntryActions: [['AddRecord', 'TimeEntries', null, {}]]
+                })
+            });
 
             var result = await integration.autoPlanMembersAfterTaskSync({
                 taskId: 1,
@@ -207,7 +284,16 @@
                 }
             };
 
-            var integration = createGanttAutoPlanningIntegration(mockGrist);
+            var integration = createGanttAutoPlanningIntegration(mockGrist, {
+                todayIso: '2026-07-01',
+                planningApi: createPlanningApiStub({
+                    success: true,
+                    canCommit: true,
+                    code: 'SUCCESS',
+                    capacityActions: [],
+                    timeEntryActions: [['AddRecord', 'TimeEntries', null, {}]]
+                })
+            });
 
             var assignments = [
                 {
@@ -283,7 +369,16 @@
                 }
             };
 
-            var integration = createGanttAutoPlanningIntegration(mockGrist);
+            var integration = createGanttAutoPlanningIntegration(mockGrist, {
+                todayIso: '2026-07-01',
+                planningApi: createPlanningApiStub({
+                    success: true,
+                    canCommit: false,
+                    code: 'INSUFFICIENT_SHARED_CAPACITY',
+                    capacityActions: [],
+                    timeEntryActions: []
+                })
+            });
 
             var assignments = [
                 {
@@ -330,7 +425,7 @@
 
             var integration = createGanttAutoPlanningIntegration(mockGrist);
             var assignment = {
-                startDate: 1783296000 // 2026-07-01
+                startDate: 1782864000 // 2026-07-01
             };
 
             var result = integration.determineReplanFromDate(assignment, 'create');

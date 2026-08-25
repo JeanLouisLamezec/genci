@@ -24,6 +24,7 @@ const OUTPUT_FILE = path.join(OUTPUT_DIR, 'taskflow-planning-browser.js');
 // Modules à bundler (dans l'ordre de dépendance)
 // Les IDs doivent correspondre aux chemins relatifs depuis CORE_DIR
 const MODULES = [
+  { path: path.join(CORE_DIR, 'planning', 'forecast', 'rolling-load.js') },
   { path: path.join(CORE_DIR, 'planning', 'planning-engine.js') },
   { path: path.join(CORE_DIR, 'planning', 'reconciliation', 'planning-reconciliation.js') },
   { path: path.join(CORE_DIR, 'grist', 'grist-api-helper.js') },
@@ -120,7 +121,7 @@ function compileModule(moduleId, filePath) {
       }
       return moduleRegistry.get(id)();
     };
-    
+
     ${code}
   })`;
   
@@ -197,18 +198,21 @@ function build(options = {}) {
   var widgetPlanningService = __require('widget-planning-service');
   var orchestrator = __require('planning/member/member-planning-orchestrator');
   var ganttAutoPlanning = __require('planning/gantt/gantt-auto-planning-integration');
+  var rollingLoad = __require('planning/forecast/rolling-load');
   
   global.TaskFlowPlanning = {
     createWidgetPlanningService: widgetPlanningService.createWidgetPlanningService,
     summarizeGristActions: widgetPlanningService.summarizeGristActions,
     createMemberPlanningOrchestrator: orchestrator.createMemberPlanningOrchestrator,
     isBlockingDiagnostic: adapter.isBlockingDiagnostic,
-    createGanttAutoPlanningIntegration: ganttAutoPlanning.createGanttAutoPlanningIntegration
+    createGanttAutoPlanningIntegration: ganttAutoPlanning.createGanttAutoPlanningIntegration,
+    rollingLoad: rollingLoad
   };
   
   // Exposer aussi directement pour compatibilité avec le code existant
   global.createMemberPlanningOrchestrator = orchestrator.createMemberPlanningOrchestrator;
   global.createGanttAutoPlanningIntegration = ganttAutoPlanning.createGanttAutoPlanningIntegration;
+  global.TaskFlowRollingLoad = rollingLoad;
   
 })(typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : this));
 

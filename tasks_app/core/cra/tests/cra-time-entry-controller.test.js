@@ -1258,5 +1258,32 @@ describe('CRA Time Entry Controller', () => {
       expect(state.hasExplicitActual).toBe(true);
       expect(state.isPrefilled).toBe(true);
     });
+
+    test('affiche un zéro virtuel ponctuel sans matérialiser la proposition', () => {
+      const state = CRAController.buildCellDisplayState(
+        [{ heures: null, heuresPrevues: 4 }],
+        { ignorePlanned: true, virtualZero: true }
+      );
+
+      expect(state.plannedHours).toBe(0);
+      expect(state.displayedHours).toBe(0);
+      expect(state.hasDisplayValue).toBe(true);
+      expect(state.hasExplicitActual).toBe(false);
+      expect(state.isPrefilled).toBe(false);
+      expect(state.isVirtualZero).toBe(true);
+    });
+
+    test('le réalisé ponctuel remplace le zéro virtuel', () => {
+      const state = CRAController.buildCellDisplayState(
+        [{ heures: 6, heuresPrevues: 4 }],
+        { ignorePlanned: true, virtualZero: true }
+      );
+
+      expect(state.plannedHours).toBe(0);
+      expect(state.displayedHours).toBe(6);
+      expect(state.actualHours).toBe(6);
+      expect(state.hasExplicitActual).toBe(true);
+      expect(state.isVirtualZero).toBe(false);
+    });
   });
 });

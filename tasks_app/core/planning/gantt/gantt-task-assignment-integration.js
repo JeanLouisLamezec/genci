@@ -48,6 +48,16 @@
             }
         }
 
+        // Une affectation ponctuelle reste une demande virtuelle : le Plan la
+        // projette à la volée et le CRA l'affiche à zéro jusqu'à la saisie.
+        // Elle ne doit donc jamais passer par l'ancien moteur qui matérialise
+        // des TimeEntries et peut bloquer sur une surcharge historique.
+        function assignmentsRequiringMaterializedPlanning(assignments) {
+            return (assignments || []).filter(function(assignment) {
+                return (assignment.modeRepartition || 'uniforme') !== 'ponctuel';
+            });
+        }
+
         /**
          * Exécute une opération en file d'attente par taskId
          * @param {number} taskId - ID de la tâche
@@ -600,9 +610,15 @@
             // PHASE B — Mode de répartition PAR MEMBRE
             // Priorité pour chaque membre :
             // 1. assignmentModes[memberId] depuis editData (si présent)
-            // 2. modeRepartition depuis l'affectation existante
-            // 3. 'uniforme' par défaut
+            // 2. distributionMode global des anciens appelants (si présent)
+            // 3. modeRepartition depuis l'affectation existante
+            // 4. 'uniforme' par défaut
             var assignmentModes = editData.assignmentModes || {};
+            // Compatibilité avec les anciens appelants qui transmettent un mode
+            // unique pour tous les membres. Le Gantt actuel utilise
+            // assignmentModes[memberId], mais des intégrations historiques
+            // peuvent encore envoyer distributionMode.
+            var globalAssignmentMode = editData.distributionMode;
             
             var assignments = [];
             var validationErrors = [];
@@ -630,6 +646,16 @@
                             return; // Skip this member
                         }
                         finalMode = explicitMode;
+                    } else if (globalAssignmentMode != null && globalAssignmentMode !== '') {
+                        if (globalAssignmentMode !== 'uniforme' && globalAssignmentMode !== 'ponctuel') {
+                            validationErrors.push({
+                                memberId: memberId,
+                                value: globalAssignmentMode,
+                                code: 'INVALID_DISTRIBUTION_MODE'
+                            });
+                            return; // Skip this member
+                        }
+                        finalMode = globalAssignmentMode;
                     } else if (context.existingAssignments) {
                         // Pas de mode explicite → préserver le mode existant
                         var existingAssignment = context.existingAssignments.find(function(a) {
@@ -774,12 +800,13 @@
                     
                     // 4. Planification automatique (après la synchronisation réussie)
                     var planningResult = null;
-                    if (autoPlanningIntegration && activeAssignments.length > 0) {
+                    var materializedAssignments = assignmentsRequiringMaterializedPlanning(activeAssignments);
+                    if (autoPlanningIntegration && materializedAssignments.length > 0) {
                         try {
                             log('Déclenchement planification automatique pour tâche ' + taskId);
                             planningResult = await autoPlanningIntegration.autoPlanMembersAfterTaskSync({
                                 taskId: taskId,
-                                assignments: activeAssignments, // Utiliser les affectations rechargées (format Grist)
+                                assignments: materializedAssignments,
                                 operation: 'create'
                             });
                             
@@ -802,6 +829,8 @@
                             };
                             // Ne pas faire échouer la création de tâche
                         }
+                    } else if (activeAssignments.length > 0 && materializedAssignments.length === 0) {
+                        log('Planification matérielle ignorée : affectations ponctuelles projetées virtuellement');
                     }
                     
                     var finalResult = {
@@ -958,12 +987,13 @@
                         
                         // Planification automatique
                         var planningResult = null;
-                        if (autoPlanningIntegration && activeAssignments.length > 0) {
+                        var materializedAssignments = assignmentsRequiringMaterializedPlanning(activeAssignments);
+                        if (autoPlanningIntegration && materializedAssignments.length > 0) {
                             try {
                                 log('Déclenchement planification automatique pour tâche ' + taskId);
                                 planningResult = await autoPlanningIntegration.autoPlanMembersAfterTaskSync({
                                     taskId: taskId,
-                                    assignments: activeAssignments, // Utiliser les affectations rechargées (format Grist)
+                                    assignments: materializedAssignments,
                                     operation: 'update'
                                 });
                                 
@@ -997,11 +1027,12 @@
                                 var assignmentsForPlanning = await assignmentService.loadAssignmentsForTask(taskId);
                                 var activeAssignments = assignmentsForPlanning.filter(function(a) { return a.actif !== false; });
                                 
-                                if (activeAssignments.length > 0) {
+                                var materializedAssignments = assignmentsRequiringMaterializedPlanning(activeAssignments);
+                                if (materializedAssignments.length > 0) {
                                     log('Déclenchement planification automatique (dates) pour tâche ' + taskId);
                                     var planningResult = await autoPlanningIntegration.autoPlanMembersAfterTaskSync({
                                         taskId: taskId,
-                                        assignments: activeAssignments,
+                                        assignments: materializedAssignments,
                                         operation: 'update'
                                     });
                                     
@@ -1632,11 +1663,12 @@
                     var assignments = await assignmentService.loadAssignmentsForTask(taskId);
                     var activeAssignments = assignments.filter(function(a) { return a.actif !== false; });
                     
-                    if (activeAssignments.length > 0) {
+                    var materializedAssignments = assignmentsRequiringMaterializedPlanning(activeAssignments);
+                    if (materializedAssignments.length > 0) {
                         log('Déclenchement planification automatique après modification des dates');
                         result.planningResult = await autoPlanningIntegration.autoPlanMembersAfterTaskSync({
                             taskId: taskId,
-                            assignments: activeAssignments,
+                            assignments: materializedAssignments,
                             operation: 'update'
                         });
                         log('Planification automatique terminée : ' + JSON.stringify(result.planningResult.summary));
@@ -1677,7 +1709,8 @@
             // Helpers exportés pour tests
             _helpers: {
                 normalizeAssigneeIds: normalizeAssigneeIds,
-                normalizeCharges: normalizeCharges
+                normalizeCharges: normalizeCharges,
+                assignmentsRequiringMaterializedPlanning: assignmentsRequiringMaterializedPlanning
             }
         };
     }

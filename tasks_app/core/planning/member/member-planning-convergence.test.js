@@ -286,7 +286,7 @@
 
       var grist = createPersistentMockGrist(baseData);
       var orchestrator = createMemberPlanningOrchestrator(grist, { logEnabled: false });
-      var preview = await orchestrator.previewMember(1, { replanFromDate: '2026-07-27' });
+      var preview = await orchestrator.previewMember(1, { replanFromDate: '2026-07-27', todayIso: '2026-07-20' });
       await orchestrator.commitMember(1, preview);
 
       var finalData = grist.getData();
@@ -361,7 +361,7 @@
 
       var grist = createPersistentMockGrist(baseData);
       var orchestrator = createMemberPlanningOrchestrator(grist, { logEnabled: false });
-      var preview = await orchestrator.previewMember(1, { replanFromDate: '2026-07-27' });
+      var preview = await orchestrator.previewMember(1, { replanFromDate: '2026-07-27', todayIso: '2026-07-20' });
       await orchestrator.commitMember(1, preview);
 
       var finalData = grist.getData();
@@ -422,7 +422,7 @@
 
       var grist = createPersistentMockGrist(baseData);
       var orchestrator = createMemberPlanningOrchestrator(grist, { logEnabled: false });
-      var preview = await orchestrator.previewMember(1, { replanFromDate: '2026-07-27' });
+      var preview = await orchestrator.previewMember(1, { replanFromDate: '2026-07-27', todayIso: '2026-07-20' });
       await orchestrator.commitMember(1, preview);
 
       var finalData = grist.getData();
@@ -463,7 +463,7 @@
 
       var grist = createPersistentMockGrist(baseData);
       var orchestrator = createMemberPlanningOrchestrator(grist, { logEnabled: false });
-      var preview = await orchestrator.previewMember(1, { replanFromDate: '2026-07-27' });
+      var preview = await orchestrator.previewMember(1, { replanFromDate: '2026-07-27', todayIso: '2026-07-20' });
       await orchestrator.commitMember(1, preview);
 
       var finalData = grist.getData();
@@ -501,7 +501,7 @@
 
       var grist = createPersistentMockGrist(baseData);
       var orchestrator = createMemberPlanningOrchestrator(grist, { logEnabled: false });
-      var preview = await orchestrator.previewMember(1, { replanFromDate: '2026-07-27' });
+      var preview = await orchestrator.previewMember(1, { replanFromDate: '2026-07-27', todayIso: '2026-07-20' });
       await orchestrator.commitMember(1, preview);
 
       var finalData = grist.getData();
@@ -546,7 +546,7 @@
 
       var grist = createPersistentMockGrist(baseData);
       var orchestrator = createMemberPlanningOrchestrator(grist, { logEnabled: false });
-      var preview = await orchestrator.previewMember(1, { replanFromDate: '2026-07-27' });
+      var preview = await orchestrator.previewMember(1, { replanFromDate: '2026-07-27', todayIso: '2026-07-20' });
       await orchestrator.commitMember(1, preview);
 
       var finalData = grist.getData();

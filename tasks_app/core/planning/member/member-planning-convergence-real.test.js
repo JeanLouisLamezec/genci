@@ -162,6 +162,178 @@
   }
 
   describe('CONVERGENCE RÉELLE — Scénario complet', function() {
+    it('replanifie la tâche ciblée malgré surconsommation et doublons sur d autres tâches', async function() {
+      var baseData = createBaseData();
+      baseData.TaskAssignments = {
+        id: [6, 2, 16],
+        tache: [8, 2, 22],
+        membre: [1, 1, 1],
+        heuresAllouees: [10, 7, 21],
+        dateDebut: [dateToTimestamp('2026-07-20'), dateToTimestamp('2026-07-20'), dateToTimestamp('2026-08-25')],
+        dateFin: [dateToTimestamp('2026-09-04'), dateToTimestamp('2026-09-04'), dateToTimestamp('2026-09-04')],
+        modeRepartition: ['uniforme', 'uniforme', 'uniforme'],
+        actif: [true, true, true],
+        commentaire: ['', '', '']
+      };
+      baseData.Tasks = {
+        id: [8, 2, 22],
+        titre: ['Ancienne surconsommée', 'Ancienne avec doublons', 'Tâche continue ciblée'],
+        dateDebut: [dateToTimestamp('2026-07-20'), dateToTimestamp('2026-07-20'), dateToTimestamp('2026-08-25')],
+        dateEcheance: [dateToTimestamp('2026-09-04'), dateToTimestamp('2026-09-04'), dateToTimestamp('2026-09-04')]
+      };
+      baseData.TimeEntries = {
+        id: [600, 7, 1166, 8, 1167, 9, 1168, 10, 1169],
+        affectation: [6, 2, 2, 2, 2, 2, 2, 2, 2],
+        tache: [8, 2, 2, 2, 2, 2, 2, 2, 2],
+        membre: [1, 1, 1, 1, 1, 1, 1, 1, 1],
+        date: [
+          dateToTimestamp('2026-07-20'),
+          dateToTimestamp('2026-07-21'), dateToTimestamp('2026-07-21'),
+          dateToTimestamp('2026-07-22'), dateToTimestamp('2026-07-22'),
+          dateToTimestamp('2026-07-23'), dateToTimestamp('2026-07-23'),
+          dateToTimestamp('2026-07-24'), dateToTimestamp('2026-07-24')
+        ],
+        heuresPrevues: [10, 1, 1, 1, 1, 1, 1, 1, 1],
+        heures: [13.5, null, null, null, null, null, null, null, null],
+        feuille: [1, null, null, null, null, null, null, null, null],
+        capaciteTheorique: [7, 7, 7, 7, 7, 7, 7, 7, 7],
+        capaciteDisponible: [7, 7, 7, 7, 7, 7, 7, 7, 7],
+        capaciteJour: [1, 2, 2, 3, 3, 4, 4, 5, 5],
+        revisionPlan: [1, 1, 1, 1, 1, 1, 1, 1, 1]
+      };
+      baseData.Feuilles = {
+        id: [1],
+        membre: [1],
+        semaine: ['2026-W30'],
+        statut: ['valide']
+      };
+      baseData.MemberDailyCapacities = {
+        id: [1, 2, 3, 4, 5],
+        membre: [1, 1, 1, 1, 1],
+        date: [
+          dateToTimestamp('2026-07-20'),
+          dateToTimestamp('2026-07-21'),
+          dateToTimestamp('2026-07-22'),
+          dateToTimestamp('2026-07-23'),
+          dateToTimestamp('2026-07-24')
+        ],
+        capaciteTheorique: [7, 7, 7, 7, 7],
+        disponibiliteRatio: [1, 1, 1, 1, 1],
+        capaciteDisponible: [7, 7, 7, 7, 7],
+        absenceHeures: [0, 0, 0, 0, 0],
+        source: ['calcul', 'calcul', 'calcul', 'calcul', 'calcul'],
+        revision: [1, 1, 1, 1, 1]
+      };
+
+      var grist = createRealPersistentMockGrist(baseData);
+      var orchestrator = createMemberPlanningOrchestrator(grist, { logEnabled: false });
+      var preview = await orchestrator.previewMember(1, {
+        replanFromDate: '2026-08-25',
+        todayIso: '2026-08-25',
+        targetAssignmentIds: [16]
+      });
+
+      expect(preview.success).toBe(true);
+      expect(preview.canCommit).toBe(true);
+      expect(preview.targetAssignmentIds).toEqual([16]);
+      var previewHours = preview.timeEntryActions.reduce(function(sum, action) {
+        return sum + (action[0] === 'AddRecord' && action[1] === 'TimeEntries' && action[3].affectation === 16
+          ? action[3].heuresPrevues
+          : 0);
+      }, 0);
+      expect(Math.round(previewHours * 100) / 100).toBe(21);
+
+      var commit = await orchestrator.commitMember(1, preview, { todayIso: '2026-08-25' });
+      expect(commit.success).toBe(true);
+
+      var finalEntries = grist.getData().TimeEntries;
+      var originalIds = [600, 7, 1166, 8, 1167, 9, 1168, 10, 1169];
+      originalIds.forEach(function(id) {
+        expect(finalEntries.id.includes(id)).toBe(true);
+      });
+      var committedHours = finalEntries.id.reduce(function(sum, id, index) {
+        return sum + (finalEntries.affectation[index] === 16 ? finalEntries.heuresPrevues[index] : 0);
+      }, 0);
+      expect(Math.round(committedHours * 100) / 100).toBe(21);
+    });
+
+    it('une surcharge historique protégée ne bloque pas 50 h régulières futures', async function() {
+      var baseData = createBaseData();
+      baseData.TaskAssignments = {
+        id: [17],
+        tache: [23],
+        membre: [1],
+        heuresAllouees: [50],
+        dateDebut: [dateToTimestamp('2026-08-25')],
+        dateFin: [dateToTimestamp('2026-09-04')],
+        modeRepartition: ['uniforme'],
+        actif: [true],
+        commentaire: ['']
+      };
+      baseData.Tasks = {
+        id: [23],
+        titre: ['Tâche régulière future'],
+        dateDebut: [dateToTimestamp('2026-08-25')],
+        dateEcheance: [dateToTimestamp('2026-09-04')]
+      };
+      baseData.TimeEntries = {
+        id: [100],
+        affectation: [999],
+        tache: [999],
+        membre: [1],
+        date: [dateToTimestamp('2026-07-20')],
+        heuresPrevues: [10],
+        heures: [10],
+        feuille: [1],
+        capaciteTheorique: [7],
+        capaciteDisponible: [7],
+        capaciteJour: [1],
+        revisionPlan: [1]
+      };
+      baseData.Feuilles = {
+        id: [1],
+        membre: [1],
+        semaine: ['2026-W30'],
+        statut: ['valide']
+      };
+      baseData.MemberDailyCapacities = {
+        id: [1],
+        membre: [1],
+        date: [dateToTimestamp('2026-07-20')],
+        capaciteTheorique: [7],
+        disponibiliteRatio: [1],
+        capaciteDisponible: [7],
+        absenceHeures: [0],
+        source: ['calcul'],
+        revision: [1]
+      };
+
+      var grist = createRealPersistentMockGrist(baseData);
+      var orchestrator = createMemberPlanningOrchestrator(grist, { logEnabled: false });
+      var preview = await orchestrator.previewMember(1, {
+        replanFromDate: '2026-08-25',
+        todayIso: '2026-08-25'
+      });
+
+      expect(preview.success).toBe(true);
+      expect(preview.canCommit).toBe(true);
+      var previewHours = preview.timeEntryActions
+        .filter(function(action) {
+          return action[0] === 'AddRecord' && action[1] === 'TimeEntries' && action[3].affectation === 17;
+        })
+        .reduce(function(sum, action) { return sum + action[3].heuresPrevues; }, 0);
+      expect(Math.round(previewHours * 100) / 100).toBe(50);
+
+      var commit = await orchestrator.commitMember(1, preview, { todayIso: '2026-08-25' });
+      expect(commit.success).toBe(true);
+
+      var finalEntries = grist.getData().TimeEntries;
+      var committedHours = finalEntries.id.reduce(function(sum, id, index) {
+        return sum + (finalEntries.affectation[index] === 17 ? finalEntries.heuresPrevues[index] : 0);
+      }, 0);
+      expect(Math.round(committedHours * 100) / 100).toBe(50);
+    });
+
     it('capaciteJour valide après commit multi-phase', async function() {
       var baseData = createBaseData();
       baseData.TaskAssignments = {

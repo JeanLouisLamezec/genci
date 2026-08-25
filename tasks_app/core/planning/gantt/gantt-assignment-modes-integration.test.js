@@ -576,3 +576,17 @@ describe('Gantt Assignment Modes - Integration stateful', () => {
         expect(result.ok).toBe(true);
     });
 });
+
+describe('Gantt Assignment Modes - projection virtuelle ponctuelle', () => {
+    test('le moteur matériel ignore les affectations ponctuelles', () => {
+        const grist = createStatefulGrist({ TaskAssignments: { id: [] } });
+        const subject = createGanttAssignmentIntegration(grist, { enableAutoPlanning: false });
+        const filtered = subject._helpers.assignmentsRequiringMaterializedPlanning([
+            { id: 1, modeRepartition: 'ponctuel' },
+            { id: 2, modeRepartition: 'uniforme' },
+            { id: 3, modeRepartition: null }
+        ]);
+
+        expect(filtered.map(a => a.id)).toEqual([2, 3]);
+    });
+});

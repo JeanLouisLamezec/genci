@@ -78,6 +78,14 @@ describe('TaskFlow Planning Browser Bundle', () => {
     expect(sandbox.window.TaskFlowPlanning.isBlockingDiagnostic).toBeDefined();
     expect(typeof sandbox.window.TaskFlowPlanning.isBlockingDiagnostic).toBe('function');
   });
+
+  test('le bundle expose le moteur de charge glissante', () => {
+    vm.runInContext(bundleContent, context);
+
+    expect(sandbox.window.TaskFlowRollingLoad).toBeDefined();
+    expect(typeof sandbox.window.TaskFlowRollingLoad.buildRollingLoadIndex).toBe('function');
+    expect(sandbox.window.TaskFlowPlanning.rollingLoad).toBe(sandbox.window.TaskFlowRollingLoad);
+  });
   
   test('summarizeGristActions fonctionne correctement', () => {
     vm.runInContext(bundleContent, context);
@@ -492,6 +500,17 @@ describe('Intégration HTML - plan.html', () => {
     expect(planHtmlContent).toMatch(/gristDataRevision/);
     expect(planHtmlContent).toMatch(/previewDataRevision/);
     expect(planHtmlContent).toMatch(/showPreviewObsolete/);
+  });
+
+  test('plan.html invalide les données canoniques après chaque rechargement Grist', () => {
+    expect(planHtmlContent).toMatch(/function\s+invalidateCanonData\s*\(\)/);
+
+    const loadGristBody = planHtmlContent.slice(
+      planHtmlContent.indexOf('async function loadGrist'),
+      planHtmlContent.indexOf('async function ensurePlanColumns')
+    );
+
+    expect(loadGristBody).toMatch(/S\.assignments\s*=.*[\s\S]*invalidateCanonData\(\)[\s\S]*render\(\)/);
   });
   
   test('plan.html lit la date au clic (pas au rendu)', () => {

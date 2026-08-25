@@ -313,7 +313,7 @@ function createMockGrist() {
         
         // Convertir en format colonnaire Grist
         var columnar = { id: [] };
-        var columns = Object.keys(data[0] || {});
+        var columns = Object.keys(data[0] || {}).filter(function(column) { return column !== 'id'; });
         
         for (var i = 0; i < columns.length; i++) {
           columnar[columns[i]] = [];
@@ -374,12 +374,44 @@ describe('PlanCanonAdapter - loadCanonData (mock)', function() {
     };
     
     // Test de chargement (nécessite async)
-    PlanCanonAdapter.loadCanonData(mockGrist, state).then(function(data) {
+    return PlanCanonAdapter.loadCanonData(mockGrist, state).then(function(data) {
       assert.strictEqual(data.team.length, 2);
       assert.strictEqual(data.assignments.length, 1);
       assert.strictEqual(data.tasks.length, 1);
       assert.strictEqual(data.timeEntries.length, 1);
     });
+  });
+});
+
+describe('PlanCanonAdapter - projection glissante', function() {
+  it('formate les micro-charges sans les supprimer', function() {
+    var rollingIndex = {
+      contributions: [{
+        assignmentId: 10,
+        taskId: 100,
+        memberId: 1,
+        periodKey: '2026-W35',
+        hours: 0.02
+      }],
+      assignments: {
+        10: { remainingHours: 0.02 }
+      }
+    };
+    var canonData = {
+      tasks: [{ id: 100, titre: 'Micro-tâche', projet: 5 }],
+      projects: [{ id: 5, programme: 8 }],
+      team: [{ id: 1, role: 'Dev' }]
+    };
+
+    var matrix = PlanCanonAdapter.formatRollingMatrixForRender(rollingIndex, 'project', canonData);
+    assert.strictEqual(matrix['5|1']['2026-W35'], 0.02);
+
+    var detail = PlanCanonAdapter.getRollingTasksInCell(
+      rollingIndex, '5|1', '2026-W35', 'project', canonData
+    );
+    assert.strictEqual(detail.length, 1);
+    assert.strictEqual(detail[0].slice, 0.02);
+    assert.strictEqual(detail[0].virtual, true);
   });
 });
 

@@ -194,7 +194,7 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
    * Codes de diagnostics bloquants
    */
   var BLOCKING_DIAGNOSTIC_PREFIXES = ['MISSING_', 'INVALID_', 'DUPLICATE_'];
-  var BLOCKING_DIAGNOSTIC_CODES = ['PROTECTED_PLAN_EXCEEDS_ALLOCATION', 'OVERCONSUMPTION'];
+  var BLOCKING_DIAGNOSTIC_CODES = ['PROTECTED_PLAN_EXCEEDS_ALLOCATION'];
   
   /**
    * Vérifie si un diagnostic est bloquant
@@ -231,6 +231,67 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
       }
       // ID croissant
       return (a.id || 0) - (b.id || 0);
+    });
+  }
+
+  /**
+   * Les affectations ponctuelles sont projetées virtuellement par le plan de
+   * charge. Elles ne doivent jamais produire de TimeEntries prévisionnelles.
+   */
+  function materializedAssignmentsOnly(assignments) {
+    return (assignments || []).filter(function(assignment) {
+      return (assignment.modeRepartition || 'uniforme') !== 'ponctuel';
+    });
+  }
+
+  function normalizeTargetAssignmentIds(values) {
+    if (!Array.isArray(values)) return null;
+    var seen = {};
+    return values.map(function(value) { return Number(value); }).filter(function(value) {
+      if (!Number.isFinite(value) || value <= 0 || seen[value]) return false;
+      seen[value] = true;
+      return true;
+    });
+  }
+
+  function createAssignmentIdSet(values) {
+    if (values === null) return null;
+    var result = new Set();
+    values.forEach(function(value) { result.add(value); });
+    return result;
+  }
+
+  function protectEntriesOutsideTarget(protectedEntries, timeEntries, targetAssignmentIdSet) {
+    if (!targetAssignmentIdSet) return protectedEntries;
+
+    var protectedIds = new Set();
+    protectedEntries.forEach(function(entry) { protectedIds.add(entry.id); });
+    var result = protectedEntries.slice();
+
+    (timeEntries || []).forEach(function(entry) {
+      if (!targetAssignmentIdSet.has(entry.assignmentId) && !protectedIds.has(entry.id)) {
+        result.push(entry);
+        protectedIds.add(entry.id);
+      }
+    });
+
+    return result;
+  }
+
+  /**
+   * Construit la capacité distribuable d'une affectation sans laisser une
+   * surcharge protégée hors fenêtre devenir une capacité métier invalide.
+   */
+  function buildPlanningCapacityWindow(registry, startDate, endDate) {
+    return registry.dates.filter(function(date) {
+      return date >= startDate && date <= endDate;
+    }).map(function(date) {
+      var regEntry = registry.getRegistry()[date];
+      return {
+        date: date,
+        baseCapacityHours: Math.max(regEntry.baseCapacityHours, 0),
+        availableCapacityHours: Math.max(regEntry.remainingCapacityHours, 0)
+      };
     });
   }
   
@@ -428,7 +489,9 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
       },
       
       /**
-       * Vérifie la postcondition : protégé + prévu <= disponible
+       * Vérifie que le nouveau planning n'aggrave pas une surcharge protégée.
+       * Une feuille déjà saisie/validée peut dépasser la capacité historique :
+       * ce constat reste visible mais ne doit ni être réécrit ni bloquer le futur.
        */
       verifyPostcondition: function(tolerance) {
         tolerance = tolerance || 0.01;
@@ -437,14 +500,18 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
         dates.forEach(function(date) {
           var entry = registry[date];
           var total = entry.protectedHours + entry.plannedHours;
-          
-          if (total > entry.availableCapacityHours + tolerance) {
+          var protectedExcess = Math.max(entry.protectedHours - entry.availableCapacityHours, 0);
+          var combinedExcess = Math.max(total - entry.availableCapacityHours, 0);
+          var introducedExcess = Math.max(combinedExcess - protectedExcess, 0);
+
+          if (introducedExcess > tolerance) {
             violations.push({
               date: date,
               protected: entry.protectedHours,
               planned: entry.plannedHours,
               available: entry.availableCapacityHours,
-              excess: total - entry.availableCapacityHours
+              protectedExcess: protectedExcess,
+              excess: introducedExcess
             });
           }
         });
@@ -827,7 +894,23 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
           throw loadError;
         }
         
-        log('Données chargées: ' + data.assignments.length + ' affectations, ' + Object.keys(data.tasks).length + ' tâches');
+        var sourceAssignmentCount = data.assignments.length;
+        data.assignments = materializedAssignmentsOnly(data.assignments);
+        var virtualAssignmentCount = sourceAssignmentCount - data.assignments.length;
+        var targetAssignmentIds = normalizeTargetAssignmentIds(options.targetAssignmentIds);
+        var targetAssignmentIdSet = createAssignmentIdSet(targetAssignmentIds);
+
+        if (targetAssignmentIdSet) {
+          data.assignments = data.assignments.filter(function(assignment) {
+            return targetAssignmentIdSet.has(assignment.id);
+          });
+          log('Planification ciblée sur les affectations: ' + targetAssignmentIds.join(', '));
+        }
+
+        log('Données chargées: ' + sourceAssignmentCount + ' affectations, ' + Object.keys(data.tasks).length + ' tâches');
+        if (virtualAssignmentCount > 0) {
+          log(virtualAssignmentCount + ' affectation(s) ponctuelle(s) exclue(s) de la planification matérielle');
+        }
         
         if (data.assignments.length === 0) {
           log('Aucune affectation pour le membre ' + memberId);
@@ -870,6 +953,12 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
         var protectedEntries = identifyProtectedEntries(data.timeEntries, feuillesById, {
           historyCutoffDate: historyCutoffDate
         });
+
+        protectedEntries = protectEntriesOutsideTarget(
+          protectedEntries,
+          data.timeEntries,
+          targetAssignmentIdSet
+        );
         
         log('Entrées protégées: ' + protectedEntries.length + ' sur ' + data.timeEntries.length + ' totales');
         
@@ -994,15 +1083,15 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
           var distributionStartDate = determineDistributionStartDate(assignment, historyCutoffDate);
           log('distributionStartDate pour affectation ' + assignment.id + ': ' + distributionStartDate);
           
-          // Construire le tableau de capacités restantes pour le moteur
-          var capacitiesArray = registry.dates.map(function(date) {
-            var regEntry = registry.getRegistry()[date];
-            return {
-              date: date,
-              baseCapacityHours: regEntry.baseCapacityHours,
-              availableCapacityHours: regEntry.remainingCapacityHours
-            };
-          });
+          // Construire uniquement la fenêtre utile à cette affectation. Une
+          // surcharge protégée antérieure peut rendre la capacité restante
+          // négative : elle reste visible dans le registre, mais ne doit pas
+          // invalider la redistribution future d'une autre affectation.
+          var capacitiesArray = buildPlanningCapacityWindow(
+            registry,
+            distributionStartDate,
+            domainAssignment.endDate
+          );
           
           // Filtrer les TimeEntries pour cette affectation uniquement
           var entriesForAssignment = data.timeEntries.filter(function(e) {
@@ -1021,15 +1110,16 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
           
           // Vérifier les diagnostics bloquants
           var hasBlockingDiagnostic = false;
+          var blockingDiagnostics = [];
           for (var j = 0; j < planningResult.diagnostics.length; j++) {
             if (isBlockingDiagnostic(planningResult.diagnostics[j])) {
               hasBlockingDiagnostic = true;
-              break;
+              blockingDiagnostics.push(planningResult.diagnostics[j]);
             }
           }
           
           if (hasBlockingDiagnostic) {
-            log('Diagnostic bloquant pour affectation ' + assignment.id);
+            log('Diagnostic bloquant pour affectation ' + assignment.id + ': ' + JSON.stringify(blockingDiagnostics));
             assignmentResults.push({
               assignmentId: assignment.id,
               success: false,
@@ -1108,6 +1198,10 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
         // Inclure TOUTES les entrées mutables
         // Exclure uniquement les lignes vraiment protégées
         var entriesForReconciliation = data.timeEntries.filter(function(e) {
+          if (targetAssignmentIdSet && !targetAssignmentIdSet.has(e.assignmentId)) {
+            return false;
+          }
+
           // PHASE 1 : Utiliser hasExplicitActual au lieu de actualHours > 0
           var hasRealise = hasExplicitActual(e);
           var isSubmitted = e.sheetStatus === 'submitted';
@@ -1225,6 +1319,7 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
           fingerprint: fingerprint,
           canCommit: !hasFailure || options.allowPartialPlanning === true,
           code: hasAssignmentFailure ? 'ASSIGNMENT_PLANNING_FAILED' : (hasUnplanned ? 'INSUFFICIENT_SHARED_CAPACITY' : 'SUCCESS'),
+          targetAssignmentIds: targetAssignmentIds,
           historyCutoffDate: historyCutoffDate,
           capacityPeriod: period
         };
@@ -1400,6 +1495,12 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
         
         // Récupérer historyCutoffDate du preview ou le recalculer
         var historyCutoffDate = preview.historyCutoffDate || determineHistoryCutoffDate(options);
+        var targetAssignmentIds = normalizeTargetAssignmentIds(
+          preview.targetAssignmentIds !== undefined
+            ? preview.targetAssignmentIds
+            : options.targetAssignmentIds
+        );
+        var targetAssignmentIdSet = createAssignmentIdSet(targetAssignmentIds);
         
         // Vérifier canCommit
         if (!preview.canCommit) {
@@ -1445,6 +1546,20 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
         
         // Recharger TOUTES les données fraîches après écriture des capacités
         var refreshedData = await loadMemberData(memberId);
+        var refreshedSourceAssignmentCount = refreshedData.assignments.length;
+        refreshedData.assignments = materializedAssignmentsOnly(refreshedData.assignments);
+        var refreshedVirtualAssignmentCount = refreshedSourceAssignmentCount - refreshedData.assignments.length;
+
+        if (targetAssignmentIdSet) {
+          refreshedData.assignments = refreshedData.assignments.filter(function(assignment) {
+            return targetAssignmentIdSet.has(assignment.id);
+          });
+          log('Recalcul ciblé sur les affectations: ' + targetAssignmentIds.join(', '));
+        }
+
+        if (refreshedVirtualAssignmentCount > 0) {
+          log(refreshedVirtualAssignmentCount + ' affectation(s) ponctuelle(s) exclue(s) du recalcul matériel');
+        }
         
         // Filtrer les entrées protégées avec les nouvelles données
         var refreshedFeuillesById = {};
@@ -1455,6 +1570,12 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
         var refreshedProtectedEntries = identifyProtectedEntries(refreshedData.timeEntries, refreshedFeuillesById, {
           historyCutoffDate: historyCutoffDate
         });
+
+        refreshedProtectedEntries = protectEntriesOutsideTarget(
+          refreshedProtectedEntries,
+          refreshedData.timeEntries,
+          targetAssignmentIdSet
+        );
         
         log('Données rechargées : ' + refreshedData.assignments.length + ' affectations, ' + refreshedData.timeEntries.length + ' TimeEntries, ' + refreshedProtectedEntries.length + ' protégées');
         
@@ -1569,15 +1690,12 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
           // Déterminer la date de début de distribution
           var distributionStartDate = determineDistributionStartDate(assignment, historyCutoffDate);
           
-          // Construire le tableau de capacités restantes pour le moteur
-          var capacitiesArray = refreshedRegistry.dates.map(function(date) {
-            var regEntry = refreshedRegistry.getRegistry()[date];
-            return {
-              date: date,
-              baseCapacityHours: regEntry.baseCapacityHours,
-              availableCapacityHours: regEntry.remainingCapacityHours
-            };
-          });
+          // Construire la même fenêtre bornée et non négative que lors du preview.
+          var capacitiesArray = buildPlanningCapacityWindow(
+            refreshedRegistry,
+            distributionStartDate,
+            domainAssignment.endDate
+          );
           
           // Filtrer les TimeEntries pour cette affectation uniquement
           var entriesForAssignment = refreshedData.timeEntries.filter(function(e) {
@@ -1596,15 +1714,16 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
           
           // Vérifier les diagnostics bloquants
           var hasBlockingDiagnostic = false;
+          var blockingDiagnostics = [];
           for (var j = 0; j < planningResult.diagnostics.length; j++) {
             if (isBlockingDiagnostic(planningResult.diagnostics[j])) {
               hasBlockingDiagnostic = true;
-              break;
+              blockingDiagnostics.push(planningResult.diagnostics[j]);
             }
           }
           
           if (hasBlockingDiagnostic) {
-            log('Diagnostic bloquant pour affectation ' + assignment.id + ' après rechargement');
+            log('Diagnostic bloquant pour affectation ' + assignment.id + ' après rechargement: ' + JSON.stringify(blockingDiagnostics));
             refreshedAssignmentResults.push({
               assignmentId: assignment.id,
               success: false,
@@ -1657,6 +1776,31 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
           allDiagnostics = allDiagnostics.concat(planningResult.diagnostics || []);
           totalUnplanned += planningResult.summary.unplannedHours || 0;
         }
+
+        if (hasAssignmentFailure) {
+          log('Échec du recalcul après rechargement: ' + JSON.stringify(allDiagnostics));
+          return {
+            success: false,
+            code: 'ASSIGNMENT_PLANNING_FAILED_AFTER_RELOAD',
+            diagnostics: allDiagnostics,
+            phases: phases,
+            capacitiesWritten: phases.capacityUpsert.actionsExecuted > 0,
+            timeEntriesWritten: false
+          };
+        }
+
+        if (totalUnplanned > 0) {
+          log('Capacité insuffisante après rechargement: ' + totalUnplanned + 'h non planifiées');
+          return {
+            success: false,
+            code: 'INSUFFICIENT_SHARED_CAPACITY_AFTER_RELOAD',
+            diagnostics: allDiagnostics,
+            unplannedHours: totalUnplanned,
+            phases: phases,
+            capacitiesWritten: phases.capacityUpsert.actionsExecuted > 0,
+            timeEntriesWritten: false
+          };
+        }
         
         // Vérifier la postcondition
         var postconditionCheck = refreshedRegistry.verifyPostcondition();
@@ -1678,6 +1822,10 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
         
         // Filtrer les entrées mutables pour la réconciliation
         var refreshedEntriesForReconciliation = refreshedData.timeEntries.filter(function(e) {
+          if (targetAssignmentIdSet && !targetAssignmentIdSet.has(e.assignmentId)) {
+            return false;
+          }
+
           var hasRealise = hasExplicitActual(e);
           var isSubmitted = e.sheetStatus === 'submitted';
           var isValidated = e.sheetStatus === 'validated';
@@ -1771,7 +1919,13 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
         // =========================================================================
         log('PHASE 4 : Nettoyage des capacités obsolètes');
         
-        var cleanupActions = await buildCapacityCleanupActions(memberId, historyCutoffDate);
+        var cleanupActions = targetAssignmentIdSet
+          ? []
+          : await buildCapacityCleanupActions(memberId, historyCutoffDate);
+
+        if (targetAssignmentIdSet) {
+          log('Phase 4 : nettoyage global ignoré pour un recalcul ciblé');
+        }
         
         if (cleanupActions.length > 0) {
           log('Nettoyage de ' + cleanupActions.length + ' capacités obsolètes');
@@ -2297,7 +2451,8 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
     module.exports = {
       createMemberPlanningOrchestrator: createMemberPlanningOrchestrator,
       createCapacityRegistry: createCapacityRegistry,
-      sortAssignments: sortAssignments
+      sortAssignments: sortAssignments,
+      materializedAssignmentsOnly: materializedAssignmentsOnly
     };
   }
   
@@ -2306,6 +2461,7 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
     window.createMemberPlanningOrchestrator = createMemberPlanningOrchestrator;
     window.createCapacityRegistry = createCapacityRegistry;
     window.sortAssignments = sortAssignments;
+    window.materializedAssignmentsOnly = materializedAssignmentsOnly;
   }
   
   // Export Lot 2 : API publique pour replanification après changement de disponibilité

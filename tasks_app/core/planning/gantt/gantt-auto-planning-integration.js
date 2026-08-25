@@ -21,6 +21,7 @@
         options = options || {};
         var logEnabled = options.logEnabled || false;
         var planningApi = options.planningApi || null;
+        var todayIso = options.todayIso || null;
 
         function log(message) {
             if (logEnabled && typeof console !== 'undefined') {
@@ -52,8 +53,7 @@
          * @returns {string} Date YYYY-MM-DD
          */
         function determineReplanFromDate(assignment, operation) {
-            var today = new Date();
-            var todayStr = formatDateUTC(today);
+            var todayStr = todayIso || formatDateUTC(new Date());
             
             // Normaliser la date de début (accepte les deux formats)
             var rawStartDate = assignment.dateDebut ?? assignment.startDate;
@@ -192,6 +192,14 @@
 
                     log('replanFromDate pour membre ' + memberId + ' : ' + replanFromDate);
 
+                    var targetAssignmentIds = memberAssigns.map(function(assignment) {
+                        return assignment.id;
+                    }).filter(function(assignmentId) {
+                        return assignmentId != null && Number(assignmentId) > 0;
+                    }).map(Number);
+
+                    log('Affectations ciblées pour membre ' + memberId + ' : ' + targetAssignmentIds.join(', '));
+
                     // Preview de la planification
                     if (onStatus) {
                         onStatus({
@@ -201,9 +209,15 @@
                         });
                     }
 
-                    var preview = await orchestrator.previewMember(memberId, {
-                        replanFromDate: replanFromDate
-                    });
+                    var previewOptions = {
+                        replanFromDate: replanFromDate,
+                        targetAssignmentIds: targetAssignmentIds
+                    };
+                    if (todayIso) {
+                        previewOptions.todayIso = todayIso;
+                    }
+
+                    var preview = await orchestrator.previewMember(memberId, previewOptions);
 
                     log('Preview membre ' + memberId + ' : ' + JSON.stringify({
                         success: preview.success,

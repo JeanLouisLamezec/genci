@@ -8,8 +8,9 @@
 <script src="core/filters/filter-manager.js"></script>
 <script src="core/planning/time_entry/time-entry-loader.js"></script>
 <script src="core/planning/view/plan-period-aggregation.js"></script>
-<script src="core/planning/view/plan-canon-adapter.js"></script>
-<script src="core/generated/taskflow-planning-browser.js"></script>
+<script src="core/planning/forecast/rolling-load.js?v=20260825"></script>
+<script src="core/generated/taskflow-planning-browser.js?v=20260825c"></script>
+<script src="core/planning/view/plan-canon-adapter.js?v=20260825"></script>
 <link rel="stylesheet" href="core/theme/taskflow-theme.css">
 <link rel="stylesheet" href="core/filters/filter-styles.css">
 <style>
@@ -170,7 +171,7 @@ tfoot td.colres{background:var(--surface-2);z-index:2}
     <button class="btn" id="btnInit" title="Initialiser la charge des tâches sans charge depuis estimationH ÷ nb assignés">⚙ Init. charges</button>
     <button class="btn" id="btnExport" title="Exporter le plan en CSV (COPIL)">⬇ CSV</button>
     <button class="btn" id="btnTimeline" title="Timeline par personne : les tâches de chacun en barres sur la fenêtre">⊞ Timeline</button>
-    <button class="btn" id="btnPlanningPreview" title="Prévisualiser le planning avec le nouveau moteur">🔮 Prévisualiser</button>
+    <button class="btn" id="btnPlanningPreview" title="Simulation avancée optionnelle — le plan affiché est déjà recalculé automatiquement">🔮 Simulation avancée</button>
   </div>
   <div class="alerts" id="alerts"></div>
   <div class="gridwrap" id="gridwrap"><div class="empty"><div class="ic">▦</div><div>Chargement…</div></div></div>
@@ -5032,19 +5033,42 @@ function periodStarts(start, g, count) {
 }
 function subLabel(d) { return S.granularity === 'month' ? '' : (d.getUTCDate() + ' ' + MOIS[d.getUTCMonth()]); }
 const r1 = (n) => Math.round(n * 10) / 10;
+const currentLocalIso = () => {
+  const date = new Date();
+  return [date.getFullYear(), String(date.getMonth() + 1).padStart(2, '0'), String(date.getDate()).padStart(2, '0')].join('-');
+};
+// Une décimale suffit pour les charges usuelles, mais elle faisait disparaître
+// les micro-charges (par exemple 0,02 h). On conserve deux décimales sous 0,1 h.
+const displayHours = (n) => {
+  const value = Number(n) || 0;
+  return Math.abs(value) < 0.1 ? Math.round(value * 100) / 100 : r1(value);
+};
+const hoursText = (n) => String(displayHours(n)).replace('.', ',');
 
 // Variables globales pour l'index canonique
 let canonData = null;
 let canonPlanIndex = null;
+let rollingLoadIndex = null;
 let lastCanonState = null; // Pour détecter les changements nécessitant une reconstruction
+
+// Les données canoniques proviennent de plusieurs tables Grist et doivent être
+// rechargées après chaque notification de données. Réinitialiser uniquement
+// l'index laisserait canonData pointer vers d'anciennes TimeEntries/affectations.
+function invalidateCanonData() {
+  canonData = null;
+  canonPlanIndex = null;
+  rollingLoadIndex = null;
+  lastCanonState = null;
+}
 
 /**
  * Vérifie si l'index canonique doit être reconstruit
  */
 function shouldRebuildCanonIndex() {
-  if (!canonData || !canonPlanIndex) return true;
+  if (!canonData || !canonPlanIndex || !rollingLoadIndex) return true;
   
   const currentState = {
+    today: currentLocalIso(),
     granularity: S.granularity,
     offset: S.offset,
     horizon: S.horizon,
@@ -5064,6 +5088,7 @@ function shouldRebuildCanonIndex() {
  */
 function updateCanonState() {
   lastCanonState = {
+    today: currentLocalIso(),
     granularity: S.granularity,
     offset: S.offset,
     horizon: S.horizon,
@@ -5099,7 +5124,10 @@ function planTasks() {
 }
 // Charges effectives : réelles, ou dérivées de estimationH ÷ nb assignés si l'option est active.
 function effCharges(t) {
-  const c = TF.parseCharges(t.charges);
+  const assignmentCharges = (S.assignments || [])
+    .filter(a => a.actif !== false && Number(a.tache) === Number(t.id) && Number(a.heuresAllouees) > 0)
+    .map(a => ({ teamId: Number(a.membre), heures: Number(a.heuresAllouees) }));
+  const c = assignmentCharges.length ? assignmentCharges : TF.parseCharges(t.charges);
   if (c.length || !S.derive) return c;
   const est = Number(t.estimationH) || 0, asg = getRefList(t.assignees);
   return (est > 0 && asg.length) ? asg.map(id => ({ teamId: id, heures: est / asg.length })) : [];
@@ -5337,12 +5365,15 @@ async function render() {
   const nowKey = TF.periodKey(new Date(), S.granularity);
   document.getElementById('navRange').textContent = plabel(periods[0]) + ' → ' + plabel(periods[periods.length - 1]);
 
-  // Utiliser l'index canonique pour la matrice
+  // Le réalisé vient exclusivement des feuilles de temps. Pour les autres
+  // vues, la charge est une projection virtuelle du reste à faire : elle est
+  // recalculée à chaque rendu sans écrire de lignes prévisionnelles.
   let matrix;
-  if (canonPlanIndex) {
+  if (S.mode === 'realise' && canonPlanIndex) {
     matrix = PlanCanonAdapter.formatCanonMatrixForRender(canonPlanIndex.byMemberPeriod, S.groupBy, S.mode);
+  } else if (rollingLoadIndex && canonData) {
+    matrix = PlanCanonAdapter.formatRollingMatrixForRender(rollingLoadIndex, S.groupBy, canonData);
   } else {
-    // Fallback legacy si index non disponible
     matrix = {};
   }
   
@@ -5364,8 +5395,8 @@ async function render() {
       const hc = {}; for (const gk of row.gkeys) { const mc = matrix[gk] || {}; for (const p in mc) hc[p] = (hc[p] || 0) + mc[p]; }
       let wtot = 0;
       h += '<tr class="grp"><td class="colres ghead"><div class="res"><span class="gdot" style="background:' + row.color + '"></span><span class="nm">' + esc(row.label) + '</span></div></td>';
-      for (let pi = 0; pi < periods.length; pi++) { const p = periods[pi], hr = r1(hc[p] || 0); wtot += hr; h += '<td class="' + (p === nowKey ? 'nowcol' : '') + '">' + (hr > 0 ? '<span class="gval">' + hr + '</span>' : '<span class="dot">·</span>') + '</td>'; }
-      h += '<td class="sum"><div class="sh">' + r1(wtot) + ' h</div></td></tr>';
+      for (let pi = 0; pi < periods.length; pi++) { const p = periods[pi], hr = Number(hc[p]) || 0; wtot += hr; h += '<td class="' + (p === nowKey ? 'nowcol' : '') + '">' + (hr > 0 ? '<span class="gval">' + hoursText(hr) + '</span>' : '<span class="dot">·</span>') + '</td>'; }
+      h += '<td class="sum"><div class="sh">' + hoursText(wtot) + ' h</div></td></tr>';
       continue;
     }
     const cells = matrix[row.key] || {};
@@ -5375,18 +5406,18 @@ async function render() {
     h += '<tr' + (row.isSub ? ' class="subr"' : '') + '><td class="colres' + (row.isSub ? ' sub' : '') + (resClk ? ' clk' : '') + '"' + (resClk ? ' data-res="' + esc(resId) + '" title="Capacité & indisponibilités"' : '') + '><div class="res"><span class="ava" style="background:' + row.color + '">' + esc(ini) + '</span><span><span class="nm">' + esc(row.label) + '</span>' + (row.cap > 0 ? ' <span class="cap">(' + Math.round(row.cap) + 'h)</span>' : '') + '</span></div></td>';
     let win = 0, peakR = 0;
     for (let pi = 0; pi < periods.length; pi++) {
-      const p = periods[pi], hr = r1(cells[p] || 0);
+      const p = periods[pi], hr = Number(cells[p]) || 0;
       // Calculer la capacité et le réduit POUR CHAQUE période (pas seulement la première)
-      const capP = canonData ? PlanCanonAdapter.getCapacityForRow(row, p, S.granularity, canonData.dailyCapacities) : 0;
+      const capP = canonData ? PlanCanonAdapter.getCapacityForRow(row, p, S.granularity, canonData.dailyCapacities, true) : 0;
       const redu = canonData ? PlanCanonAdapter.isRowCapacityReduced(row, p, S.granularity, canonData.dailyCapacities) : false;
       const dispo = S.mode === 'dispo';
       let content;
-      if (dispo) { const free = capP > 0 ? r1(Math.max(capP - hr, 0)) : 0; win += free; content = fmtDispo(free, capP); }
+      if (dispo) { const free = capP > 0 ? Math.max(capP - hr, 0) : 0; win += free; content = fmtDispo(free, capP); }
       else { win += hr; if (capP > 0 && hr / capP > peakR) peakR = hr / capP; content = fmtCell(hr, capP); }
       h += '<td class="cell' + (p === nowKey ? ' nowcol' : '') + (redu ? ' redu' : '') + (String(S._cellKey) === String(row.key) && p === S._cellPeriod ? ' sel' : '') + '" data-key="' + esc(row.key) + '" data-period="' + p + '">' + content + '</td>';
     }
     const peak = Math.round(peakR * 100);
-    h += '<td class="sum"><div class="sh">' + r1(win) + ' h</div>' + (S.mode === 'dispo' ? '<div class="sp">dispo</div>' : '<div class="sp" style="' + (peak > 100 ? 'color:var(--over)' : '') + '">pic ' + peak + '%</div>') + '</td>';
+    h += '<td class="sum"><div class="sh">' + hoursText(win) + ' h</div>' + (S.mode === 'dispo' ? '<div class="sp">dispo</div>' : '<div class="sp" style="' + (peak > 100 ? 'color:var(--over)' : '') + '">pic ' + peak + '%</div>') + '</td>';
     h += '</tr>';
   }
   h += '</tbody>';
@@ -5396,17 +5427,17 @@ async function render() {
   for (let pi = 0; pi < periods.length; pi++) {
     const p = periods[pi];
     let tot = 0; for (const row of rows) if (!row.isHeader) tot += (matrix[row.key] || {})[p] || 0;
-    const capTeam = PlanCanonAdapter.getTeamCapacity(activeTeam(), p, S.granularity, canonData ? canonData.dailyCapacities : []);
+    const capTeam = PlanCanonAdapter.getTeamCapacity(activeTeam(), p, S.granularity, canonData ? canonData.dailyCapacities : [], true);
     if (S.mode === 'dispo') {
       const freeTot = Math.max(capTeam - tot, 0); grand += freeTot;
-      h += '<td class="' + (p === nowKey ? 'nowcol' : '') + '">' + (freeTot > 0.05 ? r1(freeTot) : '·') + '</td>';
+      h += '<td class="' + (p === nowKey ? 'nowcol' : '') + '">' + (freeTot > 0.005 ? hoursText(freeTot) : '·') + '</td>';
     } else {
       grand += tot;
       const pc = capTeam > 0 ? Math.round(tot / capTeam * 100) : null;
-      h += '<td class="' + (p === nowKey ? 'nowcol' : '') + '">' + (tot > 0 ? r1(tot) + (pc != null ? '<div style="font-size:.66rem;color:var(--text-muted);font-weight:400">' + pc + '%</div>' : '') : '·') + '</td>';
+      h += '<td class="' + (p === nowKey ? 'nowcol' : '') + '">' + (tot > 0 ? hoursText(tot) + (pc != null ? '<div style="font-size:.66rem;color:var(--text-muted);font-weight:400">' + pc + '%</div>' : '') : '·') + '</td>';
     }
   }
-  h += '<td class="sum"><div class="sh">' + r1(grand) + ' h</div></td></tr></tfoot></table>';
+  h += '<td class="sum"><div class="sh">' + hoursText(grand) + ' h</div></td></tr></tfoot></table>';
   if (S.groupBy === 'programme' && !S.projects.some(p => Number(p.programme || p.portefeuille) > 0)) {
     h = '<div class="pf-hint">Aucun projet n\'est rattaché à un programme — tout apparaît sous « Sans programme ». Affectez vos projets dans la table <b>Projects</b> (colonne <b>Programme</b>).</div>' + h;
   }
@@ -5437,8 +5468,7 @@ async function loadCanonDataForRender() {
     updateCanonState();
   } catch (e) {
     console.error('Erreur chargement données canoniques:', e);
-    canonData = null;
-    canonPlanIndex = null;
+    invalidateCanonData();
   }
 }
 
@@ -5454,14 +5484,38 @@ function rebuildCanonPlanIndex() {
       granularity: S.granularity,
       keys: TF.periodRange(TF.shiftPeriods(new Date(), S.granularity, S.offset), S.granularity, S.horizon)
     };
-    
-    canonPlanIndex = PlanCanonAdapter.buildCanonPlanIndex(canonData, periodConfig);
+
+    // Le plan ne doit intégrer que les tâches visibles après application des
+    // filtres. Les écritures passées restent néanmoins conservées dans les
+    // données canoniques et réduisent le reste à faire de chaque affectation.
+    var visibleTaskIds = new Set(planTasks().map(function (task) { return Number(task.id); }));
+    var scopedCanonData = Object.assign({}, canonData, {
+      tasks: canonData.tasks.filter(function (task) { return visibleTaskIds.has(Number(task.id)); }),
+      assignments: canonData.assignments.filter(function (assignment) { return visibleTaskIds.has(Number(assignment.tache)); }),
+      timeEntries: canonData.timeEntries.filter(function (entry) { return visibleTaskIds.has(Number(entry.taskId)); })
+    });
+
+    canonPlanIndex = PlanCanonAdapter.buildCanonPlanIndex(scopedCanonData, periodConfig);
+    rollingLoadIndex = PlanCanonAdapter.buildRollingLoadIndex(scopedCanonData, periodConfig, currentLocalIso());
+
+    const rollingSummary = {
+      visibleTasks: scopedCanonData.tasks.length,
+      activeAssignments: scopedCanonData.assignments.length,
+      contributions: rollingLoadIndex.contributions.length,
+      diagnostics: rollingLoadIndex.diagnostics
+    };
+    if (rollingSummary.activeAssignments > 0 && rollingSummary.contributions === 0) {
+      console.warn('[Plan rolling] Aucune contribution calculée', rollingSummary);
+    } else {
+      console.info('[Plan rolling] Projection reconstruite', rollingSummary);
+    }
     
     // Mettre à jour l'état de référence
     updateCanonState();
   } catch (e) {
     console.error('Erreur reconstruction index canonique:', e);
     canonPlanIndex = null;
+    rollingLoadIndex = null;
   }
 }
 
@@ -5631,8 +5685,9 @@ document.addEventListener('click', (e) => { const p = document.getElementById('t
 function fmtCell(hr, capP) {
   if (!(hr > 0)) return '<span class="dot">·</span>';
   const pct = capP > 0 ? Math.round(hr / capP * 100) : 0;
-  const txt = S.unit === 'pct' && capP > 0 ? pct + '%' : hr;
-  return '<span class="v" style="background:' + heatBg(hr, capP) + '" title="' + hr + ' h' + (capP > 0 ? ' · ' + pct + '% de la capacité' : '') + '">' + txt + '</span>';
+  const pctText = capP > 0 && hr > 0 && pct === 0 ? '&lt;1%' : pct + '%';
+  const txt = S.unit === 'pct' && capP > 0 ? pctText : hoursText(hr);
+  return '<span class="v" style="background:' + heatBg(hr, capP) + '" title="' + hoursText(hr) + ' h' + (capP > 0 ? ' · ' + pctText + ' de la capacité' : '') + '">' + txt + '</span>';
 }
 // Fond façon heatmap : teinte par seuil, intensité par taux (capP = capacité de la PÉRIODE).
 function heatBg(hr, capP) {
@@ -5644,9 +5699,9 @@ function heatBg(hr, capP) {
 }
 // Mode Dispo : capacité disponible (cap - charge), échelle verte (plus c'est vert, plus il y a de marge).
 function fmtDispo(free, capP) {
-  if (!(free > 0.05)) return '<span class="dot">·</span>';
+  if (!(free > 0.005)) return '<span class="dot">·</span>';
   const r = capP > 0 ? Math.min(free / capP, 1) : 0;
-  return '<span class="v" style="background:rgba(21,160,107,' + (0.18 + 0.62 * r).toFixed(2) + ')" title="' + free + ' h disponibles' + (capP > 0 ? ' / ' + Math.round(capP) + 'h' : '') + '">' + free + '</span>';
+  return '<span class="v" style="background:rgba(21,160,107,' + (0.18 + 0.62 * r).toFixed(2) + ')" title="' + hoursText(free) + ' h disponibles' + (capP > 0 ? ' / ' + Math.round(capP) + 'h' : '') + '">' + hoursText(free) + '</span>';
 }
 
 function renderAlerts(matrix, periods) {
@@ -5657,7 +5712,7 @@ function renderAlerts(matrix, periods) {
     for (let pi = 0; pi < periods.length; pi++) { 
       const hr = (matrix[row.key] || {})[periods[pi]] || 0; 
       // Utiliser l'adaptateur canonique au lieu de capForRow()
-      const capP = canonData ? PlanCanonAdapter.getCapacityForRow(row, periods[pi], S.granularity, canonData.dailyCapacities) : 0;
+      const capP = canonData ? PlanCanonAdapter.getCapacityForRow(row, periods[pi], S.granularity, canonData.dailyCapacities, true) : 0;
       if (capP > 0 && hr > capP) over++; 
     } 
   }
@@ -5679,6 +5734,10 @@ function renderSeg(id, opts, cur, cb) {
 // Drill cellule -> panel (liste des tâches composant la charge) - VERSION CANONIQUE
 // ============================================================================
 function tasksInCell(key, period) {
+  if (S.mode !== 'realise' && rollingLoadIndex && canonData) {
+    return PlanCanonAdapter.getRollingTasksInCell(rollingLoadIndex, key, period, S.groupBy, canonData);
+  }
+
   // Utilise l'index canonique si disponible
   if (canonPlanIndex && canonData) {
     return PlanCanonAdapter.getTasksInCell(canonPlanIndex, key, period, S.tasks);
@@ -5772,16 +5831,16 @@ function openCell(key, period) {
   S._cellKey = key; S._cellPeriod = period; S._resId = null;
   const rows = buildRows(); const row = rows.find(r => String(r.key) === String(key));
   const items = tasksInCell(key, period);
-  const tot = r1(items.reduce((s, i) => s + i.slice, 0));
+  const tot = items.reduce((s, i) => s + i.slice, 0);
   const editable = (S.groupBy === 'person' || (row && row.isSub)) && S.mode === 'prevu';
   const tid = row && row.teamId != null ? row.teamId : Number(key);
   const others = activeTeam().filter(m => m.id !== tid);
   const _starts = periodStarts(TF.shiftPeriods(new Date(), S.granularity, S.offset), S.granularity, S.horizon);
   const _pi = TF.periodRange(TF.shiftPeriods(new Date(), S.granularity, S.offset), S.granularity, S.horizon).indexOf(period);
-  const capP = row && _pi >= 0 && canonData ? PlanCanonAdapter.getCapacityForRow(row, _starts[_pi], S.granularity, canonData.dailyCapacities) : 0;
+  const capP = row && _pi >= 0 && canonData ? PlanCanonAdapter.getCapacityForRow(row, period, S.granularity, canonData.dailyCapacities, true) : 0;
   document.getElementById('pTitle').textContent = (row ? row.label : key) + ' — ' + plabel(period);
   const capTxt = capP > 0 ? ' · capacité ' + Math.round(capP) + 'h (' + Math.round(tot / capP * 100) + '%)' : '';
-  document.getElementById('pSub').textContent = tot + (S.mode === 'realise' ? ' h réalisées' : ' h planifiées') + capTxt + (editable ? ' · allocation éditable' : '');
+  document.getElementById('pSub').textContent = hoursText(tot) + (S.mode === 'realise' ? ' h réalisées' : ' h planifiées') + capTxt + (editable ? ' · allocation éditable' : '');
   const capWk = editable ? capOf(teamById(tid)) : 0;
   const av = editable ? memberAvail(period) : {};
   const per = S.granularity === 'month' ? 'période' : 'sem.';
@@ -5805,14 +5864,14 @@ function openCell(key, period) {
   const unitToggle = editable ? '<div class="unitbar">Allouer en <button class="' + (S.allocUnit === 'h' ? 'on' : '') + '" onclick="setAllocUnit(\'h\')">heures</button><button class="' + (S.allocUnit === 'pct' ? 'on' : '') + '" onclick="setAllocUnit(\'pct\')">% capacité</button></div>' : '';
   document.getElementById('pBody').innerHTML = banner + hint + unitToggle + (sorted.length ? sorted.map(i => {
     const p = projById(i.task.projet);
-    const sliceTxt = (p ? esc(p.nom) : 'Sans projet') + ' · ' + i.slice + ' h cette ' + per;
+    const sliceTxt = (p ? esc(p.nom) : 'Sans projet') + ' · ' + hoursText(i.slice) + ' h cette ' + per;
     const usePct = editable && S.allocUnit === 'pct' && capWk > 0;
     const wks = taskWeeks(i.task);
-    const val = usePct ? Math.round(i.total / (capWk * wks) * 100) : i.total;
+    const val = usePct ? Math.round(i.total / (capWk * wks) * 100) : displayHours(i.total);
     const conv = usePct ? '((parseFloat(this.value)||0)/100*' + capWk + '*' + wks.toFixed(3) + ')' : '(parseFloat(this.value)||0)';
     const right = editable
       ? '<div class="tkedit"><input type="number" name="alloc" min="0" step="' + (usePct ? 5 : 0.5) + '" value="' + val + '" title="Allocation ' + (usePct ? '(% de la capacité sur la durée)' : '(heures)') + '" onchange="setCharge(' + i.task.id + ',' + tid + ',' + conv + ')"><span class="u">' + (usePct ? '%' : 'h') + '</span><select name="reassign" title="Réaffecter à un membre (sa marge est indiquée)" onchange="if(this.value)reassignCharge(' + i.task.id + ',' + tid + ',parseInt(this.value))"><option value="">⇄</option>' + others.map(m => { const fr = av[m.id] ? av[m.id].free : null; return '<option value="' + m.id + '">→ ' + esc(m.nom) + (fr != null ? ' (' + fr + ' h libres)' : '') + '</option>'; }).join('') + '</select></div>'
-      : '<div class="th">' + i.total + ' h</div>';
+      : '<div class="th">' + hoursText(i.total) + ' h</div>';
     const dates = editable ? '<div class="tkdates"><span class="dl">📅 Dates</span><input type="date" name="dateDebut" value="' + gToInput(i.task.dateDebut) + '" title="Début" onchange="setDates(' + i.task.id + ',this.value,null)"><span>→</span><input type="date" name="dateEcheance" value="' + gToInput(i.task.dateEcheance) + '" title="Échéance" onchange="setDates(' + i.task.id + ',null,this.value)"></div>' : '';
     return '<div class="tk"><div class="tkmain"><span class="pdot" style="background:' + (p ? p.couleur : '#64748b') + '"></span><div class="tinfo"><div class="tt">' + esc(i.task.titre) + '</div><div class="tm">' + sliceTxt + '</div></div>' + right + '</div>' + dates + '</div>';
   }).join('') : '<div style="color:var(--text-muted);font-size:.82rem">Aucune tâche ' + (S.mode === 'realise' ? 'réalisée' : 'planifiée') + ' sur cette période.</div>');
@@ -5834,26 +5893,85 @@ async function persistTask(taskId, updates) {
   if (!S.demo) { try { await grist.docApi.applyUserActions([['UpdateRecord', 'Tasks', taskId, updates]]); } catch (e) {} }
   render(); refreshCell();
 }
-function setCharge(taskId, teamId, heures) {
-  const t = S.tasks.find(x => x.id === taskId); if (!t) return;
-  const arr = TF.parseCharges(t.charges); const i = arr.findIndex(c => c.teamId === teamId);
-  if (heures > 0) { if (i >= 0) arr[i].heures = heures; else arr.push({ teamId, heures }); } else if (i >= 0) arr.splice(i, 1);
-  const updates = { charges: JSON.stringify(arr) };
-  // cohérence : une charge implique d'être assigné
-  if (heures > 0) { const asg = getRefList(t.assignees); if (!asg.includes(Number(teamId))) updates.assignees = toRefList(asg.concat([Number(teamId)])); }
-  persistTask(taskId, updates);
+function activeTaskAssignments(taskId, teamId) {
+  return (S.assignments || []).filter(a => a.actif !== false &&
+    Number(a.tache) === Number(taskId) &&
+    (teamId == null || Number(a.membre) === Number(teamId)));
 }
-function reassignCharge(taskId, fromId, toId) {
-  if (fromId === toId) return;
-  const t = S.tasks.find(x => x.id === taskId); if (!t) return;
-  const arr = TF.parseCharges(t.charges); const fi = arr.findIndex(c => c.teamId === fromId); if (fi < 0) return;
-  const hrs = arr[fi].heures; arr.splice(fi, 1);
-  const ti = arr.findIndex(c => c.teamId === toId); if (ti >= 0) arr[ti].heures += hrs; else arr.push({ teamId: toId, heures: hrs });
-  // cohérence assignés (option A) : + toId ; - fromId s'il n'a plus de charge sur la tâche
-  let asg = getRefList(t.assignees);
-  if (!asg.includes(Number(toId))) asg = asg.concat([Number(toId)]);
-  if (!arr.some(c => Number(c.teamId) === Number(fromId))) asg = asg.filter(id => id !== Number(fromId));
-  persistTask(taskId, { charges: JSON.stringify(arr), assignees: toRefList(asg) });
+function legacyTaskAssignmentFields(taskId) {
+  const active = activeTaskAssignments(taskId).filter(a => Number(a.heuresAllouees) > 0);
+  return {
+    charges: JSON.stringify(active.map(a => ({ teamId: Number(a.membre), heures: Number(a.heuresAllouees) }))),
+    assignees: toRefList([...new Set(active.map(a => Number(a.membre)))])
+  };
+}
+async function applyPlanAssignmentActions(actions) {
+  if (S.demo) {
+    canonPlanIndex = null;
+    rollingLoadIndex = null;
+    lastCanonState = null;
+  } else {
+    invalidateCanonData();
+  }
+  if (!S.demo) {
+    try {
+      await grist.docApi.applyUserActions(actions);
+    } catch (e) {
+      toast('Échec de la mise à jour : ' + (e.message || e));
+      invalidateCanonData();
+    }
+  }
+  await render();
+  if (S._cellKey != null) refreshCell();
+}
+async function setCharge(taskId, teamId, heures) {
+  const matches = activeTaskAssignments(taskId, teamId);
+  if (matches.length !== 1) {
+    toast(matches.length ? 'Affectation ambiguë : modification bloquée' : 'Affectation canonique introuvable');
+    return;
+  }
+  const assignment = matches[0];
+  assignment.heuresAllouees = Math.max(Number(heures) || 0, 0);
+  const task = S.tasks.find(t => Number(t.id) === Number(taskId));
+  const legacy = legacyTaskAssignmentFields(taskId);
+  if (task) Object.assign(task, legacy);
+  const actions = [
+    ['UpdateRecord', 'TaskAssignments', assignment.id, { heuresAllouees: assignment.heuresAllouees }]
+  ];
+  if (task) actions.push(['UpdateRecord', 'Tasks', task.id, legacy]);
+  await applyPlanAssignmentActions(actions);
+}
+async function reassignCharge(taskId, fromId, toId) {
+  if (Number(fromId) === Number(toId)) return;
+  const sources = activeTaskAssignments(taskId, fromId);
+  if (sources.length !== 1) {
+    toast(sources.length ? 'Affectation source ambiguë : réaffectation bloquée' : 'Affectation source introuvable');
+    return;
+  }
+  const source = sources[0];
+  const targets = activeTaskAssignments(taskId, toId);
+  if (targets.length > 1) {
+    toast('Affectation cible ambiguë : réaffectation bloquée');
+    return;
+  }
+  const actions = [];
+  if (targets.length === 1) {
+    const target = targets[0];
+    target.heuresAllouees = Number(target.heuresAllouees || 0) + Number(source.heuresAllouees || 0);
+    source.actif = false;
+    actions.push(['UpdateRecord', 'TaskAssignments', target.id, { heuresAllouees: target.heuresAllouees }]);
+    actions.push(['UpdateRecord', 'TaskAssignments', source.id, { actif: false }]);
+  } else {
+    source.membre = Number(toId);
+    actions.push(['UpdateRecord', 'TaskAssignments', source.id, { membre: Number(toId) }]);
+  }
+  const task = S.tasks.find(t => Number(t.id) === Number(taskId));
+  const legacy = legacyTaskAssignmentFields(taskId);
+  if (task) {
+    Object.assign(task, legacy);
+    actions.push(['UpdateRecord', 'Tasks', task.id, legacy]);
+  }
+  await applyPlanAssignmentActions(actions);
 }
 // Replanification depuis la vue : modifie les dates de la tâche (ré-étale la charge).
 async function setDates(taskId, debut, echeance) {
@@ -5861,8 +5979,14 @@ async function setDates(taskId, debut, echeance) {
   const upd = {};
   if (debut !== null) { t.dateDebut = inputToG(debut); upd.dateDebut = t.dateDebut; }
   if (echeance !== null) { t.dateEcheance = inputToG(echeance); upd.dateEcheance = t.dateEcheance; }
-  if (!S.demo) { try { await grist.docApi.applyUserActions([['UpdateRecord', 'Tasks', taskId, upd]]); } catch (e) {} }
-  render(); refreshCell();
+  const actions = [['UpdateRecord', 'Tasks', taskId, upd]];
+  for (const assignment of activeTaskAssignments(taskId)) {
+    const assignmentUpdates = {};
+    if (debut !== null) { assignment.dateDebut = t.dateDebut; assignmentUpdates.dateDebut = t.dateDebut; }
+    if (echeance !== null) { assignment.dateFin = t.dateEcheance; assignmentUpdates.dateFin = t.dateEcheance; }
+    actions.push(['UpdateRecord', 'TaskAssignments', assignment.id, assignmentUpdates]);
+  }
+  await applyPlanAssignmentActions(actions);
 }
 // 2.1 — panneau ressource : capacité hebdo + indisponibilités (Team.capaciteHebdo / Team.indispos).
 function openResource(key) {
@@ -6957,6 +7081,10 @@ async function loadGrist(options = {}) {
   }
   // TaskAssignments : chargement pour la prévisualisation du planning
   S.assignments = assignments ? TF.columnarToRows(assignments) : [];
+  // loadGrist est aussi rappelé par grist.onRecords. À ce stade S contient les
+  // nouvelles données, donc le cache multi-tables utilisé par render doit être
+  // invalidé avant tout nouveau calcul de matrice.
+  invalidateCanonData();
   // Programme = opt-in : actif seulement si la colonne Projects.programme (ou portefeuille) existe. Sinon le groupement propose l'activation.
   S.hasProg = !!(projects && (('programme' in projects) || ('portefeuille' in projects)) && prog);
   
@@ -7096,6 +7224,43 @@ async function loadDemo() {
     { id: 5, membre: 3, tache: 2, date: g(1), heures: 7 }, { id: 6, membre: 1, tache: 5, date: g(8), heures: 5 }
   ];
   S.hasEntries = true;
+  // Le mode démo suit le même contrat que Grist : TaskAssignments porte la
+  // demande, TimeEntries uniquement le réalisé.
+  let demoAssignmentId = 100;
+  S.assignments = S.tasks.flatMap(task => TF.parseCharges(task.charges).map(charge => ({
+    id: ++demoAssignmentId,
+    tache: task.id,
+    membre: charge.teamId,
+    heuresAllouees: charge.heures,
+    dateDebut: task.dateDebut,
+    dateFin: task.dateEcheance,
+    modeRepartition: 'uniforme',
+    actif: true
+  })));
+  canonData = {
+    team: S.team,
+    assignments: S.assignments,
+    tasks: S.tasks,
+    projects: S.projects,
+    programmes: S.programmes,
+    dailyCapacities: [],
+    timeEntries: S.entries.map(entry => {
+      const assignment = S.assignments.find(candidate => Number(candidate.tache) === Number(entry.tache) && Number(candidate.membre) === Number(entry.membre));
+      return {
+        id: entry.id,
+        assignmentId: assignment ? assignment.id : null,
+        taskId: entry.tache,
+        memberId: entry.membre,
+        date: secToISO(entry.date),
+        plannedHours: 0,
+        actualHours: Number(entry.heures) || 0,
+        sheetStatus: 'draft'
+      };
+    })
+  };
+  canonPlanIndex = null;
+  rollingLoadIndex = null;
+  lastCanonState = null;
     buildDispoIndex();
     initFilterManager();
     render();

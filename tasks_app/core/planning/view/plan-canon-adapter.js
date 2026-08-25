@@ -20,6 +20,12 @@ var formatDateUTC = PlanPeriodAggregation.formatDateUTC;
 var parseDateUTC = PlanPeriodAggregation.parseDateUTC;
 var generateDateRange = PlanPeriodAggregation.generateDateRange;
 
+var RollingLoad = (typeof window !== 'undefined' && (
+    window.TaskFlowRollingLoad ||
+    (window.TaskFlowPlanning && window.TaskFlowPlanning.rollingLoad)
+  )) ||
+  (typeof module !== 'undefined' && require('../forecast/rolling-load.js'));
+
 /**
  * Charge et normalise les données Grist pour l'agrégation canonique
  * @param {Object} grist - API Grist
@@ -241,6 +247,120 @@ function buildCanonPlanIndex(canonData, periodConfig) {
 }
 
 /**
+ * Construit la demande glissante non plafonnée pour le Plan.
+ */
+function buildRollingLoadIndex(canonData, periodConfig, today) {
+  if (!RollingLoad || typeof RollingLoad.buildRollingLoadIndex !== 'function') {
+    return {
+      contributions: [],
+      assignments: {},
+      diagnostics: [{ code: 'ROLLING_LOAD_UNAVAILABLE' }]
+    };
+  }
+
+  return RollingLoad.buildRollingLoadIndex({
+    periods: {
+      granularity: periodConfig.granularity || 'week',
+      keys: periodConfig.keys || []
+    },
+    today: today || new Date(),
+    team: canonData.team || [],
+    assignments: canonData.assignments || [],
+    tasks: canonData.tasks || [],
+    timeEntries: canonData.timeEntries || [],
+    dailyCapacities: canonData.dailyCapacities || []
+  });
+}
+
+function rollingGroupKey(contribution, groupBy, canonData) {
+  var memberId = String(contribution.memberId);
+  if (groupBy === 'person') return memberId;
+
+  var tasks = canonData.tasks || [];
+  var projects = canonData.projects || [];
+  var team = canonData.team || [];
+  var task = tasks.find(function(item) { return Number(item.id) === Number(contribution.taskId); });
+  var member = team.find(function(item) { return Number(item.id) === Number(contribution.memberId); });
+
+  if (groupBy === 'project') {
+    return String(task && task.projet ? task.projet : '0') + '|' + memberId;
+  }
+  if (groupBy === 'programme') {
+    var project = task && projects.find(function(item) { return Number(item.id) === Number(task.projet); });
+    return String(project && project.programme ? project.programme : '0') + '|' + memberId;
+  }
+  if (groupBy === 'role') {
+    return String(member && member.role ? member.role : '—') + '|' + memberId;
+  }
+  return memberId;
+}
+
+/**
+ * Transforme les contributions virtuelles en matrice compatible avec le rendu.
+ */
+function formatRollingMatrixForRender(rollingIndex, groupBy, canonData) {
+  var matrix = {};
+  if (!rollingIndex || !Array.isArray(rollingIndex.contributions)) return matrix;
+
+  rollingIndex.contributions.forEach(function(contribution) {
+    if (!(contribution.hours > 0)) return;
+    var key = rollingGroupKey(contribution, groupBy, canonData || {});
+    if (!matrix[key]) matrix[key] = {};
+    matrix[key][contribution.periodKey] =
+      (matrix[key][contribution.periodKey] || 0) + contribution.hours;
+  });
+
+  return matrix;
+}
+
+/**
+ * Détail des tâches composant une cellule de demande virtuelle.
+ */
+function getRollingTasksInCell(rollingIndex, key, period, groupBy, canonData) {
+  if (!rollingIndex || !Array.isArray(rollingIndex.contributions)) return [];
+  var byTask = {};
+  var tasks = (canonData && canonData.tasks) || [];
+
+  rollingIndex.contributions.forEach(function(contribution) {
+    if (contribution.periodKey !== period) return;
+    if (String(rollingGroupKey(contribution, groupBy, canonData || {})) !== String(key)) return;
+    var taskId = Number(contribution.taskId);
+    if (!byTask[taskId]) {
+      byTask[taskId] = {
+        taskId: taskId,
+        slice: 0,
+        total: 0,
+        assignmentIds: [],
+        overdue: false
+      };
+    }
+    byTask[taskId].slice += contribution.hours;
+    byTask[taskId].overdue = byTask[taskId].overdue || contribution.overdue === true;
+    if (!byTask[taskId].assignmentIds.includes(contribution.assignmentId)) {
+      byTask[taskId].assignmentIds.push(contribution.assignmentId);
+      var summary = rollingIndex.assignments && rollingIndex.assignments[contribution.assignmentId];
+      byTask[taskId].total += summary ? summary.remainingHours : contribution.hours;
+    }
+  });
+
+  return Object.keys(byTask).map(function(taskId) {
+    var item = byTask[taskId];
+    var task = tasks.find(function(candidate) { return Number(candidate.id) === Number(taskId); });
+    return {
+      task: task || { id: Number(taskId), titre: 'Tâche ' + taskId, projet: null },
+      taskId: Number(taskId),
+      assignmentId: item.assignmentIds.length === 1 ? item.assignmentIds[0] : null,
+      assignmentIds: item.assignmentIds,
+      slice: item.slice,
+      total: item.total,
+      entries: [],
+      virtual: true,
+      overdue: item.overdue
+    };
+  }).sort(function(a, b) { return b.slice - a.slice; });
+}
+
+/**
  * Formate l'index canonique pour compatibilité avec la matrice existante
  * @param {Object} byMemberPeriod - Agrégats par membre/période depuis buildPlanPeriodIndex
  * @param {string} groupBy - Type de groupement ('person', 'project', 'programme', 'role')
@@ -339,7 +459,7 @@ function formatCanonMatrixForRender(byMemberPeriod, groupBy, mode) {
  * @param {Array} dailyCapacities - Capacités quotidiennes
  * @returns {number} Capacité totale en heures
  */
-function getCapacityForRow(row, periodKey, granularity, dailyCapacities) {
+function getCapacityForRow(row, periodKey, granularity, dailyCapacities, useNominalFallback) {
   if (!row || !row.members || !row.members.length) {
     return 0;
   }
@@ -370,13 +490,20 @@ function getCapacityForRow(row, periodKey, granularity, dailyCapacities) {
     
     for (var j = 0; j < dates.length; j++) {
       var dateStr = dates[j];
-      
+      var foundCapacity = false;
       // Trouver la capacité pour ce membre à cette date
       for (var k = 0; k < dailyCapacities.length; k++) {
         var cap = dailyCapacities[k];
         if (cap.membre === memberId && cap.date === dateStr) {
           totalCapacity += cap.capaciteDisponible || 0;
+          foundCapacity = true;
           break;
+        }
+      }
+      if (!foundCapacity && useNominalFallback) {
+        var weekday = new Date(dateStr + 'T00:00:00Z').getUTCDay();
+        if (weekday >= 1 && weekday <= 5) {
+          totalCapacity += (Number(member.capaciteHebdo) || 35) / 5;
         }
       }
     }
@@ -441,7 +568,7 @@ function isRowCapacityReduced(row, periodKey, granularity, dailyCapacities) {
  * @param {Array} dailyCapacities - Capacités quotidiennes
  * @returns {number} Capacité totale de l'équipe
  */
-function getTeamCapacity(team, periodKey, granularity, dailyCapacities) {
+function getTeamCapacity(team, periodKey, granularity, dailyCapacities, useNominalFallback) {
   var bounds = getPeriodBounds(periodKey, granularity);
   if (!bounds) {
     return 0;
@@ -467,12 +594,19 @@ function getTeamCapacity(team, periodKey, granularity, dailyCapacities) {
     
     for (var j = 0; j < dates.length; j++) {
       var dateStr = dates[j];
-      
+      var foundCapacity = false;
       for (var k = 0; k < dailyCapacities.length; k++) {
         var cap = dailyCapacities[k];
         if (cap.membre === memberId && cap.date === dateStr) {
           totalCapacity += cap.capaciteDisponible || 0;
+          foundCapacity = true;
           break;
+        }
+      }
+      if (!foundCapacity && useNominalFallback) {
+        var weekday = new Date(dateStr + 'T00:00:00Z').getUTCDay();
+        if (weekday >= 1 && weekday <= 5) {
+          totalCapacity += (Number(member.capaciteHebdo) || 35) / 5;
         }
       }
     }
@@ -726,6 +860,9 @@ function isTerminal(statusCfg, value) {
 var PlanCanonAdapterExports = {
   loadCanonData: loadCanonData,
   buildCanonPlanIndex: buildCanonPlanIndex,
+  buildRollingLoadIndex: buildRollingLoadIndex,
+  formatRollingMatrixForRender: formatRollingMatrixForRender,
+  getRollingTasksInCell: getRollingTasksInCell,
   formatCanonMatrixForRender: formatCanonMatrixForRender,
   getCapacityForRow: getCapacityForRow,
   isRowCapacityReduced: isRowCapacityReduced,

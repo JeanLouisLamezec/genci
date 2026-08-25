@@ -88,7 +88,7 @@ describe('Member Planning Orchestrator - Commit et actions Grist', function() {
     };
     
     var orchestrator = createMemberPlanningOrchestrator(mockGrist);
-    var result = await orchestrator.previewMember(1);
+    var result = await orchestrator.previewMember(1, { todayIso: '2026-07-20' });
     
     expect(applyCalled).toBe(false);
     expect(result.success).toBe(true);
@@ -116,7 +116,7 @@ describe('Member Planning Orchestrator - Commit et actions Grist', function() {
     });
     
     var orchestrator = createMemberPlanningOrchestrator(mockGrist);
-    var preview = await orchestrator.previewMember(1);
+    var preview = await orchestrator.previewMember(1, { todayIso: '2026-07-20' });
     
     expect(preview.success).toBe(true);
     expect(preview.canCommit).toBe(true);
@@ -170,7 +170,7 @@ describe('Member Planning Orchestrator - Commit et actions Grist', function() {
     });
     
     var orchestrator = createMemberPlanningOrchestrator(mockGrist);
-    var preview = await orchestrator.previewMember(1);
+    var preview = await orchestrator.previewMember(1, { todayIso: '2026-07-20' });
     
     expect(preview.success).toBe(true);
     expect(preview.reconciliation.creates.length).toBe(0);
@@ -209,7 +209,7 @@ describe('Member Planning Orchestrator - Commit et actions Grist', function() {
     });
     
     var orchestrator = createMemberPlanningOrchestrator(mockGrist);
-    var preview = await orchestrator.previewMember(1);
+    var preview = await orchestrator.previewMember(1, { todayIso: '2026-07-20' });
     
     expect(preview.success).toBe(true);
     expect(preview.totals.protectedHours).toBe(4);
@@ -252,7 +252,7 @@ describe('Member Planning Orchestrator - Commit et actions Grist', function() {
     });
     
     var orchestrator = createMemberPlanningOrchestrator(mockGrist);
-    var preview = await orchestrator.previewMember(1);
+    var preview = await orchestrator.previewMember(1, { todayIso: '2026-07-20' });
     
     expect(preview.success).toBe(true);
     expect(preview.canCommit).toBe(false);

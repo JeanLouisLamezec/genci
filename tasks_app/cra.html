@@ -5007,24 +5007,87 @@ function fmtInputQty(hours, hasValue) {
   return String(hoursToQty(hours));
 }
 
+function activeAssignmentForCraCell(taskId, dayMs, personId) {
+  if (typeof CRAController === 'undefined' || !CRAController.resolveActiveAssignment) return null;
+  const task = S.indexes && S.indexes.taskById
+    ? S.indexes.taskById.get(Number(taskId))
+    : S.tasks.find(t => Number(t.id) === Number(taskId));
+  const project = task && task.projet
+    ? S.projects.find(p => Number(p.id) === Number(task.projet))
+    : null;
+  const result = CRAController.resolveActiveAssignment(
+    Number(taskId),
+    Number(personId),
+    localDateIso(dayMs),
+    S.assignments,
+    {
+      projectStartDate: project ? project.dateDebut : null,
+      projectEndDate: project ? project.dateFin : null,
+      allowWeekends: false
+    }
+  );
+  return result && result.status === 'found' ? result.assignment : null;
+}
+
+function assignmentForCraEntry(entry) {
+  if (!entry) return null;
+  if (entry.affectation && S.indexes && S.indexes.assignmentById) {
+    const exact = S.indexes.assignmentById.get(Number(entry.affectation));
+    if (exact) return exact;
+  }
+  if (entry.tache && entry.membre && entry.date != null) {
+    return activeAssignmentForCraCell(Number(entry.tache), gristToMs(entry.date), Number(entry.membre));
+  }
+  return null;
+}
+
+function isPunctualCraEntry(entry) {
+  const assignment = assignmentForCraEntry(entry);
+  return Boolean(assignment && assignment.modeRepartition === 'ponctuel');
+}
+
+// Les anciennes versions pouvaient matérialiser une proposition positive pour
+// une affectation ponctuelle. Elle ne doit plus préremplir le CRA : seul le
+// réalisé explicitement saisi par l'utilisateur compte.
+function effectiveCraPlannedHours(entry) {
+  return isPunctualCraEntry(entry) ? 0 : (Number(entry && entry.heuresPrevues) || 0);
+}
+
+function hasExplicitCraActual(entry) {
+  return Boolean(entry) && entry.heures !== null && entry.heures !== undefined &&
+    entry.heures !== '' && Number.isFinite(Number(entry.heures));
+}
+
+function effectiveCraDisplayedHours(entry) {
+  return hasExplicitCraActual(entry) ? Number(entry.heures) : effectiveCraPlannedHours(entry);
+}
+
 // PHASE 5 : Helper pour obtenir l'état d'affichage d'une cellule
 function getCellDisplayState(taskId, dayMs, personId) {
   const entries = cellEntries(taskId, dayMs, personId);
+  const assignment = activeAssignmentForCraCell(taskId, dayMs, personId);
+  const isVirtualPunctual = Boolean(assignment && assignment.modeRepartition === 'ponctuel');
   
   if (!entries || entries.length === 0) {
     return {
       actualHours: 0,
       plannedHours: 0,
       displayedHours: 0,
-      hasDisplayValue: false,
+      hasDisplayValue: isVirtualPunctual,
       hasExplicitActual: false,
-      isPrefilled: false
+      isPrefilled: false,
+      isVirtualPunctual: isVirtualPunctual
     };
   }
   
   // Utiliser les helpers du contrôleur si disponibles
   if (typeof CRAController !== 'undefined' && CRAController.buildCellDisplayState) {
-    return CRAController.buildCellDisplayState(entries);
+    const state = CRAController.buildCellDisplayState(entries, {
+      ignorePlanned: isVirtualPunctual,
+      virtualZero: isVirtualPunctual
+    });
+    state.isVirtualPunctual = isVirtualPunctual && !state.hasExplicitActual;
+    return state;
   }
   
   // Fallback : calcul local
@@ -5043,7 +5106,7 @@ function getCellDisplayState(taskId, dayMs, personId) {
     );
     
     const entryActual = hasActual ? Number(entry.heures) : 0;
-    const entryPlanned = Number(entry.heuresPrevues) || 0;
+    const entryPlanned = effectiveCraPlannedHours(entry);
     const entryDisplayed = hasActual ? Number(entry.heures) : entryPlanned;
     
     actualHours += entryActual;
@@ -5063,9 +5126,10 @@ function getCellDisplayState(taskId, dayMs, personId) {
     actualHours,
     plannedHours,
     displayedHours,
-    hasDisplayValue: displayedHours > 0,
+    hasDisplayValue: displayedHours > 0 || hasExplicitActual || isVirtualPunctual,
     hasExplicitActual,
-    isPrefilled
+    isPrefilled,
+    isVirtualPunctual: isVirtualPunctual && !hasExplicitActual
   };
 }
 
@@ -5094,7 +5158,7 @@ function dayDisplayedHours(dayMs, personId) {
               e.heures !== '' &&
               Number.isFinite(Number(e.heures))
             );
-            h += hasActual ? Number(e.heures) : (Number(e.heuresPrevues) || 0);
+            h += effectiveCraDisplayedHours(e);
           }
         }
       }
@@ -5111,7 +5175,7 @@ function dayDisplayedHours(dayMs, personId) {
         e.heures !== '' &&
         Number.isFinite(Number(e.heures))
       );
-      h += hasActual ? Number(e.heures) : (Number(e.heuresPrevues) || 0);
+      h += effectiveCraDisplayedHours(e);
     }
   }
   return h;
@@ -5137,7 +5201,7 @@ function taskWeekDisplayedHours(taskId, personId) {
             e.heures !== '' &&
             Number.isFinite(Number(e.heures))
           );
-          h += hasActual ? Number(e.heures) : (Number(e.heuresPrevues) || 0);
+          h += effectiveCraDisplayedHours(e);
         }
       }
     }
@@ -5170,7 +5234,7 @@ function weekDisplayedHours(personId) {
               e.heures !== '' &&
               Number.isFinite(Number(e.heures))
             );
-            h += hasActual ? Number(e.heures) : (Number(e.heuresPrevues) || 0);
+            h += effectiveCraDisplayedHours(e);
           }
         }
       }
@@ -5259,7 +5323,7 @@ function cellPlannedHours(taskId, dayMs, personId) {
   const entries = cellEntries(taskId, dayMs, personId);
   let h = 0;
   for (const e of entries) {
-    h += (Number(e.heuresPrevues) || 0);
+    h += effectiveCraPlannedHours(e);
   }
   return h;
 }
@@ -5310,7 +5374,7 @@ function dayPlannedHours(dayMs, personId) {
           const eDate = typeof e.date === 'number' ? new Date(e.date * 1000) : new Date(0);
           const edk = [eDate.getFullYear(), String(eDate.getMonth() + 1).padStart(2, '0'), String(eDate.getDate()).padStart(2, '0')].join('-');
           if (edk === dk) {
-            h += (Number(e.heuresPrevues) || 0);
+            h += effectiveCraPlannedHours(e);
           }
         }
       }
@@ -5321,7 +5385,7 @@ function dayPlannedHours(dayMs, personId) {
   // Fallback
   for (const e of S.entries) {
     if (e.membre === personId && sameDay(gristToMs(e.date), dayMs)) {
-      h += (Number(e.heuresPrevues) || 0);
+      h += effectiveCraPlannedHours(e);
     }
   }
   return h;
@@ -5373,7 +5437,7 @@ function taskWeekPlannedHours(taskId, personId) {
       for (const e of entries) {
         const eMs = typeof e.date === 'number' ? e.date * 1000 : 0;
         if (eMs >= weekStartMs && eMs <= weekEndMs) {
-          h += (Number(e.heuresPrevues) || 0);
+          h += effectiveCraPlannedHours(e);
         }
       }
     }
@@ -5434,7 +5498,7 @@ function weekPlannedHours(personId) {
         for (const e of entries) {
           const eMs = typeof e.date === 'number' ? e.date * 1000 : 0;
           if (eMs >= weekStartMs && eMs <= weekEndMs) {
-            h += (Number(e.heuresPrevues) || 0);
+            h += effectiveCraPlannedHours(e);
           }
         }
       }
@@ -7229,7 +7293,7 @@ function exportCSV() {
   const rows = [['Agent', 'Date', 'Projet/Imputation', 'Tache', 'Heures realisees', 'Heures prevues', 'Ecart', 'Statut feuille']];
   S.entries.slice().sort((a, b) => a.date - b.date).forEach(e => {
     const realized = Number(e.heures) || 0;
-    const planned = Number(e.heuresPrevues) || 0;
+    const planned = effectiveCraPlannedHours(e);
     const gap = realized - planned;
     rows.push([
       nameOf(e.membre), 
@@ -7461,6 +7525,7 @@ function buildCraIndexes() {
     entriesByAssignmentDate: new Map(),
     entriesByTaskDate: new Map(),  // Fallback pour données legacy
     entriesByPersonWeek: new Map(),  // URGENT 3 : Initialiser (manquait)
+    assignmentById: new Map(),
     assignmentsByPersonTask: new Map(),
     dailyCapacityByPersonDate: new Map(),
     feuillesByPersonWeek: new Map()
@@ -7525,6 +7590,7 @@ function buildCraIndexes() {
   
   // Index assignments par personne + tache
   for (const a of S.assignments) {
+    S.indexes.assignmentById.set(Number(a.id), a);
     if (a.actif) {
       const key = a.membre + '|' + a.tache;
       S.indexes.assignmentsByPersonTask.set(key, a);

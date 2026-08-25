@@ -811,15 +811,19 @@ function buildSubmissionEntryPatch(entry, sheetId) {
  * @param {Array} entries - TimeEntries de la cellule
  * @returns {Object} État de cellule
  */
-function buildCellDisplayState(entries) {
+function buildCellDisplayState(entries, options) {
+  options = options || {};
+  const ignorePlanned = options.ignorePlanned === true;
+  const virtualZero = options.virtualZero === true;
   if (!entries || entries.length === 0) {
     return {
       actualHours: 0,
       plannedHours: 0,
       displayedHours: 0,
-      hasDisplayValue: false,
+      hasDisplayValue: virtualZero,
       hasExplicitActual: false,
-      isPrefilled: false
+      isPrefilled: false,
+      isVirtualZero: virtualZero
     };
   }
 
@@ -831,8 +835,8 @@ function buildCellDisplayState(entries) {
 
   for (const entry of entries) {
     const entryActual = hasExplicitActualHours(entry) ? Number(entry.heures) : 0;
-    const entryPlanned = Number(entry.heuresPrevues) || 0;
-    const entryDisplayed = effectiveDisplayedHours(entry);
+    const entryPlanned = ignorePlanned ? 0 : (Number(entry.heuresPrevues) || 0);
+    const entryDisplayed = hasExplicitActualHours(entry) ? Number(entry.heures) : entryPlanned;
 
     actualHours += entryActual;
     plannedHours += entryPlanned;
@@ -842,14 +846,14 @@ function buildCellDisplayState(entries) {
       hasExplicitActual = true;
     }
 
-    if (isPrefilledFromPlanning(entry)) {
+    if (!ignorePlanned && isPrefilledFromPlanning(entry)) {
       isPrefilled = true;
     }
   }
 
   // PHASE 5 : hasDisplayValue = true si displayedHours > 0 OU s'il y a un réalisé explicite (même 0)
   // Cela permet d'afficher "0" dans l'input quand l'utilisateur a explicitement saisi 0
-  const hasDisplayValue = displayedHours > 0 || hasExplicitActual;
+  const hasDisplayValue = displayedHours > 0 || hasExplicitActual || virtualZero;
 
   return {
     actualHours,
@@ -857,7 +861,8 @@ function buildCellDisplayState(entries) {
     displayedHours,
     hasDisplayValue,
     hasExplicitActual,
-    isPrefilled
+    isPrefilled,
+    isVirtualZero: virtualZero && !hasExplicitActual
   };
 }
 

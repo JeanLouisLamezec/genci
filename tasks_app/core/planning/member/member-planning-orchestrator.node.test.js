@@ -44,7 +44,7 @@ describe('Member Planning Orchestrator - API publique', function() {
     };
     
     var orchestrator = createMemberPlanningOrchestrator(mockGrist);
-    var result = await orchestrator.previewMember(1);
+    var result = await orchestrator.previewMember(1, { todayIso: '2026-07-20' });
     
     expect(result.success).toBe(true);
     expect(result.code).toBe('NO_ASSIGNMENTS');
@@ -118,7 +118,7 @@ describe('Member Planning Orchestrator - Scénarios métier', function() {
     });
     
     var orchestrator = createMemberPlanningOrchestrator(mockGrist);
-    var result = await orchestrator.previewMember(1);
+    var result = await orchestrator.previewMember(1, { todayIso: '2026-07-20' });
     
     expect(result.success).toBe(true);
     expect(typeof result.totals.totalAllocatedHours).toBe('number');
@@ -158,7 +158,7 @@ describe('Member Planning Orchestrator - Scénarios métier', function() {
     });
     
     var orchestrator = createMemberPlanningOrchestrator(mockGrist);
-    var result = await orchestrator.previewMember(1);
+    var result = await orchestrator.previewMember(1, { todayIso: '2026-07-20' });
     
     expect(result.success).toBe(true);
     expect(typeof result.totals.totalAllocatedHours).toBe('number');
@@ -198,8 +198,8 @@ describe('Member Planning Orchestrator - Scénarios métier', function() {
     });
     
     var orchestrator = createMemberPlanningOrchestrator(mockGrist);
-    var result = await orchestrator.previewMember(1);
-    
+    var result = await orchestrator.previewMember(1, { todayIso: '2026-07-20' });
+
     expect(result.success).toBe(true);
     expect(typeof result.totals.totalAllocatedHours).toBe('number');
     expect(typeof result.totals.totalPlannedHours).toBe('number');
@@ -208,5 +208,60 @@ describe('Member Planning Orchestrator - Scénarios métier', function() {
     expect(result.totals.totalUnplannedHours).toBe(25);
     expect(result.canCommit).toBe(false);
     expect(result.code).toBe('INSUFFICIENT_SHARED_CAPACITY');
+  });
+
+  it('Une surconsommation validée est signalée sans bloquer le membre', async function() {
+    var start = new Date(Date.UTC(2026, 6, 20)).getTime() / 1000;
+    var end = new Date(Date.UTC(2026, 8, 4)).getTime() / 1000;
+    var mockGrist = createMockGristWithData({
+      'Team': [{ id: 1, nom: 'Alice', capaciteHebdo: 35 }],
+      'TaskAssignments': [{
+        id: 6,
+        tache: 8,
+        membre: 1,
+        heuresAllouees: 10,
+        dateDebut: start,
+        dateFin: end,
+        actif: true,
+        modeRepartition: 'uniforme'
+      }],
+      'Tasks': [{ id: 8, titre: 'Tâche surconsommée', dateDebut: start, dateEcheance: end }],
+      'TimeEntries': [{
+        id: 600,
+        affectation: 6,
+        tache: 8,
+        membre: 1,
+        date: start,
+        heuresPrevues: 10,
+        heures: 13.5,
+        feuille: 1,
+        capaciteTheorique: 7,
+        capaciteDisponible: 7,
+        capaciteJour: 1,
+        revisionPlan: 1
+      }],
+      'Feuilles': [{ id: 1, membre: 1, semaine: '2026-W30', statut: 'valide' }],
+      'Disponibilites': [],
+      'MemberDailyCapacities': [{
+        id: 1,
+        membre: 1,
+        date: start,
+        capaciteTheorique: 7,
+        disponibiliteRatio: 1,
+        capaciteDisponible: 7,
+        absenceHeures: 0,
+        source: 'calcul',
+        revision: 1
+      }]
+    });
+
+    var orchestrator = createMemberPlanningOrchestrator(mockGrist);
+    var result = await orchestrator.previewMember(1, { todayIso: '2026-08-25' });
+
+    expect(result.success).toBe(true);
+    expect(result.canCommit).toBe(true);
+    expect(result.diagnostics.some(function(diagnostic) {
+      return diagnostic.code === 'OVERCONSUMPTION';
+    })).toBe(true);
   });
 });
