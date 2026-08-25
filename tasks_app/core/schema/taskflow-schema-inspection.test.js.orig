@@ -411,7 +411,7 @@ describe('CRA Data Loader - Schema Recovery Disabled', () => {
         // Vérifier que le code source contient bien allowSchemaRecovery = false
         const fs = require('fs');
         const path = require('path');
-        const craDataLoaderPath = path.join(__dirname, '../cra/loader/cra-data-loader.js');
+        const craDataLoaderPath = path.join(__dirname, '../cra/cra-data-loader.js');
         const content = fs.readFileSync(craDataLoaderPath, 'utf8');
         
         // Le code devrait contenir la ligne qui force allowSchemaRecovery à false

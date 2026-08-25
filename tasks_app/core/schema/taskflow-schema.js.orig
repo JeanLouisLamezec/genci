@@ -37,7 +37,7 @@
     }
 
     // Version courante du schéma
-    var SCHEMA_VERSION = 6;
+    var SCHEMA_VERSION = 5;
 
     // Ordre de création des tables (important pour les dépendances)
     var TABLE_ORDER = [
@@ -69,8 +69,6 @@
                 { id: 'email',            opts: dataColumn('Text') },
                 { id: 'avatar',           opts: dataColumn('Text') },
                 { id: 'role',             opts: dataColumn('Choice') },
-                // Autorisation fonctionnelle globale des widgets (POC, sans ACL Grist)
-                { id: 'estAdmin',         opts: dataColumn('Bool') },
                 { id: 'actif',            opts: dataColumn('Bool') },
                 { id: 'couleur',          opts: dataColumn('Text') },
                 // Plan de charge (opt-in mais défini ici)

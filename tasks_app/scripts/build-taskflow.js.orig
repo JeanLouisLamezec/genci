@@ -16,9 +16,9 @@ const ROOT_DIR = path.join(__dirname, '..');
 const CORE_DIR = path.join(ROOT_DIR, 'core');
 const SCHEMA_DIR = path.join(CORE_DIR, 'schema');
 
+    path.join(CORE_DIR, 'permissions', 'taskflow-permissions.js'),
 // Fichiers à injecter
 const FILES_TO_INJECT = [
-    path.join(CORE_DIR, 'permissions', 'taskflow-permissions.js'),
     path.join(CORE_DIR, 'taskflow-core.js'),
     path.join(SCHEMA_DIR, 'taskflow-schema.js'),
     path.join(SCHEMA_DIR, 'taskflow-timesheet-backfill.js'),

@@ -875,14 +875,12 @@
         
         var pending = getPendingMigrations(currentVersion);
         
-        // Le dry run reste reserve a la migration de donnees v5. La migration
-        // additive v6 ne doit pas etre executee pendant cette previsualisation.
+        // Dry run autorisé uniquement si la seule migration en attente est v5
         if (dryRun && pending.length > 0) {
-            var canPreviewV5 = Number(currentVersion) === 4 && pending[0].version === 5;
-            if (!canPreviewV5) {
+            var hasOnlyV5 = pending.length === 1 && pending[0].version === 5;
+            if (!hasOnlyV5) {
                 throw new Error('DRY_RUN_REQUIRES_SCHEMA_V4: Le dry run n\'est autorisé que pour la migration v5 depuis un schéma v4');
             }
-            pending = [pending[0]];
         }
         
         if (pending.length === 0) {

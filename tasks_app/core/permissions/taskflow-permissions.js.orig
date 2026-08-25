@@ -1,0 +1,597 @@
+/* ============================================================================
+ * taskflow-permissions.js — Autorisations fonctionnelles communes TaskFlow
+ * ----------------------------------------------------------------------------
+ * Ce module ne pose aucune ACL Grist. Il applique la matrice fonctionnelle des
+ * widgets a partir des relations Team / Projects / Tasks / Actions.
+ *
+ * Le coeur metier est pur et testable. createGristPermissionRuntime est le fin
+ * adaptateur charge de lire l'identite Grist et les tables necessaires.
+ * ========================================================================== */
+
+(function (global) {
+    'use strict';
+
+    var CONTROLLED_TABLES = [
+        'Team',
+        'Entites',
+        'Programmes',
+        'Projects',
+        'Tasks',
+        'Actions',
+        'KanbanSteps'
+    ];
+
+    var RECORD_ACTIONS = [
+        'AddRecord',
+        'UpdateRecord',
+        'RemoveRecord',
+        'BulkAddRecord',
+        'BulkUpdateRecord',
+        'BulkRemoveRecord'
+    ];
+
+    function normalizeId(value) {
+        if (value === null || value === undefined || value === '') return null;
+        var numeric = Number(value);
+        return Number.isInteger(numeric) && numeric > 0 ? numeric : null;
+    }
+
+    function normalizeRefList(value) {
+        if (!Array.isArray(value)) return [];
+        var values = value[0] === 'L' ? value.slice(1) : value.slice();
+        return values.map(normalizeId).filter(function (id) { return id !== null; });
+    }
+
+    function columnarToRows(data) {
+        if (!data) return [];
+        if (Array.isArray(data)) return data.slice();
+        var keys = Object.keys(data);
+        if (!keys.length) return [];
+        var count = Array.isArray(data[keys[0]]) ? data[keys[0]].length : 0;
+        var rows = [];
+        for (var i = 0; i < count; i++) {
+            var row = {};
+            for (var j = 0; j < keys.length; j++) row[keys[j]] = data[keys[j]][i];
+            rows.push(row);
+        }
+        return rows;
+    }
+
+    function indexById(rows) {
+        var index = new Map();
+        (rows || []).forEach(function (row) {
+            var id = normalizeId(row && row.id);
+            if (id !== null) index.set(id, row);
+        });
+        return index;
+    }
+
+    function isTruthy(value) {
+        return value === true || value === 1 || value === '1' || String(value).toLowerCase() === 'true';
+    }
+
+    function duplicateGristUserIds(team) {
+        var counts = new Map();
+        (team || []).forEach(function (member) {
+            var id = normalizeId(member && member.gristUserId);
+            if (id !== null) counts.set(id, (counts.get(id) || 0) + 1);
+        });
+        return Array.from(counts.entries())
+            .filter(function (entry) { return entry[1] > 1; })
+            .map(function (entry) { return entry[0]; });
+    }
+
+    function resolveActorIdentity(options) {
+        options = options || {};
+        var team = options.team || [];
+        var gristUserId = normalizeId(options.currentGristUserId);
+        var base = {
+            identified: false,
+            status: null,
+            memberId: null,
+            member: null,
+            isAdmin: false,
+            duplicateUserIds: []
+        };
+
+        if (gristUserId === null) {
+            base.status = 'INVALID_CURRENT_USER_ID';
+            return base;
+        }
+
+        var duplicates = duplicateGristUserIds(team);
+        if (duplicates.length) {
+            base.status = 'GRIST_USER_ID_DUPLICATED';
+            base.duplicateUserIds = duplicates;
+            return base;
+        }
+
+        var matches = team.filter(function (member) {
+            return normalizeId(member && member.gristUserId) === gristUserId;
+        });
+        if (matches.length !== 1) {
+            base.status = 'TEAM_ASSOCIATION_REQUIRED';
+            return base;
+        }
+
+        var member = matches[0];
+        if (member.actif === false || member.actif === 0) {
+            base.status = 'MEMBER_INACTIVE';
+            base.memberId = normalizeId(member.id);
+            base.member = member;
+            return base;
+        }
+
+        base.identified = true;
+        base.status = 'IDENTIFIED';
+        base.memberId = normalizeId(member.id);
+        base.member = member;
+        base.isAdmin = isTruthy(member.estAdmin);
+        return base;
+    }
+
+    function createSnapshot(data, identity) {
+        data = data || {};
+        return {
+            actor: identity || { identified: false, status: 'IDENTITY_NOT_LOADED' },
+            tables: {
+                Team: (data.Team || data.team || []).slice(),
+                Entites: (data.Entites || data.entites || []).slice(),
+                Programmes: (data.Programmes || data.programmes || []).slice(),
+                Projects: (data.Projects || data.projects || []).slice(),
+                Tasks: (data.Tasks || data.tasks || []).slice(),
+                Actions: (data.Actions || data.actions || []).slice(),
+                KanbanSteps: (data.KanbanSteps || data.kanbanSteps || []).slice()
+            },
+            indexes: null
+        };
+    }
+
+    function ensureIndexes(snapshot) {
+        if (!snapshot.indexes) {
+            snapshot.indexes = {
+                Team: indexById(snapshot.tables.Team),
+                Entites: indexById(snapshot.tables.Entites),
+                Programmes: indexById(snapshot.tables.Programmes),
+                Projects: indexById(snapshot.tables.Projects),
+                Tasks: indexById(snapshot.tables.Tasks),
+                Actions: indexById(snapshot.tables.Actions),
+                KanbanSteps: indexById(snapshot.tables.KanbanSteps)
+            };
+        }
+        return snapshot.indexes;
+    }
+
+    function allow(code) {
+        return { allowed: true, code: code || 'ALLOWED' };
+    }
+
+    function deny(code, message, details) {
+        return Object.assign({ allowed: false, code: code, message: message }, details || {});
+    }
+
+    function actorId(snapshot) {
+        return normalizeId(snapshot && snapshot.actor && snapshot.actor.memberId);
+    }
+
+    function requireActor(snapshot) {
+        if (!snapshot || !snapshot.actor || !snapshot.actor.identified || actorId(snapshot) === null) {
+            var status = snapshot && snapshot.actor && snapshot.actor.status;
+            return deny(
+                status || 'ACTOR_NOT_IDENTIFIED',
+                'Votre compte Grist n\'est pas associe de maniere unique a un membre actif de Team.'
+            );
+        }
+        return null;
+    }
+
+    function actorIsAdmin(snapshot) {
+        return Boolean(snapshot && snapshot.actor && snapshot.actor.identified && snapshot.actor.isAdmin);
+    }
+
+    function isProjectOwner(snapshot, project) {
+        return Boolean(project) && normalizeId(project.responsable) === actorId(snapshot);
+    }
+
+    function isDirectManagerOfMember(snapshot, memberId) {
+        var member = ensureIndexes(snapshot).Team.get(normalizeId(memberId));
+        return Boolean(member) && normalizeId(member.responsable) === actorId(snapshot);
+    }
+
+    function isDirectManagerOfProjectOwner(snapshot, project) {
+        return Boolean(project) && isDirectManagerOfMember(snapshot, project.responsable);
+    }
+
+    function canManageProject(snapshot, project) {
+        return actorIsAdmin(snapshot) || isProjectOwner(snapshot, project) || isDirectManagerOfProjectOwner(snapshot, project);
+    }
+
+    function projectForTask(snapshot, task) {
+        if (!task) return null;
+        return ensureIndexes(snapshot).Projects.get(normalizeId(task.projet)) || null;
+    }
+
+    function taskForAction(snapshot, action) {
+        if (!action) return null;
+        return ensureIndexes(snapshot).Tasks.get(normalizeId(action.task)) || null;
+    }
+
+    function isTaskAssignee(snapshot, task) {
+        return Boolean(task) && normalizeRefList(task.assignees).indexOf(actorId(snapshot)) !== -1;
+    }
+
+    function isActionOwner(snapshot, action) {
+        return Boolean(action) && normalizeId(action.assignee) === actorId(snapshot);
+    }
+
+    function recordLabel(table, record) {
+        if (!record) return table;
+        return record.titre || record.nom || (table + ' #' + (record.id || '?'));
+    }
+
+    function canCreateProject(snapshot, proposed) {
+        if (actorIsAdmin(snapshot)) return allow('ADMIN');
+        var responsibleId = normalizeId(proposed && proposed.responsable);
+        if (responsibleId === actorId(snapshot)) return allow('PROJECT_SELF_RESPONSIBLE');
+        if (isDirectManagerOfMember(snapshot, responsibleId)) return allow('DIRECT_MANAGER');
+        return deny('PROJECT_CREATE_FORBIDDEN', 'Vous ne pouvez creer que votre propre projet ou celui d\'un collaborateur direct.');
+    }
+
+    function canUpdateProject(snapshot, current) {
+        if (canManageProject(snapshot, current)) return allow('PROJECT_SCOPE');
+        return deny('PROJECT_OUTSIDE_SCOPE', 'Ce projet est hors de votre perimetre.', {
+            resourceLabel: recordLabel('Projects', current)
+        });
+    }
+
+    function canCreateTask(snapshot, proposed) {
+        if (actorIsAdmin(snapshot)) return allow('ADMIN');
+        var project = projectForTask(snapshot, proposed);
+        if (project && canManageProject(snapshot, project)) return allow('PROJECT_SCOPE');
+        return deny('TASK_CREATE_FORBIDDEN', 'Vous ne pouvez creer une tache que dans un projet dont vous etes responsable ou manager direct.');
+    }
+
+    function canUpdateTask(snapshot, current) {
+        if (actorIsAdmin(snapshot)) return allow('ADMIN');
+        var project = projectForTask(snapshot, current);
+        if (project && canManageProject(snapshot, project)) return allow('PROJECT_SCOPE');
+        if (isTaskAssignee(snapshot, current)) return allow('TASK_ASSIGNEE');
+        return deny('TASK_OUTSIDE_SCOPE', 'La tache « ' + recordLabel('Tasks', current) + ' » est hors de votre perimetre.', {
+            resourceLabel: recordLabel('Tasks', current)
+        });
+    }
+
+    function canDeleteTask(snapshot, current) {
+        if (actorIsAdmin(snapshot)) return allow('ADMIN');
+        var project = projectForTask(snapshot, current);
+        if (project && canManageProject(snapshot, project)) return allow('PROJECT_SCOPE');
+        return deny('TASK_DELETE_FORBIDDEN', 'Seul le responsable du projet, son manager direct ou un administrateur peut supprimer cette tache.', {
+            resourceLabel: recordLabel('Tasks', current)
+        });
+    }
+
+    function canCreateAction(snapshot, proposed) {
+        if (actorIsAdmin(snapshot)) return allow('ADMIN');
+        var task = taskForAction(snapshot, proposed);
+        var project = projectForTask(snapshot, task);
+        if (task && project && canManageProject(snapshot, project)) return allow('PROJECT_SCOPE');
+        if (task && isTaskAssignee(snapshot, task) && normalizeId(proposed.assignee) === actorId(snapshot)) {
+            return allow('TASK_ASSIGNEE_OWN_ACTION');
+        }
+        if (!task && normalizeId(proposed && proposed.assignee) === actorId(snapshot)) return allow('OWN_UNLINKED_ACTION');
+        return deny('ACTION_CREATE_FORBIDDEN', 'Vous ne pouvez creer qu\'une action qui vous est assignee sur une tache a laquelle vous etes affecte.');
+    }
+
+    function canUpdateAction(snapshot, current, proposed) {
+        if (actorIsAdmin(snapshot)) return allow('ADMIN');
+        var task = taskForAction(snapshot, current);
+        var project = projectForTask(snapshot, task);
+        if (task && project && canManageProject(snapshot, project)) return allow('PROJECT_SCOPE');
+
+        if (!isActionOwner(snapshot, current)) {
+            return deny('ACTION_OUTSIDE_SCOPE', 'Cette action ne vous appartient pas et son projet est hors de votre perimetre.');
+        }
+
+        if (Object.prototype.hasOwnProperty.call(proposed || {}, 'assignee') && normalizeId(proposed.assignee) !== actorId(snapshot)) {
+            return deny('ACTION_REASSIGN_FORBIDDEN', 'Un executant ne peut pas reassigner son action.');
+        }
+
+        if (Object.prototype.hasOwnProperty.call(proposed || {}, 'task')) {
+            var nextTaskId = normalizeId(proposed.task);
+            if (nextTaskId !== null) {
+                var nextTask = ensureIndexes(snapshot).Tasks.get(nextTaskId);
+                if (!nextTask || !isTaskAssignee(snapshot, nextTask)) {
+                    return deny('ACTION_TASK_CHANGE_FORBIDDEN', 'Vous ne pouvez rattacher votre action qu\'a une tache a laquelle vous etes affecte.');
+                }
+            }
+        }
+
+        return allow('ACTION_OWNER');
+    }
+
+    function canDeleteAction(snapshot, current) {
+        if (actorIsAdmin(snapshot)) return allow('ADMIN');
+        var task = taskForAction(snapshot, current);
+        var project = projectForTask(snapshot, task);
+        if (task && project && canManageProject(snapshot, project)) return allow('PROJECT_SCOPE');
+        if (isActionOwner(snapshot, current)) return allow('ACTION_OWNER');
+        return deny('ACTION_DELETE_FORBIDDEN', 'Vous ne pouvez supprimer que vos propres actions ou celles de votre perimetre projet.');
+    }
+
+    function authorizeRecordMutation(snapshot, mutation) {
+        var actorError = requireActor(snapshot);
+        if (actorError) return actorError;
+
+        var table = mutation.table;
+        var kind = mutation.kind;
+        var current = mutation.current;
+        var proposed = mutation.proposed || {};
+
+        if (table === 'Team' || table === 'Entites' || table === 'Programmes' || table === 'KanbanSteps') {
+            return actorIsAdmin(snapshot)
+                ? allow('ADMIN')
+                : deny('ADMIN_REQUIRED', 'Cette operation est reservee aux administrateurs.');
+        }
+
+        if (table === 'Projects') {
+            if (kind === 'create') return canCreateProject(snapshot, proposed);
+            if (kind === 'update') return canUpdateProject(snapshot, current);
+            return actorIsAdmin(snapshot)
+                ? allow('ADMIN')
+                : deny('PROJECT_DELETE_FORBIDDEN', 'Seul un administrateur peut supprimer un projet.');
+        }
+
+        if (table === 'Tasks') {
+            if (kind === 'create') return canCreateTask(snapshot, proposed);
+            if (kind === 'update') return canUpdateTask(snapshot, current);
+            return canDeleteTask(snapshot, current);
+        }
+
+        if (table === 'Actions') {
+            if (kind === 'create') return canCreateAction(snapshot, proposed);
+            if (kind === 'update') return canUpdateAction(snapshot, current, proposed);
+            return canDeleteAction(snapshot, current);
+        }
+
+        return allow('UNCONTROLLED_TABLE');
+    }
+
+    function cloneTables(snapshot) {
+        var out = {};
+        CONTROLLED_TABLES.forEach(function (table) {
+            out[table] = (snapshot.tables[table] || []).map(function (row) { return Object.assign({}, row); });
+        });
+        return out;
+    }
+
+    function copySnapshot(snapshot) {
+        return createSnapshot(cloneTables(snapshot), snapshot.actor);
+    }
+
+    function expandBulkAction(action) {
+        var type = action[0];
+        var table = action[1];
+        if (type === 'BulkAddRecord') {
+            var addIds = Array.isArray(action[2]) ? action[2] : [];
+            var addFields = action[3] || {};
+            var addCount = addIds.length || Object.keys(addFields).reduce(function (max, key) {
+                return Math.max(max, Array.isArray(addFields[key]) ? addFields[key].length : 0);
+            }, 0);
+            var adds = [];
+            for (var i = 0; i < addCount; i++) {
+                var addRecord = {};
+                Object.keys(addFields).forEach(function (key) { addRecord[key] = addFields[key][i]; });
+                adds.push(['AddRecord', table, addIds[i] == null ? null : addIds[i], addRecord]);
+            }
+            return adds;
+        }
+        if (type === 'BulkUpdateRecord') {
+            var updateIds = Array.isArray(action[2]) ? action[2] : [];
+            var updateFields = action[3] || {};
+            return updateIds.map(function (id, index) {
+                var values = {};
+                Object.keys(updateFields).forEach(function (key) { values[key] = updateFields[key][index]; });
+                return ['UpdateRecord', table, id, values];
+            });
+        }
+        if (type === 'BulkRemoveRecord') {
+            return (Array.isArray(action[2]) ? action[2] : []).map(function (id) {
+                return ['RemoveRecord', table, id];
+            });
+        }
+        return [action];
+    }
+
+    function normalizeRecordAction(action, snapshot) {
+        var type = action[0];
+        var table = action[1];
+        var id = normalizeId(action[2]);
+        var fields = action[3] || {};
+        var current = id === null ? null : ensureIndexes(snapshot)[table].get(id) || null;
+        if (type === 'AddRecord') {
+            return { table: table, kind: 'create', id: id, current: null, proposed: Object.assign({}, fields) };
+        }
+        if (type === 'UpdateRecord') {
+            return { table: table, kind: 'update', id: id, current: current, proposed: Object.assign({}, fields) };
+        }
+        return { table: table, kind: 'delete', id: id, current: current, proposed: null };
+    }
+
+    function applyMutationToSnapshot(snapshot, mutation) {
+        var rows = snapshot.tables[mutation.table];
+        if (!rows) return;
+        if (mutation.kind === 'create') {
+            rows.push(Object.assign({ id: mutation.id }, mutation.proposed));
+        } else {
+            var index = rows.findIndex(function (row) { return normalizeId(row.id) === mutation.id; });
+            if (index !== -1 && mutation.kind === 'update') rows[index] = Object.assign({}, rows[index], mutation.proposed);
+            if (index !== -1 && mutation.kind === 'delete') rows.splice(index, 1);
+        }
+        snapshot.indexes = null;
+    }
+
+    function authorizeMutationBatch(snapshot, actions) {
+        var working = copySnapshot(snapshot);
+        var flat = [];
+        (actions || []).forEach(function (action) {
+            flat = flat.concat(expandBulkAction(action));
+        });
+
+        for (var i = 0; i < flat.length; i++) {
+            var action = flat[i];
+            var type = action && action[0];
+            var table = action && action[1];
+            if (CONTROLLED_TABLES.indexOf(table) === -1) continue;
+
+            if (RECORD_ACTIONS.indexOf(type) === -1) {
+                var structuralActorError = requireActor(working);
+                var structuralResult = structuralActorError || (actorIsAdmin(working)
+                    ? allow('ADMIN')
+                    : deny('ADMIN_REQUIRED', 'La configuration des tables metier est reservee aux administrateurs.'));
+                if (!structuralResult.allowed) {
+                    return Object.assign(structuralResult, { deniedAction: action, deniedIndex: i, table: table });
+                }
+                continue;
+            }
+
+            var mutation = normalizeRecordAction(action, working);
+            if (mutation.kind !== 'create' && !mutation.current) {
+                return deny('RESOURCE_NOT_FOUND', 'Enregistrement introuvable avant controle des droits.', {
+                    deniedAction: action,
+                    deniedIndex: i,
+                    table: table,
+                    recordId: mutation.id
+                });
+            }
+
+            var result = authorizeRecordMutation(working, mutation);
+            if (!result.allowed) {
+                return Object.assign(result, {
+                    deniedAction: action,
+                    deniedIndex: i,
+                    table: table,
+                    recordId: mutation.id
+                });
+            }
+            applyMutationToSnapshot(working, mutation);
+        }
+
+        return { allowed: true, code: 'BATCH_ALLOWED', checkedActions: flat.length, nextSnapshot: working };
+    }
+
+    function decodeJwtPayload(token) {
+        try {
+            var parts = String(token || '').split('.');
+            if (parts.length !== 3) return null;
+            var normalized = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+            while (normalized.length % 4) normalized += '=';
+            var json;
+            if (typeof atob === 'function') {
+                json = decodeURIComponent(Array.prototype.map.call(atob(normalized), function (c) {
+                    return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
+                }).join(''));
+            } else if (typeof Buffer !== 'undefined') {
+                json = Buffer.from(normalized, 'base64').toString('utf8');
+            } else {
+                return null;
+            }
+            return JSON.parse(json);
+        } catch (e) {
+            return null;
+        }
+    }
+
+    async function getCurrentGristUser(grist) {
+        try {
+            var tokenResult = await grist.docApi.getAccessToken({ readOnly: true });
+            var payload = decodeJwtPayload(tokenResult && tokenResult.token);
+            if (!payload) return { userId: null, email: null };
+            return {
+                userId: payload.userId != null ? payload.userId : (payload.user && payload.user.id != null ? payload.user.id : payload.sub),
+                email: payload.email || (payload.user && payload.user.email) || payload.loginEmail || null
+            };
+        } catch (e) {
+            return { userId: null, email: null, error: e };
+        }
+    }
+
+    function createGristPermissionRuntime(grist, options) {
+        options = options || {};
+        var snapshot = null;
+        var valid = false;
+        var loading = null;
+
+        async function refresh() {
+            if (loading) return loading;
+            loading = (async function () {
+                var currentUser = await getCurrentGristUser(grist);
+                var existingTables = await grist.docApi.listTables();
+                var data = {};
+                await Promise.all(CONTROLLED_TABLES.map(async function (table) {
+                    if (existingTables.indexOf(table) === -1) {
+                        data[table] = [];
+                        return;
+                    }
+                    data[table] = columnarToRows(await grist.docApi.fetchTable(table));
+                }));
+                var identity = resolveActorIdentity({
+                    team: data.Team,
+                    currentGristUserId: currentUser.userId
+                });
+                snapshot = createSnapshot(data, identity);
+                valid = true;
+                if (typeof options.onIdentity === 'function') options.onIdentity(identity);
+                return snapshot;
+            })();
+            try {
+                return await loading;
+            } finally {
+                loading = null;
+            }
+        }
+
+        async function authorize(actions) {
+            if (!valid || !snapshot) await refresh();
+            return authorizeMutationBatch(snapshot, actions);
+        }
+
+        return {
+            refresh: refresh,
+            authorize: authorize,
+            invalidate: function () { valid = false; },
+            getSnapshot: function () { return snapshot; },
+            getActor: function () { return snapshot && snapshot.actor; }
+        };
+    }
+
+    var api = {
+        CONTROLLED_TABLES: CONTROLLED_TABLES,
+        normalizeId: normalizeId,
+        normalizeRefList: normalizeRefList,
+        columnarToRows: columnarToRows,
+        duplicateGristUserIds: duplicateGristUserIds,
+        resolveActorIdentity: resolveActorIdentity,
+        createSnapshot: createSnapshot,
+        isProjectOwner: isProjectOwner,
+        isDirectManagerOfProjectOwner: isDirectManagerOfProjectOwner,
+        isTaskAssignee: isTaskAssignee,
+        isActionOwner: isActionOwner,
+        canCreateProject: canCreateProject,
+        canUpdateProject: canUpdateProject,
+        canCreateTask: canCreateTask,
+        canUpdateTask: canUpdateTask,
+        canDeleteTask: canDeleteTask,
+        canCreateAction: canCreateAction,
+        canUpdateAction: canUpdateAction,
+        canDeleteAction: canDeleteAction,
+        authorizeRecordMutation: authorizeRecordMutation,
+        authorizeMutationBatch: authorizeMutationBatch,
+        decodeJwtPayload: decodeJwtPayload,
+        getCurrentGristUser: getCurrentGristUser,
+        createGristPermissionRuntime: createGristPermissionRuntime
+    };
+
+    global.TaskFlowPermissions = api;
+    if (typeof module !== 'undefined' && module.exports) module.exports = api;
+
+})(typeof window !== 'undefined' ? window : (typeof global !== 'undefined' ? global : this));

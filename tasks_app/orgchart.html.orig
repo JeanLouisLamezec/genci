@@ -5,7 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>TaskFlow - Organigramme</title>
 <script src="https://docs.getgrist.com/grist-plugin-api.js"></script>
-<script src="core/permissions/taskflow-permissions.js"></script>
 <style>
 :root {
   --primary: #3e5de7; --primary-dark: #2845c1; --primary-light: #dce6ff;
@@ -702,38 +701,12 @@ document.getElementById('aclModal').addEventListener('click', (e) => { if (e.tar
 // ---- Init ----------------------------------------------------------------
 (async () => {
   try {
-    await grist.ready({ requiredAccess: 'full' });
-    const permissionRuntime = TaskFlowPermissions.createGristPermissionRuntime(grist, {
-      onIdentity: identity => { if (!identity.identified) console.warn('[Orgchart permissions]', identity.status); },
-      onError: error => console.error('[Orgchart permissions] Initialisation impossible', error)
-    });
-    await permissionRuntime.refresh();
-    document.getElementById('aclBtn').style.display = 'none';
+    grist.ready({ requiredAccess: 'full' });
     // #7 respect des droits (standalone, sans TF) : bandeau lecture seule + garde sur les ecritures.
     (function () {
       const ro = () => { try { return new URLSearchParams(location.search).get('readonly') === 'true'; } catch (e) { return false; } };
       if (ro() && !document.getElementById('tf-ro-banner')) { const b = document.createElement('div'); b.id = 'tf-ro-banner'; b.textContent = 'Lecture seule — vos droits ne permettent pas la modification'; b.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#b45309;color:#fff;font:600 12px/1.4 system-ui,sans-serif;text-align:center;padding:6px 10px;box-sizing:border-box'; document.body.appendChild(b); document.body.style.paddingTop = ((parseFloat(getComputedStyle(document.body).paddingTop) || 0) + (b.offsetHeight || 28)) + 'px'; }
-      if (window.grist && grist.docApi && !grist.docApi._tfGuarded) {
-        const raw = grist.docApi.applyUserActions.bind(grist.docApi);
-        const controlledTables = TaskFlowPermissions.CONTROLLED_TABLES;
-        grist.docApi._tfGuarded = true;
-        grist.docApi.applyUserActions = async function (a) {
-          if (ro()) { const e = new Error('Document en lecture seule'); e.tfReadOnly = true; throw e; }
-          const controlled = (a || []).some(action => Array.isArray(action) && controlledTables.includes(action[1]));
-          if (controlled) {
-            const decision = await permissionRuntime.authorize(a);
-            if (!decision.allowed) {
-              window.alert(decision.message || 'Modification refusée par vos droits');
-              const e = new Error(decision.message || 'Modification refusée');
-              e.tfPermissionDenied = true;
-              throw e;
-            }
-          }
-          const result = await raw(a);
-          if (controlled) permissionRuntime.invalidate();
-          return result;
-        };
-      }
+      if (window.grist && grist.docApi && !grist.docApi._tfGuarded) { const raw = grist.docApi.applyUserActions.bind(grist.docApi); grist.docApi._tfGuarded = true; grist.docApi.applyUserActions = async function (a) { if (ro()) { const e = new Error('Document en lecture seule'); e.tfReadOnly = true; throw e; } return await raw(a); }; }
     })();
     await new Promise(r => setTimeout(r, 250));
     await grist.docApi.listTables(); // test API

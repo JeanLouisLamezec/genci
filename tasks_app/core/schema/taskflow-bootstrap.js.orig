@@ -1046,10 +1046,8 @@
         }
 
         return {
-            safeToRemoveAll: errors.length === 0 && duplicates.every(function (item) { return item.safeToRemove; }),
+            safeToRemoveAll: errors.length === 0 && duplicates.every(function (item) { return item.empty; }),
             duplicateCount: duplicates.length,
-            safeToRemoveCount: duplicates.filter(function (item) { return item.safeToRemove; }).length,
-            requiresReviewCount: duplicates.filter(function (item) { return !item.safeToRemove; }).length,
             duplicates: duplicates,
             errors: errors
         };

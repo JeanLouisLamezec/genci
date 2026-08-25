@@ -1,0 +1,121 @@
+const fs = require('fs');
+const path = require('path');
+
+describe('TaskFlow bootstrap - prévention des colonnes dupliquées', () => {
+  let bootstrap;
+
+  function metadataTables(columns) {
+    const ids = columns.map((column, index) => 10 + index);
+    return {
+      _grist_Tables: { id: [1], tableId: ['Team'] },
+      _grist_Tables_column: {
+        id: ids,
+        parentId: ids.map(() => 1),
+        colId: columns.map(column => column.id),
+        type: columns.map(column => column.type || 'Text'),
+        isFormula: columns.map(column => !!column.isFormula),
+        formula: columns.map(column => column.formula || '')
+      }
+    };
+  }
+
+  beforeEach(() => {
+    jest.resetModules();
+    window.TASKFLOW_SCHEMA = {
+      version: 6,
+      tableOrder: ['Team'],
+      tables: {
+        Team: {
+          columns: [
+            { id: 'nom', opts: { type: 'Text' } },
+            { id: 'estAdmin', opts: { type: 'Bool' } }
+          ]
+        }
+      },
+      formulas: {},
+      defaultChoices: {},
+      referenceDisplays: []
+    };
+    window.TF = {};
+    require('./taskflow-bootstrap.js');
+    bootstrap = window.TaskFlowBootstrap;
+  });
+
+  afterEach(() => {
+    delete window.TaskFlowBootstrap;
+    delete window.TASKFLOW_SCHEMA;
+    delete window.TF;
+  });
+
+  test('associe les métadonnées même lorsque parentId est une Ref encodée', async () => {
+    const grist = {
+      docApi: {
+        fetchTable: jest.fn(async table => {
+          if (table === '_grist_Tables') {
+            return { id: [1], tableId: ['Team'] };
+          }
+          if (table === '_grist_Tables_column') {
+            return {
+              id: [10, 11],
+              parentId: [['R', '1'], '1'],
+              colId: ['nom', 'estAdmin'],
+              type: ['Text', 'Bool'],
+              isFormula: [false, false],
+              formula: ['', '']
+            };
+          }
+          throw new Error('unexpected table ' + table);
+        })
+      }
+    };
+
+    const metadata = await bootstrap.loadSchemaMetadata(grist);
+
+    expect(metadata.columnByKey['Team.nom']).toBeDefined();
+    expect(metadata.columnByKey['Team.estAdmin']).toBeDefined();
+  });
+
+  test('audite les suffixes sans écrire et distingue défauts et données divergentes', async () => {
+    const applyUserActions = jest.fn();
+    const metadata = metadataTables([
+      { id: 'nom' }, { id: 'nom2' }, { id: 'nom3' },
+      { id: 'estAdmin', type: 'Bool' }, { id: 'estAdmin2', type: 'Bool' }
+    ]);
+    const grist = {
+      docApi: {
+        fetchTable: jest.fn(async table => {
+          if (table === 'Team') {
+          if (metadata[table]) return metadata[table];
+            return {
+              id: [1, 2],
+              nom: ['Alice', 'Bob'],
+              nom2: ['', null],
+              nom3: ['', 'valeur inattendue'],
+              estAdmin: [true, false],
+              estAdmin2: [false, false]
+            };
+          }
+          throw new Error('unexpected table ' + table);
+        }),
+        applyUserActions
+      }
+    };
+
+    const audit = await bootstrap.auditDuplicateColumns(grist);
+
+    expect(audit.duplicateCount).toBe(3);
+    expect(audit.safeToRemoveAll).toBe(false);
+    expect(audit.duplicates.find(item => item.duplicateColumn === 'nom2').empty).toBe(true);
+    expect(audit.duplicates.find(item => item.duplicateColumn === 'nom3').nonEmptyCount).toBe(1);
+    expect(applyUserActions).not.toHaveBeenCalled();
+    expect(audit.duplicates.find(item => item.duplicateColumn === 'nom3').classification).toBe('divergent-data');
+    expect(audit.duplicates.find(item => item.duplicateColumn === 'estAdmin2').classification).toBe('default-only');
+  });
+
+  test('les phases de création ne sont présentes qu’une fois par branche neuf/existant', () => {
+    const source = fs.readFileSync(path.join(__dirname, 'taskflow-bootstrap.js'), 'utf8');
+    const occurrences = source.match(/log\('Phase 1: Création tables/g) || [];
+
+    expect(occurrences).toHaveLength(2);
+  });
+});

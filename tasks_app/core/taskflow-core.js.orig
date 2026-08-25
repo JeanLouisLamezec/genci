@@ -529,24 +529,13 @@ const TF = (function () {
     }
 
     async function createPermissionRuntime(grist, opts) {
-        opts = opts || {};
-        try {
-            const permissions = typeof globalThis !== 'undefined' && globalThis.TaskFlowPermissions;
-            if (!permissions || typeof permissions.createGristPermissionRuntime !== 'function') {
-                throw new Error('Moteur de permissions TaskFlow non charge');
-            }
-            const runtime = permissions.createGristPermissionRuntime(grist, opts);
-            await runtime.refresh();
-            return runtime;
-        } catch (error) {
-            try { opts.onError && opts.onError(error); } catch (e) {}
-            const decision = { allowed: false, code: 'PERMISSION_DATA_UNAVAILABLE', message: 'Controle des droits indisponible : modification bloquee.' };
-            return {
-                authorize: async function () { return decision; },
-                invalidate: function () {},
-                getActor: function () { return { identified: false, status: decision.code }; }
-            };
+        const permissions = typeof globalThis !== 'undefined' && globalThis.TaskFlowPermissions;
+        if (!permissions || typeof permissions.createGristPermissionRuntime !== 'function') {
+            throw new Error('Moteur de permissions TaskFlow non charge');
         }
+        const runtime = permissions.createGristPermissionRuntime(grist, opts || {});
+        await runtime.refresh();
+        return runtime;
     }
 
     function hasControlledActions(actions) {
@@ -564,42 +553,14 @@ const TF = (function () {
     // Les erreurs continuent d'etre levees (les try/catch existants les absorbent).
     function guardWrites(grist, opts) {
         opts = opts || {};
-        if (!grist || !grist.docApi) return;
-        if (grist.docApi._tfGuarded) {
-            Object.assign(grist.docApi._tfGuardOptions || {}, opts);
-            return grist.docApi._tfGuardState;
-        }
-        const guardOptions = Object.assign({}, opts);
+        if (!grist || !grist.docApi || grist.docApi._tfGuarded) return;
         const raw = grist.docApi.applyUserActions.bind(grist.docApi);
         grist.docApi._tfGuarded = true;
-        grist.docApi._tfGuardOptions = guardOptions;
         grist.docApi.applyUserActions = async function (actions) {
-            if (isReadOnly()) { try { guardOptions.onReadOnly && guardOptions.onReadOnly(); } catch (e) {} const err = new Error('Document en lecture seule'); err.tfReadOnly = true; throw err; }
-            const runtime = guardOptions.permissionRuntime;
-            const controlled = runtime && hasControlledActions(actions);
-            if (controlled) {
-                const decision = await runtime.authorize(actions);
-                if (!decision.allowed) {
-                    const denied = new Error(decision.message || 'Modification refusee par vos droits');
-                    denied.tfPermissionDenied = true;
-                    denied.permissionDecision = decision;
-                    try {
-                        const callback = guardOptions.onPermissionDenied || guardOptions.onDenied;
-                        callback && callback(denied, decision);
-                    } catch (e) {}
-                    throw denied;
-                }
-            }
-            try {
-                const result = await raw(actions);
-                if (controlled) runtime.invalidate();
-                return result;
-            }
-            catch (e) { if (!e.tfPermissionDenied && isAccessError(e)) { try { guardOptions.onDenied && guardOptions.onDenied(e); } catch (e2) {} } throw e; }
+            if (isReadOnly()) { try { opts.onReadOnly && opts.onReadOnly(); } catch (e) {} const err = new Error('Document en lecture seule'); err.tfReadOnly = true; throw err; }
+            try { return await raw(actions); }
+            catch (e) { if (isAccessError(e)) { try { opts.onDenied && opts.onDenied(e); } catch (e2) {} } throw e; }
         };
-        const state = { options: guardOptions, rawApplyUserActions: raw };
-        grist.docApi._tfGuardState = state;
-        return state;
     }
     // Bandeau "lecture seule" auto-contenu (aucun markup widget requis).
     // Pousse le contenu vers le bas (padding-top sur body) pour NE PAS recouvrir l'en-tete du widget.
@@ -742,7 +703,6 @@ const TF = (function () {
         accessLevel: accessLevel,
         isAccessError: isAccessError,
         safeApply: safeApply,
-        createPermissionRuntime: createPermissionRuntime,
         guardWrites: guardWrites,
         readOnlyBanner: readOnlyBanner,
     // Helpers pour le schema
