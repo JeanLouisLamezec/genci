@@ -22,6 +22,10 @@
         options = options || {};
         var logEnabled = options.logEnabled || false;
         var enableAutoPlanning = options.enableAutoPlanning !== false;
+        var canForceDeleteProtectedTimeEntries =
+            typeof options.canForceDeleteProtectedTimeEntries === 'function'
+                ? options.canForceDeleteProtectedTimeEntries
+                : function() { return false; };
         var assignmentService = null;
         var autoPlanningIntegration = null;
 
@@ -1279,6 +1283,7 @@
             options = options || {};
             var detachChildren = options.detachChildren === true;
             var includeDescendants = options.includeDescendants === true;
+            var forceProtectedTimeEntries = options.forceProtectedTimeEntries === true;
             
             if (!assignmentService || !grist || !grist.docApi) {
                 return { ok: false, code: 'SERVICE_NOT_AVAILABLE' };
@@ -1418,12 +1423,32 @@
                     };
                 }
                 
-                // 4. Si des TimeEntries verrouillés existent, bloquer la suppression
-                if (lockedTimeEntryIds.length > 0) {
+                // 4. Les temps protégés bloquent normalement la suppression. Un
+                // administrateur peut les supprimer après une confirmation UI
+                // explicite. L'autorisation est revérifiée ici afin qu'une simple
+                // option passée depuis la console ne permette pas le contournement.
+                var protectedDeletionAuthorized = false;
+                if (lockedTimeEntryIds.length > 0 && forceProtectedTimeEntries) {
+                    try {
+                        protectedDeletionAuthorized = Boolean(await Promise.resolve(
+                            canForceDeleteProtectedTimeEntries({
+                                taskIds: taskIds.slice(),
+                                assignmentIds: assignmentIds.slice(),
+                                protectedTimeEntryIds: lockedTimeEntryIds.slice()
+                            })
+                        ));
+                    } catch (authorizationError) {
+                        log('Erreur vérification suppression protégée: ' + authorizationError.message);
+                        protectedDeletionAuthorized = false;
+                    }
+                }
+
+                if (lockedTimeEntryIds.length > 0 && !protectedDeletionAuthorized) {
                     console.warn('[TaskAssignment lifecycle]', {
                         phase: 'delete-blocked',
                         taskIds: taskIds,
-                        lockedTimeEntryIds: lockedTimeEntryIds
+                        lockedTimeEntryIds: lockedTimeEntryIds,
+                        adminOverrideRequested: forceProtectedTimeEntries
                     });
                     
                     return {
@@ -1431,10 +1456,19 @@
                         code: 'TASK_DELETE_BLOCKED_BY_TIME_ENTRIES',
                         taskIds: taskIds,
                         assignmentIds: assignmentIds,
-                        timeEntryIds: lockedTimeEntryIds
+                        timeEntryIds: lockedTimeEntryIds,
+                        adminOverrideRequested: forceProtectedTimeEntries
                     };
                 }
                 
+                if (protectedDeletionAuthorized) {
+                    console.warn('[TaskAssignment lifecycle]', {
+                        phase: 'delete-admin-override',
+                        taskIds: taskIds,
+                        protectedTimeEntryIds: lockedTimeEntryIds
+                    });
+                }
+
                 // 5. Construire les actions de suppression
                 var actions = [];
                 
@@ -1442,6 +1476,12 @@
                 mutableTimeEntryIds.forEach(function(id) {
                     actions.push(['RemoveRecord', 'TimeEntries', id]);
                 });
+
+                if (protectedDeletionAuthorized) {
+                    lockedTimeEntryIds.forEach(function(id) {
+                        actions.push(['RemoveRecord', 'TimeEntries', id]);
+                    });
+                }
                 
                 // Supprimer les TaskAssignments
                 assignmentIds.forEach(function(id) {
@@ -1477,6 +1517,8 @@
                 console.info('[TaskAssignment lifecycle]', {
                     phase: 'delete-actions',
                     mutableTimeEntries: mutableTimeEntryIds.length,
+                    protectedTimeEntries: protectedDeletionAuthorized ? lockedTimeEntryIds.length : 0,
+                    adminOverrideApplied: protectedDeletionAuthorized,
                     assignments: assignmentIds.length,
                     tasks: allTaskIds.length,
                     actions: actions.length
@@ -1526,7 +1568,9 @@
                     ok: true,
                     deletedTasks: allTaskIds.length,
                     deletedAssignments: assignmentIds.length,
-                    deletedTimeEntries: mutableTimeEntryIds.length
+                    deletedTimeEntries: mutableTimeEntryIds.length + (protectedDeletionAuthorized ? lockedTimeEntryIds.length : 0),
+                    deletedProtectedTimeEntries: protectedDeletionAuthorized ? lockedTimeEntryIds.length : 0,
+                    adminOverrideApplied: protectedDeletionAuthorized
                 };
                 
             } catch (e) {

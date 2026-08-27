@@ -25,6 +25,7 @@ describe('Cycle de vie TaskAssignments - Intégration réelle', () => {
     let teamTable;
     let taskAssignmentsTable;
     let timeEntriesTable;
+    let feuillesTable;
 
     beforeEach(() => {
         tasksTable = {
@@ -65,6 +66,11 @@ describe('Cycle de vie TaskAssignments - Intégration réelle', () => {
             sheetStatus: []
         };
 
+        feuillesTable = {
+            id: [],
+            statut: []
+        };
+
         mockGrist = {
             docApi: {
                 fetchTable: jest.fn().mockImplementation(async function(table) {
@@ -72,6 +78,7 @@ describe('Cycle de vie TaskAssignments - Intégration réelle', () => {
                     if (table === 'Team') return teamTable;
                     if (table === 'TaskAssignments') return taskAssignmentsTable;
                     if (table === 'TimeEntries') return timeEntriesTable;
+                    if (table === 'Feuilles') return feuillesTable;
                     return { id: [] };
                 }),
                 applyUserActions: jest.fn().mockImplementation(async function(actions) {
@@ -346,7 +353,17 @@ describe('Cycle de vie TaskAssignments - Intégration réelle', () => {
 
     describe('4. Suppression', () => {
         beforeEach(async () => {
-            // Créer une tâche avec affectation
+            // La tâche existe déjà lorsque le hook onTaskCreated synchronise
+            // ses affectations.
+            tasksTable.id.push(6);
+            tasksTable.titre.push('Tâche à supprimer');
+            tasksTable.dateDebut.push(1784505600);
+            tasksTable.dateEcheance.push(1785456000);
+            tasksTable.assignees.push(['L', 1]);
+            tasksTable.charges.push('[{"teamId":1,"heures":50}]');
+            tasksTable.parentTask.push(null);
+
+            // Créer son affectation
             const createResult = await integration.onTaskCreated(6, {
                 assignees: ['L', 1],
                 charges: [{ teamId: 1, heures: 50 }],
@@ -383,7 +400,7 @@ describe('Cycle de vie TaskAssignments - Intégration réelle', () => {
             timeEntriesTable.tache.push(6);
             timeEntriesTable.membre.push(1);
             timeEntriesTable.date.push(1784505600);
-            timeEntriesTable.heures.push(0);
+            timeEntriesTable.heures.push(null);
             timeEntriesTable.feuille.push(null);
             timeEntriesTable.sheetStatus.push(null);
 
@@ -412,6 +429,60 @@ describe('Cycle de vie TaskAssignments - Intégration réelle', () => {
             expect(result.code).toBe('TASK_DELETE_BLOCKED_BY_TIME_ENTRIES');
 
             // Rien ne doit être supprimé
+            expect(tasksTable.id).toContain(6);
+            expect(taskAssignmentsTable.id).toHaveLength(1);
+            expect(timeEntriesTable.id).toHaveLength(1);
+        });
+
+        test('Suppression forcée des TimeEntries protégés autorisée pour un administrateur', async () => {
+            timeEntriesTable.id.push(1);
+            timeEntriesTable.tache.push(6);
+            timeEntriesTable.membre.push(1);
+            timeEntriesTable.date.push(1784505600);
+            feuillesTable.id.push(1);
+            feuillesTable.statut.push('valide');
+            timeEntriesTable.heures.push(null);
+            timeEntriesTable.feuille.push(1);
+            timeEntriesTable.sheetStatus.push(null);
+
+            const adminIntegration = createGanttAssignmentIntegration(mockGrist, {
+                logEnabled: false,
+                enableAutoPlanning: false,
+                canForceDeleteProtectedTimeEntries: () => true
+            });
+            const result = await adminIntegration.deleteTasksWithAssignments([6], {
+                forceProtectedTimeEntries: true
+            });
+
+            expect(result.ok).toBe(true);
+            expect(result.adminOverrideApplied).toBe(true);
+            expect(result.deletedProtectedTimeEntries).toBe(1);
+            expect(tasksTable.id).not.toContain(6);
+            expect(taskAssignmentsTable.id).toHaveLength(0);
+            expect(timeEntriesTable.id).toHaveLength(0);
+        });
+
+        test('Suppression forcée des TimeEntries protégés refusée sans droit administrateur', async () => {
+            timeEntriesTable.id.push(1);
+            timeEntriesTable.tache.push(6);
+            timeEntriesTable.membre.push(1);
+            timeEntriesTable.date.push(1784505600);
+            timeEntriesTable.heures.push(5);
+            timeEntriesTable.feuille.push(null);
+            timeEntriesTable.sheetStatus.push(null);
+
+            const nonAdminIntegration = createGanttAssignmentIntegration(mockGrist, {
+                logEnabled: false,
+                enableAutoPlanning: false,
+                canForceDeleteProtectedTimeEntries: () => false
+            });
+            const result = await nonAdminIntegration.deleteTasksWithAssignments([6], {
+                forceProtectedTimeEntries: true
+            });
+
+            expect(result.ok).toBe(false);
+            expect(result.code).toBe('TASK_DELETE_BLOCKED_BY_TIME_ENTRIES');
+            expect(result.adminOverrideRequested).toBe(true);
             expect(tasksTable.id).toContain(6);
             expect(taskAssignmentsTable.id).toHaveLength(1);
             expect(timeEntriesTable.id).toHaveLength(1);

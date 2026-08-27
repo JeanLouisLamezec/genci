@@ -9,7 +9,7 @@
     <script src="core/filters/filter-manager.js"></script>
     <script src="core/gantt/gantt-visible-tree.js"></script>
     <script src="core/planning/task_assignment/task-assignment-service.js"></script>
-    <script src="core/planning/gantt/gantt-task-assignment-integration.js?v=20260825c"></script>
+    <script src="core/planning/gantt/gantt-task-assignment-integration.js?v=20260827"></script>
     <script src="core/planning/gantt/gantt-auto-planning-integration.js"></script>
     <script src="core/generated/taskflow-planning-browser.js?v=20260825c"></script>
     <link rel="stylesheet" href="core/theme/taskflow-theme.css">
@@ -6221,6 +6221,7 @@ if (typeof globalThis !== 'undefined') {
         let dragState = { active: false, type: null, taskId: null, startX: 0, originalLeft: 0, originalWidth: 0, originalStart: null, originalEnd: null };
         let panelState = { open: false, isNew: false, taskId: null, taskIndex: -1, taskList: [], editData: null };
         let assignmentIntegration = null;  // Global pour les fonctions de sauvegarde
+        let permissionRuntime = null;       // Identité courante, notamment pour l'override admin de suppression
         var planningService = null;  // Global pour le service de planning par membre
         let overlayPointerStart = { x: 0, y: 0 };
         let effectiveStart = new Date();    // Plage effective calculée à chaque render()
@@ -8595,11 +8596,37 @@ assignmentModes: {},
                         return;
                     }
                     
-                    const result = await assignmentIntegration.deleteTasksWithAssignments([panelState.taskId], {
+                    let result = await assignmentIntegration.deleteTasksWithAssignments([panelState.taskId], {
                         detachChildren: detachChildren,
                         includeDescendants: includeDescendants
                     });
                     
+                    // Un administrateur peut supprimer aussi les temps saisis ou
+                    // validés, mais uniquement après un avertissement destructif
+                    // explicite. L'intégration revérifie elle-même le rôle admin.
+                    if (!result.ok && result.code === 'TASK_DELETE_BLOCKED_BY_TIME_ENTRIES') {
+                        const actor = permissionRuntime && permissionRuntime.getActor
+                            ? permissionRuntime.getActor()
+                            : null;
+                        if (actor && actor.isAdmin) {
+                            const protectedCount = Array.isArray(result.timeEntryIds) ? result.timeEntryIds.length : 0;
+                            const confirmed = confirm(
+                                'Suppression administrateur\n\n' +
+                                protectedCount + ' entrée(s) de temps saisie(s) ou validée(s) seront supprimée(s) définitivement.\n' +
+                                'Les feuilles concernées seront modifiées. Continuer ?'
+                            );
+                            if (!confirmed) {
+                                showToast('Suppression annulée', 'info');
+                                return;
+                            }
+                            result = await assignmentIntegration.deleteTasksWithAssignments([panelState.taskId], {
+                                detachChildren: detachChildren,
+                                includeDescendants: includeDescendants,
+                                forceProtectedTimeEntries: true
+                            });
+                        }
+                    }
+
                     console.log('[Gantt] Suppression TaskAssignments', result);
                     
                     if (!result.ok) {
@@ -9111,7 +9138,15 @@ assignmentModes: {},
             
             // Initialiser l'intégration TaskAssignments
             if (typeof createGanttAssignmentIntegration === 'function') {
-                assignmentIntegration = createGanttAssignmentIntegration(grist, { logEnabled: true });
+                assignmentIntegration = createGanttAssignmentIntegration(grist, {
+                    logEnabled: true,
+                    canForceDeleteProtectedTimeEntries: function() {
+                        const actor = permissionRuntime && permissionRuntime.getActor
+                            ? permissionRuntime.getActor()
+                            : null;
+                        return Boolean(actor && actor.isAdmin);
+                    }
+                });
                 console.log('[Gantt] TaskAssignment integration initialized');
             } else {
                 console.warn('[Gantt] TaskAssignment integration not available');
@@ -9131,7 +9166,7 @@ assignmentModes: {},
             
             // #7 respect des droits : bandeau lecture seule + garde transverse sur toutes les ecritures.
             TF.readOnlyBanner();
-            const permissionRuntime = await TF.createPermissionRuntime(grist, {
+            permissionRuntime = await TF.createPermissionRuntime(grist, {
                 onIdentity: (identity) => {
                     if (!identity.identified) showToast('Identité non associée : modifications bloquées', 'error');
                 },
