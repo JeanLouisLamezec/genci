@@ -413,6 +413,89 @@ describe('PlanCanonAdapter - projection glissante', function() {
     assert.strictEqual(detail[0].slice, 0.02);
     assert.strictEqual(detail[0].virtual, true);
   });
+
+  it('fusionne le continu effectif et le ponctuel virtuel', function() {
+    var canonMatrix = {
+      1: { '2026-W35': 28 }
+    };
+    var rollingMatrix = {
+      1: { '2026-W35': 7, '2026-W36': 3.5 }
+    };
+
+    var planned = PlanCanonAdapter.mergeCanonAndRollingMatrices(
+      canonMatrix,
+      rollingMatrix,
+      'prevu'
+    );
+    assert.strictEqual(planned[1]['2026-W35'], 35);
+    assert.strictEqual(planned[1]['2026-W36'], 3.5);
+
+    var available = PlanCanonAdapter.mergeCanonAndRollingMatrices(
+      { 1: { '2026-W35': 7 } },
+      rollingMatrix,
+      'dispo'
+    );
+    assert.strictEqual(available[1]['2026-W35'], 0);
+  });
+
+    it('utilise le réalisé explicite comme charge effective du Plan', function() {
+    var matrix = PlanCanonAdapter.formatCanonMatrixForRender({
+      '1:2026-W35': {
+        plannedHours: 35,
+        actualHours: 28,
+        effectiveHours: 28,
+        availableCapacityHours: 35
+      }
+    }, 'person', 'prevu');
+
+    assert.strictEqual(matrix[1]['2026-W35'], 28);
+    });
+
+    it('ventile la charge continue dans les clés projet et personne', function() {
+      var byMemberPeriod = {
+        '1:2026-W35': {
+          memberId: 1,
+          periodKey: '2026-W35',
+          entries: [
+            { memberId: 1, taskId: 10, plannedHours: 4, actualHours: null },
+            { memberId: 1, taskId: 11, plannedHours: 6, actualHours: 2 }
+          ]
+        }
+      };
+      var data = {
+        tasks: [
+          { id: 10, projet: 100 },
+          { id: 11, projet: 200 }
+        ],
+        projects: [],
+        team: [{ id: 1, role: 'Dev' }]
+      };
+
+      var matrix = PlanCanonAdapter.formatCanonMatrixForRender(byMemberPeriod, 'project', 'prevu', data);
+
+      assert.strictEqual(matrix['100|1']['2026-W35'], 4);
+      assert.strictEqual(matrix['200|1']['2026-W35'], 2);
+    });
+
+    it('filtre le détail matérialisé sur le projet de la cellule', function() {
+      var index = {
+        byMemberPeriod: {
+          '1:2026-W35': {
+            entries: [
+              { memberId: 1, taskId: 10, plannedHours: 4, actualHours: null },
+              { memberId: 1, taskId: 11, plannedHours: 6, actualHours: null }
+            ]
+          }
+        }
+      };
+      var tasks = [{ id: 10, projet: 100, titre: 'A' }, { id: 11, projet: 200, titre: 'B' }];
+
+      var details = PlanCanonAdapter.getTasksInCell(index, '100|1', '2026-W35', tasks, 'project', {
+        projects: []
+      });
+
+      assert.deepStrictEqual(details.map(function(item) { return item.taskId; }), [10]);
+    });
 });
 
 // ============================================================================

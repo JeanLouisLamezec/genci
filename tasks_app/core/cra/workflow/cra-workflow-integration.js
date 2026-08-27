@@ -11,6 +11,7 @@
  *   CraWorkflowIntegration.validateSheet(sheetId)
  *   CraWorkflowIntegration.rejectSheet(sheetId, reason)
  *   CraWorkflowIntegration.openCorrection(sheetId, reason)
+ *   CraWorkflowIntegration.prepareRetroactiveCorrection(memberId, weekStart, reason)
  *   CraWorkflowIntegration.enterManagerCorrection(sheetId)
  *   CraWorkflowIntegration.updateManagerActual(sheetId, timeEntryId, hours)
  *   CraWorkflowIntegration.revalidateSheet(sheetId)
@@ -688,6 +689,127 @@
     
     return await adapter.openCorrection(sheetId, modalReason);
   }
+
+  /**
+   * Prépare une semaine passée pour une régularisation par le manager.
+   *
+   * Ce parcours ne contourne jamais une feuille soumise ou validée. Il sert
+   * uniquement à matérialiser une enveloppe absente (ou encore brouillon sans
+   * saisie) autour des TimeEntries prévisionnelles déjà créées par le planning.
+   */
+  async function prepareRetroactiveCorrection(memberId, weekStart, reason) {
+    if (!config || !adapter) {
+      throw new Error('CraWorkflowIntegration non configuré');
+    }
+
+    const state = config.getState();
+    const actorMemberId = normalizeId(state && state.currentUserMemberId);
+    const targetMemberId = normalizeId(memberId);
+    const weekStartIso = getWeekStartIso(weekStart);
+    const trimmedReason = String(reason || '').trim();
+
+    if (!actorMemberId) return { success: false, code: 'ACTOR_NOT_IDENTIFIED' };
+    if (!targetMemberId || !weekStartIso) return { success: false, code: 'INVALID_RETROACTIVE_SCOPE' };
+    if (!trimmedReason) return { success: false, code: 'MISSING_CORRECTION_REASON' };
+
+    const managerState = state.managerWorkspaceState || {};
+    const directReportIds = Array.isArray(managerState.directReportIds)
+      ? managerState.directReportIds
+      : (Array.isArray(state.mesGeres) ? state.mesGeres : []);
+    const isDirectReport = directReportIds.some(id => normalizeId(id) === targetMemberId);
+    if (!isDirectReport) return { success: false, code: 'NOT_DIRECT_REPORT' };
+
+    const weekEntries = (state.entries || []).filter(entry =>
+      normalizeId(entry.membre) === targetMemberId &&
+      getWeekStartIso(entry.date) === weekStartIso
+    );
+    if (weekEntries.length === 0) {
+      return { success: false, code: 'NO_ENTRIES_TO_REGULARIZE' };
+    }
+
+    if (config.setBusy) config.setBusy(true);
+    try {
+      const ensureResult = await config.taskFlowCra.service.ensureWeeklySheet({
+        grist: config.grist,
+        memberId: targetMemberId,
+        weekStartIso: weekStartIso,
+        sheets: state.feuilles || [],
+        entries: state.entries || [],
+        createOnlyWhenEntriesExist: true
+      });
+
+      if (!ensureResult || !ensureResult.success || !ensureResult.sheet) {
+        return {
+          success: false,
+          code: ensureResult && ensureResult.code ? ensureResult.code : 'WEEKLY_SHEET_CREATE_FAILED'
+        };
+      }
+
+      const sheet = ensureResult.sheet;
+      const sheetId = normalizeId(ensureResult.sheetId || sheet.id);
+      const status = String(sheet.statut || '').toLowerCase();
+      if (!sheetId) return { success: false, code: 'WEEKLY_SHEET_POSTCONDITION_FAILED' };
+
+      if (['soumis', 'submitted', 'valide', 'validated'].includes(status)) {
+        return { success: false, code: 'SHEET_REQUIRES_WORKFLOW_ACTION', sheetId };
+      }
+      if (status === 'correction_manager' && normalizeId(sheet.responsableValidation) !== actorMemberId) {
+        return { success: false, code: 'NOT_EXPECTED_VALIDATION_MANAGER', sheetId };
+      }
+
+      const sheetEntries = weekEntries.filter(entry => normalizeId(entry.feuille) === sheetId);
+      const hasExplicitDraftInput = status === 'brouillon' && sheetEntries.some(entry => entry.heures != null);
+      if (hasExplicitDraftInput) {
+        return { success: false, code: 'DRAFT_ALREADY_EDITED', sheetId };
+      }
+
+      const actions = [];
+      if (status !== 'correction_manager') {
+        actions.push(['UpdateRecord', 'Feuilles', sheetId, {
+          statut: 'correction_manager',
+          responsableValidation: actorMemberId,
+          motifCorrection: trimmedReason
+        }]);
+      }
+
+      weekEntries.forEach(entry => {
+        if (entry.feuille == null || entry.feuille === 0 || entry.feuille === '') {
+          actions.push(['UpdateRecord', 'TimeEntries', entry.id, { feuille: sheetId }]);
+        }
+      });
+
+      if (actions.length > 0) {
+        await config.grist.docApi.applyUserActions(actions);
+      }
+      if (typeof config.reload === 'function') {
+        await config.reload({ reason: 'manager-retroactive-correction', immediate: true });
+      }
+
+      const refreshedState = config.getState();
+      const refreshedSheet = (refreshedState.feuilles || []).find(item => normalizeId(item.id) === sheetId) || {
+        ...sheet,
+        id: sheetId,
+        membre: targetMemberId,
+        semaine: Math.floor(mondayOf(weekStartIso) / 1000),
+        statut: 'correction_manager',
+        responsableValidation: actorMemberId,
+        motifCorrection: trimmedReason
+      };
+      config.enterCorrectionMode(refreshedSheet);
+
+      return {
+        success: true,
+        code: 'RETROACTIVE_CORRECTION_READY',
+        sheetId: sheetId,
+        linkedEntryCount: actions.filter(action => action[1] === 'TimeEntries').length
+      };
+    } catch (error) {
+      console.error('[CRA] Régularisation rétroactive impossible:', error);
+      return { success: false, code: 'RETROACTIVE_CORRECTION_ERROR', message: error.message };
+    } finally {
+      if (config.setBusy) config.setBusy(false);
+    }
+  }
   
   // Entrer en mode correction manager
   async function enterManagerCorrection(sheetId) {
@@ -766,6 +888,7 @@
     validateSheet,
     rejectSheet,
     openCorrection,
+    prepareRetroactiveCorrection,
     enterManagerCorrection,
     updateManagerActual,
     revalidateSheet,

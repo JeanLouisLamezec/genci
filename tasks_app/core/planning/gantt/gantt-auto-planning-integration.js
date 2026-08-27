@@ -59,16 +59,10 @@
             var rawStartDate = assignment.dateDebut ?? assignment.startDate;
             var startDate = rawStartDate ? formatDateUTC(new Date(rawStartDate * 1000)) : null;
             
-            if (operation === 'create') {
-                // Pour une création, commencer à la date de début de l'affectation
-                return startDate || todayStr;
-            } else {
-                // Pour une modification, max(today, dateDebut)
-                if (startDate && startDate > todayStr) {
-                    return startDate;
-                }
-                return todayStr;
-            }
+            // Création comme modification : la même affectation doit produire
+            // le même lissage passé/futur. Les saisies explicites et les
+            // feuilles verrouillées sont protégées plus bas par l'orchestrateur.
+            return startDate || todayStr;
         }
 
         /**

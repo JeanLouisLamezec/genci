@@ -395,6 +395,18 @@ function validateNumber(value, fieldName, options = {}) {
 }
 
 /**
+ * Indique si une valeur réalisée a été explicitement saisie.
+ * Le zéro est une valeur métier : il ne doit pas être confondu avec null.
+ */
+function hasExplicitActualHours(entry) {
+  return entry &&
+    entry.actualHours !== null &&
+    entry.actualHours !== undefined &&
+    entry.actualHours !== '' &&
+    Number.isFinite(Number(entry.actualHours));
+}
+
+/**
  * Convertit des heures (float) en centièmes d'heure (entier)
  * @param {number} hours - Heures à convertir
  * @returns {number} Centièmes d'heure
@@ -586,7 +598,7 @@ function findDuplicates(entries, idField = 'id') {
  * @param {Array} input.existingEntries - Entrées existantes avec id, assignmentId, date, plannedHours, actualHours, sheetStatus, description, imputation
  * @param {string} [input.replanFromDate] - Date à partir de laquelle recalculer le plan (YYYY-MM-DD)
  * @param {number} [input.precisionHours=0.01] - Précision en heures
- * @param {string} [input.capacityPolicy="cap"] - Politique de capacité ("cap" pour ne pas dépasser)
+ * @param {string} [input.capacityPolicy="cap"] - Politique de capacité : "cap" ou "allow-overload"
  * @returns {Object} Résultat avec desiredPlan, summary, diagnostics
  */
 function buildAssignmentPlan(input) {
@@ -656,7 +668,8 @@ function buildAssignmentPlan(input) {
     
     capacityMap.set(cap.date, {
       baseCapacityHours: cap.baseCapacityHours,
-      availableCapacityHours: cap.availableCapacityHours
+      availableCapacityHours: cap.availableCapacityHours,
+      distributionCapacityHours: cap.distributionCapacityHours
     });
   }
   
@@ -672,8 +685,7 @@ function buildAssignmentPlan(input) {
   // 2. entriesInAssignmentRange : lignes entre startDate et endDate (pour la réconciliation)
   
   // Calcul comptable : toutes les entrées de l'affectation, peu importe la date
-  let validatedActualCentiHours = 0;
-  let validatedActualEntries = [];
+  let effectiveActualCentiHours = 0;
   let hasInvalidActualHours = false;
   
   for (const entry of existingEntries || []) {
@@ -693,9 +705,11 @@ function buildAssignmentPlan(input) {
       continue;
     }
     
-    if (entry.sheetStatus === 'validated') {
-      validatedActualCentiHours += entry.actualHours === null || entry.actualHours === undefined || entry.actualHours === '' ? 0 : toCentiHours(entry.actualHours);
-      validatedActualEntries.push(entry);
+    // Une saisie explicite, même en brouillon et même égale à zéro, devient
+    // immédiatement la réalité de la journée. La validation verrouille la
+    // ligne, mais ne change pas sa valeur comptable.
+    if (hasExplicitActualHours(entry)) {
+      effectiveActualCentiHours += toCentiHours(Number(entry.actualHours));
     }
   }
   
@@ -717,15 +731,15 @@ function buildAssignmentPlan(input) {
     };
   }
   
-  const validatedActualHours = toHours(validatedActualCentiHours);
-  const overconsumedCentiHours = Math.max(0, validatedActualCentiHours - allocatedCentiHours);
+  const validatedActualHours = toHours(effectiveActualCentiHours);
+  const overconsumedCentiHours = Math.max(0, effectiveActualCentiHours - allocatedCentiHours);
   const overconsumedHours = toHours(overconsumedCentiHours);
   
   // Si surconsommation, retourner immédiatement sans plan
   if (overconsumedCentiHours > 0) {
     diagnostics.push({
       code: "OVERCONSUMPTION",
-      message: `Le réalisé validé (${validatedActualHours}h) dépasse l'allocation (${toHours(allocatedCentiHours)}h) de ${overconsumedHours}h`
+      message: `Le réalisé renseigné (${validatedActualHours}h) dépasse l'allocation (${toHours(allocatedCentiHours)}h) de ${overconsumedHours}h`
     });
     
     return {
@@ -832,25 +846,39 @@ function buildAssignmentPlan(input) {
     
     let validatedEntry = null;
     let submittedEntry = null;
+    let explicitActualEntry = null;
+    let draftEntry = null;
     let mutableEntries = [];
     
     for (const entry of entries) {
-      if (entry.sheetStatus === 'validated') {
+      if (hasExplicitActualHours(entry)) {
+        explicitActualEntry = entry;
+      } else if (entry.sheetStatus === 'validated') {
         validatedEntry = entry;
       } else if (entry.sheetStatus === 'submitted') {
         submittedEntry = entry;
+      } else if (entry.sheetStatus === 'draft') {
+        draftEntry = entry;
       } else {
         mutableEntries.push(entry);
       }
     }
     
-    if (validatedEntry) {
+    if (explicitActualEntry) {
+      entriesToRespect.set(date, explicitActualEntry);
+    } else if (validatedEntry) {
       entriesToRespect.set(date, validatedEntry);
-      // validatedActualCentiHours déjà calculé plus haut pour toutes les entrées
-      // Ne pas re-compter ici pour éviter le double comptage
+      // Compatibilité avec les anciennes feuilles validées qui n'auraient pas
+      // matérialisé heures : leur proposition reste malgré tout verrouillée.
+      protectedPlannedCentiHours += toCentiHours(validatedEntry.plannedHours || 0);
     } else if (submittedEntry) {
       entriesToRespect.set(date, submittedEntry);
       protectedPlannedCentiHours += toCentiHours(submittedEntry.plannedHours || 0);
+    } else if (draftEntry) {
+      // Une semaine brouillon peut être en cours d'édition. Sa proposition
+      // reste stable jusqu'à une action explicite de l'utilisateur.
+      entriesToRespect.set(date, draftEntry);
+      protectedPlannedCentiHours += toCentiHours(draftEntry.plannedHours || 0);
     } else if (isBeforeReplan && mutableEntries.length > 0) {
       const entryToProtect = mutableEntries[0];
       entriesToRespect.set(date, entryToProtect);
@@ -864,7 +892,7 @@ function buildAssignmentPlan(input) {
   // À ce stade, overconsumedCentiHours === 0 (sinon retour immédiat)
   // Donc overconsumedHours === 0 également
   
-  const remainingAfterValidated = allocatedCentiHours - validatedActualCentiHours;
+  const remainingAfterValidated = allocatedCentiHours - effectiveActualCentiHours;
   const overprotectedCentiHours = Math.max(0, protectedPlannedCentiHours - remainingAfterValidated);
   const overprotectedHours = toHours(overprotectedCentiHours);
   
@@ -936,7 +964,13 @@ function buildAssignmentPlan(input) {
     if (distributableEntry) {
       distributableDates.push(date);
       const cap = capacityMap.get(date);
-      const availableCapacity = cap ? toCentiHours(cap.availableCapacityHours) : 0;
+      const availableCapacity = cap
+        ? toCentiHours(
+            capacityPolicy === 'allow-overload' && cap.distributionCapacityHours != null
+              ? cap.distributionCapacityHours
+              : cap.availableCapacityHours
+          )
+        : 0;
       capacityForDistribution.set(date, availableCapacity);
       continue;
     }
@@ -946,7 +980,13 @@ function buildAssignmentPlan(input) {
     }
     
     const cap = capacityMap.get(date);
-    const availableCapacity = cap ? toCentiHours(cap.availableCapacityHours) : 0;
+    const availableCapacity = cap
+      ? toCentiHours(
+          capacityPolicy === 'allow-overload' && cap.distributionCapacityHours != null
+            ? cap.distributionCapacityHours
+            : cap.availableCapacityHours
+        )
+      : 0;
     
     if (availableCapacity <= 0) {
       continue;
@@ -991,8 +1031,11 @@ function buildAssignmentPlan(input) {
   let remainingToDistribute = remainingCentiHours;
   
   if (totalCapacityCentiHours > 0 && remainingToDistribute > 0) {
-    // Limiter à la capacité totale disponible
-    const toDistribute = Math.min(remainingToDistribute, totalCapacityCentiHours);
+    // En mode surcharge autorisée, la capacité sert de poids de lissage mais
+    // ne plafonne pas la demande. Les dépassements restent visibles dans le Plan.
+    const toDistribute = capacityPolicy === 'allow-overload'
+      ? remainingToDistribute
+      : Math.min(remainingToDistribute, totalCapacityCentiHours);
     
     // Étape 1: Calculer la part théorique de chaque date et prendre la partie entière
     const distribution = distributableDates.map(date => {
@@ -1051,7 +1094,7 @@ function buildAssignmentPlan(input) {
     for (const item of distribution) {
       let plannedCentiHours = item.assigned;
       
-      // Plafonner à la capacité (policy "cap")
+      // Plafonner uniquement avec la politique historique "cap".
       if (capacityPolicy === "cap") {
         plannedCentiHours = Math.min(plannedCentiHours, item.capacity);
       }
@@ -1074,6 +1117,20 @@ function buildAssignmentPlan(input) {
   }
   
   const unplannedCentiHours = remainingToDistribute;
+
+  if (capacityPolicy === 'allow-overload') {
+    const overloadedDates = desiredPlan.filter(item => {
+      const cap = capacityMap.get(item.date);
+      return cap && item.plannedHours > Number(cap.availableCapacityHours || 0) + 0.01;
+    });
+    if (overloadedDates.length > 0) {
+      diagnostics.push({
+        code: 'CAPACITY_OVERLOAD_ALLOWED',
+        dates: overloadedDates.map(item => item.date),
+        message: `${overloadedDates.length} jour(s) dépassent la capacité disponible`
+      });
+    }
+  }
   
   if (unplannedCentiHours > 0) {
     diagnostics.push({
@@ -4008,7 +4065,10 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
       'draft': 'draft',
       'submitted': 'submitted',
       'validated': 'validated',
-      'rejected': 'draft'
+      'rejected': 'draft',
+      // Une correction manager est une feuille ouverte à une saisie explicite :
+      // ses autres cellules doivent rester stables pendant cette correction.
+      'correction_manager': 'draft'
     };
     return STATUS_MAPPING[String(status).toLowerCase()] || null;
   }
@@ -4127,7 +4187,10 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
       return {
         date: date,
         baseCapacityHours: Math.max(regEntry.baseCapacityHours, 0),
-        availableCapacityHours: Math.max(regEntry.remainingCapacityHours, 0)
+        availableCapacityHours: Math.max(regEntry.remainingCapacityHours, 0),
+        // Capacité métier après indisponibilités, utilisée comme poids de
+        // lissage lorsque la surcharge est autorisée.
+        distributionCapacityHours: Math.max(regEntry.availableCapacityHours, 0)
       };
     });
   }
@@ -4297,11 +4360,11 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
       /**
        * Réserve des heures pour une affectation
        */
-      reserveHours: function(date, hours) {
+      reserveHours: function(date, hours, allowOverload) {
         if (!registry[date]) return false;
         
         var remaining = registry[date].remainingCapacityHours;
-        if (remaining < hours) {
+        if (!allowOverload && remaining < hours) {
           return false;
         }
         
@@ -4557,30 +4620,23 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
      * Critères :
      * - feuille soumise ou validée
      * - heures réalisées > 0 OU === 0 (explicitement saisi)
-     * - historique avant historyCutoffDate (sans feuille et sans réalisé)
+     * - feuille brouillon en cours d'édition
      */
     function identifyProtectedEntries(timeEntries, feuillesById, options) {
       options = options || {};
-      var historyCutoffDate = options.historyCutoffDate;
-      
       return timeEntries.filter(function(entry) {
         var isSubmitted = entry.sheetStatus === 'submitted';
         var isValidated = entry.sheetStatus === 'validated';
+        var isDraft = entry.sheetStatus === 'draft' && entry.feuille;
         var hasActualHours = hasExplicitActual(entry);
-        var isBeforeCutoff = historyCutoffDate && entry.date && entry.date < historyCutoffDate;
         
-        // Feuille soumise ou validée
-        if (isSubmitted || isValidated) {
+        // Feuille soumise, validée ou brouillon en cours d'édition
+        if (isSubmitted || isValidated || isDraft) {
           return true;
         }
         
         // Heures réalisées explicites (null ≠ 0, et 0 est protégé)
         if (hasActualHours) {
-          return true;
-        }
-        
-        // Historique avant historyCutoffDate (lignes sans feuille et sans réalisé)
-        if (isBeforeCutoff && !entry.feuille) {
           return true;
         }
         
@@ -4663,20 +4719,12 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
     
     /**
      * Détermine la date de début de distribution pour une affectation
-     * max(historyCutoffDate, assignment.startDate)
+     * Toute la durée de l'affectation est planifiable. Une date passée n'est
+     * pas protégée par elle-même ; seules les saisies et feuilles le sont.
      */
     function determineDistributionStartDate(assignment, historyCutoffDate) {
       var assignmentStartDate = gristDateToIso(assignment.dateDebut);
-      
-      if (!historyCutoffDate) {
-        return assignmentStartDate;
-      }
-      
-      if (!assignmentStartDate) {
-        return historyCutoffDate;
-      }
-      
-      return assignmentStartDate > historyCutoffDate ? assignmentStartDate : historyCutoffDate;
+      return assignmentStartDate || historyCutoffDate;
     }
     
     /**
@@ -4693,19 +4741,12 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
         // PHASE 1 : Utiliser hasExplicitActual pour détecter le réalisé
         var hasRealise = hasExplicitActual(entry);
         
-        // Feuille validée : protéger max(heuresPrevues, heures)
-        if (entry.sheetStatus === 'validated') {
-          protectedHoursByDate[entry.date] += Math.max(entry.plannedHours, entry.actualHours === null || entry.actualHours === undefined || entry.actualHours === '' ? 0 : entry.actualHours);
+        // Une valeur explicite est la réalité, y compris zéro. Elle remplace
+        // la proposition dans le calcul de charge.
+        if (hasRealise) {
+          protectedHoursByDate[entry.date] += Number(entry.actualHours);
         }
-        // Feuille soumise : protéger heuresPrevues
-        else if (entry.sheetStatus === 'submitted') {
-          protectedHoursByDate[entry.date] += entry.plannedHours;
-        }
-        // Ligne avec réalisé explicite (y compris 0) : protéger max(heuresPrevues, heures)
-        else if (hasRealise) {
-          protectedHoursByDate[entry.date] += Math.max(entry.plannedHours, entry.actualHours === null || entry.actualHours === undefined || entry.actualHours === '' ? 0 : entry.actualHours);
-        }
-        // Historique avant replanFromDate ou ligne sans réalisé : protéger heuresPrevues
+        // Feuille soumise/validée/brouillon sans réalisé explicite.
         else {
           protectedHoursByDate[entry.date] += entry.plannedHours;
         }
@@ -4835,7 +4876,11 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
           var capReconciliation = reconcileMemberDailyCapacities(
             data.capacities,
             capacityResult.capacities,
-            { nowUnixSeconds: nowUnixSeconds, todayIso: historyCutoffDate }
+            {
+              nowUnixSeconds: nowUnixSeconds,
+              todayIso: historyCutoffDate,
+              forceHistoricalRebuild: true
+            }
           );
           
           // Vérifier les conflits
@@ -4942,7 +4987,7 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
             existingEntries: entriesForAssignment,
             replanFromDate: distributionStartDate,
             precisionHours: 0.01,
-            capacityPolicy: 'cap'
+            capacityPolicy: 'allow-overload'
           });
           
           // Vérifier les diagnostics bloquants
@@ -4976,7 +5021,7 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
           var reservationFailed = false;
           for (var k = 0; k < plannedEntries.length; k++) {
             var entry = plannedEntries[k];
-            if (!registry.reserveHours(entry.date, entry.plannedHours)) {
+            if (!registry.reserveHours(entry.date, entry.plannedHours, true)) {
               reservationFailed = true;
               break;
             }
@@ -5014,12 +5059,11 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
         var postconditionCheck = registry.verifyPostcondition();
         
         if (!postconditionCheck.valid) {
-          log('Violation postcondition: ' + JSON.stringify(postconditionCheck.violations));
-          return {
-            success: false,
-            code: 'CAPACITY_OVERCOMMITMENT',
+          log('Surcharge autorisée: ' + JSON.stringify(postconditionCheck.violations));
+          allDiagnostics.push({
+            code: 'CAPACITY_OVERCOMMITMENT_ALLOWED',
             violations: postconditionCheck.violations
-          };
+          });
         }
         
         // 8. Réconciliation globale
@@ -5057,11 +5101,6 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
           
           // Lignes avec feuille brouillon : à exclure car l'utilisateur travaille dessus
           if (hasFeuille && e.sheetStatus === 'draft') {
-            return false;
-          }
-          
-          // Lignes historiques avant historyCutoffDate (sans feuille et sans réalisé)
-          if (e.date && e.date < historyCutoffDate && !hasFeuille) {
             return false;
           }
           
@@ -5546,7 +5585,7 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
             existingEntries: entriesForAssignment,
             replanFromDate: distributionStartDate,
             precisionHours: 0.01,
-            capacityPolicy: 'cap'
+            capacityPolicy: 'allow-overload'
           });
           
           // Vérifier les diagnostics bloquants
@@ -5580,7 +5619,7 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
           var reservationFailed = false;
           for (var k = 0; k < plannedEntries.length; k++) {
             var entry = plannedEntries[k];
-            if (!refreshedRegistry.reserveHours(entry.date, entry.plannedHours)) {
+            if (!refreshedRegistry.reserveHours(entry.date, entry.plannedHours, true)) {
               reservationFailed = true;
               break;
             }
@@ -5643,13 +5682,11 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
         var postconditionCheck = refreshedRegistry.verifyPostcondition();
         
         if (!postconditionCheck.valid) {
-          log('Violation postcondition après rechargement: ' + JSON.stringify(postconditionCheck.violations));
-          return {
-            success: false,
-            code: 'CAPACITY_OVERCOMMITMENT_AFTER_RELOAD',
-            violations: postconditionCheck.violations,
-            phases: phases
-          };
+          log('Surcharge autorisée après rechargement: ' + JSON.stringify(postconditionCheck.violations));
+          allDiagnostics.push({
+            code: 'CAPACITY_OVERCOMMITMENT_ALLOWED',
+            violations: postconditionCheck.violations
+          });
         }
         
         // =========================================================================
@@ -5677,10 +5714,6 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
           }
           
           if (hasFeuille && e.sheetStatus === 'draft') {
-            return false;
-          }
-          
-          if (e.date && e.date < historyCutoffDate && !hasFeuille) {
             return false;
           }
           
@@ -6381,16 +6414,10 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
             var rawStartDate = assignment.dateDebut ?? assignment.startDate;
             var startDate = rawStartDate ? formatDateUTC(new Date(rawStartDate * 1000)) : null;
             
-            if (operation === 'create') {
-                // Pour une création, commencer à la date de début de l'affectation
-                return startDate || todayStr;
-            } else {
-                // Pour une modification, max(today, dateDebut)
-                if (startDate && startDate > todayStr) {
-                    return startDate;
-                }
-                return todayStr;
-            }
+            // Création comme modification : la même affectation doit produire
+            // le même lissage passé/futur. Les saisies explicites et les
+            // feuilles verrouillées sont protégées plus bas par l'orchestrateur.
+            return startDate || todayStr;
         }
 
         /**

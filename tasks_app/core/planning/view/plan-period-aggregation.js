@@ -50,10 +50,11 @@ function formatDateUTC(date) {
  * @returns {Date} Date UTC
  */
 function parseDateUTC(dateStr) {
-  if (!dateStr) return null;
+  if (!dateStr || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return null;
   const parts = dateStr.split('-');
   if (parts.length !== 3) return null;
-  return new Date(Date.UTC(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10)));
+  const date = new Date(Date.UTC(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10)));
+  return formatDateUTC(date) === dateStr ? date : null;
 }
 
 /**
@@ -311,6 +312,7 @@ function buildPlanPeriodIndex(params) {
         periodKey: periodKey,
         plannedHours: 0,
         actualHours: 0,
+        effectiveHours: 0,
         theoreticalCapacityHours: 0,
         availableCapacityHours: 0,
         absenceHours: 0,
@@ -341,8 +343,10 @@ function buildPlanPeriodIndex(params) {
           // Travailler en centièmes d'heure pour éviter les erreurs flottantes
           const plannedCenti = toCentiHours(entry.plannedHours);
           const actualCenti = entry.actualHours != null ? toCentiHours(entry.actualHours) : null;
+          const effectiveCenti = actualCenti != null ? actualCenti : plannedCenti;
           
           agg.plannedHours += plannedCenti;
+          agg.effectiveHours += effectiveCenti;
           if (actualCenti != null) {
             agg.actualHours += actualCenti;
           }
@@ -362,10 +366,11 @@ function buildPlanPeriodIndex(params) {
       // Convertir en heures (depuis centièmes)
       agg.plannedHours = toHours(agg.plannedHours);
       agg.actualHours = toHours(agg.actualHours);
+      agg.effectiveHours = toHours(agg.effectiveHours);
       
       // Calculer la capacité libre et le ratio
-      agg.freeCapacityHours = Math.max(agg.availableCapacityHours - agg.plannedHours, 0);
-      agg.loadRatio = agg.availableCapacityHours > 0 ? agg.plannedHours / agg.availableCapacityHours : 0;
+      agg.freeCapacityHours = Math.max(agg.availableCapacityHours - agg.effectiveHours, 0);
+      agg.loadRatio = agg.availableCapacityHours > 0 ? agg.effectiveHours / agg.availableCapacityHours : 0;
       
       // Convertir les Sets en tableaux pour sérialisation
       agg.assignmentIds = Array.from(agg.assignmentIds);
@@ -382,6 +387,7 @@ function buildPlanPeriodIndex(params) {
             periodKey: periodKey,
             plannedHours: 0,
             actualHours: 0,
+            effectiveHours: 0,
             memberIds: new Set()
           };
         }
@@ -390,6 +396,9 @@ function buildPlanPeriodIndex(params) {
         const taskEntries = agg.entries.filter(e => e.taskId === taskId);
         for (const entry of taskEntries) {
           byTaskPeriod[taskKey].plannedHours += entry.plannedHours;
+          byTaskPeriod[taskKey].effectiveHours += entry.actualHours != null
+            ? entry.actualHours
+            : entry.plannedHours;
           if (entry.actualHours != null) {
             byTaskPeriod[taskKey].actualHours += entry.actualHours;
           }
@@ -411,6 +420,7 @@ function buildPlanPeriodIndex(params) {
             periodKey: periodKey,
             plannedHours: 0,
             actualHours: 0,
+            effectiveHours: 0,
             memberIds: new Set(),
             taskIds: new Set()
           };
@@ -419,6 +429,9 @@ function buildPlanPeriodIndex(params) {
         const taskEntries = agg.entries.filter(e => e.taskId === taskId);
         for (const entry of taskEntries) {
           byProjectPeriod[projectKey].plannedHours += entry.plannedHours;
+          byProjectPeriod[projectKey].effectiveHours += entry.actualHours != null
+            ? entry.actualHours
+            : entry.plannedHours;
           if (entry.actualHours != null) {
             byProjectPeriod[projectKey].actualHours += entry.actualHours;
           }
@@ -444,6 +457,7 @@ function buildPlanPeriodIndex(params) {
             periodKey: periodKey,
             plannedHours: 0,
             actualHours: 0,
+            effectiveHours: 0,
             memberIds: new Set(),
             projectIds: new Set(),
             taskIds: new Set()
@@ -453,6 +467,9 @@ function buildPlanPeriodIndex(params) {
         const taskEntries = agg.entries.filter(e => e.taskId === taskId);
         for (const entry of taskEntries) {
           byProgrammePeriod[programmeKey].plannedHours += entry.plannedHours;
+          byProgrammePeriod[programmeKey].effectiveHours += entry.actualHours != null
+            ? entry.actualHours
+            : entry.plannedHours;
           if (entry.actualHours != null) {
             byProgrammePeriod[programmeKey].actualHours += entry.actualHours;
           }
@@ -471,6 +488,7 @@ function buildPlanPeriodIndex(params) {
             periodKey: periodKey,
             plannedHours: 0,
             actualHours: 0,
+            effectiveHours: 0,
             theoreticalCapacityHours: 0,
             availableCapacityHours: 0,
             memberIds: new Set()
@@ -479,6 +497,7 @@ function buildPlanPeriodIndex(params) {
         
         byRolePeriod[roleKey].plannedHours += agg.plannedHours;
         byRolePeriod[roleKey].actualHours += agg.actualHours;
+        byRolePeriod[roleKey].effectiveHours += agg.effectiveHours;
         byRolePeriod[roleKey].theoreticalCapacityHours += agg.theoreticalCapacityHours;
         byRolePeriod[roleKey].availableCapacityHours += agg.availableCapacityHours;
         byRolePeriod[roleKey].memberIds.add(memberId);
@@ -528,12 +547,12 @@ function buildPlanPeriodIndex(params) {
     const agg = byMemberPeriod[key];
     
     // Capacité nulle avec prévu > 0
-    if (agg.availableCapacityHours === 0 && agg.plannedHours > 0) {
+    if (agg.availableCapacityHours === 0 && agg.effectiveHours > 0) {
       diagnostics.push({
         code: 'ZERO_CAPACITY_WITH_PLANNED',
         memberPeriod: key,
-        plannedHours: agg.plannedHours,
-        message: 'Capacité nulle mais ' + agg.plannedHours + 'h prévues'
+        plannedHours: agg.effectiveHours,
+        message: 'Capacité nulle mais ' + agg.effectiveHours + 'h de charge'
       });
     }
     
@@ -543,7 +562,7 @@ function buildPlanPeriodIndex(params) {
         code: 'OVERLOAD',
         memberPeriod: key,
         loadRatio: agg.loadRatio,
-        plannedHours: agg.plannedHours,
+        plannedHours: agg.effectiveHours,
         availableCapacityHours: agg.availableCapacityHours,
         message: 'Surcharge : ' + Math.round(agg.loadRatio * 100) + '%'
       });

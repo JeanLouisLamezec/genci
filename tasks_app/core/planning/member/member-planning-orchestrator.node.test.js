@@ -169,7 +169,7 @@ describe('Member Planning Orchestrator - Scénarios métier', function() {
     expect(result.canCommit).toBe(true);
   });
   
-  it('Scénario 3: Surcharge 30h + 30h = 60h alloués, 35h planifiés', async function() {
+  it('Scénario 3: Surcharge 30h + 30h = 60h planifiés avec alerte', async function() {
     var monday = new Date(Date.UTC(2026, 6, 20)).getTime() / 1000;
     var friday = new Date(Date.UTC(2026, 6, 24)).getTime() / 1000;
     
@@ -204,10 +204,62 @@ describe('Member Planning Orchestrator - Scénarios métier', function() {
     expect(typeof result.totals.totalAllocatedHours).toBe('number');
     expect(typeof result.totals.totalPlannedHours).toBe('number');
     expect(result.totals.totalAllocatedHours).toBe(60);
-    expect(result.totals.totalPlannedHours).toBe(35);
-    expect(result.totals.totalUnplannedHours).toBe(25);
-    expect(result.canCommit).toBe(false);
-    expect(result.code).toBe('INSUFFICIENT_SHARED_CAPACITY');
+    expect(result.totals.totalPlannedHours).toBe(60);
+    expect(result.totals.totalUnplannedHours).toBe(0);
+    expect(result.canCommit).toBe(true);
+    expect(result.code).toBe('SUCCESS');
+    expect(result.diagnostics.some(function(diagnostic) {
+      return diagnostic.code === 'CAPACITY_OVERCOMMITMENT_ALLOWED';
+    })).toBe(true);
+  });
+
+  it('Une affectation passée vide est planifiée depuis sa date de début', async function() {
+    var monday = new Date(Date.UTC(2026, 6, 20)).getTime() / 1000;
+    var friday = new Date(Date.UTC(2026, 6, 24)).getTime() / 1000;
+    var capacities = [];
+    for (var i = 0; i < 5; i++) {
+      capacities.push({
+        id: i + 1,
+        membre: 1,
+        date: monday + i * 86400,
+        capaciteTheorique: 7,
+        capaciteDisponible: 7
+      });
+    }
+
+    var mockGrist = createMockGristWithData({
+      'Team': [{ id: 1, nom: 'Alice', capaciteHebdo: 35 }],
+      'TaskAssignments': [{
+        id: 10,
+        tache: 10,
+        membre: 1,
+        heuresAllouees: 35,
+        dateDebut: monday,
+        dateFin: friday,
+        actif: true,
+        modeRepartition: 'uniforme'
+      }],
+      'Tasks': [{ id: 10, titre: 'Tâche rétroactive' }],
+      'TimeEntries': [],
+      'Feuilles': [],
+      'Disponibilites': [],
+      'MemberDailyCapacities': capacities
+    });
+
+    var orchestrator = createMemberPlanningOrchestrator(mockGrist);
+    var result = await orchestrator.previewMember(1, { todayIso: '2026-08-27' });
+
+    expect(result.success).toBe(true);
+    expect(result.canCommit).toBe(true);
+    expect(result.assignmentResults[0].plannedEntries.map(function(entry) {
+      return entry.date;
+    })).toEqual([
+      '2026-07-20',
+      '2026-07-21',
+      '2026-07-22',
+      '2026-07-23',
+      '2026-07-24'
+    ]);
   });
 
   it('Une surconsommation validée est signalée sans bloquer le membre', async function() {

@@ -8,9 +8,9 @@
 <script src="core/filters/filter-manager.js"></script>
 <script src="core/planning/time_entry/time-entry-loader.js"></script>
 <script src="core/planning/view/plan-period-aggregation.js"></script>
-<script src="core/planning/forecast/rolling-load.js?v=20260825"></script>
-<script src="core/generated/taskflow-planning-browser.js?v=20260825c"></script>
-<script src="core/planning/view/plan-canon-adapter.js?v=20260825"></script>
+<script src="core/planning/forecast/rolling-load.js?v=20260827-retro"></script>
+<script src="core/generated/taskflow-planning-browser.js?v=20260827-retro"></script>
+<script src="core/planning/view/plan-canon-adapter.js?v=20260827-retro"></script>
 <link rel="stylesheet" href="core/theme/taskflow-theme.css">
 <link rel="stylesheet" href="core/filters/filter-styles.css">
 <style>
@@ -6194,17 +6194,19 @@ async function render() {
   const nowKey = TF.periodKey(new Date(), S.granularity);
   document.getElementById('navRange').textContent = plabel(periods[0]) + ' → ' + plabel(periods[periods.length - 1]);
 
-  // Le réalisé vient exclusivement des feuilles de temps. Pour les autres
-  // vues, la charge est une projection virtuelle du reste à faire : elle est
-  // recalculée à chaque rendu sans écrire de lignes prévisionnelles.
-  let matrix;
-  if (S.mode === 'realise' && canonPlanIndex) {
-    matrix = PlanCanonAdapter.formatCanonMatrixForRender(canonPlanIndex.byMemberPeriod, S.groupBy, S.mode);
-  } else if (rollingLoadIndex && canonData) {
-    matrix = PlanCanonAdapter.formatRollingMatrixForRender(rollingLoadIndex, S.groupBy, canonData);
-  } else {
-    matrix = {};
-  }
+  // Les tâches continues proviennent des TimeEntries matérialisées sur toute
+  // leur durée. Seules les tâches ponctuelles ajoutent une projection virtuelle.
+  const canonMatrix = canonPlanIndex
+    ? PlanCanonAdapter.formatCanonMatrixForRender(canonPlanIndex.byMemberPeriod, S.groupBy, S.mode, canonData)
+    : {};
+  const rollingMatrix = rollingLoadIndex && canonData
+    ? PlanCanonAdapter.formatRollingMatrixForRender(rollingLoadIndex, S.groupBy, canonData)
+    : {};
+  const matrix = PlanCanonAdapter.mergeCanonAndRollingMatrices(
+    canonMatrix,
+    rollingMatrix,
+    S.mode
+  );
   
   const rows = buildRows();
   const wrap = document.getElementById('gridwrap');
@@ -6563,13 +6565,44 @@ function renderSeg(id, opts, cur, cb) {
 // Drill cellule -> panel (liste des tâches composant la charge) - VERSION CANONIQUE
 // ============================================================================
 function tasksInCell(key, period) {
-  if (S.mode !== 'realise' && rollingLoadIndex && canonData) {
-    return PlanCanonAdapter.getRollingTasksInCell(rollingLoadIndex, key, period, S.groupBy, canonData);
-  }
-
-  // Utilise l'index canonique si disponible
   if (canonPlanIndex && canonData) {
-    return PlanCanonAdapter.getTasksInCell(canonPlanIndex, key, period, S.tasks);
+    const materialized = PlanCanonAdapter.getTasksInCell(
+      canonPlanIndex,
+      key,
+      period,
+      S.tasks,
+      S.groupBy,
+      canonData
+    );
+    if (S.mode === 'realise' || !rollingLoadIndex) return materialized;
+
+    const virtual = PlanCanonAdapter.getRollingTasksInCell(
+      rollingLoadIndex,
+      key,
+      period,
+      S.groupBy,
+      canonData
+    );
+    const byTask = new Map();
+    materialized.concat(virtual).forEach(item => {
+      const taskId = Number(item.taskId);
+      if (!byTask.has(taskId)) {
+        byTask.set(taskId, Object.assign({}, item, {
+          slice: 0,
+          total: 0,
+          entries: [],
+          assignmentIds: []
+        }));
+      }
+      const merged = byTask.get(taskId);
+      merged.slice += Number(item.slice || 0);
+      merged.total += Number(item.total || 0);
+      merged.entries = merged.entries.concat(item.entries || []);
+      merged.assignmentIds = merged.assignmentIds.concat(item.assignmentIds || []);
+      merged.virtual = Boolean(merged.virtual || item.virtual);
+      merged.overdue = Boolean(merged.overdue || item.overdue);
+    });
+    return Array.from(byTask.values()).sort((a, b) => b.slice - a.slice);
   }
   
   // Fallback legacy

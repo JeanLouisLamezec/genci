@@ -432,7 +432,7 @@
             expect(result).toBe('2026-07-01');
         });
 
-        it('Utilise max(today, dateDebut) pour une modification', function() {
+        it('Utilise dateDebut pour une modification rétroactive ou future', function() {
             var mockGrist = {
                 docApi: {
                     fetchTable: function() { return Promise.resolve({ id: [] }); },
@@ -441,16 +441,13 @@
             };
 
             var integration = createGanttAutoPlanningIntegration(mockGrist);
-            var today = new Date();
-            var todayStr = today.toISOString().split('T')[0];
-
             // Date dans le passé
             var assignment1 = {
                 startDate: 1000000000 // 2001-09-09
             };
 
             var result1 = integration.determineReplanFromDate(assignment1, 'update');
-            expect(result1).toBe(todayStr);
+            expect(result1).toBe('2001-09-09');
 
             // Date dans le futur
             var assignment2 = {

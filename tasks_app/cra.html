@@ -10,9 +10,10 @@
 <script src="core/cra/ui/cra-filter-adapter.js"></script>
 <script src="core/cra/controller/cra-time-entry-controller.js"></script>
 <script src="core/cra/loader/cra-data-loader.js"></script>
+<script src="core/generated/taskflow-planning-browser.js?v=20260827-retro"></script>
 
 <script src="core/generated/taskflow-cra-browser.js?v=20260728-1"></script>
-<script src="core/cra/workflow/cra-workflow-integration.js?v=20260728-1"></script>
+<script src="core/cra/workflow/cra-workflow-integration.js?v=20260827-retro"></script>
 <script src="core/cra/export/cra-export-model.js"></script>
 <script src="core/cra/export/cra-export-pdf.js"></script>
 <script src="core/cra/export/cra-export-csv.js"></script>
@@ -7159,6 +7160,27 @@ function renderSaisie() {
   main.innerHTML = html;
 }
 
+function managerRetroactivePanelHtml(managerState) {
+  const reportIds = Array.isArray(managerState.directReportIds) ? managerState.directReportIds : [];
+  if (reportIds.length === 0) return '';
+
+  const options = reportIds.map(id => {
+    const member = S.team.find(item => Number(item.id) === Number(id));
+    return '<option value="' + Number(id) + '">' + esc(member ? member.nom : ('Membre ' + id)) + '</option>';
+  }).join('');
+  const defaultDate = localDateIso(S.weekStart || mondayOf(Date.now()));
+
+  return '<div style="padding:14px 16px;margin-bottom:16px;background:var(--card-bg);border:1px solid var(--border);border-radius:8px">' +
+    '<div style="font-weight:700;margin-bottom:5px">Régularisation rétroactive</div>' +
+    '<div class="csub" style="margin-bottom:10px">Créer ou reprendre une feuille passée à partir des heures prévues déjà présentes. Une feuille soumise ou validée conserve son workflow normal.</div>' +
+    '<div style="display:flex;gap:8px;align-items:end;flex-wrap:wrap">' +
+      '<label style="font-size:.8rem">Agent<br><select id="retroManagerMember" style="min-width:190px">' + options + '</select></label>' +
+      '<label style="font-size:.8rem">Semaine contenant le<br><input id="retroManagerWeek" type="date" value="' + defaultDate + '"></label>' +
+      '<button class="btn" onclick="prepareManagerRetroactiveCorrection()">Préparer la régularisation</button>' +
+    '</div>' +
+  '</div>';
+}
+
 function renderValider() {
   const main = document.getElementById('main');
   
@@ -7200,7 +7222,7 @@ function renderValider() {
     }
     
     message += '</div>';
-    main.innerHTML = message;
+    main.innerHTML = managerRetroactivePanelHtml(managerState) + message;
     return;
   }
   
@@ -7213,7 +7235,7 @@ function renderValider() {
     return (priority[statusA] || 99) - (priority[statusB] || 99);
   });
   
-  let html = '<table class="grid"><thead><tr><th class="left">Agent</th><th class="left">Semaine</th><th class="total">Total</th><th class="left">Statut</th><th class="left">Action</th></tr></thead><tbody>';
+  let html = managerRetroactivePanelHtml(managerState) + '<table class="grid"><thead><tr><th class="left">Agent</th><th class="left">Semaine</th><th class="total">Total</th><th class="left">Statut</th><th class="left">Action</th></tr></thead><tbody>';
   for (const f of subs) {
     const p = S.team.find(t => t.id === f.membre), wk = gristToMs(f.semaine);
     const status = normalizeSheetStatus(f.statut);
@@ -7307,6 +7329,7 @@ async function setCell(taskId, dayMs, personId, qtyStr) {
       
       if (typeof CraWorkflowIntegration !== 'undefined' && CraWorkflowIntegration.updateManagerActual) {
         await CraWorkflowIntegration.updateManagerActual(S.managerCorrectionSheetId, existingEntry.id, parseResult.hours);
+        await replanContinuousAssignmentAfterCraEdit(personId, existingEntry.affectation);
       } else {
         toast('Adaptateur non initialisé');
       }
@@ -7439,12 +7462,73 @@ async function setCell(taskId, dayMs, personId, qtyStr) {
   
   // PHASE 1.1.6 : SUPPRESSION écriture Tasks.tempsPasse
   // Cette écriture sort du contrat du CRA et sera gérée par une formule Grist ou un service dédié
+
+  // Une saisie continue devient immédiatement la nouvelle réalité. Recalculer
+  // le reliquat sur toutes les autres dates encore modifiables.
+  const replanning = await replanContinuousAssignmentAfterCraEdit(
+    personId,
+    result.assignmentId
+  );
+  if (replanning && replanning.reloaded) {
+    return;
+  }
   
   // Reconstruire les index après modification locale
   buildCraIndexes();
   render();
 }
 window.setCell = setCell;
+
+async function replanContinuousAssignmentAfterCraEdit(personId, assignmentId) {
+  const assignment = (S.assignments || []).find(item =>
+    Number(item.id) === Number(assignmentId)
+  );
+  if (!assignment || (assignment.modeRepartition || 'uniforme') === 'ponctuel') {
+    return { skipped: true, reason: 'PUNCTUAL_OR_MISSING_ASSIGNMENT' };
+  }
+
+  const planningApi = globalThis.TaskFlowPlanning;
+  if (!planningApi || typeof planningApi.createMemberPlanningOrchestrator !== 'function') {
+    console.warn('[CRA planning] Orchestrateur indisponible');
+    return { skipped: true, reason: 'ORCHESTRATOR_UNAVAILABLE' };
+  }
+
+  try {
+    const orchestrator = planningApi.createMemberPlanningOrchestrator(grist, {
+      logEnabled: true
+    });
+    const preview = await orchestrator.previewMember(Number(personId), {
+      targetAssignmentIds: [Number(assignmentId)]
+    });
+
+    if (!preview.success || !preview.canCommit) {
+      console.warn('[CRA planning] Replanification non committable', {
+        personId,
+        assignmentId,
+        code: preview.code,
+        diagnostics: preview.diagnostics || []
+      });
+      toast('Saisie enregistrée, mais le reliquat n’a pas pu être recalculé');
+      return { success: false, code: preview.code };
+    }
+
+    const commit = await orchestrator.commitMember(Number(personId), preview, {
+      targetAssignmentIds: [Number(assignmentId)]
+    });
+    if (!commit.success) {
+      console.warn('[CRA planning] Commit échoué', commit);
+      toast('Saisie enregistrée, mais le reliquat n’a pas pu être appliqué');
+      return { success: false, code: commit.code };
+    }
+
+    await reloadCra('continuous-entry-replanned', { immediate: true });
+    return { success: true, reloaded: true };
+  } catch (error) {
+    console.error('[CRA planning] Erreur de replanification', error);
+    toast('Saisie enregistrée, replanification différée');
+    return { success: false, code: 'REPLAN_ERROR' };
+  }
+}
 
 // realise total d'une tache = somme des heures saisies (tous agents) = source de tempsPasse
 function taskRealizedHours(taskId) { 
@@ -8069,6 +8153,39 @@ window.rejeterFeuille = async (id) => {
   } else {
     toast('Adaptateur non initialisé');
   }
+};
+
+window.prepareManagerRetroactiveCorrection = async () => {
+  const memberInput = document.getElementById('retroManagerMember');
+  const weekInput = document.getElementById('retroManagerWeek');
+  if (!memberInput || !weekInput || !weekInput.value) {
+    toast('Sélectionnez un agent et une semaine');
+    return;
+  }
+
+  const reason = window.prompt('Motif de la régularisation rétroactive :', 'Régularisation rétroactive');
+  if (reason === null) return;
+
+  if (typeof CraWorkflowIntegration === 'undefined' || !CraWorkflowIntegration.prepareRetroactiveCorrection) {
+    toast('Service de régularisation indisponible');
+    return;
+  }
+
+  const result = await CraWorkflowIntegration.prepareRetroactiveCorrection(
+    Number(memberInput.value),
+    weekInput.value,
+    reason
+  );
+  if (result && result.success) return;
+
+  const messages = {
+    NO_ENTRIES_TO_REGULARIZE: 'Aucune heure prévue n’existe pour cet agent sur cette semaine.',
+    SHEET_REQUIRES_WORKFLOW_ACTION: 'Cette feuille est déjà soumise ou validée : utilisez les actions de validation ou de correction existantes.',
+    DRAFT_ALREADY_EDITED: 'Cette feuille brouillon contient déjà une saisie explicite de l’agent.',
+    NOT_DIRECT_REPORT: 'Cet agent ne fait pas partie de vos collaborateurs directs.',
+    MISSING_CORRECTION_REASON: 'Le motif est obligatoire.'
+  };
+  toast(messages[result && result.code] || ('Régularisation impossible : ' + ((result && result.code) || 'erreur inconnue')));
 };
 
 /**

@@ -184,7 +184,7 @@ describe('Member Planning Orchestrator - Commit et actions Grist', function() {
     expect(commitResult.totalActionsExecuted).toBe(0);
   });
   
-  it('Scénario 7: Entrée protégée - feuille soumise de 4h le lundi', async function() {
+  it('Scénario 7: Zéro explicite protégé sur une feuille soumise', async function() {
     var monday = new Date(Date.UTC(2026, 6, 20)).getTime() / 1000;
     var friday = new Date(Date.UTC(2026, 6, 24)).getTime() / 1000;
     
@@ -212,20 +212,22 @@ describe('Member Planning Orchestrator - Commit et actions Grist', function() {
     var preview = await orchestrator.previewMember(1, { todayIso: '2026-07-20' });
     
     expect(preview.success).toBe(true);
-    expect(preview.totals.protectedHours).toBe(4);
+    // Un zéro explicite est une réalité saisie : la ligne est protégée, mais
+    // elle ne consomme pas les 4 h qui figuraient auparavant au prévisionnel.
+    expect(preview.totals.protectedHours).toBe(0);
     
     var mondayEntry = preview.capacities.find(function(c) { return c.date === '2026-07-20'; });
-    expect(mondayEntry.protectedHours).toBe(4);
-    expect(mondayEntry.remainingCapacityHours).toBeLessThanOrEqual(3);
+    expect(mondayEntry.protectedHours).toBe(0);
+    expect(mondayEntry.remainingCapacityHours).toBeLessThanOrEqual(7);
     
     var totalPlanned = preview.totals.totalPlannedHours;
-    expect(totalPlanned).toBeLessThanOrEqual(31);
+    expect(totalPlanned).toBe(35);
     
     var mondayPlan = preview.reconciliation.creates.find(function(c) { return c.date === '2026-07-20'; });
     expect(mondayPlan).toBeUndefined();
   });
   
-  it('Scénario 8: Refus du commit quand canCommit=false', async function() {
+  it('Scénario 8: Surcharge committable et signalée', async function() {
     var monday = new Date(Date.UTC(2026, 6, 20)).getTime() / 1000;
     var friday = new Date(Date.UTC(2026, 6, 24)).getTime() / 1000;
     
@@ -255,12 +257,46 @@ describe('Member Planning Orchestrator - Commit et actions Grist', function() {
     var preview = await orchestrator.previewMember(1, { todayIso: '2026-07-20' });
     
     expect(preview.success).toBe(true);
-    expect(preview.canCommit).toBe(false);
-    expect(preview.code).toBe('INSUFFICIENT_SHARED_CAPACITY');
+    expect(preview.canCommit).toBe(true);
+    expect(preview.code).toBe('SUCCESS');
+    expect(preview.diagnostics.some(function(d) {
+      return d.code === 'CAPACITY_OVERCOMMITMENT_ALLOWED';
+    })).toBe(true);
     
     var commitResult = await orchestrator.commitMember(1, preview);
     
-    expect(commitResult.success).toBe(false);
-    expect(commitResult.code).toBe('INSUFFICIENT_SHARED_CAPACITY');
+    expect(commitResult.success).toBe(true);
+    expect(commitResult.code).toBe('SUCCESS');
+  });
+
+  it('Scénario 9: Une feuille en correction manager protège ses propositions', async function() {
+    var monday = new Date(Date.UTC(2026, 6, 20)).getTime() / 1000;
+    var friday = new Date(Date.UTC(2026, 6, 24)).getTime() / 1000;
+    var mockGrist = createMockGristWithData({
+      'Team': [{ id: 1, nom: 'Alice', capaciteHebdo: 35 }],
+      'TaskAssignments': [{ id: 1, tache: 1, membre: 1, heuresAllouees: 35, dateDebut: monday, dateFin: friday, actif: true }],
+      'Tasks': [{ id: 1, titre: 'Tâche A' }],
+      'TimeEntries': [
+        { id: 1, affectation: 1, tache: 1, membre: 1, date: monday, heuresPrevues: 4, heures: null, feuille: 1 }
+      ],
+      'Feuilles': [
+        { id: 1, membre: 1, semaine: '2026-W29', statut: 'correction_manager', responsableValidation: 2 }
+      ],
+      'Disponibilites': [],
+      'MemberDailyCapacities': [
+        { id: 1, membre: 1, date: monday, capaciteTheorique: 7, capaciteDisponible: 7 },
+        { id: 2, membre: 1, date: monday + 86400, capaciteTheorique: 7, capaciteDisponible: 7 },
+        { id: 3, membre: 1, date: monday + 2 * 86400, capaciteTheorique: 7, capaciteDisponible: 7 },
+        { id: 4, membre: 1, date: monday + 3 * 86400, capaciteTheorique: 7, capaciteDisponible: 7 },
+        { id: 5, membre: 1, date: monday + 4 * 86400, capaciteTheorique: 7, capaciteDisponible: 7 }
+      ]
+    });
+
+    var preview = await createMemberPlanningOrchestrator(mockGrist).previewMember(1, { todayIso: '2026-07-20' });
+
+    expect(preview.success).toBe(true);
+    expect(preview.totals.protectedHours).toBe(4);
+    expect(preview.reconciliation.updates.find(function(update) { return update.id === 1; })).toBeUndefined();
+    expect(preview.reconciliation.deletes.find(function(id) { return id === 1; })).toBeUndefined();
   });
 });

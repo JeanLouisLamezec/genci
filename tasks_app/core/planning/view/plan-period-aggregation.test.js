@@ -286,6 +286,7 @@ describe('PlanPeriodAggregation - Agrégation', function() {
       
       // Alice : 3.5h réalisées (seulement le 09/01)
       assert.strictEqual(alice.actualHours, 3.5);
+      assert.strictEqual(alice.effectiveHours, 9.5);
       
       // Capacité théorique : 7h * 5 jours = 35h (lun-ven)
       // Mais seules 2 dates sont dans les capacités : 8 et 9 janvier = 14h
@@ -343,8 +344,8 @@ describe('PlanPeriodAggregation - Agrégation', function() {
       const alice = result.byMemberPeriod[aliceKey];
       
       if (alice) {
-        // Les 3 entrées = 9h
-        assert.strictEqual(alice.plannedHours, 9);
+        // W48 se termine le 1er décembre : l'entrée du 2 décembre est en W49.
+        assert.strictEqual(alice.plannedHours, 6);
       }
     });
   });
@@ -415,8 +416,8 @@ describe('PlanPeriodAggregation - Agrégation', function() {
       assert.strictEqual(alice.availableCapacityHours, 7); // 3.5 * 2 jours
       assert.strictEqual(alice.plannedHours, 10);
       
-      // Ratio : 10 / 7 = 1.43 (surcharge)
-      assert.ok(alice.loadRatio > 1.4, 'Ratio de charge correct');
+      // Charge effective : 4 + 3,5 + 2 = 9,5h ; ratio 9,5 / 7.
+      assert.ok(alice.loadRatio > 1.35, 'Ratio de charge correct');
       
       // Diagnostic de surcharge
       const overloadDiagnostic = result.diagnostics.find(d => d.code === 'OVERLOAD');

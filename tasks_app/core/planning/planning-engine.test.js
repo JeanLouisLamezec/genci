@@ -264,7 +264,7 @@ describe('Planning Engine - Distribution', () => {
         assignmentId: 1,
         date: '2026-07-01',
         plannedHours: 5,
-        actualHours: 0,
+        actualHours: null,
         sheetStatus: null,
         description: null,
         imputation: null
@@ -315,7 +315,7 @@ describe('Planning Engine - Distribution', () => {
       assignmentId: item.assignmentId,
       date: item.date,
       plannedHours: item.plannedHours,
-      actualHours: 0,
+      actualHours: null,
       sheetStatus: null,
       description: null,
       imputation: null,
@@ -523,7 +523,7 @@ describe('Planning Engine - Surconsommation et sur-réservation', () => {
         assignmentId: 1,
         date: '2026-07-01',
         plannedHours: 8,
-        actualHours: 0,
+        actualHours: null,
         sheetStatus: 'submitted',
         description: null,
         imputation: null
@@ -533,7 +533,7 @@ describe('Planning Engine - Surconsommation et sur-réservation', () => {
         assignmentId: 1,
         date: '2026-07-02',
         plannedHours: 5,
-        actualHours: 0,
+        actualHours: null,
         sheetStatus: 'submitted',
         description: null,
         imputation: null
@@ -581,7 +581,7 @@ describe('Planning Engine - Statuts de feuille', () => {
         assignmentId: 1,
         date: '2026-07-01',
         plannedHours: 3.5,
-        actualHours: 0,
+        actualHours: null,
         sheetStatus: 'submitted',
         description: null,
         imputation: null
@@ -800,6 +800,43 @@ describe('Planning Engine - capacityPolicy cap', () => {
     expect(result.desiredPlan.length).toBe(1);
     expect(result.desiredPlan[0].plannedHours).toBe(7);
     expect(result.summary.unplannedHours).toBe(93);
+  });
+});
+
+describe('Planning Engine - surcharge autorisée', () => {
+  test('répartit toute la charge en utilisant la capacité comme poids', () => {
+    const result = buildAssignmentPlan({
+      assignment: {
+        id: 1,
+        taskId: 1,
+        memberId: 1,
+        allocatedHours: 20,
+        startDate: '2026-07-01',
+        endDate: '2026-07-02'
+      },
+      capacities: [
+        {
+          date: '2026-07-01',
+          baseCapacityHours: 7,
+          availableCapacityHours: 7,
+          distributionCapacityHours: 7
+        },
+        {
+          date: '2026-07-02',
+          baseCapacityHours: 7,
+          availableCapacityHours: 7,
+          distributionCapacityHours: 7
+        }
+      ],
+      existingEntries: [],
+      capacityPolicy: 'allow-overload'
+    });
+
+    expect(result.desiredPlan).toHaveLength(2);
+    expect(result.desiredPlan[0].plannedHours).toBe(10);
+    expect(result.desiredPlan[1].plannedHours).toBe(10);
+    expect(result.summary.unplannedHours).toBe(0);
+    expect(result.diagnostics.some(d => d.code === 'CAPACITY_OVERLOAD_ALLOWED')).toBe(true);
   });
 });
 

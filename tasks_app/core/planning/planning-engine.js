@@ -68,6 +68,18 @@ function validateNumber(value, fieldName, options = {}) {
 }
 
 /**
+ * Indique si une valeur réalisée a été explicitement saisie.
+ * Le zéro est une valeur métier : il ne doit pas être confondu avec null.
+ */
+function hasExplicitActualHours(entry) {
+  return entry &&
+    entry.actualHours !== null &&
+    entry.actualHours !== undefined &&
+    entry.actualHours !== '' &&
+    Number.isFinite(Number(entry.actualHours));
+}
+
+/**
  * Convertit des heures (float) en centièmes d'heure (entier)
  * @param {number} hours - Heures à convertir
  * @returns {number} Centièmes d'heure
@@ -259,7 +271,7 @@ function findDuplicates(entries, idField = 'id') {
  * @param {Array} input.existingEntries - Entrées existantes avec id, assignmentId, date, plannedHours, actualHours, sheetStatus, description, imputation
  * @param {string} [input.replanFromDate] - Date à partir de laquelle recalculer le plan (YYYY-MM-DD)
  * @param {number} [input.precisionHours=0.01] - Précision en heures
- * @param {string} [input.capacityPolicy="cap"] - Politique de capacité ("cap" pour ne pas dépasser)
+ * @param {string} [input.capacityPolicy="cap"] - Politique de capacité : "cap" ou "allow-overload"
  * @returns {Object} Résultat avec desiredPlan, summary, diagnostics
  */
 function buildAssignmentPlan(input) {
@@ -329,7 +341,8 @@ function buildAssignmentPlan(input) {
     
     capacityMap.set(cap.date, {
       baseCapacityHours: cap.baseCapacityHours,
-      availableCapacityHours: cap.availableCapacityHours
+      availableCapacityHours: cap.availableCapacityHours,
+      distributionCapacityHours: cap.distributionCapacityHours
     });
   }
   
@@ -345,8 +358,7 @@ function buildAssignmentPlan(input) {
   // 2. entriesInAssignmentRange : lignes entre startDate et endDate (pour la réconciliation)
   
   // Calcul comptable : toutes les entrées de l'affectation, peu importe la date
-  let validatedActualCentiHours = 0;
-  let validatedActualEntries = [];
+  let effectiveActualCentiHours = 0;
   let hasInvalidActualHours = false;
   
   for (const entry of existingEntries || []) {
@@ -366,9 +378,11 @@ function buildAssignmentPlan(input) {
       continue;
     }
     
-    if (entry.sheetStatus === 'validated') {
-      validatedActualCentiHours += entry.actualHours === null || entry.actualHours === undefined || entry.actualHours === '' ? 0 : toCentiHours(entry.actualHours);
-      validatedActualEntries.push(entry);
+    // Une saisie explicite, même en brouillon et même égale à zéro, devient
+    // immédiatement la réalité de la journée. La validation verrouille la
+    // ligne, mais ne change pas sa valeur comptable.
+    if (hasExplicitActualHours(entry)) {
+      effectiveActualCentiHours += toCentiHours(Number(entry.actualHours));
     }
   }
   
@@ -390,15 +404,15 @@ function buildAssignmentPlan(input) {
     };
   }
   
-  const validatedActualHours = toHours(validatedActualCentiHours);
-  const overconsumedCentiHours = Math.max(0, validatedActualCentiHours - allocatedCentiHours);
+  const validatedActualHours = toHours(effectiveActualCentiHours);
+  const overconsumedCentiHours = Math.max(0, effectiveActualCentiHours - allocatedCentiHours);
   const overconsumedHours = toHours(overconsumedCentiHours);
   
   // Si surconsommation, retourner immédiatement sans plan
   if (overconsumedCentiHours > 0) {
     diagnostics.push({
       code: "OVERCONSUMPTION",
-      message: `Le réalisé validé (${validatedActualHours}h) dépasse l'allocation (${toHours(allocatedCentiHours)}h) de ${overconsumedHours}h`
+      message: `Le réalisé renseigné (${validatedActualHours}h) dépasse l'allocation (${toHours(allocatedCentiHours)}h) de ${overconsumedHours}h`
     });
     
     return {
@@ -505,25 +519,39 @@ function buildAssignmentPlan(input) {
     
     let validatedEntry = null;
     let submittedEntry = null;
+    let explicitActualEntry = null;
+    let draftEntry = null;
     let mutableEntries = [];
     
     for (const entry of entries) {
-      if (entry.sheetStatus === 'validated') {
+      if (hasExplicitActualHours(entry)) {
+        explicitActualEntry = entry;
+      } else if (entry.sheetStatus === 'validated') {
         validatedEntry = entry;
       } else if (entry.sheetStatus === 'submitted') {
         submittedEntry = entry;
+      } else if (entry.sheetStatus === 'draft') {
+        draftEntry = entry;
       } else {
         mutableEntries.push(entry);
       }
     }
     
-    if (validatedEntry) {
+    if (explicitActualEntry) {
+      entriesToRespect.set(date, explicitActualEntry);
+    } else if (validatedEntry) {
       entriesToRespect.set(date, validatedEntry);
-      // validatedActualCentiHours déjà calculé plus haut pour toutes les entrées
-      // Ne pas re-compter ici pour éviter le double comptage
+      // Compatibilité avec les anciennes feuilles validées qui n'auraient pas
+      // matérialisé heures : leur proposition reste malgré tout verrouillée.
+      protectedPlannedCentiHours += toCentiHours(validatedEntry.plannedHours || 0);
     } else if (submittedEntry) {
       entriesToRespect.set(date, submittedEntry);
       protectedPlannedCentiHours += toCentiHours(submittedEntry.plannedHours || 0);
+    } else if (draftEntry) {
+      // Une semaine brouillon peut être en cours d'édition. Sa proposition
+      // reste stable jusqu'à une action explicite de l'utilisateur.
+      entriesToRespect.set(date, draftEntry);
+      protectedPlannedCentiHours += toCentiHours(draftEntry.plannedHours || 0);
     } else if (isBeforeReplan && mutableEntries.length > 0) {
       const entryToProtect = mutableEntries[0];
       entriesToRespect.set(date, entryToProtect);
@@ -537,7 +565,7 @@ function buildAssignmentPlan(input) {
   // À ce stade, overconsumedCentiHours === 0 (sinon retour immédiat)
   // Donc overconsumedHours === 0 également
   
-  const remainingAfterValidated = allocatedCentiHours - validatedActualCentiHours;
+  const remainingAfterValidated = allocatedCentiHours - effectiveActualCentiHours;
   const overprotectedCentiHours = Math.max(0, protectedPlannedCentiHours - remainingAfterValidated);
   const overprotectedHours = toHours(overprotectedCentiHours);
   
@@ -609,7 +637,13 @@ function buildAssignmentPlan(input) {
     if (distributableEntry) {
       distributableDates.push(date);
       const cap = capacityMap.get(date);
-      const availableCapacity = cap ? toCentiHours(cap.availableCapacityHours) : 0;
+      const availableCapacity = cap
+        ? toCentiHours(
+            capacityPolicy === 'allow-overload' && cap.distributionCapacityHours != null
+              ? cap.distributionCapacityHours
+              : cap.availableCapacityHours
+          )
+        : 0;
       capacityForDistribution.set(date, availableCapacity);
       continue;
     }
@@ -619,7 +653,13 @@ function buildAssignmentPlan(input) {
     }
     
     const cap = capacityMap.get(date);
-    const availableCapacity = cap ? toCentiHours(cap.availableCapacityHours) : 0;
+    const availableCapacity = cap
+      ? toCentiHours(
+          capacityPolicy === 'allow-overload' && cap.distributionCapacityHours != null
+            ? cap.distributionCapacityHours
+            : cap.availableCapacityHours
+        )
+      : 0;
     
     if (availableCapacity <= 0) {
       continue;
@@ -664,8 +704,11 @@ function buildAssignmentPlan(input) {
   let remainingToDistribute = remainingCentiHours;
   
   if (totalCapacityCentiHours > 0 && remainingToDistribute > 0) {
-    // Limiter à la capacité totale disponible
-    const toDistribute = Math.min(remainingToDistribute, totalCapacityCentiHours);
+    // En mode surcharge autorisée, la capacité sert de poids de lissage mais
+    // ne plafonne pas la demande. Les dépassements restent visibles dans le Plan.
+    const toDistribute = capacityPolicy === 'allow-overload'
+      ? remainingToDistribute
+      : Math.min(remainingToDistribute, totalCapacityCentiHours);
     
     // Étape 1: Calculer la part théorique de chaque date et prendre la partie entière
     const distribution = distributableDates.map(date => {
@@ -724,7 +767,7 @@ function buildAssignmentPlan(input) {
     for (const item of distribution) {
       let plannedCentiHours = item.assigned;
       
-      // Plafonner à la capacité (policy "cap")
+      // Plafonner uniquement avec la politique historique "cap".
       if (capacityPolicy === "cap") {
         plannedCentiHours = Math.min(plannedCentiHours, item.capacity);
       }
@@ -747,6 +790,20 @@ function buildAssignmentPlan(input) {
   }
   
   const unplannedCentiHours = remainingToDistribute;
+
+  if (capacityPolicy === 'allow-overload') {
+    const overloadedDates = desiredPlan.filter(item => {
+      const cap = capacityMap.get(item.date);
+      return cap && item.plannedHours > Number(cap.availableCapacityHours || 0) + 0.01;
+    });
+    if (overloadedDates.length > 0) {
+      diagnostics.push({
+        code: 'CAPACITY_OVERLOAD_ALLOWED',
+        dates: overloadedDates.map(item => item.date),
+        message: `${overloadedDates.length} jour(s) dépassent la capacité disponible`
+      });
+    }
+  }
   
   if (unplannedCentiHours > 0) {
     diagnostics.push({

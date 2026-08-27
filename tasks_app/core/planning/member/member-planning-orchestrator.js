@@ -171,7 +171,10 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
       'draft': 'draft',
       'submitted': 'submitted',
       'validated': 'validated',
-      'rejected': 'draft'
+      'rejected': 'draft',
+      // Une correction manager est une feuille ouverte à une saisie explicite :
+      // ses autres cellules doivent rester stables pendant cette correction.
+      'correction_manager': 'draft'
     };
     return STATUS_MAPPING[String(status).toLowerCase()] || null;
   }
@@ -290,7 +293,10 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
       return {
         date: date,
         baseCapacityHours: Math.max(regEntry.baseCapacityHours, 0),
-        availableCapacityHours: Math.max(regEntry.remainingCapacityHours, 0)
+        availableCapacityHours: Math.max(regEntry.remainingCapacityHours, 0),
+        // Capacité métier après indisponibilités, utilisée comme poids de
+        // lissage lorsque la surcharge est autorisée.
+        distributionCapacityHours: Math.max(regEntry.availableCapacityHours, 0)
       };
     });
   }
@@ -460,11 +466,11 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
       /**
        * Réserve des heures pour une affectation
        */
-      reserveHours: function(date, hours) {
+      reserveHours: function(date, hours, allowOverload) {
         if (!registry[date]) return false;
         
         var remaining = registry[date].remainingCapacityHours;
-        if (remaining < hours) {
+        if (!allowOverload && remaining < hours) {
           return false;
         }
         
@@ -720,30 +726,23 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
      * Critères :
      * - feuille soumise ou validée
      * - heures réalisées > 0 OU === 0 (explicitement saisi)
-     * - historique avant historyCutoffDate (sans feuille et sans réalisé)
+     * - feuille brouillon en cours d'édition
      */
     function identifyProtectedEntries(timeEntries, feuillesById, options) {
       options = options || {};
-      var historyCutoffDate = options.historyCutoffDate;
-      
       return timeEntries.filter(function(entry) {
         var isSubmitted = entry.sheetStatus === 'submitted';
         var isValidated = entry.sheetStatus === 'validated';
+        var isDraft = entry.sheetStatus === 'draft' && entry.feuille;
         var hasActualHours = hasExplicitActual(entry);
-        var isBeforeCutoff = historyCutoffDate && entry.date && entry.date < historyCutoffDate;
         
-        // Feuille soumise ou validée
-        if (isSubmitted || isValidated) {
+        // Feuille soumise, validée ou brouillon en cours d'édition
+        if (isSubmitted || isValidated || isDraft) {
           return true;
         }
         
         // Heures réalisées explicites (null ≠ 0, et 0 est protégé)
         if (hasActualHours) {
-          return true;
-        }
-        
-        // Historique avant historyCutoffDate (lignes sans feuille et sans réalisé)
-        if (isBeforeCutoff && !entry.feuille) {
           return true;
         }
         
@@ -826,20 +825,12 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
     
     /**
      * Détermine la date de début de distribution pour une affectation
-     * max(historyCutoffDate, assignment.startDate)
+     * Toute la durée de l'affectation est planifiable. Une date passée n'est
+     * pas protégée par elle-même ; seules les saisies et feuilles le sont.
      */
     function determineDistributionStartDate(assignment, historyCutoffDate) {
       var assignmentStartDate = gristDateToIso(assignment.dateDebut);
-      
-      if (!historyCutoffDate) {
-        return assignmentStartDate;
-      }
-      
-      if (!assignmentStartDate) {
-        return historyCutoffDate;
-      }
-      
-      return assignmentStartDate > historyCutoffDate ? assignmentStartDate : historyCutoffDate;
+      return assignmentStartDate || historyCutoffDate;
     }
     
     /**
@@ -856,19 +847,12 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
         // PHASE 1 : Utiliser hasExplicitActual pour détecter le réalisé
         var hasRealise = hasExplicitActual(entry);
         
-        // Feuille validée : protéger max(heuresPrevues, heures)
-        if (entry.sheetStatus === 'validated') {
-          protectedHoursByDate[entry.date] += Math.max(entry.plannedHours, entry.actualHours === null || entry.actualHours === undefined || entry.actualHours === '' ? 0 : entry.actualHours);
+        // Une valeur explicite est la réalité, y compris zéro. Elle remplace
+        // la proposition dans le calcul de charge.
+        if (hasRealise) {
+          protectedHoursByDate[entry.date] += Number(entry.actualHours);
         }
-        // Feuille soumise : protéger heuresPrevues
-        else if (entry.sheetStatus === 'submitted') {
-          protectedHoursByDate[entry.date] += entry.plannedHours;
-        }
-        // Ligne avec réalisé explicite (y compris 0) : protéger max(heuresPrevues, heures)
-        else if (hasRealise) {
-          protectedHoursByDate[entry.date] += Math.max(entry.plannedHours, entry.actualHours === null || entry.actualHours === undefined || entry.actualHours === '' ? 0 : entry.actualHours);
-        }
-        // Historique avant replanFromDate ou ligne sans réalisé : protéger heuresPrevues
+        // Feuille soumise/validée/brouillon sans réalisé explicite.
         else {
           protectedHoursByDate[entry.date] += entry.plannedHours;
         }
@@ -998,7 +982,11 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
           var capReconciliation = reconcileMemberDailyCapacities(
             data.capacities,
             capacityResult.capacities,
-            { nowUnixSeconds: nowUnixSeconds, todayIso: historyCutoffDate }
+            {
+              nowUnixSeconds: nowUnixSeconds,
+              todayIso: historyCutoffDate,
+              forceHistoricalRebuild: true
+            }
           );
           
           // Vérifier les conflits
@@ -1105,7 +1093,7 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
             existingEntries: entriesForAssignment,
             replanFromDate: distributionStartDate,
             precisionHours: 0.01,
-            capacityPolicy: 'cap'
+            capacityPolicy: 'allow-overload'
           });
           
           // Vérifier les diagnostics bloquants
@@ -1139,7 +1127,7 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
           var reservationFailed = false;
           for (var k = 0; k < plannedEntries.length; k++) {
             var entry = plannedEntries[k];
-            if (!registry.reserveHours(entry.date, entry.plannedHours)) {
+            if (!registry.reserveHours(entry.date, entry.plannedHours, true)) {
               reservationFailed = true;
               break;
             }
@@ -1177,12 +1165,11 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
         var postconditionCheck = registry.verifyPostcondition();
         
         if (!postconditionCheck.valid) {
-          log('Violation postcondition: ' + JSON.stringify(postconditionCheck.violations));
-          return {
-            success: false,
-            code: 'CAPACITY_OVERCOMMITMENT',
+          log('Surcharge autorisée: ' + JSON.stringify(postconditionCheck.violations));
+          allDiagnostics.push({
+            code: 'CAPACITY_OVERCOMMITMENT_ALLOWED',
             violations: postconditionCheck.violations
-          };
+          });
         }
         
         // 8. Réconciliation globale
@@ -1220,11 +1207,6 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
           
           // Lignes avec feuille brouillon : à exclure car l'utilisateur travaille dessus
           if (hasFeuille && e.sheetStatus === 'draft') {
-            return false;
-          }
-          
-          // Lignes historiques avant historyCutoffDate (sans feuille et sans réalisé)
-          if (e.date && e.date < historyCutoffDate && !hasFeuille) {
             return false;
           }
           
@@ -1709,7 +1691,7 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
             existingEntries: entriesForAssignment,
             replanFromDate: distributionStartDate,
             precisionHours: 0.01,
-            capacityPolicy: 'cap'
+            capacityPolicy: 'allow-overload'
           });
           
           // Vérifier les diagnostics bloquants
@@ -1743,7 +1725,7 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
           var reservationFailed = false;
           for (var k = 0; k < plannedEntries.length; k++) {
             var entry = plannedEntries[k];
-            if (!refreshedRegistry.reserveHours(entry.date, entry.plannedHours)) {
+            if (!refreshedRegistry.reserveHours(entry.date, entry.plannedHours, true)) {
               reservationFailed = true;
               break;
             }
@@ -1806,13 +1788,11 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
         var postconditionCheck = refreshedRegistry.verifyPostcondition();
         
         if (!postconditionCheck.valid) {
-          log('Violation postcondition après rechargement: ' + JSON.stringify(postconditionCheck.violations));
-          return {
-            success: false,
-            code: 'CAPACITY_OVERCOMMITMENT_AFTER_RELOAD',
-            violations: postconditionCheck.violations,
-            phases: phases
-          };
+          log('Surcharge autorisée après rechargement: ' + JSON.stringify(postconditionCheck.violations));
+          allDiagnostics.push({
+            code: 'CAPACITY_OVERCOMMITMENT_ALLOWED',
+            violations: postconditionCheck.violations
+          });
         }
         
         // =========================================================================
@@ -1840,10 +1820,6 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
           }
           
           if (hasFeuille && e.sheetStatus === 'draft') {
-            return false;
-          }
-          
-          if (e.date && e.date < historyCutoffDate && !hasFeuille) {
             return false;
           }
           

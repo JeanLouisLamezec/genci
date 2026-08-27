@@ -147,7 +147,7 @@ var addDaysUTC = planningEngine.addDaysUTC;
         date: capacities.map(function(c) { return c.date; }),
         capaciteTheorique: capacities.map(function(c) { return c.capaciteTheorique || 7; }),
         disponibiliteRatio: capacities.map(function(c) { return c.disponibiliteRatio != null ? c.disponibiliteRatio : 1; }),
-        capaciteDisponible: capacities.map(function(c) { return c.capaciteDisponible || 7; }),
+        capaciteDisponible: capacities.map(function(c) { return c.capaciteDisponible != null ? c.capaciteDisponible : 7; }),
         absenceHeures: capacities.map(function(c) { return c.absenceHeures || 0; }),
         source: capacities.map(function(c) { return c.source || 'calcul'; }),
         revision: capacities.map(function(c) { return c.revision || 1; })
@@ -469,8 +469,8 @@ var addDaysUTC = planningEngine.addDaysUTC;
       });
     });
     
-    // 10.3. Capacité insuffisante
-    it('10.3. Capacité insuffisante - unplannedHours > 0', function() {
+    // 10.3. Surcharge visible mais non bloquante
+    it('10.3. Capacité insuffisante - toute la charge reste planifiée avec alerte', function() {
       var testDate = new Date('2026-07-25');
       var startDate = new Date('2026-07-27');
       var endDate = new Date('2026-07-31');
@@ -506,8 +506,13 @@ var addDaysUTC = planningEngine.addDaysUTC;
       
       return orchestrator.previewMember(1, { todayIso: '2026-07-25' }).then(function(result) {
         expect(result.success).toBe(true);
-        // 100h allouées mais capacité insuffisante
-        expect(result.totals.totalUnplannedHours).toBeGreaterThan(0);
+        // La surcharge est une information de pilotage, pas un motif de rejet.
+        expect(result.totals.totalPlannedHours).toBe(100);
+        expect(result.totals.totalUnplannedHours).toBe(0);
+        expect(result.canCommit).toBe(true);
+        expect(result.diagnostics.some(function(d) {
+          return d.code === 'CAPACITY_OVERCOMMITMENT_ALLOWED';
+        })).toBe(true);
       });
     });
     
@@ -670,6 +675,16 @@ var addDaysUTC = planningEngine.addDaysUTC;
             dateFin: Math.floor(new Date('2026-07-29').getTime() / 1000),
             dispo: 0
           }
+        ],
+        // Le mock de ce fichier ne matérialise pas les actions Grist entre
+        // preview et commit : fournir l'état de capacité attendu permet de
+        // tester réellement le recalcul de la phase 2.
+        capacities: [
+          { id: 1, memberId: 1, date: '2026-07-27', capaciteTheorique: 7, capaciteDisponible: 7 },
+          { id: 2, memberId: 1, date: '2026-07-28', capaciteTheorique: 7, capaciteDisponible: 7 },
+          { id: 3, memberId: 1, date: '2026-07-29', capaciteTheorique: 7, disponibiliteRatio: 0, capaciteDisponible: 0, absenceHeures: 7 },
+          { id: 4, memberId: 1, date: '2026-07-30', capaciteTheorique: 7, capaciteDisponible: 7 },
+          { id: 5, memberId: 1, date: '2026-07-31', capaciteTheorique: 7, capaciteDisponible: 7 }
         ]
       });
       
