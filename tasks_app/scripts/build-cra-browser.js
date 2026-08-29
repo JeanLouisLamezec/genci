@@ -29,8 +29,6 @@ const MODULES = [
   { path: path.join(CORE_DIR, 'timesheets', 'timesheet-validator.js') },
   { path: path.join(CORE_DIR, 'cra', 'workflow', 'cra-sheet-validation-service.js') },
   { path: path.join(CORE_DIR, 'cra', 'ui', 'cra-sheet-ui-adapter.js') },
-  { path: path.join(CORE_DIR, 'cra', 'identity', 'cra-identity-association.js') },
-  { path: path.join(CORE_DIR, 'cra', 'identity', 'cra-identity-claim-service.js') },
   { path: path.join(CORE_DIR, 'cra', 'manager', 'cra-manager-workspace.js') }
 ];
 
@@ -196,8 +194,6 @@ function build(options = {}) {
   var validator = __require('timesheets/timesheet-validator');
   var service = __require('cra/workflow/cra-sheet-validation-service');
   var adapterModule = __require('cra/ui/cra-sheet-ui-adapter');
-  var identityModule = __require('cra/identity/cra-identity-association');
-  var claimService = __require('cra/identity/cra-identity-claim-service');
   var managerModule = __require('cra/manager/cra-manager-workspace');
   
   global.TaskFlowCra = {
@@ -249,25 +245,6 @@ function build(options = {}) {
       ERROR_CODES: validator.ERROR_CODES
     },
     
-    // Identité (mode libre provisoire)
-    identity: {
-      IDENTITY_STATUS: identityModule.IDENTITY_STATUS,
-      normalizeGristUserId: identityModule.normalizeGristUserId,
-      normalizeEmail: identityModule.normalizeEmail,
-      isUnassociated: identityModule.isUnassociated,
-      isValidGristUserId: identityModule.isValidGristUserId,
-      resolveCurrentUserIdentity: identityModule.resolveCurrentUserIdentity,
-      listClaimableTeamMembers: identityModule.listClaimableTeamMembers,
-      buildIdentityClaim: identityModule.buildIdentityClaim,
-      isAssociationAlreadyApplied: identityModule.isAssociationAlreadyApplied
-    },
-    
-    claimService: {
-      claimCurrentUserIdentity: claimService.claimCurrentUserIdentity,
-      isClaimPending: claimService.isClaimPending,
-      CLAIM_ERROR_CODES: claimService.CLAIM_ERROR_CODES
-    },
-    
     // Espace manager
     managerWorkspace: {
       resolveManagerWorkspaceState: managerModule.resolveManagerWorkspaceState,
@@ -310,10 +287,6 @@ function build(options = {}) {
       typeof context.globalThis.TaskFlowCra.service.updateManagerActual !== 'function' ||
       typeof context.globalThis.TaskFlowCra.service.ensureWeeklySheet !== 'function' ||
       typeof context.globalThis.TaskFlowCra.createUiAdapter !== 'function' ||
-      !context.globalThis.TaskFlowCra.identity ||
-      typeof context.globalThis.TaskFlowCra.identity.resolveCurrentUserIdentity !== 'function' ||
-      !context.globalThis.TaskFlowCra.claimService ||
-      typeof context.globalThis.TaskFlowCra.claimService.claimCurrentUserIdentity !== 'function' ||
       !context.globalThis.TaskFlowCra.managerWorkspace ||
       typeof context.globalThis.TaskFlowCra.managerWorkspace.resolveManagerWorkspaceState !== 'function' ||
       !context.globalThis.TaskFlowCra.weeklySheet ||
@@ -328,8 +301,6 @@ function build(options = {}) {
     console.log('   ✓ service.updateManagerActual disponible');
     console.log('   ✓ service.ensureWeeklySheet disponible');
     console.log('   ✓ createUiAdapter disponible');
-    console.log('   ✓ identity.resolveCurrentUserIdentity disponible');
-    console.log('   ✓ claimService.claimCurrentUserIdentity disponible');
     console.log('   ✓ managerWorkspace.resolveManagerWorkspaceState disponible');
     console.log('   ✓ weeklySheet.resolveWeeklySheetState disponible');
   } catch (e) {

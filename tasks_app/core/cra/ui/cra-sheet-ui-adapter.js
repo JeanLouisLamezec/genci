@@ -85,6 +85,7 @@ function createUiAdapter(options) {
     service,
     grist,
     getActorMemberId,
+    getActor,
     reload,
     notify,
     setBusy,
@@ -94,6 +95,14 @@ function createUiAdapter(options) {
   // État interne pour empêcher le double-clic
   // Verrouillage par sheetId uniquement (pas par opération)
   const pendingOperations = new Set();
+
+  function resolveActor() {
+    const actor = typeof getActor === 'function' ? getActor() : null;
+    return {
+      actorMemberId: actor && actor.memberId ? actor.memberId : getActorMemberId(),
+      actorIsAdmin: !!(actor && actor.isAdmin)
+    };
+  }
   
   /**
    * Vérifie si une opération est déjà en cours pour cette feuille
@@ -187,6 +196,16 @@ function createUiAdapter(options) {
       }
     }
   }
+
+  async function callWorkflowService(operation, sheetId) {
+    try {
+      return await operation();
+    } catch (error) {
+      markOperationDone(sheetId);
+      if (typeof setBusy === 'function') setBusy(false);
+      throw error;
+    }
+  }
   
   /**
    * Soumet une feuille
@@ -201,7 +220,7 @@ function createUiAdapter(options) {
       return { success: false, code: 'OPERATION_PENDING' };
     }
     
-    const actorMemberId = getActorMemberId();
+    const { actorMemberId, actorIsAdmin } = resolveActor();
     if (!actorMemberId) {
       showNotification(USER_MESSAGES.ACTOR_NOT_IDENTIFIED, 'error');
       return { success: false, code: 'ACTOR_NOT_IDENTIFIED' };
@@ -212,12 +231,13 @@ function createUiAdapter(options) {
       setBusy(true);
     }
     
-    const result = await service.submitSheet({
+    const result = await callWorkflowService(() => service.submitSheet({
       grist,
       actorMemberId,
+      actorIsAdmin,
       sheetId,
       nowUnixSeconds: nowUnixSeconds()
-    });
+    }), sheetId);
     
     return await handleOperationResult(
       result,
@@ -240,7 +260,7 @@ function createUiAdapter(options) {
       return { success: false, code: 'OPERATION_PENDING' };
     }
     
-    const actorMemberId = getActorMemberId();
+    const { actorMemberId, actorIsAdmin } = resolveActor();
     if (!actorMemberId) {
       showNotification(USER_MESSAGES.ACTOR_NOT_IDENTIFIED, 'error');
       return { success: false, code: 'ACTOR_NOT_IDENTIFIED' };
@@ -251,11 +271,12 @@ function createUiAdapter(options) {
       setBusy(true);
     }
     
-    const result = await service.withdrawSheet({
+    const result = await callWorkflowService(() => service.withdrawSheet({
       grist,
       actorMemberId,
+      actorIsAdmin,
       sheetId
-    });
+    }), sheetId);
     
     return await handleOperationResult(
       result,
@@ -278,7 +299,7 @@ function createUiAdapter(options) {
       return { success: false, code: 'OPERATION_PENDING' };
     }
     
-    const actorMemberId = getActorMemberId();
+    const { actorMemberId, actorIsAdmin } = resolveActor();
     if (!actorMemberId) {
       showNotification(USER_MESSAGES.ACTOR_NOT_IDENTIFIED, 'error');
       return { success: false, code: 'ACTOR_NOT_IDENTIFIED' };
@@ -289,12 +310,13 @@ function createUiAdapter(options) {
       setBusy(true);
     }
     
-    const result = await service.validateSheet({
+    const result = await callWorkflowService(() => service.validateSheet({
       grist,
       actorMemberId,
+      actorIsAdmin,
       sheetId,
       nowUnixSeconds: nowUnixSeconds()
-    });
+    }), sheetId);
     
     return await handleOperationResult(
       result,
@@ -322,7 +344,7 @@ function createUiAdapter(options) {
       return { success: false, code: 'OPERATION_PENDING' };
     }
     
-    const actorMemberId = getActorMemberId();
+    const { actorMemberId, actorIsAdmin } = resolveActor();
     if (!actorMemberId) {
       showNotification(USER_MESSAGES.ACTOR_NOT_IDENTIFIED, 'error');
       return { success: false, code: 'ACTOR_NOT_IDENTIFIED' };
@@ -333,12 +355,13 @@ function createUiAdapter(options) {
       setBusy(true);
     }
     
-    const result = await service.rejectSheet({
+    const result = await callWorkflowService(() => service.rejectSheet({
       grist,
       actorMemberId,
+      actorIsAdmin,
       sheetId,
       rejectReason: String(reason).trim()
-    });
+    }), sheetId);
     
     return await handleOperationResult(
       result,
@@ -366,7 +389,7 @@ function createUiAdapter(options) {
       return { success: false, code: 'OPERATION_PENDING' };
     }
     
-    const actorMemberId = getActorMemberId();
+    const { actorMemberId, actorIsAdmin } = resolveActor();
     if (!actorMemberId) {
       showNotification(USER_MESSAGES.ACTOR_NOT_IDENTIFIED, 'error');
       return { success: false, code: 'ACTOR_NOT_IDENTIFIED' };
@@ -377,12 +400,13 @@ function createUiAdapter(options) {
       setBusy(true);
     }
     
-    const result = await service.openManagerCorrection({
+    const result = await callWorkflowService(() => service.openManagerCorrection({
       grist,
       actorMemberId,
+      actorIsAdmin,
       sheetId,
       correctionReason: String(reason).trim()
-    });
+    }), sheetId);
     
     return await handleOperationResult(
       result,
@@ -418,7 +442,7 @@ function createUiAdapter(options) {
       return { success: false, code: 'OPERATION_PENDING' };
     }
     
-    const actorMemberId = getActorMemberId();
+    const { actorMemberId, actorIsAdmin } = resolveActor();
     if (!actorMemberId) {
       showNotification(USER_MESSAGES.ACTOR_NOT_IDENTIFIED, 'error');
       return { success: false, code: 'ACTOR_NOT_IDENTIFIED' };
@@ -429,13 +453,14 @@ function createUiAdapter(options) {
       setBusy(true);
     }
     
-    const result = await service.updateManagerActual({
+    const result = await callWorkflowService(() => service.updateManagerActual({
       grist,
       actorMemberId,
+      actorIsAdmin,
       sheetId,
       timeEntryId,
       hours: numericHours
-    });
+    }), sheetId);
     
     return await handleOperationResult(
       result,
@@ -458,7 +483,7 @@ function createUiAdapter(options) {
       return { success: false, code: 'OPERATION_PENDING' };
     }
     
-    const actorMemberId = getActorMemberId();
+    const { actorMemberId, actorIsAdmin } = resolveActor();
     if (!actorMemberId) {
       showNotification(USER_MESSAGES.ACTOR_NOT_IDENTIFIED, 'error');
       return { success: false, code: 'ACTOR_NOT_IDENTIFIED' };
@@ -469,12 +494,13 @@ function createUiAdapter(options) {
       setBusy(true);
     }
     
-    const result = await service.revalidateSheet({
+    const result = await callWorkflowService(() => service.revalidateSheet({
       grist,
       actorMemberId,
+      actorIsAdmin,
       sheetId,
       nowUnixSeconds: nowUnixSeconds()
-    });
+    }), sheetId);
     
     return await handleOperationResult(
       result,

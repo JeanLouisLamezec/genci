@@ -190,17 +190,15 @@ function normalizeEmail(value) {
 }
 
 /**
- * Helper : importer le module d'identité (depuis le bundle TaskFlowCra)
+ * Helper : importer le domaine d'identité commun TaskFlow
  */
 function getIdentityAssociationModule() {
   try {
-    // Priorité au bundle TaskFlowCra (recommandé)
-    if (typeof globalThis.TaskFlowCra !== 'undefined' && globalThis.TaskFlowCra.identity) {
-      return globalThis.TaskFlowCra.identity;
+    if (typeof globalThis.TaskFlowIdentity !== 'undefined') {
+      return globalThis.TaskFlowIdentity;
     }
-    // Fallback vers l'ancien nom (pour compatibilité)
-    if (typeof globalThis.CraIdentityAssociation !== 'undefined') {
-      return globalThis.CraIdentityAssociation;
+    if (typeof module !== 'undefined' && module.exports) {
+      return require('../../identity/taskflow-identity.js');
     }
   } catch (e) {
     // Module non chargé
@@ -660,6 +658,7 @@ function normalizeCraSnapshot(raw, currentUser) {
     email: r.email,
     gristUserId: r.gristUserId,
     actif: r.actif !== false,  // true par défaut si undefined ou null
+    estAdmin: r.estAdmin === true || r.estAdmin === 1,
     entite: workflowNormalizeMemberId(r.entite),
     agentsGeres: [],
     capaciteHebdo: normalizeCapacityValue(r.capaciteHebdo) !== null ? normalizeCapacityValue(r.capaciteHebdo) : 35,
@@ -753,81 +752,37 @@ function normalizeCraSnapshot(raw, currentUser) {
     revision: Number(r.revision) || 0
   }));
   
-  // 1.2.1 - SÉPARATION IDENTITÉ : Distinguer utilisateur connecté et personne affichée
+  // Identité commune : seul gristUserId identifie durablement l'acteur.
+  // L'email peut uniquement proposer une première association dans IdentityGate.
   const meUserId = workflowNormalizeMemberId(currentUser?.userId);
   const currentEmail = normalizeEmail(currentUser?.email);
-  
-  // Identification par gristUserId (méthode principale)
-  const matchedByUserId = team.find(member =>
-    workflowNormalizeMemberId(member.gristUserId) === meUserId
-  );
-  
-  // Fallback par email (si le jeton contient l'email)
-  // DÉTECTION DE DOUBLONS : échouer si plusieurs lignes ont le même email
-  const emailMatches = currentEmail
-    ? team.filter(member => normalizeEmail(member.email) === currentEmail)
-    : [];
-  
-  let matchedByEmail = null;
-  if (emailMatches.length > 1) {
-    console.error('[CRA identity] Email Team dupliqué', {
-      email: currentEmail,
-      memberIds: emailMatches.map(member => member.id)
-    });
-    // Ne pas sélectionner silencieusement, retourner null
-  } else if (emailMatches.length === 1) {
-    matchedByEmail = emailMatches[0];
-  }
-  
-  // Utiliser userId en priorité, sinon email
-  const matchedUser = matchedByUserId || matchedByEmail;
-  
-  // Log de diagnostic de correspondance
-  console.info('[CRA identity match]', {
-    currentUserId: currentUser?.userId ?? null,
-    currentEmail: currentEmail || null,
-    matchedByUserId: matchedByUserId?.id ?? null,
-    matchedByEmail: matchedByEmail?.id ?? null,
-    currentUserMemberId: matchedUser?.id ?? null
-  });
-  
-  // currentUserMemberId : l'utilisateur connecté (immuable, ne change pas avec les filtres)
-  // Si identification échoue, reste null (pas de fallback silencieux vers team[0])
-  const currentUserMemberId = matchedUser ? matchedUser.id : null;
-  
-  // selectedPersonId : la personne actuellement affichée (peut changer avec filtres)
-  // Initialisée à currentUserMemberId si disponible, sinon null
-  const selectedPersonId = currentUserMemberId || null;
-  
-  const matchedUserRow = matchedUser ? team.find(t => t.id === matchedUser.id) : null;
-  const currentUserMemberName = matchedUserRow ? matchedUserRow.nom : '';
-  
-  // === ÉTAT D'IDENTITÉ (pour association libre) ===
-  let identityState = null;
-  
+  let identityState;
   const identityModule = getIdentityAssociationModule();
-  if (identityModule) {
-    try {
-      identityState = identityModule.resolveCurrentUserIdentity({
+  try {
+    identityState = identityModule && identityModule.resolveActorIdentity
+      ? identityModule.resolveActorIdentity({
         team,
         currentGristUserId: currentUser?.userId ?? null,
         currentEmail: currentUser?.email ?? null
-      });
-      
-      console.info('[CRA identity state]', {
-        status: identityState?.status,
-        currentUserMemberId,
-        candidateCount: identityState?.candidates?.length || 0,
-        conflictCodes: identityState?.conflictCodes || []
-      });
-    } catch (e) {
-      console.error('[CRA identity state] Erreur résolution', e);
-      identityState = {
-        status: 'DATA_CONFLICT',
-        error: e.message
-      };
-    }
+      })
+      : { identified: false, status: 'IDENTITY_DATA_UNAVAILABLE', memberId: null, isAdmin: false };
+  } catch (e) {
+    console.error('[CRA identity state] Erreur résolution', e);
+    identityState = { identified: false, status: 'IDENTITY_DATA_UNAVAILABLE', memberId: null, isAdmin: false, error: e.message };
   }
+
+  const currentUserMemberId = identityState.identified ? identityState.memberId : null;
+  const selectedPersonId = currentUserMemberId || null;
+  const currentUserMemberName = identityState.member ? identityState.member.nom || '' : '';
+
+  console.info('[CRA identity state]', {
+    status: identityState.status,
+    currentUserId: meUserId,
+    currentEmail: currentEmail || null,
+    currentUserMemberId,
+    associationCandidateId: identityState.associationCandidate?.id ?? null,
+    conflictCodes: identityState.conflictCodes || []
+  });
   
   return {
     team,
@@ -844,6 +799,7 @@ function normalizeCraSnapshot(raw, currentUser) {
     currentGristUserId: meUserId,  // userId Grist brut (155719, pas Team.id)
     currentUserMemberId,     // Utilisateur connecté (immuable)
     currentUserMemberName,   // Nom de l'utilisateur connecté
+    currentUserActor: identityState,
     selectedPersonId,        // Personne actuellement affichée (change avec filtres)
     identityState,           // État d'association (IDENTIFIED, ASSOCIATION_REQUIRED, etc.)
     // LEGACY : Pour compatibilité temporaire (sera supprimé)

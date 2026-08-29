@@ -115,6 +115,20 @@ describe('TaskFlow permissions - projets et tâches', () => {
     expect(authorize(snapshot, ['UpdateRecord', 'Tasks', 101, { titre: 'X' }]).allowed).toBe(false);
   });
 
+  test('exécutant affecté ne peut pas déplacer ni réaffecter une tâche', () => {
+    const snapshot = fixture(4);
+    expect(permissions.canUpdateTask(snapshot, snapshot.tables.Tasks[0], { statut: 'en_cours' }).allowed).toBe(true);
+    expect(permissions.canUpdateTask(snapshot, snapshot.tables.Tasks[0], { projet: 99 }).code).toBe('TASK_SCOPE_FIELDS_ADMIN_OR_MANAGER_REQUIRED');
+    expect(permissions.canUpdateTask(snapshot, snapshot.tables.Tasks[0], { assignees: ['L', 4, 5] }).allowed).toBe(false);
+  });
+
+  test('seul un administrateur peut transférer la responsabilité d’un projet', () => {
+    const owner = fixture(3);
+    const admin = fixture(1);
+    expect(permissions.canUpdateProject(owner, owner.tables.Projects[0], { responsable: 4 }).code).toBe('PROJECT_RESPONSIBLE_CHANGE_ADMIN_REQUIRED');
+    expect(permissions.canUpdateProject(admin, admin.tables.Projects[0], { responsable: 4 }).allowed).toBe(true);
+  });
+
   test('équipe, organisation, programme et étapes Kanban sont admin uniquement', () => {
     const snapshot = fixture(2);
     expect(authorize(snapshot, ['UpdateRecord', 'Team', 3, { nom: 'X' }]).code).toBe('ADMIN_REQUIRED');

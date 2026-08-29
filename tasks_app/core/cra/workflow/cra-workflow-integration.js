@@ -415,7 +415,7 @@
       throw new Error('CraWorkflowIntegration.configure: options requises');
     }
     
-    const { grist, taskFlowCra, getState, reload, notify, setBusy, enterCorrectionMode, leaveCorrectionMode } = options;
+    const { grist, taskFlowCra, getState, getActor, reload, notify, setBusy, enterCorrectionMode, leaveCorrectionMode } = options;
     
     if (!grist || !taskFlowCra || !taskFlowCra.service || !taskFlowCra.createUiAdapter) {
       throw new Error('CraWorkflowIntegration.configure: taskFlowCra et service requis');
@@ -435,6 +435,7 @@
       grist, 
       taskFlowCra, 
       getState, 
+      getActor,
       reload, 
       notify, 
       setBusy,
@@ -449,6 +450,11 @@
       getActorMemberId: () => {
         const state = getState();
         return state ? state.currentUserMemberId : null;
+      },
+      getActor: () => {
+        if (typeof getActor === 'function') return getActor();
+        const state = getState();
+        return state ? state.currentUserActor : null;
       },
       reload: reload || (() => {}),
       notify: notify || (() => {}),

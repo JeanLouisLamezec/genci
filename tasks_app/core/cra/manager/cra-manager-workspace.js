@@ -64,9 +64,10 @@ function normalizeStatus(status) {
  * @param {Array} options.team - Liste des membres Team
  * @param {Array} options.sheets - Liste des feuilles Feuilles
  * @param {number} options.currentUserMemberId - ID de l'utilisateur connecté
+ * @param {boolean} options.isAdmin - Passe-droit fonctionnel complet
  * @returns {Object} - État de l'espace manager
  */
-function resolveManagerWorkspaceState({ team, sheets, currentUserMemberId }) {
+function resolveManagerWorkspaceState({ team, sheets, currentUserMemberId, isAdmin = false }) {
   const result = {
     isIdentified: false,
     managesSomeone: false,
@@ -96,6 +97,8 @@ function resolveManagerWorkspaceState({ team, sheets, currentUserMemberId }) {
       return false;
     }
     
+    if (isAdmin) return normalizeId(member.id) !== managerId;
+
     // Responsable direct doit correspondre
     const memberRespId = normalizeId(member.responsable);
     return memberRespId === managerId;
@@ -108,7 +111,7 @@ function resolveManagerWorkspaceState({ team, sheets, currentUserMemberId }) {
   // 3. Calculer les feuilles accessibles via responsableValidation
   const accessibleSheets = sheets.filter(sheet => {
     const sheetRespId = normalizeId(sheet.responsableValidation);
-    if (sheetRespId !== managerId) {
+    if (!isAdmin && sheetRespId !== managerId) {
       return false;
     }
     
@@ -138,7 +141,8 @@ function resolveManagerWorkspaceState({ team, sheets, currentUserMemberId }) {
   
   // 5. Visibilité finale
   // Afficher si : manager de quelqu'un OU a des feuilles accessibles
-  result.shouldShowManagerTab = result.managesSomeone || result.hasAccessibleSheets;
+  result.shouldShowManagerTab = isAdmin || result.managesSomeone || result.hasAccessibleSheets;
+  result.isAdmin = isAdmin;
   
   return result;
 }

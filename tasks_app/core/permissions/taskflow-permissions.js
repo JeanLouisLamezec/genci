@@ -11,6 +11,13 @@
 (function (global) {
     'use strict';
 
+    var identityDomain = global && global.TaskFlowIdentity;
+    var identityRuntimeModule = global && global.TaskFlowIdentityRuntime;
+    if (typeof module !== 'undefined' && module.exports) {
+        identityDomain = require('../identity/taskflow-identity.js');
+        identityRuntimeModule = require('../identity/taskflow-identity-runtime.js');
+    }
+
     var CONTROLLED_TABLES = [
         'Team',
         'Entites',
@@ -18,8 +25,12 @@
         'Projects',
         'Tasks',
         'Actions',
-        'KanbanSteps'
+        'KanbanSteps',
+        'Feuilles',
+        'TimeEntries'
     ];
+
+    var PERMISSION_DATA_TABLES = CONTROLLED_TABLES.concat(['TaskAssignments']);
 
     var RECORD_ACTIONS = [
         'AddRecord',
@@ -71,63 +82,11 @@
     }
 
     function duplicateGristUserIds(team) {
-        var counts = new Map();
-        (team || []).forEach(function (member) {
-            var id = normalizeId(member && member.gristUserId);
-            if (id !== null) counts.set(id, (counts.get(id) || 0) + 1);
-        });
-        return Array.from(counts.entries())
-            .filter(function (entry) { return entry[1] > 1; })
-            .map(function (entry) { return entry[0]; });
+        return identityDomain.findDuplicateGristUserIds(team || []);
     }
 
     function resolveActorIdentity(options) {
-        options = options || {};
-        var team = options.team || [];
-        var gristUserId = normalizeId(options.currentGristUserId);
-        var base = {
-            identified: false,
-            status: null,
-            memberId: null,
-            member: null,
-            isAdmin: false,
-            duplicateUserIds: []
-        };
-
-        if (gristUserId === null) {
-            base.status = 'INVALID_CURRENT_USER_ID';
-            return base;
-        }
-
-        var duplicates = duplicateGristUserIds(team);
-        if (duplicates.length) {
-            base.status = 'GRIST_USER_ID_DUPLICATED';
-            base.duplicateUserIds = duplicates;
-            return base;
-        }
-
-        var matches = team.filter(function (member) {
-            return normalizeId(member && member.gristUserId) === gristUserId;
-        });
-        if (matches.length !== 1) {
-            base.status = 'TEAM_ASSOCIATION_REQUIRED';
-            return base;
-        }
-
-        var member = matches[0];
-        if (member.actif === false || member.actif === 0) {
-            base.status = 'MEMBER_INACTIVE';
-            base.memberId = normalizeId(member.id);
-            base.member = member;
-            return base;
-        }
-
-        base.identified = true;
-        base.status = 'IDENTIFIED';
-        base.memberId = normalizeId(member.id);
-        base.member = member;
-        base.isAdmin = isTruthy(member.estAdmin);
-        return base;
+        return identityDomain.resolveActorIdentity(options || {});
     }
 
     function createSnapshot(data, identity) {
@@ -141,7 +100,10 @@
                 Projects: (data.Projects || data.projects || []).slice(),
                 Tasks: (data.Tasks || data.tasks || []).slice(),
                 Actions: (data.Actions || data.actions || []).slice(),
-                KanbanSteps: (data.KanbanSteps || data.kanbanSteps || []).slice()
+                KanbanSteps: (data.KanbanSteps || data.kanbanSteps || []).slice(),
+                Feuilles: (data.Feuilles || data.feuilles || []).slice(),
+                TimeEntries: (data.TimeEntries || data.timeEntries || []).slice(),
+                TaskAssignments: (data.TaskAssignments || data.taskAssignments || []).slice()
             },
             indexes: null
         };
@@ -156,7 +118,10 @@
                 Projects: indexById(snapshot.tables.Projects),
                 Tasks: indexById(snapshot.tables.Tasks),
                 Actions: indexById(snapshot.tables.Actions),
-                KanbanSteps: indexById(snapshot.tables.KanbanSteps)
+                KanbanSteps: indexById(snapshot.tables.KanbanSteps),
+                Feuilles: indexById(snapshot.tables.Feuilles),
+                TimeEntries: indexById(snapshot.tables.TimeEntries),
+                TaskAssignments: indexById(snapshot.tables.TaskAssignments)
             };
         }
         return snapshot.indexes;
@@ -237,7 +202,12 @@
         return deny('PROJECT_CREATE_FORBIDDEN', 'Vous ne pouvez creer que votre propre projet ou celui d\'un collaborateur direct.');
     }
 
-    function canUpdateProject(snapshot, current) {
+    function canUpdateProject(snapshot, current, proposed) {
+        if (actorIsAdmin(snapshot)) return allow('ADMIN');
+        if (Object.prototype.hasOwnProperty.call(proposed || {}, 'responsable') &&
+            normalizeId(proposed.responsable) !== normalizeId(current && current.responsable)) {
+            return deny('PROJECT_RESPONSIBLE_CHANGE_ADMIN_REQUIRED', 'Seul un administrateur peut changer le responsable d\'un projet.');
+        }
         if (canManageProject(snapshot, current)) return allow('PROJECT_SCOPE');
         return deny('PROJECT_OUTSIDE_SCOPE', 'Ce projet est hors de votre perimetre.', {
             resourceLabel: recordLabel('Projects', current)
@@ -251,11 +221,18 @@
         return deny('TASK_CREATE_FORBIDDEN', 'Vous ne pouvez creer une tache que dans un projet dont vous etes responsable ou manager direct.');
     }
 
-    function canUpdateTask(snapshot, current) {
+    function canUpdateTask(snapshot, current, proposed) {
         if (actorIsAdmin(snapshot)) return allow('ADMIN');
         var project = projectForTask(snapshot, current);
         if (project && canManageProject(snapshot, project)) return allow('PROJECT_SCOPE');
-        if (isTaskAssignee(snapshot, current)) return allow('TASK_ASSIGNEE');
+        if (isTaskAssignee(snapshot, current)) {
+            var protectedFields = ['projet', 'assignees', 'dependDe', 'parentTask'];
+            var changesScope = Object.keys(proposed || {}).some(function (field) {
+                return protectedFields.indexOf(field) !== -1;
+            });
+            if (changesScope) return deny('TASK_SCOPE_FIELDS_ADMIN_OR_MANAGER_REQUIRED', 'Un executant ne peut pas modifier le projet, les affectations ou les dependances de la tache.');
+            return allow('TASK_ASSIGNEE');
+        }
         return deny('TASK_OUTSIDE_SCOPE', 'La tache « ' + recordLabel('Tasks', current) + ' » est hors de votre perimetre.', {
             resourceLabel: recordLabel('Tasks', current)
         });
@@ -318,6 +295,147 @@
         return deny('ACTION_DELETE_FORBIDDEN', 'Vous ne pouvez supprimer que vos propres actions ou celles de votre perimetre projet.');
     }
 
+    function normalizeStatus(value) {
+        return String(value || '').trim().toLowerCase();
+    }
+
+    function hasExactFields(fields, expected) {
+        var actual = Object.keys(fields || {}).sort();
+        return actual.length === expected.length && actual.every(function (key, index) {
+            return key === expected.slice().sort()[index];
+        });
+    }
+
+    function hasOnlyFields(fields, allowed) {
+        return Object.keys(fields || {}).every(function (key) { return allowed.indexOf(key) !== -1; });
+    }
+
+    function sheetForEntry(snapshot, entry) {
+        return entry ? ensureIndexes(snapshot).Feuilles.get(normalizeId(entry.feuille)) || null : null;
+    }
+
+    function isSheetOwner(snapshot, sheet) {
+        return Boolean(sheet) && normalizeId(sheet.membre) === actorId(snapshot);
+    }
+
+    function isSheetValidationManager(snapshot, sheet) {
+        return Boolean(sheet) && normalizeId(sheet.responsableValidation) === actorId(snapshot);
+    }
+
+    function canCreateSheet(snapshot, proposed) {
+        if (actorIsAdmin(snapshot)) return allow('ADMIN');
+        if (!hasExactFields(proposed, ['membre', 'semaine', 'statut', 'revisionValidation'])) {
+            return deny('CRA_SHEET_CREATE_FIELDS_FORBIDDEN', 'La creation d\'une feuille doit utiliser uniquement les champs initiaux du workflow.');
+        }
+        if (normalizeId(proposed.membre) !== actorId(snapshot) || normalizeStatus(proposed.statut) !== 'brouillon' || Number(proposed.revisionValidation) !== 0) {
+            return deny('CRA_SHEET_CREATE_FORBIDDEN', 'Vous ne pouvez creer que votre propre feuille en brouillon.');
+        }
+        return allow('CRA_SHEET_OWNER_CREATE');
+    }
+
+    function canUpdateSheet(snapshot, current, proposed) {
+        if (actorIsAdmin(snapshot)) return allow('ADMIN');
+        var from = normalizeStatus(current && current.statut);
+        var to = Object.prototype.hasOwnProperty.call(proposed || {}, 'statut') ? normalizeStatus(proposed.statut) : from;
+        var owner = isSheetOwner(snapshot, current);
+        var manager = isSheetValidationManager(snapshot, current);
+        var sheetMember = ensureIndexes(snapshot).Team.get(normalizeId(current && current.membre)) || null;
+
+        if (owner && (from === 'brouillon' || from === 'rejete') && to === 'soumis' &&
+            hasExactFields(proposed, ['statut', 'responsableValidation', 'soumisPar', 'dateSoumission', 'validePar', 'dateValidation', 'motifRejet', 'motifCorrection', 'revisionValidation']) &&
+            normalizeId(proposed.soumisPar) === actorId(snapshot) &&
+            normalizeId(proposed.responsableValidation) === normalizeId(sheetMember && sheetMember.responsable) &&
+            normalizeId(proposed.responsableValidation) !== null &&
+            proposed.validePar == null && proposed.dateValidation == null &&
+            Number(proposed.revisionValidation) === Number(current.revisionValidation || 0)) return allow('CRA_SUBMIT');
+
+        if (owner && from === 'soumis' && to === 'brouillon' &&
+            hasExactFields(proposed, ['statut', 'responsableValidation', 'soumisPar', 'dateSoumission', 'validePar', 'dateValidation', 'motifRejet', 'motifCorrection'])) return allow('CRA_WITHDRAW');
+
+        if (manager && from === 'soumis' && to === 'valide' &&
+            hasExactFields(proposed, ['statut', 'validePar', 'dateValidation', 'revisionValidation', 'motifRejet']) &&
+            normalizeId(proposed.validePar) === actorId(snapshot) &&
+            Number(proposed.revisionValidation) === Number(current.revisionValidation || 0) + 1) return allow('CRA_VALIDATE');
+
+        if (manager && from === 'soumis' && to === 'rejete' &&
+            hasExactFields(proposed, ['statut', 'motifRejet', 'validePar', 'dateValidation']) && String(proposed.motifRejet || '').trim()) return allow('CRA_REJECT');
+
+        if (manager && from === 'valide' && to === 'correction_manager' &&
+            hasExactFields(proposed, ['statut', 'motifCorrection']) && String(proposed.motifCorrection || '').trim()) return allow('CRA_OPEN_CORRECTION');
+
+        if (manager && from === 'correction_manager' && to === 'valide' &&
+            hasExactFields(proposed, ['statut', 'validePar', 'dateValidation', 'revisionValidation']) &&
+            normalizeId(proposed.validePar) === actorId(snapshot) &&
+            Number(proposed.revisionValidation) === Number(current.revisionValidation || 0) + 1) return allow('CRA_REVALIDATE');
+
+        if (from === 'brouillon' && to === 'correction_manager' &&
+            isDirectManagerOfMember(snapshot, current && current.membre) &&
+            hasExactFields(proposed, ['statut', 'responsableValidation', 'motifCorrection']) &&
+            normalizeId(proposed.responsableValidation) === actorId(snapshot) && String(proposed.motifCorrection || '').trim()) {
+            return allow('CRA_RETROACTIVE_CORRECTION');
+        }
+
+        return deny('CRA_SHEET_TRANSITION_FORBIDDEN', 'Transition de feuille ou champs systeme non autorises.');
+    }
+
+    var TIME_ENTRY_CREATE_FIELDS = [
+        'membre', 'tache', 'date', 'heures', 'imputation', 'description', 'heuresPrevues',
+        'capaciteTheorique', 'capaciteDisponible', 'revisionPlan', 'affectation', 'feuille', 'capaciteJour'
+    ];
+
+    function canCreateTimeEntry(snapshot, proposed) {
+        if (actorIsAdmin(snapshot)) return allow('ADMIN');
+        var sheet = ensureIndexes(snapshot).Feuilles.get(normalizeId(proposed && proposed.feuille)) || null;
+        if (normalizeId(proposed && proposed.membre) !== actorId(snapshot) || !sheet || !isSheetOwner(snapshot, sheet)) {
+            return deny('CRA_TIME_ENTRY_CREATE_FORBIDDEN', 'Vous ne pouvez creer que vos propres saisies dans votre feuille.');
+        }
+        if (['brouillon', 'rejete'].indexOf(normalizeStatus(sheet.statut)) === -1 || !hasOnlyFields(proposed, TIME_ENTRY_CREATE_FIELDS)) {
+            return deny('CRA_TIME_ENTRY_CREATE_FIELDS_FORBIDDEN', 'La feuille est verrouillee ou contient des champs de saisie interdits.');
+        }
+        var assignment = ensureIndexes(snapshot).TaskAssignments.get(normalizeId(proposed.affectation)) || null;
+        if (!assignment || normalizeId(assignment.membre) !== actorId(snapshot) || normalizeId(assignment.tache) !== normalizeId(proposed.tache) || assignment.actif === false || assignment.actif === 0) {
+            return deny('CRA_TIME_ENTRY_ASSIGNMENT_REQUIRED', 'Une affectation active correspondant au membre et a la tache est obligatoire.');
+        }
+        return allow('CRA_TIME_ENTRY_OWNER_CREATE');
+    }
+
+    function canUpdateTimeEntry(snapshot, current, proposed) {
+        if (actorIsAdmin(snapshot)) return allow('ADMIN');
+        var sheet = sheetForEntry(snapshot, current);
+        var ownsEntry = normalizeId(current && current.membre) === actorId(snapshot);
+        var fields = Object.keys(proposed || {});
+        if (ownsEntry && sheet && isSheetOwner(snapshot, sheet) && ['brouillon', 'rejete'].indexOf(normalizeStatus(sheet.statut)) !== -1 &&
+            fields.length > 0 && hasOnlyFields(proposed, ['heures', 'feuille'])) return allow('CRA_TIME_ENTRY_OWNER_UPDATE');
+
+        if (sheet && normalizeStatus(sheet.statut) === 'correction_manager' && isSheetValidationManager(snapshot, sheet) &&
+            hasExactFields(proposed, ['heures'])) return allow('CRA_TIME_ENTRY_MANAGER_CORRECTION');
+
+        if (ownsEntry && hasExactFields(proposed, ['feuille'])) {
+            var targetSheet = ensureIndexes(snapshot).Feuilles.get(normalizeId(proposed.feuille)) || null;
+            if (targetSheet && isSheetOwner(snapshot, targetSheet) && ['brouillon', 'rejete'].indexOf(normalizeStatus(targetSheet.statut)) !== -1) {
+                return allow('CRA_TIME_ENTRY_OWNER_LINK');
+            }
+        }
+
+        if (hasExactFields(proposed, ['feuille'])) {
+            var correctionSheet = ensureIndexes(snapshot).Feuilles.get(normalizeId(proposed.feuille)) || null;
+            if (correctionSheet && normalizeStatus(correctionSheet.statut) === 'correction_manager' && isSheetValidationManager(snapshot, correctionSheet) &&
+                normalizeId(correctionSheet.membre) === normalizeId(current && current.membre)) return allow('CRA_TIME_ENTRY_MANAGER_LINK');
+        }
+
+        return deny('CRA_TIME_ENTRY_UPDATE_FORBIDDEN', 'Cette saisie est verrouillee ou les champs demandes sont interdits.');
+    }
+
+    function canDeleteTimeEntry(snapshot, current) {
+        if (actorIsAdmin(snapshot)) return allow('ADMIN');
+        var sheet = sheetForEntry(snapshot, current);
+        if (normalizeId(current && current.membre) === actorId(snapshot) &&
+            (!sheet || (isSheetOwner(snapshot, sheet) && ['brouillon', 'rejete'].indexOf(normalizeStatus(sheet.statut)) !== -1))) {
+            return allow('CRA_TIME_ENTRY_OWNER_DELETE');
+        }
+        return deny('CRA_TIME_ENTRY_DELETE_FORBIDDEN', 'Cette saisie ne peut pas etre supprimee dans son etat actuel.');
+    }
+
     function authorizeRecordMutation(snapshot, mutation) {
         var actorError = requireActor(snapshot);
         if (actorError) return actorError;
@@ -335,7 +453,7 @@
 
         if (table === 'Projects') {
             if (kind === 'create') return canCreateProject(snapshot, proposed);
-            if (kind === 'update') return canUpdateProject(snapshot, current);
+            if (kind === 'update') return canUpdateProject(snapshot, current, proposed);
             return actorIsAdmin(snapshot)
                 ? allow('ADMIN')
                 : deny('PROJECT_DELETE_FORBIDDEN', 'Seul un administrateur peut supprimer un projet.');
@@ -343,7 +461,7 @@
 
         if (table === 'Tasks') {
             if (kind === 'create') return canCreateTask(snapshot, proposed);
-            if (kind === 'update') return canUpdateTask(snapshot, current);
+            if (kind === 'update') return canUpdateTask(snapshot, current, proposed);
             return canDeleteTask(snapshot, current);
         }
 
@@ -353,12 +471,24 @@
             return canDeleteAction(snapshot, current);
         }
 
+        if (table === 'Feuilles') {
+            if (kind === 'create') return canCreateSheet(snapshot, proposed);
+            if (kind === 'update') return canUpdateSheet(snapshot, current, proposed);
+            return actorIsAdmin(snapshot) ? allow('ADMIN') : deny('CRA_SHEET_DELETE_FORBIDDEN', 'Seul un administrateur peut supprimer une feuille.');
+        }
+
+        if (table === 'TimeEntries') {
+            if (kind === 'create') return canCreateTimeEntry(snapshot, proposed);
+            if (kind === 'update') return canUpdateTimeEntry(snapshot, current, proposed);
+            return canDeleteTimeEntry(snapshot, current);
+        }
+
         return allow('UNCONTROLLED_TABLE');
     }
 
     function cloneTables(snapshot) {
         var out = {};
-        CONTROLLED_TABLES.forEach(function (table) {
+        PERMISSION_DATA_TABLES.forEach(function (table) {
             out[table] = (snapshot.tables[table] || []).map(function (row) { return Object.assign({}, row); });
         });
         return out;
@@ -496,18 +626,19 @@
         }
     }
 
-    async function getCurrentGristUser(grist) {
-        try {
-            var tokenResult = await grist.docApi.getAccessToken({ readOnly: true });
-            var payload = decodeJwtPayload(tokenResult && tokenResult.token);
-            if (!payload) return { userId: null, email: null };
-            return {
-                userId: payload.userId != null ? payload.userId : (payload.user && payload.user.id != null ? payload.user.id : payload.sub),
-                email: payload.email || (payload.user && payload.user.email) || payload.loginEmail || null
-            };
-        } catch (e) {
-            return { userId: null, email: null, error: e };
-        }
+    var getCurrentGristUser = identityRuntimeModule.getCurrentGristUser;
+
+    function isExactIdentityClaimAction(actions, claim) {
+        if (!claim || !claim.allowed || claim.idempotent || !claim.action) return false;
+        if (!Array.isArray(actions) || actions.length !== 1) return false;
+        var action = actions[0];
+        if (!Array.isArray(action) || action[0] !== 'UpdateRecord' || action[1] !== 'Team') return false;
+        if (normalizeId(action[2]) !== claim.teamMemberId) return false;
+        var fields = action[3];
+        if (!fields || typeof fields !== 'object' || Array.isArray(fields)) return false;
+        var keys = Object.keys(fields);
+        return keys.length === 1 && keys[0] === 'gristUserId' &&
+            normalizeId(fields.gristUserId) === claim.gristUserId;
     }
 
     function createGristPermissionRuntime(grist, options) {
@@ -515,28 +646,30 @@
         var snapshot = null;
         var valid = false;
         var loading = null;
+        var identityRuntime = options.identityRuntime || identityRuntimeModule.createGristIdentityRuntime(grist, {
+            onError: options.onError,
+            onIdentity: options.onIdentity
+        });
 
-        async function refresh() {
+        async function refresh(refreshOptions) {
+            refreshOptions = refreshOptions || {};
+            if (valid && !refreshOptions.force) return snapshot;
             if (loading) return loading;
             loading = (async function () {
                 try {
-                var currentUser = await getCurrentGristUser(grist);
+                var identityState = await identityRuntime.refresh({ force: !!refreshOptions.force });
                 var existingTables = await grist.docApi.listTables();
-                var data = {};
-                await Promise.all(CONTROLLED_TABLES.map(async function (table) {
+                var data = { Team: identityState.team || [] };
+                await Promise.all(PERMISSION_DATA_TABLES.map(async function (table) {
+                    if (table === 'Team') return;
                     if (existingTables.indexOf(table) === -1) {
                         data[table] = [];
                         return;
                     }
                     data[table] = columnarToRows(await grist.docApi.fetchTable(table));
                 }));
-                var identity = resolveActorIdentity({
-                    team: data.Team,
-                    currentGristUserId: currentUser.userId
-                });
-                snapshot = createSnapshot(data, identity);
+                snapshot = createSnapshot(data, identityState.actor);
                 valid = true;
-                if (typeof options.onIdentity === 'function') options.onIdentity(identity);
                 return snapshot;
                 } catch (error) {
                     var identity = { identified: false, status: 'PERMISSION_DATA_UNAVAILABLE', memberId: null, member: null, isAdmin: false };
@@ -555,21 +688,37 @@
         }
 
         async function authorize(actions) {
-            await refresh();
+            if (Array.isArray(actions) && actions.length === 1) {
+                var action = actions[0];
+                if (Array.isArray(action) && action[0] === 'UpdateRecord' && action[1] === 'Team') {
+                    var claim = await identityRuntime.buildClaim(action[2]);
+                    if (isExactIdentityClaimAction(actions, claim)) {
+                        return {
+                            allowed: true,
+                            code: 'IDENTITY_CLAIM_ALLOWED',
+                            checkedActions: 1,
+                            identityClaim: true
+                        };
+                    }
+                }
+            }
+            await refresh({ force: true });
             return authorizeMutationBatch(snapshot, actions);
         }
 
         return {
             refresh: refresh,
             authorize: authorize,
-            invalidate: function () { valid = false; },
+            invalidate: function () { valid = false; identityRuntime.invalidate(); },
             getSnapshot: function () { return snapshot; },
-            getActor: function () { return snapshot && snapshot.actor; }
+            getActor: function () { return snapshot && snapshot.actor; },
+            getIdentityRuntime: function () { return identityRuntime; }
         };
     }
 
     var api = {
         CONTROLLED_TABLES: CONTROLLED_TABLES,
+        PERMISSION_DATA_TABLES: PERMISSION_DATA_TABLES,
         normalizeId: normalizeId,
         normalizeRefList: normalizeRefList,
         columnarToRows: columnarToRows,
@@ -588,10 +737,16 @@
         canCreateAction: canCreateAction,
         canUpdateAction: canUpdateAction,
         canDeleteAction: canDeleteAction,
+        canCreateSheet: canCreateSheet,
+        canUpdateSheet: canUpdateSheet,
+        canCreateTimeEntry: canCreateTimeEntry,
+        canUpdateTimeEntry: canUpdateTimeEntry,
+        canDeleteTimeEntry: canDeleteTimeEntry,
         authorizeRecordMutation: authorizeRecordMutation,
         authorizeMutationBatch: authorizeMutationBatch,
         decodeJwtPayload: decodeJwtPayload,
         getCurrentGristUser: getCurrentGristUser,
+        isExactIdentityClaimAction: isExactIdentityClaimAction,
         createGristPermissionRuntime: createGristPermissionRuntime
     };
 

@@ -699,7 +699,7 @@ function validateEntriesBelongToSheet(context) {
  * }}
  */
 function canSubmitSheet(context) {
-  const { actorMemberId, sheet, team, sheets, timeEntries } = context || {};
+  const { actorMemberId, actorIsAdmin = false, sheet, team, sheets, timeEntries } = context || {};
 
   // 1. Acteur identifié
   const actorId = normalizeMemberId(actorMemberId);
@@ -732,7 +732,7 @@ function canSubmitSheet(context) {
   const sheetMemberId = normalizeMemberId(sheet.membre);
 
   // 3. Acteur = membre de la feuille
-  if (actorId !== sheetMemberId) {
+  if (!actorIsAdmin && actorId !== sheetMemberId) {
     return {
       can: false,
       reason: 'Seul le propriétaire de la feuille peut la soumettre',
@@ -752,7 +752,7 @@ function canSubmitSheet(context) {
 
   // 5. Vérifier l'unicité (diagnostic de doublons)
   const weekStartIso = getWeekStartIso(sheet.semaine);
-  const uniquenessCheck = findUniqueSheetForWeek(actorId, weekStartIso, sheets);
+  const uniquenessCheck = findUniqueSheetForWeek(sheetMemberId, weekStartIso, sheets);
 
   if (uniquenessCheck.status === 'duplicate') {
     return {
@@ -832,7 +832,7 @@ function canSubmitSheet(context) {
  * @returns {{ can: boolean, reason: string, code: string }}
  */
 function canWithdrawSheet(context) {
-  const { actorMemberId, sheet, sheets } = context || {};
+  const { actorMemberId, actorIsAdmin = false, sheet, sheets } = context || {};
 
   const actorId = normalizeMemberId(actorMemberId);
   if (actorId === null) {
@@ -860,7 +860,7 @@ function canWithdrawSheet(context) {
     };
   }
 
-  if (normalizeMemberId(sheet.membre) !== actorId) {
+  if (!actorIsAdmin && normalizeMemberId(sheet.membre) !== actorId) {
     return {
       can: false,
       reason: 'Seul le propriétaire peut retirer sa soumission',
@@ -941,7 +941,7 @@ function canWithdrawSheet(context) {
  * @returns {{ can: boolean, reason: string, code: string }}
  */
 function canValidateSheet(context) {
-  const { actorMemberId, sheet, sheets, validationResult } = context || {};
+  const { actorMemberId, actorIsAdmin = false, sheet, sheets, validationResult } = context || {};
 
   // 1. Acteur identifié
   const actorId = normalizeMemberId(actorMemberId);
@@ -982,7 +982,7 @@ function canValidateSheet(context) {
   }
 
   // 4. Auto-validation interdite
-  if (normalizeMemberId(sheet.membre) === actorId) {
+  if (!actorIsAdmin && normalizeMemberId(sheet.membre) === actorId) {
     return {
       can: false,
       reason: 'Auto-validation interdite',
@@ -992,7 +992,7 @@ function canValidateSheet(context) {
 
   // 5. responsableValidation présent (photographie)
   const expectedManager = getExpectedValidationManagerId(sheet);
-  if (expectedManager === null) {
+  if (!actorIsAdmin && expectedManager === null) {
     return {
       can: false,
       reason: 'responsableValidation absent (photographie manquante)',
@@ -1001,7 +1001,7 @@ function canValidateSheet(context) {
   }
 
   // 6. Acteur = responsableValidation
-  if (!isExpectedValidationManager(actorMemberId, sheet)) {
+  if (!actorIsAdmin && !isExpectedValidationManager(actorMemberId, sheet)) {
     return {
       can: false,
       reason: 'Seul le responsable de validation photographié peut valider',
@@ -1079,7 +1079,7 @@ function canValidateSheet(context) {
  * @returns {{ can: boolean, reason: string, code: string }}
  */
 function canRejectSheet(context) {
-  const { actorMemberId, sheet, sheets, rejectReason } = context || {};
+  const { actorMemberId, actorIsAdmin = false, sheet, sheets, rejectReason } = context || {};
 
   // 1. Acteur identifié
   const actorId = normalizeMemberId(actorMemberId);
@@ -1120,7 +1120,7 @@ function canRejectSheet(context) {
   }
 
   // 4. Auto-rejet interdit
-  if (normalizeMemberId(sheet.membre) === actorId) {
+  if (!actorIsAdmin && normalizeMemberId(sheet.membre) === actorId) {
     return {
       can: false,
       reason: 'Auto-rejet interdit',
@@ -1130,7 +1130,7 @@ function canRejectSheet(context) {
 
   // 5. responsableValidation présent (photographie)
   const expectedManager = getExpectedValidationManagerId(sheet);
-  if (expectedManager === null) {
+  if (!actorIsAdmin && expectedManager === null) {
     return {
       can: false,
       reason: 'responsableValidation absent (photographie manquante)',
@@ -1139,7 +1139,7 @@ function canRejectSheet(context) {
   }
 
   // 6. Acteur = responsableValidation
-  if (!isExpectedValidationManager(actorMemberId, sheet)) {
+  if (!actorIsAdmin && !isExpectedValidationManager(actorMemberId, sheet)) {
     return {
       can: false,
       reason: 'Seul le responsable de validation photographié peut rejeter',
@@ -1213,7 +1213,7 @@ function canRejectSheet(context) {
  * @returns {{ can: boolean, reason: string, code: string }}
  */
 function canOpenManagerCorrection(context) {
-  const { actorMemberId, sheet, sheets, correctionReason } = context || {};
+  const { actorMemberId, actorIsAdmin = false, sheet, sheets, correctionReason } = context || {};
 
   // 1. Acteur identifié
   const actorId = normalizeMemberId(actorMemberId);
@@ -1254,7 +1254,7 @@ function canOpenManagerCorrection(context) {
   }
 
   // 4. Auto-correction interdite
-  if (normalizeMemberId(sheet.membre) === actorId) {
+  if (!actorIsAdmin && normalizeMemberId(sheet.membre) === actorId) {
     return {
       can: false,
       reason: 'Auto-correction interdite',
@@ -1264,7 +1264,7 @@ function canOpenManagerCorrection(context) {
 
   // 5. responsableValidation présent (photographie)
   const expectedManager = getExpectedValidationManagerId(sheet);
-  if (expectedManager === null) {
+  if (!actorIsAdmin && expectedManager === null) {
     return {
       can: false,
       reason: 'responsableValidation absent (photographie manquante)',
@@ -1273,7 +1273,7 @@ function canOpenManagerCorrection(context) {
   }
 
   // 6. Acteur = responsableValidation
-  if (!isExpectedValidationManager(actorMemberId, sheet)) {
+  if (!actorIsAdmin && !isExpectedValidationManager(actorMemberId, sheet)) {
     return {
       can: false,
       reason: 'Seul le responsable de validation photographié peut ouvrir une correction',
@@ -1344,7 +1344,7 @@ function canOpenManagerCorrection(context) {
  * @returns {{ can: boolean, reason: string, code: string }}
  */
 function canManagerEditActual(context) {
-  const { actorMemberId, sheet, timeEntry } = context || {};
+  const { actorMemberId, actorIsAdmin = false, sheet, timeEntry } = context || {};
 
   // 1. Acteur identifié
   const actorId = normalizeMemberId(actorMemberId);
@@ -1385,7 +1385,7 @@ function canManagerEditActual(context) {
   }
 
   // 4. Auto-édition interdite
-  if (normalizeMemberId(sheet.membre) === actorId) {
+  if (!actorIsAdmin && normalizeMemberId(sheet.membre) === actorId) {
     return {
       can: false,
       reason: 'Le propriétaire ne peut pas éditer en mode correction manager',
@@ -1395,7 +1395,7 @@ function canManagerEditActual(context) {
 
   // 5. responsableValidation présent
   const expectedManager = getExpectedValidationManagerId(sheet);
-  if (expectedManager === null) {
+  if (!actorIsAdmin && expectedManager === null) {
     return {
       can: false,
       reason: 'responsableValidation absent',
@@ -1404,7 +1404,7 @@ function canManagerEditActual(context) {
   }
 
   // 6. Acteur = responsableValidation
-  if (!isExpectedValidationManager(actorMemberId, sheet)) {
+  if (!actorIsAdmin && !isExpectedValidationManager(actorMemberId, sheet)) {
     return {
       can: false,
       reason: 'Seul le responsable de validation photographié peut éditer',
@@ -1476,7 +1476,7 @@ function canManagerEditActual(context) {
  * @returns {{ can: boolean, reason: string, code: string }}
  */
 function canRevalidateSheet(context) {
-  const { actorMemberId, sheet, sheets, validationResult } = context || {};
+  const { actorMemberId, actorIsAdmin = false, sheet, sheets, validationResult } = context || {};
 
   // 1. Acteur identifié
   const actorId = normalizeMemberId(actorMemberId);
@@ -1517,7 +1517,7 @@ function canRevalidateSheet(context) {
   }
 
   // 4. Auto-validation interdite
-  if (normalizeMemberId(sheet.membre) === actorId) {
+  if (!actorIsAdmin && normalizeMemberId(sheet.membre) === actorId) {
     return {
       can: false,
       reason: 'Auto-validation interdite',
@@ -1527,7 +1527,7 @@ function canRevalidateSheet(context) {
 
   // 5. responsableValidation présent
   const expectedManager = getExpectedValidationManagerId(sheet);
-  if (expectedManager === null) {
+  if (!actorIsAdmin && expectedManager === null) {
     return {
       can: false,
       reason: 'responsableValidation absent',
@@ -1536,7 +1536,7 @@ function canRevalidateSheet(context) {
   }
 
   // 6. Acteur = responsableValidation
-  if (!isExpectedValidationManager(actorMemberId, sheet)) {
+  if (!actorIsAdmin && !isExpectedValidationManager(actorMemberId, sheet)) {
     return {
       can: false,
       reason: 'Seul le responsable de validation photographié peut revalider',
@@ -1620,7 +1620,7 @@ function canRevalidateSheet(context) {
  * @returns {{ allowed: boolean, can: boolean, code: string, reason: string, actions: Array, diagnostics: Array, summary: Object }}
  */
 function buildSubmissionActions(params) {
-  const { actorMemberId, sheet, team, sheets, timeEntries, nowUnixSeconds } = params || {};
+  const { actorMemberId, actorIsAdmin = false, sheet, team, sheets, timeEntries, nowUnixSeconds } = params || {};
   const actions = [];
   const diagnostics = [];
   const summary = {};
@@ -1650,7 +1650,7 @@ function buildSubmissionActions(params) {
     };
   }
 
-  const authCheck = canSubmitSheet({ actorMemberId, sheet, team, sheets, timeEntries });
+  const authCheck = canSubmitSheet({ actorMemberId, actorIsAdmin, sheet, team, sheets, timeEntries });
   if (!authCheck.can) {
     return {
       allowed: false,
@@ -1760,7 +1760,7 @@ function buildSubmissionActions(params) {
  * @returns {{ allowed: boolean, can: boolean, code: string, reason: string, actions: Array, diagnostics: Array, summary: Object }}
  */
 function buildWithdrawActions(params) {
-  const { actorMemberId, sheet, sheets } = params || {};
+  const { actorMemberId, actorIsAdmin = false, sheet, sheets } = params || {};
   const actions = [];
   const diagnostics = [];
   const summary = {};
@@ -1814,7 +1814,7 @@ function buildWithdrawActions(params) {
     };
   }
 
-  const authCheck = canWithdrawSheet({ actorMemberId, sheet, sheets });
+  const authCheck = canWithdrawSheet({ actorMemberId, actorIsAdmin, sheet, sheets });
   if (!authCheck.can) {
     return {
       allowed: false,
@@ -1882,7 +1882,7 @@ function buildWithdrawActions(params) {
  * @returns {{ allowed: boolean, can: boolean, code: string, reason: string, actions: Array, diagnostics: Array, summary: Object }}
  */
 function buildValidationAction(params) {
-  const { actorMemberId, sheet, sheets, validationResult, nowUnixSeconds } = params || {};
+  const { actorMemberId, actorIsAdmin = false, sheet, sheets, validationResult, nowUnixSeconds } = params || {};
   const actions = [];
   const diagnostics = [];
   const summary = {};
@@ -1912,7 +1912,7 @@ function buildValidationAction(params) {
     };
   }
 
-  const authCheck = canValidateSheet({ actorMemberId, sheet, sheets, validationResult });
+  const authCheck = canValidateSheet({ actorMemberId, actorIsAdmin, sheet, sheets, validationResult });
   if (!authCheck.can) {
     return {
       allowed: false,
@@ -1979,7 +1979,7 @@ function buildValidationAction(params) {
  * @returns {{ allowed: boolean, can: boolean, code: string, reason: string, actions: Array, diagnostics: Array, summary: Object }}
  */
 function buildRejectionAction(params) {
-  const { actorMemberId, sheet, sheets, rejectReason } = params || {};
+  const { actorMemberId, actorIsAdmin = false, sheet, sheets, rejectReason } = params || {};
   const actions = [];
   const diagnostics = [];
   const summary = {};
@@ -1996,7 +1996,7 @@ function buildRejectionAction(params) {
     };
   }
 
-  const authCheck = canRejectSheet({ actorMemberId, sheet, sheets, rejectReason });
+  const authCheck = canRejectSheet({ actorMemberId, actorIsAdmin, sheet, sheets, rejectReason });
   if (!authCheck.can) {
     return {
       allowed: false,
@@ -2059,7 +2059,7 @@ function buildRejectionAction(params) {
  * @returns {{ allowed: boolean, can: boolean, code: string, reason: string, actions: Array, diagnostics: Array, summary: Object }}
  */
 function buildOpenManagerCorrectionActions(params) {
-  const { actorMemberId, sheet, sheets, correctionReason } = params || {};
+  const { actorMemberId, actorIsAdmin = false, sheet, sheets, correctionReason } = params || {};
   const actions = [];
   const diagnostics = [];
   const summary = {};
@@ -2076,7 +2076,7 @@ function buildOpenManagerCorrectionActions(params) {
     };
   }
 
-  const authCheck = canOpenManagerCorrection({ actorMemberId, sheet, sheets, correctionReason });
+  const authCheck = canOpenManagerCorrection({ actorMemberId, actorIsAdmin, sheet, sheets, correctionReason });
   if (!authCheck.can) {
     return {
       allowed: false,
@@ -2134,7 +2134,7 @@ function buildOpenManagerCorrectionActions(params) {
  * @returns {{ allowed: boolean, can: boolean, code: string, reason: string, actions: Array, diagnostics: Array, summary: Object }}
  */
 function buildRevalidationActions(params) {
-  const { actorMemberId, sheet, sheets, validationResult, nowUnixSeconds } = params || {};
+  const { actorMemberId, actorIsAdmin = false, sheet, sheets, validationResult, nowUnixSeconds } = params || {};
   const actions = [];
   const diagnostics = [];
   const summary = {};
@@ -2164,7 +2164,7 @@ function buildRevalidationActions(params) {
     };
   }
 
-  const authCheck = canRevalidateSheet({ actorMemberId, sheet, sheets, validationResult });
+  const authCheck = canRevalidateSheet({ actorMemberId, actorIsAdmin, sheet, sheets, validationResult });
   if (!authCheck.can) {
     return {
       allowed: false,
@@ -2235,7 +2235,7 @@ function buildRevalidationActions(params) {
  * @returns {{ allowed: boolean, can: boolean, code: string, reason: string, actions: Array, diagnostics: Array, summary: Object }}
  */
 function buildManagerActualUpdateAction(params) {
-  const { actorMemberId, sheet, timeEntry, hours } = params || {};
+  const { actorMemberId, actorIsAdmin = false, sheet, timeEntry, hours } = params || {};
   const actions = [];
   const diagnostics = [];
   const summary = {};
@@ -2279,7 +2279,7 @@ function buildManagerActualUpdateAction(params) {
   }
 
   // Vérification d'autorisation
-  const authCheck = canManagerEditActual({ actorMemberId, sheet, timeEntry });
+  const authCheck = canManagerEditActual({ actorMemberId, actorIsAdmin, sheet, timeEntry });
   if (!authCheck.can) {
     return {
       allowed: false,

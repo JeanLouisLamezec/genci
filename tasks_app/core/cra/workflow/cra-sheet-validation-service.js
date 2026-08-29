@@ -896,7 +896,7 @@ async function executeTransition(params) {
 // ============================================================================
 
 async function submitSheet(params) {
-  const { grist, actorMemberId, sheetId, nowUnixSeconds } = params || {};
+  const { grist, actorMemberId, actorIsAdmin = false, sheetId, nowUnixSeconds } = params || {};
   const validation = validateCommonParams({ grist, sheetId, actorMemberId });
   if (!validation.valid) return { success: false, code: validation.code, sheetId, transition: 'submit' };
 
@@ -908,7 +908,7 @@ async function submitSheet(params) {
     sheetId,
     actorId: validation.actorId,
     transitionName: 'submit',
-    userContext: { actorMemberId, nowUnixSeconds: timestampCheck.value },
+    userContext: { actorMemberId, actorIsAdmin, nowUnixSeconds: timestampCheck.value },
     buildDecision: (snapshot, context) => {
       const { actorMemberId, nowUnixSeconds } = context;
 
@@ -931,6 +931,7 @@ async function submitSheet(params) {
 
       return workflow.buildSubmissionActions({
         actorMemberId,
+        actorIsAdmin: context.actorIsAdmin,
         sheet: snapshot.sheet,
         team: snapshot.team,
         sheets: snapshot.sheets,
@@ -988,7 +989,7 @@ async function submitSheet(params) {
 }
 
 async function withdrawSheet(params) {
-  const { grist, actorMemberId, sheetId } = params || {};
+  const { grist, actorMemberId, actorIsAdmin = false, sheetId } = params || {};
   const validation = validateCommonParams({ grist, sheetId, actorMemberId });
   if (!validation.valid) return { success: false, code: validation.code, sheetId, transition: 'withdraw' };
 
@@ -997,10 +998,11 @@ async function withdrawSheet(params) {
     sheetId,
     actorId: validation.actorId,
     transitionName: 'withdraw',
-    userContext: { actorMemberId },
+    userContext: { actorMemberId, actorIsAdmin },
     buildDecision: (snapshot, context) => {
       return workflow.buildWithdrawActions({
         actorMemberId: context.actorMemberId,
+        actorIsAdmin: context.actorIsAdmin,
         sheet: snapshot.sheet,
         sheets: snapshot.sheets
       });
@@ -1023,7 +1025,7 @@ async function withdrawSheet(params) {
 }
 
 async function validateSheet(params) {
-  const { grist, actorMemberId, sheetId, nowUnixSeconds } = params || {};
+  const { grist, actorMemberId, actorIsAdmin = false, sheetId, nowUnixSeconds } = params || {};
   const validation = validateCommonParams({ grist, sheetId, actorMemberId });
   if (!validation.valid) return { success: false, code: validation.code, sheetId, transition: 'validate' };
 
@@ -1035,10 +1037,11 @@ async function validateSheet(params) {
     sheetId,
     actorId: validation.actorId,
     transitionName: 'validate',
-    userContext: { actorMemberId, nowUnixSeconds: timestampCheck.value },
+    userContext: { actorMemberId, actorIsAdmin, nowUnixSeconds: timestampCheck.value },
     buildDecision: (snapshot, context) => {
       return workflow.buildValidationAction({
         actorMemberId: context.actorMemberId,
+        actorIsAdmin: context.actorIsAdmin,
         sheet: snapshot.sheet,
         sheets: snapshot.sheets,
         validationResult: context.validationResult,
@@ -1064,7 +1067,7 @@ async function validateSheet(params) {
 }
 
 async function rejectSheet(params) {
-  const { grist, actorMemberId, sheetId, rejectReason } = params || {};
+  const { grist, actorMemberId, actorIsAdmin = false, sheetId, rejectReason } = params || {};
   const validation = validateCommonParams({ grist, sheetId, actorMemberId });
   if (!validation.valid) return { success: false, code: validation.code, sheetId, transition: 'reject' };
 
@@ -1077,10 +1080,11 @@ async function rejectSheet(params) {
     sheetId,
     actorId: validation.actorId,
     transitionName: 'reject',
-    userContext: { actorMemberId, rejectReason },
+    userContext: { actorMemberId, actorIsAdmin, rejectReason },
     buildDecision: (snapshot, context) => {
       return workflow.buildRejectionAction({
         actorMemberId: context.actorMemberId,
+        actorIsAdmin: context.actorIsAdmin,
         sheet: snapshot.sheet,
         sheets: snapshot.sheets,
         rejectReason: context.rejectReason
@@ -1097,7 +1101,7 @@ async function rejectSheet(params) {
 }
 
 async function openManagerCorrection(params) {
-  const { grist, actorMemberId, sheetId, correctionReason } = params || {};
+  const { grist, actorMemberId, actorIsAdmin = false, sheetId, correctionReason } = params || {};
   const validation = validateCommonParams({ grist, sheetId, actorMemberId });
   if (!validation.valid) return { success: false, code: validation.code, sheetId, transition: 'open_correction' };
 
@@ -1110,10 +1114,11 @@ async function openManagerCorrection(params) {
     sheetId,
     actorId: validation.actorId,
     transitionName: 'open_correction',
-    userContext: { actorMemberId, correctionReason },
+    userContext: { actorMemberId, actorIsAdmin, correctionReason },
     buildDecision: (snapshot, context) => {
       return workflow.buildOpenManagerCorrectionActions({
         actorMemberId: context.actorMemberId,
+        actorIsAdmin: context.actorIsAdmin,
         sheet: snapshot.sheet,
         sheets: snapshot.sheets,
         correctionReason: context.correctionReason
@@ -1130,7 +1135,7 @@ async function openManagerCorrection(params) {
 }
 
 async function revalidateSheet(params) {
-  const { grist, actorMemberId, sheetId, nowUnixSeconds } = params || {};
+  const { grist, actorMemberId, actorIsAdmin = false, sheetId, nowUnixSeconds } = params || {};
   const validation = validateCommonParams({ grist, sheetId, actorMemberId });
   if (!validation.valid) return { success: false, code: validation.code, sheetId, transition: 'revalidate' };
 
@@ -1142,10 +1147,11 @@ async function revalidateSheet(params) {
     sheetId,
     actorId: validation.actorId,
     transitionName: 'revalidate',
-    userContext: { actorMemberId, nowUnixSeconds: timestampCheck.value },
+    userContext: { actorMemberId, actorIsAdmin, nowUnixSeconds: timestampCheck.value },
     buildDecision: (snapshot, context) => {
       return workflow.buildRevalidationActions({
         actorMemberId: context.actorMemberId,
+        actorIsAdmin: context.actorIsAdmin,
         sheet: snapshot.sheet,
         sheets: snapshot.sheets,
         validationResult: context.validationResult,
@@ -1167,7 +1173,7 @@ async function revalidateSheet(params) {
 }
 
 async function updateManagerActual(params) {
-  const { grist, actorMemberId, sheetId, timeEntryId, hours } = params || {};
+  const { grist, actorMemberId, actorIsAdmin = false, sheetId, timeEntryId, hours } = params || {};
   const validation = validateCommonParams({ grist, sheetId, actorMemberId });
   if (!validation.valid) return { success: false, code: validation.code, sheetId, transition: 'update_manager_actual' };
 
@@ -1236,6 +1242,7 @@ async function updateManagerActual(params) {
     // === DÉCISION 1 ===
     const decision1 = workflow.buildManagerActualUpdateAction({
       actorMemberId,
+      actorIsAdmin,
       sheet: snapshot1.sheet,
       timeEntry,
       hours: numericHours
@@ -1293,6 +1300,7 @@ async function updateManagerActual(params) {
       // Re-construire la décision avec snapshot 2
       finalDecision = workflow.buildManagerActualUpdateAction({
         actorMemberId,
+        actorIsAdmin,
         sheet: snapshot2.sheet,
         timeEntry: timeEntry2,
         hours: numericHours

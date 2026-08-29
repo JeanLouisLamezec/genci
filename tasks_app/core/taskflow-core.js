@@ -537,6 +537,18 @@ const TF = (function () {
             }
             const runtime = permissions.createGristPermissionRuntime(grist, opts);
             await runtime.refresh();
+            const gateModule = typeof globalThis !== 'undefined' && globalThis.TaskFlowIdentityGate;
+            if (opts.identityGate !== false && gateModule && typeof gateModule.createIdentityGate === 'function') {
+                const identityGate = gateModule.createIdentityGate({
+                    grist: grist,
+                    permissionRuntime: runtime,
+                    identityRuntime: runtime.getIdentityRuntime(),
+                    reloadSnapshot: opts.reloadIdentitySnapshot,
+                    onAssociated: opts.onAssociated
+                });
+                runtime.identityGate = identityGate;
+                await identityGate.start();
+            }
             return runtime;
         } catch (error) {
             try { opts.onError && opts.onError(error); } catch (e) {}

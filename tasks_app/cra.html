@@ -230,6 +230,693 @@ tfoot td.left { text-align: left; color: var(--text-muted); font-weight: 600; }
 <script>
 // <taskflow-core> -- GENERE par scripts/build-taskflow.js, NE PAS EDITER ICI
 /* ============================================================================
+ * taskflow-identity.js — Domaine d'identité commun TaskFlow
+ * ----------------------------------------------------------------------------
+ * Module pur : aucune dépendance au DOM, à Grist ou aux widgets.
+ * ========================================================================== */
+(function (root, factory) {
+    var api = factory();
+    if (typeof module !== 'undefined' && module.exports) module.exports = api;
+    if (root) root.TaskFlowIdentity = api;
+})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+    'use strict';
+
+    var IDENTITY_STATUS = Object.freeze({
+        IDENTIFIED: 'IDENTIFIED',
+        ASSOCIATION_CONFIRMATION_REQUIRED: 'ASSOCIATION_CONFIRMATION_REQUIRED',
+        ASSOCIATION_UNAVAILABLE: 'ASSOCIATION_UNAVAILABLE',
+        MEMBER_INACTIVE: 'MEMBER_INACTIVE',
+        GRIST_USER_ID_DUPLICATED: 'GRIST_USER_ID_DUPLICATED',
+        EMAIL_DUPLICATED: 'EMAIL_DUPLICATED',
+        INVALID_CURRENT_USER: 'INVALID_CURRENT_USER',
+        IDENTITY_DATA_UNAVAILABLE: 'IDENTITY_DATA_UNAVAILABLE'
+    });
+
+    function normalizePositiveId(value) {
+        if (value === null || value === undefined || value === '' || value === 0 || value === '0') {
+            return null;
+        }
+        if (typeof value === 'string' && !/^[1-9]\d*$/.test(value.trim())) return null;
+        var numeric = Number(value);
+        return Number.isInteger(numeric) && numeric > 0 ? numeric : null;
+    }
+
+    function normalizeEmail(value) {
+        return value === null || value === undefined
+            ? ''
+            : String(value).trim().toLowerCase();
+    }
+
+    function isTruthy(value) {
+        return value === true || value === 1 || value === '1' || String(value).toLowerCase() === 'true';
+    }
+
+    function isActive(member) {
+        return !(member && (member.actif === false || member.actif === 0 || member.actif === '0'));
+    }
+
+    function isUnassociated(value) {
+        return normalizePositiveId(value) === null;
+    }
+
+    function duplicateValues(rows, selector) {
+        var counts = new Map();
+        (rows || []).forEach(function (row) {
+            var value = selector(row);
+            if (value !== null && value !== '') counts.set(value, (counts.get(value) || 0) + 1);
+        });
+        return Array.from(counts.entries())
+            .filter(function (entry) { return entry[1] > 1; })
+            .map(function (entry) { return entry[0]; });
+    }
+
+    function findDuplicateGristUserIds(team) {
+        return duplicateValues(team, function (member) {
+            return normalizePositiveId(member && member.gristUserId);
+        });
+    }
+
+    function findDuplicateEmails(team) {
+        return duplicateValues(team, function (member) {
+            return normalizeEmail(member && member.email);
+        });
+    }
+
+    function baseIdentity(currentGristUserId, currentEmail) {
+        return {
+            identified: false,
+            status: null,
+            gristUserId: normalizePositiveId(currentGristUserId),
+            email: normalizeEmail(currentEmail),
+            memberId: null,
+            currentUserMemberId: null,
+            member: null,
+            isAdmin: false,
+            associationCandidate: null,
+            conflictCodes: [],
+            duplicateUserIds: [],
+            duplicateEmails: []
+        };
+    }
+
+    function resolveActorIdentity(options) {
+        options = options || {};
+        var team = Array.isArray(options.team) ? options.team : [];
+        var result = baseIdentity(options.currentGristUserId, options.currentEmail);
+
+        if (result.gristUserId === null) {
+            result.status = IDENTITY_STATUS.INVALID_CURRENT_USER;
+            result.conflictCodes.push('INVALID_CURRENT_USER_ID');
+            return result;
+        }
+
+        result.duplicateUserIds = findDuplicateGristUserIds(team);
+        if (result.duplicateUserIds.length > 0) {
+            result.status = IDENTITY_STATUS.GRIST_USER_ID_DUPLICATED;
+            result.conflictCodes.push('GRIST_USER_ID_DUPLICATED');
+            return result;
+        }
+
+        var idMatches = team.filter(function (member) {
+            return normalizePositiveId(member && member.gristUserId) === result.gristUserId;
+        });
+        if (idMatches.length === 1) {
+            var associatedMember = idMatches[0];
+            result.memberId = normalizePositiveId(associatedMember.id);
+            result.currentUserMemberId = result.memberId;
+            result.member = associatedMember;
+            if (!isActive(associatedMember)) {
+                result.status = IDENTITY_STATUS.MEMBER_INACTIVE;
+                result.conflictCodes.push('MEMBER_INACTIVE');
+                return result;
+            }
+            result.identified = true;
+            result.status = IDENTITY_STATUS.IDENTIFIED;
+            result.isAdmin = isTruthy(associatedMember.estAdmin);
+            return result;
+        }
+
+        if (!result.email) {
+            result.status = IDENTITY_STATUS.ASSOCIATION_UNAVAILABLE;
+            result.conflictCodes.push('CURRENT_EMAIL_MISSING');
+            return result;
+        }
+
+        var emailMatches = team.filter(function (member) {
+            return normalizeEmail(member && member.email) === result.email;
+        });
+        if (emailMatches.length > 1) {
+            result.status = IDENTITY_STATUS.EMAIL_DUPLICATED;
+            result.duplicateEmails = [result.email];
+            result.conflictCodes.push('CURRENT_EMAIL_DUPLICATED');
+            return result;
+        }
+        if (emailMatches.length === 0) {
+            result.status = IDENTITY_STATUS.ASSOCIATION_UNAVAILABLE;
+            result.conflictCodes.push('TEAM_EMAIL_NOT_FOUND');
+            return result;
+        }
+
+        var candidate = emailMatches[0];
+        if (!isActive(candidate)) {
+            result.status = IDENTITY_STATUS.MEMBER_INACTIVE;
+            result.member = candidate;
+            result.memberId = normalizePositiveId(candidate.id);
+            result.currentUserMemberId = result.memberId;
+            result.conflictCodes.push('MEMBER_INACTIVE');
+            return result;
+        }
+        if (!isUnassociated(candidate.gristUserId)) {
+            result.status = IDENTITY_STATUS.ASSOCIATION_UNAVAILABLE;
+            result.conflictCodes.push('TEAM_MEMBER_ALREADY_ASSOCIATED');
+            return result;
+        }
+
+        result.status = IDENTITY_STATUS.ASSOCIATION_CONFIRMATION_REQUIRED;
+        result.associationCandidate = {
+            id: normalizePositiveId(candidate.id),
+            nom: candidate.nom || '',
+            email: normalizeEmail(candidate.email)
+        };
+        return result;
+    }
+
+    function buildIdentityClaim(options) {
+        options = options || {};
+        var identity = resolveActorIdentity(options);
+        var result = {
+            allowed: false,
+            idempotent: false,
+            status: identity.status,
+            code: identity.status,
+            reason: null,
+            teamMemberId: null,
+            gristUserId: identity.gristUserId,
+            action: null,
+            identity: identity
+        };
+
+        if (identity.status === IDENTITY_STATUS.IDENTIFIED) {
+            var alreadyExpectedMemberId = normalizePositiveId(options.expectedTeamMemberId);
+            if (alreadyExpectedMemberId !== null && alreadyExpectedMemberId !== identity.memberId) {
+                result.code = 'ACTOR_ALREADY_ASSOCIATED';
+                result.reason = 'Ce compte Grist est déjà associé à un autre profil Team';
+                return result;
+            }
+            result.allowed = true;
+            result.idempotent = true;
+            result.code = 'ALREADY_APPLIED';
+            result.teamMemberId = identity.memberId;
+            return result;
+        }
+        if (identity.status !== IDENTITY_STATUS.ASSOCIATION_CONFIRMATION_REQUIRED) {
+            result.reason = 'Association impossible tant que le profil Team ou son email ne sont pas corrigés';
+            return result;
+        }
+
+        var expectedMemberId = normalizePositiveId(options.expectedTeamMemberId);
+        var candidateId = identity.associationCandidate.id;
+        if (expectedMemberId !== null && expectedMemberId !== candidateId) {
+            result.code = 'ASSOCIATION_CANDIDATE_CHANGED';
+            result.reason = 'Le profil Team proposé ne correspond plus au profil confirmé';
+            return result;
+        }
+
+        result.allowed = true;
+        result.code = 'ASSOCIATION_ALLOWED';
+        result.teamMemberId = candidateId;
+        result.action = ['UpdateRecord', 'Team', candidateId, { gristUserId: identity.gristUserId }];
+        return result;
+    }
+
+    return {
+        IDENTITY_STATUS: IDENTITY_STATUS,
+        normalizePositiveId: normalizePositiveId,
+        normalizeGristUserId: normalizePositiveId,
+        normalizeEmail: normalizeEmail,
+        isTruthy: isTruthy,
+        isActive: isActive,
+        isUnassociated: isUnassociated,
+        findDuplicateGristUserIds: findDuplicateGristUserIds,
+        findDuplicateEmails: findDuplicateEmails,
+        resolveActorIdentity: resolveActorIdentity,
+        buildIdentityClaim: buildIdentityClaim
+    };
+});
+
+
+/* ============================================================================
+ * taskflow-identity-runtime.js — Adaptateur Grist du domaine d'identité
+ * ========================================================================== */
+(function (root, factory) {
+    var identity = root && root.TaskFlowIdentity;
+    if (typeof module !== 'undefined' && module.exports) {
+        identity = require('./taskflow-identity.js');
+    }
+    var api = factory(identity);
+    if (typeof module !== 'undefined' && module.exports) module.exports = api;
+    if (root) root.TaskFlowIdentityRuntime = api;
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (identityDomain) {
+    'use strict';
+
+    function requireIdentityDomain() {
+        if (!identityDomain || typeof identityDomain.resolveActorIdentity !== 'function') {
+            throw new Error('Domaine d\'identité TaskFlow non chargé');
+        }
+        return identityDomain;
+    }
+
+    function columnarToRows(data) {
+        if (!data) return [];
+        if (Array.isArray(data)) return data.slice();
+        var keys = Object.keys(data);
+        if (!keys.length) return [];
+        var count = Array.isArray(data[keys[0]]) ? data[keys[0]].length : 0;
+        var rows = [];
+        for (var index = 0; index < count; index++) {
+            var row = {};
+            keys.forEach(function (key) { row[key] = data[key][index]; });
+            rows.push(row);
+        }
+        return rows;
+    }
+
+    function decodeJwtPayload(token) {
+        try {
+            var parts = String(token || '').split('.');
+            if (parts.length !== 3) return null;
+            var normalized = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+            while (normalized.length % 4) normalized += '=';
+            var json;
+            if (typeof atob === 'function') {
+                json = decodeURIComponent(Array.prototype.map.call(atob(normalized), function (character) {
+                    return '%' + ('00' + character.charCodeAt(0).toString(16)).slice(-2);
+                }).join(''));
+            } else if (typeof Buffer !== 'undefined') {
+                json = Buffer.from(normalized, 'base64').toString('utf8');
+            } else {
+                return null;
+            }
+            return JSON.parse(json);
+        } catch (error) {
+            return null;
+        }
+    }
+
+    async function getCurrentGristUser(grist) {
+        try {
+            var tokenResult = await grist.docApi.getAccessToken({ readOnly: true });
+            var payload = decodeJwtPayload(tokenResult && tokenResult.token);
+            if (!payload) return { userId: null, email: null };
+            return {
+                userId: payload.userId != null
+                    ? payload.userId
+                    : (payload.user && payload.user.id != null ? payload.user.id : payload.sub),
+                email: payload.email || (payload.user && payload.user.email) || payload.loginEmail || null
+            };
+        } catch (error) {
+            return { userId: null, email: null, error: error };
+        }
+    }
+
+    function unavailableActor(error) {
+        return {
+            identified: false,
+            status: requireIdentityDomain().IDENTITY_STATUS.IDENTITY_DATA_UNAVAILABLE,
+            gristUserId: null,
+            email: '',
+            memberId: null,
+            currentUserMemberId: null,
+            member: null,
+            isAdmin: false,
+            associationCandidate: null,
+            conflictCodes: ['IDENTITY_DATA_UNAVAILABLE'],
+            error: error || null
+        };
+    }
+
+    function createGristIdentityRuntime(grist, options) {
+        options = options || {};
+        var state = null;
+        var valid = false;
+        var loading = null;
+
+        async function load() {
+            var currentUser = await getCurrentGristUser(grist);
+            if (currentUser.error) throw currentUser.error;
+            var rawTeam = await grist.docApi.fetchTable('Team');
+            var team = columnarToRows(rawTeam);
+            var actor = requireIdentityDomain().resolveActorIdentity({
+                team: team,
+                currentGristUserId: currentUser.userId,
+                currentEmail: currentUser.email
+            });
+            return { actor: actor, currentUser: currentUser, team: team };
+        }
+
+        async function refresh(refreshOptions) {
+            refreshOptions = refreshOptions || {};
+            if (valid && !refreshOptions.force) return state;
+            if (loading) return loading;
+            loading = (async function () {
+                try {
+                    state = await load();
+                    valid = true;
+                    if (typeof options.onIdentity === 'function') options.onIdentity(state.actor);
+                    return state;
+                } catch (error) {
+                    state = { actor: unavailableActor(error), currentUser: null, team: [] };
+                    valid = true;
+                    if (typeof options.onError === 'function') options.onError(error);
+                    if (typeof options.onIdentity === 'function') options.onIdentity(state.actor);
+                    return state;
+                }
+            })();
+            try {
+                return await loading;
+            } finally {
+                loading = null;
+            }
+        }
+
+        async function buildClaim(expectedTeamMemberId) {
+            var current = await refresh({ force: true });
+            return requireIdentityDomain().buildIdentityClaim({
+                team: current.team,
+                currentGristUserId: current.currentUser && current.currentUser.userId,
+                currentEmail: current.currentUser && current.currentUser.email,
+                expectedTeamMemberId: expectedTeamMemberId
+            });
+        }
+
+        return {
+            refresh: refresh,
+            buildClaim: buildClaim,
+            invalidate: function () { valid = false; },
+            getState: function () { return state; },
+            getActor: function () { return state && state.actor; },
+            getTeam: function () { return state ? state.team : []; },
+            getCurrentUser: function () { return state && state.currentUser; }
+        };
+    }
+
+    return {
+        columnarToRows: columnarToRows,
+        decodeJwtPayload: decodeJwtPayload,
+        getCurrentGristUser: getCurrentGristUser,
+        createGristIdentityRuntime: createGristIdentityRuntime
+    };
+});
+
+
+/* ============================================================================
+ * taskflow-identity-claim-service.js — Écriture contrôlée de l'association
+ * ========================================================================== */
+(function (root, factory) {
+    var api = factory();
+    if (typeof module !== 'undefined' && module.exports) module.exports = api;
+    if (root) root.TaskFlowIdentityClaimService = api;
+})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+    'use strict';
+
+    var CLAIM_STATUS = Object.freeze({
+        APPLIED: 'APPLIED',
+        ALREADY_APPLIED: 'ALREADY_APPLIED',
+        PENDING: 'PENDING',
+        NOT_ALLOWED: 'NOT_ALLOWED',
+        WRITE_FAILED: 'WRITE_FAILED',
+        RELOAD_FAILED: 'RELOAD_FAILED',
+        POSTCONDITION_FAILED: 'POSTCONDITION_FAILED'
+    });
+
+    function createIdentityClaimService(options) {
+        options = options || {};
+        var grist = options.grist;
+        var identityRuntime = options.identityRuntime;
+        var pending = false;
+
+        async function claim(expectedTeamMemberId) {
+            if (pending) {
+                return { success: false, code: CLAIM_STATUS.PENDING };
+            }
+            if (!identityRuntime || typeof identityRuntime.buildClaim !== 'function') {
+                return { success: false, code: CLAIM_STATUS.NOT_ALLOWED, reason: 'Runtime d\'identité indisponible' };
+            }
+
+            pending = true;
+            try {
+                var validation = await identityRuntime.buildClaim(expectedTeamMemberId);
+                if (!validation.allowed) {
+                    return {
+                        success: false,
+                        code: CLAIM_STATUS.NOT_ALLOWED,
+                        reason: validation.reason,
+                        validationCode: validation.code,
+                        identity: validation.identity
+                    };
+                }
+                if (validation.idempotent) {
+                    return {
+                        success: true,
+                        code: CLAIM_STATUS.ALREADY_APPLIED,
+                        teamMemberId: validation.teamMemberId,
+                        identity: validation.identity
+                    };
+                }
+
+                try {
+                    await grist.docApi.applyUserActions([validation.action]);
+                } catch (error) {
+                    return { success: false, code: CLAIM_STATUS.WRITE_FAILED, reason: error.message || String(error), error: error };
+                }
+
+                identityRuntime.invalidate();
+                if (typeof options.reloadSnapshot === 'function') {
+                    try {
+                        await options.reloadSnapshot({ reason: 'identity-association', immediate: true });
+                    } catch (error) {
+                        return { success: false, code: CLAIM_STATUS.RELOAD_FAILED, reason: error.message || String(error), error: error };
+                    }
+                }
+
+                var after = await identityRuntime.refresh({ force: true });
+                var actor = after && after.actor;
+                if (!actor || !actor.identified || actor.memberId !== validation.teamMemberId) {
+                    return {
+                        success: false,
+                        code: CLAIM_STATUS.POSTCONDITION_FAILED,
+                        expectedTeamMemberId: validation.teamMemberId,
+                        actor: actor || null
+                    };
+                }
+
+                return {
+                    success: true,
+                    code: CLAIM_STATUS.APPLIED,
+                    teamMemberId: actor.memberId,
+                    actor: actor
+                };
+            } finally {
+                pending = false;
+            }
+        }
+
+        return {
+            claim: claim,
+            isPending: function () { return pending; }
+        };
+    }
+
+    return {
+        CLAIM_STATUS: CLAIM_STATUS,
+        createIdentityClaimService: createIdentityClaimService
+    };
+});
+
+
+/* ============================================================================
+ * taskflow-identity-gate.js — Parcours d'association commun aux widgets
+ * ========================================================================== */
+(function (root, factory) {
+    var claimServiceModule = root && root.TaskFlowIdentityClaimService;
+    if (typeof module !== 'undefined' && module.exports) {
+        claimServiceModule = require('./taskflow-identity-claim-service.js');
+    }
+    var api = factory(claimServiceModule);
+    if (typeof module !== 'undefined' && module.exports) module.exports = api;
+    if (root) root.TaskFlowIdentityGate = api;
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (claimServiceModule) {
+    'use strict';
+
+    var GATE_ID = 'taskflow-identity-gate';
+
+    function escapeHtml(value) {
+        return String(value == null ? '' : value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
+
+    function unavailableMessage(actor) {
+        var codes = actor && actor.conflictCodes || [];
+        if (codes.indexOf('TEAM_EMAIL_NOT_FOUND') !== -1) {
+            return 'Aucun profil Team actif ne correspond à votre email Grist. Demandez à un administrateur de créer ou corriger votre profil, puis réessayez.';
+        }
+        if (codes.indexOf('CURRENT_EMAIL_DUPLICATED') !== -1 || actor && actor.status === 'EMAIL_DUPLICATED') {
+            return 'Plusieurs profils Team utilisent votre email. Un administrateur doit corriger ce doublon avant une nouvelle tentative.';
+        }
+        if (actor && actor.status === 'MEMBER_INACTIVE') {
+            return 'Votre profil Team est inactif. Un administrateur doit le réactiver avant une nouvelle tentative.';
+        }
+        if (actor && actor.status === 'GRIST_USER_ID_DUPLICATED') {
+            return 'Des associations Grist sont en conflit dans Team. Un administrateur doit les corriger.';
+        }
+        return 'Votre compte ne peut pas être associé pour le moment. Vérifiez votre profil Team avec un administrateur, puis réessayez.';
+    }
+
+    function createIdentityGate(options) {
+        options = options || {};
+        var identityRuntime = options.identityRuntime ||
+            (options.permissionRuntime && options.permissionRuntime.getIdentityRuntime && options.permissionRuntime.getIdentityRuntime());
+        var documentRef = options.document || (typeof document !== 'undefined' ? document : null);
+        var mount = options.mount || (documentRef && documentRef.body);
+        var gateElement = null;
+        var busy = false;
+        var claimService = options.claimService || claimServiceModule.createIdentityClaimService({
+            grist: options.grist,
+            identityRuntime: identityRuntime,
+            reloadSnapshot: options.reloadSnapshot
+        });
+
+        function destroy() {
+            if (gateElement && gateElement.parentNode) gateElement.parentNode.removeChild(gateElement);
+            gateElement = null;
+        }
+
+        function ensureElement() {
+            if (!documentRef || !mount) return null;
+            if (gateElement && gateElement.parentNode) return gateElement;
+            var previous = documentRef.getElementById(GATE_ID);
+            if (previous && previous.parentNode) previous.parentNode.removeChild(previous);
+            gateElement = documentRef.createElement('div');
+            gateElement.id = GATE_ID;
+            gateElement.setAttribute('role', 'dialog');
+            gateElement.setAttribute('aria-modal', 'true');
+            gateElement.style.cssText = 'position:fixed;inset:0;z-index:100000;display:flex;align-items:center;justify-content:center;padding:20px;background:rgba(15,23,42,.58);font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;';
+            mount.appendChild(gateElement);
+            return gateElement;
+        }
+
+        function shell(title, body, buttonLabel, buttonKind) {
+            var element = ensureElement();
+            if (!element) return;
+            element.innerHTML = '<div style="width:min(480px,100%);background:#fff;color:#1e293b;border-radius:14px;padding:24px;box-shadow:0 24px 60px rgba(15,23,42,.3)">' +
+                '<h2 style="font-size:1.15rem;margin:0 0 10px">' + escapeHtml(title) + '</h2>' +
+                '<div style="font-size:.9rem;line-height:1.5;color:#475569">' + body + '</div>' +
+                '<button type="button" data-tf-identity-action="' + buttonKind + '" style="margin-top:18px;width:100%;border:0;border-radius:9px;padding:10px 14px;background:#3e5de7;color:#fff;font-weight:700;cursor:pointer"' + (busy ? ' disabled' : '') + '>' + escapeHtml(buttonLabel) + '</button>' +
+                '</div>';
+        }
+
+        async function associate(candidateId) {
+            if (busy) return;
+            busy = true;
+            render(identityRuntime.getActor && identityRuntime.getActor());
+            var result = await claimService.claim(candidateId);
+            busy = false;
+            if (!result.success) {
+                var refreshed = await identityRuntime.refresh({ force: true });
+                render(refreshed.actor, result.reason || null);
+                return result;
+            }
+            if (options.permissionRuntime) options.permissionRuntime.invalidate();
+            if (options.permissionRuntime && options.permissionRuntime.refresh) {
+                await options.permissionRuntime.refresh({ force: true });
+            }
+            destroy();
+            if (typeof options.onAssociated === 'function') options.onAssociated(result.actor || result.identity);
+            return result;
+        }
+
+        async function retry() {
+            if (busy) return;
+            busy = true;
+            shell('Association du compte', 'Nouvelle vérification du profil Team…', 'Vérification…', 'retry');
+            var state = await identityRuntime.refresh({ force: true });
+            busy = false;
+            render(state.actor);
+            return state;
+        }
+
+        function render(actor, errorMessage) {
+            if (!actor || actor.status === 'IDENTITY_DATA_UNAVAILABLE') {
+                shell('Identité indisponible', escapeHtml(errorMessage || unavailableMessage(actor)), 'Réessayer', 'retry');
+            } else if (actor.identified) {
+                destroy();
+                return;
+            } else if (actor.status === 'ASSOCIATION_CONFIRMATION_REQUIRED' && actor.associationCandidate) {
+                var candidate = actor.associationCandidate;
+                shell(
+                    'Associer votre compte Grist',
+                    (errorMessage ? '<p style="color:#b91c1c;margin:0 0 10px">' + escapeHtml(errorMessage) + '</p>' : '') +
+                    '<p style="margin:0 0 12px">Votre compte Grist correspond au profil suivant :</p>' +
+                    '<p style="margin:0;font-weight:700">' + escapeHtml(candidate.nom || 'Profil Team') + '</p>' +
+                    '<p style="margin:3px 0 0">' + escapeHtml(candidate.email) + '</p>',
+                    busy ? 'Association en cours…' : 'Associer mon compte',
+                    'associate'
+                );
+            } else {
+                shell(
+                    'Association impossible',
+                    (errorMessage ? '<p style="color:#b91c1c;margin:0 0 10px">' + escapeHtml(errorMessage) + '</p>' : '') +
+                    '<p style="margin:0">' + escapeHtml(unavailableMessage(actor)) + '</p>',
+                    busy ? 'Vérification…' : 'Associer mon compte',
+                    'retry'
+                );
+            }
+
+            if (!gateElement) return;
+            var button = gateElement.querySelector('[data-tf-identity-action]');
+            if (!button) return;
+            button.addEventListener('click', function () {
+                if (button.getAttribute('data-tf-identity-action') === 'associate') {
+                    associate(actor.associationCandidate.id);
+                } else {
+                    retry();
+                }
+            });
+        }
+
+        async function start() {
+            if (!identityRuntime || typeof identityRuntime.refresh !== 'function') {
+                render({ status: 'IDENTITY_DATA_UNAVAILABLE', conflictCodes: [] });
+                return null;
+            }
+            var state = await identityRuntime.refresh();
+            render(state.actor);
+            return state;
+        }
+
+        return {
+            start: start,
+            retry: retry,
+            associate: associate,
+            render: render,
+            destroy: destroy,
+            getElement: function () { return gateElement; },
+            isBusy: function () { return busy; }
+        };
+    }
+
+    return {
+        GATE_ID: GATE_ID,
+        createIdentityGate: createIdentityGate
+    };
+});
+
+
+/* ============================================================================
  * taskflow-permissions.js — Autorisations fonctionnelles communes TaskFlow
  * ----------------------------------------------------------------------------
  * Ce module ne pose aucune ACL Grist. Il applique la matrice fonctionnelle des
@@ -242,6 +929,13 @@ tfoot td.left { text-align: left; color: var(--text-muted); font-weight: 600; }
 (function (global) {
     'use strict';
 
+    var identityDomain = global && global.TaskFlowIdentity;
+    var identityRuntimeModule = global && global.TaskFlowIdentityRuntime;
+    if (typeof module !== 'undefined' && module.exports) {
+        identityDomain = require('../identity/taskflow-identity.js');
+        identityRuntimeModule = require('../identity/taskflow-identity-runtime.js');
+    }
+
     var CONTROLLED_TABLES = [
         'Team',
         'Entites',
@@ -249,8 +943,12 @@ tfoot td.left { text-align: left; color: var(--text-muted); font-weight: 600; }
         'Projects',
         'Tasks',
         'Actions',
-        'KanbanSteps'
+        'KanbanSteps',
+        'Feuilles',
+        'TimeEntries'
     ];
+
+    var PERMISSION_DATA_TABLES = CONTROLLED_TABLES.concat(['TaskAssignments']);
 
     var RECORD_ACTIONS = [
         'AddRecord',
@@ -302,63 +1000,11 @@ tfoot td.left { text-align: left; color: var(--text-muted); font-weight: 600; }
     }
 
     function duplicateGristUserIds(team) {
-        var counts = new Map();
-        (team || []).forEach(function (member) {
-            var id = normalizeId(member && member.gristUserId);
-            if (id !== null) counts.set(id, (counts.get(id) || 0) + 1);
-        });
-        return Array.from(counts.entries())
-            .filter(function (entry) { return entry[1] > 1; })
-            .map(function (entry) { return entry[0]; });
+        return identityDomain.findDuplicateGristUserIds(team || []);
     }
 
     function resolveActorIdentity(options) {
-        options = options || {};
-        var team = options.team || [];
-        var gristUserId = normalizeId(options.currentGristUserId);
-        var base = {
-            identified: false,
-            status: null,
-            memberId: null,
-            member: null,
-            isAdmin: false,
-            duplicateUserIds: []
-        };
-
-        if (gristUserId === null) {
-            base.status = 'INVALID_CURRENT_USER_ID';
-            return base;
-        }
-
-        var duplicates = duplicateGristUserIds(team);
-        if (duplicates.length) {
-            base.status = 'GRIST_USER_ID_DUPLICATED';
-            base.duplicateUserIds = duplicates;
-            return base;
-        }
-
-        var matches = team.filter(function (member) {
-            return normalizeId(member && member.gristUserId) === gristUserId;
-        });
-        if (matches.length !== 1) {
-            base.status = 'TEAM_ASSOCIATION_REQUIRED';
-            return base;
-        }
-
-        var member = matches[0];
-        if (member.actif === false || member.actif === 0) {
-            base.status = 'MEMBER_INACTIVE';
-            base.memberId = normalizeId(member.id);
-            base.member = member;
-            return base;
-        }
-
-        base.identified = true;
-        base.status = 'IDENTIFIED';
-        base.memberId = normalizeId(member.id);
-        base.member = member;
-        base.isAdmin = isTruthy(member.estAdmin);
-        return base;
+        return identityDomain.resolveActorIdentity(options || {});
     }
 
     function createSnapshot(data, identity) {
@@ -372,7 +1018,10 @@ tfoot td.left { text-align: left; color: var(--text-muted); font-weight: 600; }
                 Projects: (data.Projects || data.projects || []).slice(),
                 Tasks: (data.Tasks || data.tasks || []).slice(),
                 Actions: (data.Actions || data.actions || []).slice(),
-                KanbanSteps: (data.KanbanSteps || data.kanbanSteps || []).slice()
+                KanbanSteps: (data.KanbanSteps || data.kanbanSteps || []).slice(),
+                Feuilles: (data.Feuilles || data.feuilles || []).slice(),
+                TimeEntries: (data.TimeEntries || data.timeEntries || []).slice(),
+                TaskAssignments: (data.TaskAssignments || data.taskAssignments || []).slice()
             },
             indexes: null
         };
@@ -387,7 +1036,10 @@ tfoot td.left { text-align: left; color: var(--text-muted); font-weight: 600; }
                 Projects: indexById(snapshot.tables.Projects),
                 Tasks: indexById(snapshot.tables.Tasks),
                 Actions: indexById(snapshot.tables.Actions),
-                KanbanSteps: indexById(snapshot.tables.KanbanSteps)
+                KanbanSteps: indexById(snapshot.tables.KanbanSteps),
+                Feuilles: indexById(snapshot.tables.Feuilles),
+                TimeEntries: indexById(snapshot.tables.TimeEntries),
+                TaskAssignments: indexById(snapshot.tables.TaskAssignments)
             };
         }
         return snapshot.indexes;
@@ -468,7 +1120,12 @@ tfoot td.left { text-align: left; color: var(--text-muted); font-weight: 600; }
         return deny('PROJECT_CREATE_FORBIDDEN', 'Vous ne pouvez creer que votre propre projet ou celui d\'un collaborateur direct.');
     }
 
-    function canUpdateProject(snapshot, current) {
+    function canUpdateProject(snapshot, current, proposed) {
+        if (actorIsAdmin(snapshot)) return allow('ADMIN');
+        if (Object.prototype.hasOwnProperty.call(proposed || {}, 'responsable') &&
+            normalizeId(proposed.responsable) !== normalizeId(current && current.responsable)) {
+            return deny('PROJECT_RESPONSIBLE_CHANGE_ADMIN_REQUIRED', 'Seul un administrateur peut changer le responsable d\'un projet.');
+        }
         if (canManageProject(snapshot, current)) return allow('PROJECT_SCOPE');
         return deny('PROJECT_OUTSIDE_SCOPE', 'Ce projet est hors de votre perimetre.', {
             resourceLabel: recordLabel('Projects', current)
@@ -482,11 +1139,18 @@ tfoot td.left { text-align: left; color: var(--text-muted); font-weight: 600; }
         return deny('TASK_CREATE_FORBIDDEN', 'Vous ne pouvez creer une tache que dans un projet dont vous etes responsable ou manager direct.');
     }
 
-    function canUpdateTask(snapshot, current) {
+    function canUpdateTask(snapshot, current, proposed) {
         if (actorIsAdmin(snapshot)) return allow('ADMIN');
         var project = projectForTask(snapshot, current);
         if (project && canManageProject(snapshot, project)) return allow('PROJECT_SCOPE');
-        if (isTaskAssignee(snapshot, current)) return allow('TASK_ASSIGNEE');
+        if (isTaskAssignee(snapshot, current)) {
+            var protectedFields = ['projet', 'assignees', 'dependDe', 'parentTask'];
+            var changesScope = Object.keys(proposed || {}).some(function (field) {
+                return protectedFields.indexOf(field) !== -1;
+            });
+            if (changesScope) return deny('TASK_SCOPE_FIELDS_ADMIN_OR_MANAGER_REQUIRED', 'Un executant ne peut pas modifier le projet, les affectations ou les dependances de la tache.');
+            return allow('TASK_ASSIGNEE');
+        }
         return deny('TASK_OUTSIDE_SCOPE', 'La tache « ' + recordLabel('Tasks', current) + ' » est hors de votre perimetre.', {
             resourceLabel: recordLabel('Tasks', current)
         });
@@ -549,6 +1213,147 @@ tfoot td.left { text-align: left; color: var(--text-muted); font-weight: 600; }
         return deny('ACTION_DELETE_FORBIDDEN', 'Vous ne pouvez supprimer que vos propres actions ou celles de votre perimetre projet.');
     }
 
+    function normalizeStatus(value) {
+        return String(value || '').trim().toLowerCase();
+    }
+
+    function hasExactFields(fields, expected) {
+        var actual = Object.keys(fields || {}).sort();
+        return actual.length === expected.length && actual.every(function (key, index) {
+            return key === expected.slice().sort()[index];
+        });
+    }
+
+    function hasOnlyFields(fields, allowed) {
+        return Object.keys(fields || {}).every(function (key) { return allowed.indexOf(key) !== -1; });
+    }
+
+    function sheetForEntry(snapshot, entry) {
+        return entry ? ensureIndexes(snapshot).Feuilles.get(normalizeId(entry.feuille)) || null : null;
+    }
+
+    function isSheetOwner(snapshot, sheet) {
+        return Boolean(sheet) && normalizeId(sheet.membre) === actorId(snapshot);
+    }
+
+    function isSheetValidationManager(snapshot, sheet) {
+        return Boolean(sheet) && normalizeId(sheet.responsableValidation) === actorId(snapshot);
+    }
+
+    function canCreateSheet(snapshot, proposed) {
+        if (actorIsAdmin(snapshot)) return allow('ADMIN');
+        if (!hasExactFields(proposed, ['membre', 'semaine', 'statut', 'revisionValidation'])) {
+            return deny('CRA_SHEET_CREATE_FIELDS_FORBIDDEN', 'La creation d\'une feuille doit utiliser uniquement les champs initiaux du workflow.');
+        }
+        if (normalizeId(proposed.membre) !== actorId(snapshot) || normalizeStatus(proposed.statut) !== 'brouillon' || Number(proposed.revisionValidation) !== 0) {
+            return deny('CRA_SHEET_CREATE_FORBIDDEN', 'Vous ne pouvez creer que votre propre feuille en brouillon.');
+        }
+        return allow('CRA_SHEET_OWNER_CREATE');
+    }
+
+    function canUpdateSheet(snapshot, current, proposed) {
+        if (actorIsAdmin(snapshot)) return allow('ADMIN');
+        var from = normalizeStatus(current && current.statut);
+        var to = Object.prototype.hasOwnProperty.call(proposed || {}, 'statut') ? normalizeStatus(proposed.statut) : from;
+        var owner = isSheetOwner(snapshot, current);
+        var manager = isSheetValidationManager(snapshot, current);
+        var sheetMember = ensureIndexes(snapshot).Team.get(normalizeId(current && current.membre)) || null;
+
+        if (owner && (from === 'brouillon' || from === 'rejete') && to === 'soumis' &&
+            hasExactFields(proposed, ['statut', 'responsableValidation', 'soumisPar', 'dateSoumission', 'validePar', 'dateValidation', 'motifRejet', 'motifCorrection', 'revisionValidation']) &&
+            normalizeId(proposed.soumisPar) === actorId(snapshot) &&
+            normalizeId(proposed.responsableValidation) === normalizeId(sheetMember && sheetMember.responsable) &&
+            normalizeId(proposed.responsableValidation) !== null &&
+            proposed.validePar == null && proposed.dateValidation == null &&
+            Number(proposed.revisionValidation) === Number(current.revisionValidation || 0)) return allow('CRA_SUBMIT');
+
+        if (owner && from === 'soumis' && to === 'brouillon' &&
+            hasExactFields(proposed, ['statut', 'responsableValidation', 'soumisPar', 'dateSoumission', 'validePar', 'dateValidation', 'motifRejet', 'motifCorrection'])) return allow('CRA_WITHDRAW');
+
+        if (manager && from === 'soumis' && to === 'valide' &&
+            hasExactFields(proposed, ['statut', 'validePar', 'dateValidation', 'revisionValidation', 'motifRejet']) &&
+            normalizeId(proposed.validePar) === actorId(snapshot) &&
+            Number(proposed.revisionValidation) === Number(current.revisionValidation || 0) + 1) return allow('CRA_VALIDATE');
+
+        if (manager && from === 'soumis' && to === 'rejete' &&
+            hasExactFields(proposed, ['statut', 'motifRejet', 'validePar', 'dateValidation']) && String(proposed.motifRejet || '').trim()) return allow('CRA_REJECT');
+
+        if (manager && from === 'valide' && to === 'correction_manager' &&
+            hasExactFields(proposed, ['statut', 'motifCorrection']) && String(proposed.motifCorrection || '').trim()) return allow('CRA_OPEN_CORRECTION');
+
+        if (manager && from === 'correction_manager' && to === 'valide' &&
+            hasExactFields(proposed, ['statut', 'validePar', 'dateValidation', 'revisionValidation']) &&
+            normalizeId(proposed.validePar) === actorId(snapshot) &&
+            Number(proposed.revisionValidation) === Number(current.revisionValidation || 0) + 1) return allow('CRA_REVALIDATE');
+
+        if (from === 'brouillon' && to === 'correction_manager' &&
+            isDirectManagerOfMember(snapshot, current && current.membre) &&
+            hasExactFields(proposed, ['statut', 'responsableValidation', 'motifCorrection']) &&
+            normalizeId(proposed.responsableValidation) === actorId(snapshot) && String(proposed.motifCorrection || '').trim()) {
+            return allow('CRA_RETROACTIVE_CORRECTION');
+        }
+
+        return deny('CRA_SHEET_TRANSITION_FORBIDDEN', 'Transition de feuille ou champs systeme non autorises.');
+    }
+
+    var TIME_ENTRY_CREATE_FIELDS = [
+        'membre', 'tache', 'date', 'heures', 'imputation', 'description', 'heuresPrevues',
+        'capaciteTheorique', 'capaciteDisponible', 'revisionPlan', 'affectation', 'feuille', 'capaciteJour'
+    ];
+
+    function canCreateTimeEntry(snapshot, proposed) {
+        if (actorIsAdmin(snapshot)) return allow('ADMIN');
+        var sheet = ensureIndexes(snapshot).Feuilles.get(normalizeId(proposed && proposed.feuille)) || null;
+        if (normalizeId(proposed && proposed.membre) !== actorId(snapshot) || !sheet || !isSheetOwner(snapshot, sheet)) {
+            return deny('CRA_TIME_ENTRY_CREATE_FORBIDDEN', 'Vous ne pouvez creer que vos propres saisies dans votre feuille.');
+        }
+        if (['brouillon', 'rejete'].indexOf(normalizeStatus(sheet.statut)) === -1 || !hasOnlyFields(proposed, TIME_ENTRY_CREATE_FIELDS)) {
+            return deny('CRA_TIME_ENTRY_CREATE_FIELDS_FORBIDDEN', 'La feuille est verrouillee ou contient des champs de saisie interdits.');
+        }
+        var assignment = ensureIndexes(snapshot).TaskAssignments.get(normalizeId(proposed.affectation)) || null;
+        if (!assignment || normalizeId(assignment.membre) !== actorId(snapshot) || normalizeId(assignment.tache) !== normalizeId(proposed.tache) || assignment.actif === false || assignment.actif === 0) {
+            return deny('CRA_TIME_ENTRY_ASSIGNMENT_REQUIRED', 'Une affectation active correspondant au membre et a la tache est obligatoire.');
+        }
+        return allow('CRA_TIME_ENTRY_OWNER_CREATE');
+    }
+
+    function canUpdateTimeEntry(snapshot, current, proposed) {
+        if (actorIsAdmin(snapshot)) return allow('ADMIN');
+        var sheet = sheetForEntry(snapshot, current);
+        var ownsEntry = normalizeId(current && current.membre) === actorId(snapshot);
+        var fields = Object.keys(proposed || {});
+        if (ownsEntry && sheet && isSheetOwner(snapshot, sheet) && ['brouillon', 'rejete'].indexOf(normalizeStatus(sheet.statut)) !== -1 &&
+            fields.length > 0 && hasOnlyFields(proposed, ['heures', 'feuille'])) return allow('CRA_TIME_ENTRY_OWNER_UPDATE');
+
+        if (sheet && normalizeStatus(sheet.statut) === 'correction_manager' && isSheetValidationManager(snapshot, sheet) &&
+            hasExactFields(proposed, ['heures'])) return allow('CRA_TIME_ENTRY_MANAGER_CORRECTION');
+
+        if (ownsEntry && hasExactFields(proposed, ['feuille'])) {
+            var targetSheet = ensureIndexes(snapshot).Feuilles.get(normalizeId(proposed.feuille)) || null;
+            if (targetSheet && isSheetOwner(snapshot, targetSheet) && ['brouillon', 'rejete'].indexOf(normalizeStatus(targetSheet.statut)) !== -1) {
+                return allow('CRA_TIME_ENTRY_OWNER_LINK');
+            }
+        }
+
+        if (hasExactFields(proposed, ['feuille'])) {
+            var correctionSheet = ensureIndexes(snapshot).Feuilles.get(normalizeId(proposed.feuille)) || null;
+            if (correctionSheet && normalizeStatus(correctionSheet.statut) === 'correction_manager' && isSheetValidationManager(snapshot, correctionSheet) &&
+                normalizeId(correctionSheet.membre) === normalizeId(current && current.membre)) return allow('CRA_TIME_ENTRY_MANAGER_LINK');
+        }
+
+        return deny('CRA_TIME_ENTRY_UPDATE_FORBIDDEN', 'Cette saisie est verrouillee ou les champs demandes sont interdits.');
+    }
+
+    function canDeleteTimeEntry(snapshot, current) {
+        if (actorIsAdmin(snapshot)) return allow('ADMIN');
+        var sheet = sheetForEntry(snapshot, current);
+        if (normalizeId(current && current.membre) === actorId(snapshot) &&
+            (!sheet || (isSheetOwner(snapshot, sheet) && ['brouillon', 'rejete'].indexOf(normalizeStatus(sheet.statut)) !== -1))) {
+            return allow('CRA_TIME_ENTRY_OWNER_DELETE');
+        }
+        return deny('CRA_TIME_ENTRY_DELETE_FORBIDDEN', 'Cette saisie ne peut pas etre supprimee dans son etat actuel.');
+    }
+
     function authorizeRecordMutation(snapshot, mutation) {
         var actorError = requireActor(snapshot);
         if (actorError) return actorError;
@@ -566,7 +1371,7 @@ tfoot td.left { text-align: left; color: var(--text-muted); font-weight: 600; }
 
         if (table === 'Projects') {
             if (kind === 'create') return canCreateProject(snapshot, proposed);
-            if (kind === 'update') return canUpdateProject(snapshot, current);
+            if (kind === 'update') return canUpdateProject(snapshot, current, proposed);
             return actorIsAdmin(snapshot)
                 ? allow('ADMIN')
                 : deny('PROJECT_DELETE_FORBIDDEN', 'Seul un administrateur peut supprimer un projet.');
@@ -574,7 +1379,7 @@ tfoot td.left { text-align: left; color: var(--text-muted); font-weight: 600; }
 
         if (table === 'Tasks') {
             if (kind === 'create') return canCreateTask(snapshot, proposed);
-            if (kind === 'update') return canUpdateTask(snapshot, current);
+            if (kind === 'update') return canUpdateTask(snapshot, current, proposed);
             return canDeleteTask(snapshot, current);
         }
 
@@ -584,12 +1389,24 @@ tfoot td.left { text-align: left; color: var(--text-muted); font-weight: 600; }
             return canDeleteAction(snapshot, current);
         }
 
+        if (table === 'Feuilles') {
+            if (kind === 'create') return canCreateSheet(snapshot, proposed);
+            if (kind === 'update') return canUpdateSheet(snapshot, current, proposed);
+            return actorIsAdmin(snapshot) ? allow('ADMIN') : deny('CRA_SHEET_DELETE_FORBIDDEN', 'Seul un administrateur peut supprimer une feuille.');
+        }
+
+        if (table === 'TimeEntries') {
+            if (kind === 'create') return canCreateTimeEntry(snapshot, proposed);
+            if (kind === 'update') return canUpdateTimeEntry(snapshot, current, proposed);
+            return canDeleteTimeEntry(snapshot, current);
+        }
+
         return allow('UNCONTROLLED_TABLE');
     }
 
     function cloneTables(snapshot) {
         var out = {};
-        CONTROLLED_TABLES.forEach(function (table) {
+        PERMISSION_DATA_TABLES.forEach(function (table) {
             out[table] = (snapshot.tables[table] || []).map(function (row) { return Object.assign({}, row); });
         });
         return out;
@@ -727,18 +1544,19 @@ tfoot td.left { text-align: left; color: var(--text-muted); font-weight: 600; }
         }
     }
 
-    async function getCurrentGristUser(grist) {
-        try {
-            var tokenResult = await grist.docApi.getAccessToken({ readOnly: true });
-            var payload = decodeJwtPayload(tokenResult && tokenResult.token);
-            if (!payload) return { userId: null, email: null };
-            return {
-                userId: payload.userId != null ? payload.userId : (payload.user && payload.user.id != null ? payload.user.id : payload.sub),
-                email: payload.email || (payload.user && payload.user.email) || payload.loginEmail || null
-            };
-        } catch (e) {
-            return { userId: null, email: null, error: e };
-        }
+    var getCurrentGristUser = identityRuntimeModule.getCurrentGristUser;
+
+    function isExactIdentityClaimAction(actions, claim) {
+        if (!claim || !claim.allowed || claim.idempotent || !claim.action) return false;
+        if (!Array.isArray(actions) || actions.length !== 1) return false;
+        var action = actions[0];
+        if (!Array.isArray(action) || action[0] !== 'UpdateRecord' || action[1] !== 'Team') return false;
+        if (normalizeId(action[2]) !== claim.teamMemberId) return false;
+        var fields = action[3];
+        if (!fields || typeof fields !== 'object' || Array.isArray(fields)) return false;
+        var keys = Object.keys(fields);
+        return keys.length === 1 && keys[0] === 'gristUserId' &&
+            normalizeId(fields.gristUserId) === claim.gristUserId;
     }
 
     function createGristPermissionRuntime(grist, options) {
@@ -746,28 +1564,30 @@ tfoot td.left { text-align: left; color: var(--text-muted); font-weight: 600; }
         var snapshot = null;
         var valid = false;
         var loading = null;
+        var identityRuntime = options.identityRuntime || identityRuntimeModule.createGristIdentityRuntime(grist, {
+            onError: options.onError,
+            onIdentity: options.onIdentity
+        });
 
-        async function refresh() {
+        async function refresh(refreshOptions) {
+            refreshOptions = refreshOptions || {};
+            if (valid && !refreshOptions.force) return snapshot;
             if (loading) return loading;
             loading = (async function () {
                 try {
-                var currentUser = await getCurrentGristUser(grist);
+                var identityState = await identityRuntime.refresh({ force: !!refreshOptions.force });
                 var existingTables = await grist.docApi.listTables();
-                var data = {};
-                await Promise.all(CONTROLLED_TABLES.map(async function (table) {
+                var data = { Team: identityState.team || [] };
+                await Promise.all(PERMISSION_DATA_TABLES.map(async function (table) {
+                    if (table === 'Team') return;
                     if (existingTables.indexOf(table) === -1) {
                         data[table] = [];
                         return;
                     }
                     data[table] = columnarToRows(await grist.docApi.fetchTable(table));
                 }));
-                var identity = resolveActorIdentity({
-                    team: data.Team,
-                    currentGristUserId: currentUser.userId
-                });
-                snapshot = createSnapshot(data, identity);
+                snapshot = createSnapshot(data, identityState.actor);
                 valid = true;
-                if (typeof options.onIdentity === 'function') options.onIdentity(identity);
                 return snapshot;
                 } catch (error) {
                     var identity = { identified: false, status: 'PERMISSION_DATA_UNAVAILABLE', memberId: null, member: null, isAdmin: false };
@@ -786,21 +1606,37 @@ tfoot td.left { text-align: left; color: var(--text-muted); font-weight: 600; }
         }
 
         async function authorize(actions) {
-            await refresh();
+            if (Array.isArray(actions) && actions.length === 1) {
+                var action = actions[0];
+                if (Array.isArray(action) && action[0] === 'UpdateRecord' && action[1] === 'Team') {
+                    var claim = await identityRuntime.buildClaim(action[2]);
+                    if (isExactIdentityClaimAction(actions, claim)) {
+                        return {
+                            allowed: true,
+                            code: 'IDENTITY_CLAIM_ALLOWED',
+                            checkedActions: 1,
+                            identityClaim: true
+                        };
+                    }
+                }
+            }
+            await refresh({ force: true });
             return authorizeMutationBatch(snapshot, actions);
         }
 
         return {
             refresh: refresh,
             authorize: authorize,
-            invalidate: function () { valid = false; },
+            invalidate: function () { valid = false; identityRuntime.invalidate(); },
             getSnapshot: function () { return snapshot; },
-            getActor: function () { return snapshot && snapshot.actor; }
+            getActor: function () { return snapshot && snapshot.actor; },
+            getIdentityRuntime: function () { return identityRuntime; }
         };
     }
 
     var api = {
         CONTROLLED_TABLES: CONTROLLED_TABLES,
+        PERMISSION_DATA_TABLES: PERMISSION_DATA_TABLES,
         normalizeId: normalizeId,
         normalizeRefList: normalizeRefList,
         columnarToRows: columnarToRows,
@@ -819,10 +1655,16 @@ tfoot td.left { text-align: left; color: var(--text-muted); font-weight: 600; }
         canCreateAction: canCreateAction,
         canUpdateAction: canUpdateAction,
         canDeleteAction: canDeleteAction,
+        canCreateSheet: canCreateSheet,
+        canUpdateSheet: canUpdateSheet,
+        canCreateTimeEntry: canCreateTimeEntry,
+        canUpdateTimeEntry: canUpdateTimeEntry,
+        canDeleteTimeEntry: canDeleteTimeEntry,
         authorizeRecordMutation: authorizeRecordMutation,
         authorizeMutationBatch: authorizeMutationBatch,
         decodeJwtPayload: decodeJwtPayload,
         getCurrentGristUser: getCurrentGristUser,
+        isExactIdentityClaimAction: isExactIdentityClaimAction,
         createGristPermissionRuntime: createGristPermissionRuntime
     };
 
@@ -1371,6 +2213,18 @@ const TF = (function () {
             }
             const runtime = permissions.createGristPermissionRuntime(grist, opts);
             await runtime.refresh();
+            const gateModule = typeof globalThis !== 'undefined' && globalThis.TaskFlowIdentityGate;
+            if (opts.identityGate !== false && gateModule && typeof gateModule.createIdentityGate === 'function') {
+                const identityGate = gateModule.createIdentityGate({
+                    grist: grist,
+                    permissionRuntime: runtime,
+                    identityRuntime: runtime.getIdentityRuntime(),
+                    reloadSnapshot: opts.reloadIdentitySnapshot,
+                    onAssociated: opts.onAssociated
+                });
+                runtime.identityGate = identityGate;
+                await identityGate.start();
+            }
             return runtime;
         } catch (error) {
             try { opts.onError && opts.onError(error); } catch (e) {}
@@ -6587,7 +7441,8 @@ function render() {
     ? TaskFlowCra.managerWorkspace.resolveManagerWorkspaceState({
         team: S.team,
         sheets: S.feuilles,
-        currentUserMemberId: managerId
+        currentUserMemberId: managerId,
+        isAdmin: !!(S.currentUserActor && S.currentUserActor.isAdmin)
       })
     : {
         shouldShowManagerTab: false,
@@ -6631,274 +7486,6 @@ function render() {
   renderSaisie();
 }
 
-// ============================================================================
-// ASSOCIATION LIBRE - Dialogue et service
-// ============================================================================
-
-let associationInProgress = false;
-let selectedAssociationMemberId = null;
-
-/**
- * Affiche le dialogue d'association
- */
-function showAssociationDialog() {
-  if (!S.identityState || S.identityState.status !== 'ASSOCIATION_REQUIRED') {
-    console.warn('[CRA] showAssociationDialog appelé hors état ASSOCIATION_REQUIRED');
-    return;
-  }
-  
-  // Réinitialiser l'état de sélection
-  selectedAssociationMemberId = null;
-  associationInProgress = false;
-  
-  const candidates = S.identityState.candidates || [];
-  
-  // Créer la modale si elle n'existe pas
-  let modal = document.getElementById('craAssociationModal');
-  if (modal) {
-    modal.remove();
-  }
-  
-  modal = document.createElement('div');
-  modal.id = 'craAssociationModal';
-  modal.className = 'modal-ov';
-  modal.setAttribute('role', 'dialog');
-  modal.setAttribute('aria-modal', 'true');
-  modal.setAttribute('aria-labelledby', 'craAssociationTitle');
-  
-  modal.innerHTML = `
-    <div class="modal">
-      <h2 id="craAssociationTitle">Associer votre compte Grist</h2>
-      <p class="csub">
-        Votre compte n'est pas encore associé à un membre de l'équipe.
-        Sélectionnez votre propre profil pour continuer.
-      </p>
-      
-      <div id="craAssociationError" style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:12px;margin-bottom:16px;color:#dc2626;font-size:.85rem;display:none"></div>
-      
-      <div style="margin-bottom:16px;max-height:400px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;">
-        ${candidates.length === 0 ? 
-          '<p style="padding:20px;text-align:center;color:var(--text-muted)">Aucun candidat disponible</p>' :
-          candidates.map(c => `
-            <div class="cra-association-option" data-member-id="${c.id}" style="padding:12px 16px;border-bottom:1px solid var(--border);cursor:pointer;display:flex;align-items:center;gap:12px;" role="radio" aria-checked="false" tabindex="0">
-              <div style="width:20px;height:20px;border:2px solid var(--border);border-radius:50%;flex-shrink:0;"></div>
-              <div style="flex:1">
-                <div style="font-weight:600;font-size:.9rem;">${escapeHtml(c.nom)}</div>
-                <div style="font-size:.8rem;color:var(--text-muted);">${escapeHtml(c.email)}</div>
-              </div>
-            </div>
-          `).join('')
-        }
-      </div>
-      
-      <div class="cacts" style="display:flex;gap:8px;justify-content:flex-end;">
-        <button class="cbtn" id="craAssociationCancel">Annuler</button>
-        <button class="cbtn primary" id="craAssociationConfirm" disabled>Associer mon compte</button>
-      </div>
-    </div>
-  `;
-  
-  document.body.appendChild(modal);
-  
-  // Gestionnaires d'événements
-  const cancelBtn = document.getElementById('craAssociationCancel');
-  const confirmBtn = document.getElementById('craAssociationConfirm');
-  const errorEl = document.getElementById('craAssociationError');
-  const options = modal.querySelectorAll('.cra-association-option');
-  
-  // Annuler
-  cancelBtn.onclick = () => {
-    closeModal();
-  };
-  
-  // Confirmer
-  confirmBtn.onclick = () => {
-    if (selectedAssociationMemberId) {
-      performAssociation(selectedAssociationMemberId);
-    }
-  };
-  
-  // Sélection d'une option
-  options.forEach(option => {
-    option.onclick = () => selectOption(option);
-    option.onkeydown = (e) => {
-      if (e.key === 'Enter' || e.key === ' ') {
-        e.preventDefault();
-        selectOption(option);
-      }
-    };
-  });
-  
-  // Échap pour fermer
-  const escHandler = (e) => {
-    if (e.key === 'Escape' && !associationInProgress) {
-      closeModal();
-    }
-  };
-  document.addEventListener('keydown', escHandler);
-  
-  // Afficher la modale
-  modal.classList.add('open');
-  modal.setAttribute('aria-hidden', 'false');
-  
-  // Focus sur le premier élément
-  if (options.length > 0) {
-    options[0].focus();
-  }
-  
-  // Fonctions locales
-  function selectOption(selectedOption) {
-    if (associationInProgress) return;
-    
-    // Désélectionner toutes les options
-    options.forEach(opt => {
-      opt.setAttribute('aria-checked', 'false');
-      const circle = opt.firstElementChild;
-      if (circle) circle.style.borderColor = 'var(--border)';
-      opt.style.background = '';
-    });
-    
-    // Sélectionner l'option cliquée
-    selectedOption.setAttribute('aria-checked', 'true');
-    const selectedCircle = selectedOption.firstElementChild;
-    if (selectedCircle) selectedCircle.style.borderColor = 'var(--primary)';
-    selectedOption.style.background = 'color-mix(in srgb, var(--primary) 8%, transparent)';
-    
-    selectedAssociationMemberId = Number(selectedOption.getAttribute('data-member-id'));
-    confirmBtn.disabled = false;
-    confirmBtn.focus();
-  }
-  
-  function closeModal() {
-    if (associationInProgress) return;
-    document.removeEventListener('keydown', escHandler);
-    modal.classList.remove('open');
-    modal.setAttribute('aria-hidden', 'true');
-    setTimeout(() => modal.remove(), 200);
-  }
-  
-  function performAssociation(memberId) {
-    if (associationInProgress) return;
-    associationInProgress = true;
-    
-    // Désactiver l'interface
-    confirmBtn.disabled = true;
-    cancelBtn.disabled = true;
-    options.forEach(opt => opt.style.pointerEvents = 'none');
-    
-    // Afficher l'état de chargement
-    confirmBtn.textContent = 'Association en cours…';
-    errorEl.style.display = 'none';
-    
-    // Obtenir le module de service (depuis le bundle TaskFlowCra)
-    const identityModule = globalThis.TaskFlowCra?.identity;
-    const claimService = globalThis.TaskFlowCra?.claimService;
-    
-    if (!identityModule || !claimService) {
-      showError('Service d\'association indisponible');
-      associationInProgress = false;
-      confirmBtn.disabled = false;
-      cancelBtn.disabled = false;
-      options.forEach(opt => opt.style.pointerEvents = '');
-      confirmBtn.textContent = 'Associer mon compte';
-      return;
-    }
-    
-    // Valider la demande avec S.currentGristUserId (155719, pas S.currentUserMemberId)
-    const validation = identityModule.buildIdentityClaim({
-      team: S.team,
-      selectedTeamMemberId: memberId,
-      currentGristUserId: S.currentGristUserId
-    });
-    
-    if (!validation.allowed) {
-      showError(validation.reason || 'Demande invalide');
-      associationInProgress = false;
-      confirmBtn.disabled = false;
-      cancelBtn.disabled = false;
-      options.forEach(opt => opt.style.pointerEvents = '');
-      confirmBtn.textContent = 'Associer mon compte';
-      return;
-    }
-    
-    // Afficher la confirmation
-    const selectedMember = candidates.find(c => c.id === memberId);
-    if (!confirm(`Votre compte sera associé à :\n\n${selectedMember.nom}\n${selectedMember.email}\n\nCette association ne pourra pas être modifiée depuis le CRA.\n\nConfirmer ?`)) {
-      associationInProgress = false;
-      confirmBtn.disabled = false;
-      cancelBtn.disabled = false;
-      options.forEach(opt => opt.style.pointerEvents = '');
-      confirmBtn.textContent = 'Associer mon compte';
-      return;
-    }
-    
-    // Appel au service
-    claimService.claimCurrentUserIdentity({
-      grist: grist,
-      teamMemberId: memberId,
-      currentGristUserId: S.currentGristUserId,  // Utiliser le userId Grist brut
-      team: S.team,
-      reloadSnapshot: () => {
-        // Recharger via CraDataLoader
-        if (typeof CraDataLoader !== 'undefined' && CraDataLoader.requestCraReload) {
-          return CraDataLoader.requestCraReload({
-            reason: 'identity-association',
-            immediate: true
-          });
-        }
-        return Promise.resolve();
-      }
-    }).then(result => {
-      if (result.success) {
-        // Succès : fermer et recharger
-        associationInProgress = false;  // Libérer AVANT de fermer
-        selectedAssociationMemberId = null;  // Réinitialiser la sélection
-        closeModal();  // Maintenant que associationInProgress = false, ça ferme
-        // Le rechargement mettra à jour S.identityState et S.currentUserMemberId
-        if (typeof notify !== 'undefined') {
-          notify('Compte associé avec succès', 'success');
-        }
-      } else {
-        // Échec : afficher l'erreur
-        let message = 'Échec de l\'association';
-        if (result.code === 'IDENTITY_CLAIM_CONFLICT') {
-          message = 'Cette ligne a été associée entre-temps. Veuillez recharger.';
-        } else if (result.code === 'IDENTITY_CLAIM_WRITE_FAILED') {
-          message = 'Erreur lors de l\'enregistrement. Veuillez réessayer.';
-        } else if (result.reason) {
-          message = result.reason;
-        }
-        showError(message);
-        associationInProgress = false;
-        confirmBtn.disabled = false;
-        cancelBtn.disabled = false;
-        options.forEach(opt => opt.style.pointerEvents = '');
-        confirmBtn.textContent = 'Associer mon compte';
-      }
-    }).catch(e => {
-      showError('Erreur inattendue : ' + (e.message || String(e)));
-      associationInProgress = false;
-      confirmBtn.disabled = false;
-      cancelBtn.disabled = false;
-      options.forEach(opt => opt.style.pointerEvents = '');
-      confirmBtn.textContent = 'Associer mon compte';
-    });
-  }
-  
-  function showError(message) {
-    errorEl.textContent = message;
-    errorEl.style.display = 'block';
-  }
-}
-
-/**
- * Helper : échapper le HTML
- */
-function escapeHtml(text) {
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
-}
 function updateSubmitBtn() {
   const sb = document.getElementById('submitBtn'), eb = document.getElementById('exportBtn');
   eb.style.display = (S.hasTable && S.visiblePersonIds.length > 0) ? '' : 'none';
@@ -6922,20 +7509,8 @@ function updateSubmitBtn() {
   // Utiliser currentUserMemberId (identité réelle), jamais selectedPersonId ou visiblePersonIds[0]
   const currentUserId = S.currentUserMemberId;
   
-  // Vérifier l'état d'identité pour l'association libre
-  if (S.identityState && S.identityState.status === 'ASSOCIATION_REQUIRED') {
-    // Afficher le bouton d'association
-    sb.textContent = 'Associer mon compte…';
-    sb.disabled = false;
-    sb.className = 'btn primary';
-    sb.onclick = () => {
-      showAssociationDialog();
-    };
-    return;
-  }
-  
-  // Si identityState indique un conflit bloquant
-  if (S.identityState && S.identityState.status !== 'IDENTIFIED' && S.identityState.status !== 'ASSOCIATION_REQUIRED') {
+  // Le parcours d'association est exclusivement porte par IdentityGate.
+  if (S.identityState && S.identityState.status !== 'IDENTIFIED') {
     sb.textContent = 'Identité impossible';
     sb.disabled = true;
     sb.className = 'btn ghost';
@@ -8666,8 +9241,21 @@ async function initGrist() {
     S.alone = false;
     
     TF.readOnlyBanner();
+
+    const permissionRuntime = await TF.createPermissionRuntime(grist, {
+      onIdentity: identity => {
+        if (!identity.identified) console.warn('[CRA permissions]', identity.status);
+      },
+      onError: error => console.error('[CRA permissions] Initialisation impossible', error),
+      reloadIdentitySnapshot: () => CraDataLoader.requestCraReload({
+        reason: 'identity-association',
+        immediate: true,
+        allowSchemaRecovery: false
+      })
+    });
     
     TF.guardWrites(grist, {
+      permissionRuntime,
       onReadOnly: () => {
         toast('Lecture seule : modification non autorisée');
       },
@@ -8698,6 +9286,9 @@ async function initGrist() {
         taskFlowCra: globalThis.TaskFlowCra,
         getState: function() {
           return S;
+        },
+        getActor: function() {
+          return permissionRuntime.getActor();
         },
         reload: function(options) {
           return CraDataLoader.requestCraReload(

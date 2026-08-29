@@ -12,7 +12,7 @@
 
 const service = require('../workflow/cra-sheet-validation-service.js');
 const workflow = require('../workflow/cra-sheet-workflow.js');
-const { createMockGrist } = require('../grist/mock-grist');
+const { createMockGrist } = require('../../grist/mock-grist');
 
 // ============================================================================
 // HELPERS DE TEST
@@ -27,6 +27,8 @@ function createBaseData(options = {}) {
     entryFeuille = 1
   } = options;
 
+  const hasValidationSnapshot = ['soumis', 'valide', 'correction_manager'].includes(sheetStatut);
+
   return {
     Team: [
       { id: 1, nom: 'Manager', responsable: null, email: 'manager@example.com' },
@@ -38,9 +40,9 @@ function createBaseData(options = {}) {
         membre: 2,
         semaine: 1704672000,
         statut: sheetStatut,
-        responsableValidation: sheetStatut === 'soumis' ? 1 : null,
-        soumisPar: sheetStatut === 'soumis' ? 2 : null,
-        dateSoumission: sheetStatut === 'soumis' ? 1704672000 : null,
+        responsableValidation: hasValidationSnapshot ? 1 : null,
+        soumisPar: hasValidationSnapshot ? 2 : null,
+        dateSoumission: hasValidationSnapshot ? 1704672000 : null,
         revisionValidation: sheetRevision,
         validePar: null,
         dateValidation: null,
@@ -707,13 +709,14 @@ describe('CRA Sheet Validation Service - Concurrence réelle', () => {
     const data = createBaseData({ sheetStatut: 'soumis', sheetRevision: 0 });
     const grist = createMockGristWithData(data);
 
-    let fetchCallCount = 0;
+    let sheetFetchCount = 0;
     const originalFetchTable = grist.docApi.fetchTable.bind(grist.docApi);
     grist.docApi.fetchTable = async (tableId) => {
-      fetchCallCount++;
+      if (tableId === 'Feuilles') sheetFetchCount++;
+      const currentSheetFetch = sheetFetchCount;
       const result = await originalFetchTable(tableId);
       
-      if (fetchCallCount > 3 && tableId === 'Feuilles') {
+      if (tableId === 'Feuilles' && currentSheetFetch === 2) {
         result.revisionValidation = result.revisionValidation.map(() => 5);
       }
       
@@ -737,13 +740,14 @@ describe('CRA Sheet Validation Service - Concurrence réelle', () => {
     const data = createBaseData({ sheetStatut: 'soumis' });
     const grist = createMockGristWithData(data);
 
-    let callCount = 0;
+    let sheetFetchCount = 0;
     const originalFetchTable = grist.docApi.fetchTable.bind(grist.docApi);
     grist.docApi.fetchTable = async (tableId) => {
-      callCount++;
+      if (tableId === 'Feuilles') sheetFetchCount++;
+      const currentSheetFetch = sheetFetchCount;
       const result = await originalFetchTable(tableId);
       
-      if (callCount > 3 && tableId === 'Feuilles') {
+      if (tableId === 'Feuilles' && currentSheetFetch === 2) {
         result.statut = result.statut.map(() => 'valide');
       }
       

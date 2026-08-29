@@ -112,6 +112,18 @@ function validateNumber(value, fieldName, options = {}) {
 }
 
 /**
+ * Indique si une valeur réalisée a été explicitement saisie.
+ * Le zéro est une valeur métier : il ne doit pas être confondu avec null.
+ */
+function hasExplicitActualHours(entry) {
+  return entry &&
+    entry.actualHours !== null &&
+    entry.actualHours !== undefined &&
+    entry.actualHours !== '' &&
+    Number.isFinite(Number(entry.actualHours));
+}
+
+/**
  * Convertit des heures (float) en centièmes d'heure (entier)
  * @param {number} hours - Heures à convertir
  * @returns {number} Centièmes d'heure
@@ -303,7 +315,7 @@ function findDuplicates(entries, idField = 'id') {
  * @param {Array} input.existingEntries - Entrées existantes avec id, assignmentId, date, plannedHours, actualHours, sheetStatus, description, imputation
  * @param {string} [input.replanFromDate] - Date à partir de laquelle recalculer le plan (YYYY-MM-DD)
  * @param {number} [input.precisionHours=0.01] - Précision en heures
- * @param {string} [input.capacityPolicy="cap"] - Politique de capacité ("cap" pour ne pas dépasser)
+ * @param {string} [input.capacityPolicy="cap"] - Politique de capacité : "cap" ou "allow-overload"
  * @returns {Object} Résultat avec desiredPlan, summary, diagnostics
  */
 function buildAssignmentPlan(input) {
@@ -373,7 +385,8 @@ function buildAssignmentPlan(input) {
     
     capacityMap.set(cap.date, {
       baseCapacityHours: cap.baseCapacityHours,
-      availableCapacityHours: cap.availableCapacityHours
+      availableCapacityHours: cap.availableCapacityHours,
+      distributionCapacityHours: cap.distributionCapacityHours
     });
   }
   
@@ -389,8 +402,7 @@ function buildAssignmentPlan(input) {
   // 2. entriesInAssignmentRange : lignes entre startDate et endDate (pour la réconciliation)
   
   // Calcul comptable : toutes les entrées de l'affectation, peu importe la date
-  let validatedActualCentiHours = 0;
-  let validatedActualEntries = [];
+  let effectiveActualCentiHours = 0;
   let hasInvalidActualHours = false;
   
   for (const entry of existingEntries || []) {
@@ -410,9 +422,11 @@ function buildAssignmentPlan(input) {
       continue;
     }
     
-    if (entry.sheetStatus === 'validated') {
-      validatedActualCentiHours += entry.actualHours === null || entry.actualHours === undefined || entry.actualHours === '' ? 0 : toCentiHours(entry.actualHours);
-      validatedActualEntries.push(entry);
+    // Une saisie explicite, même en brouillon et même égale à zéro, devient
+    // immédiatement la réalité de la journée. La validation verrouille la
+    // ligne, mais ne change pas sa valeur comptable.
+    if (hasExplicitActualHours(entry)) {
+      effectiveActualCentiHours += toCentiHours(Number(entry.actualHours));
     }
   }
   
@@ -434,15 +448,15 @@ function buildAssignmentPlan(input) {
     };
   }
   
-  const validatedActualHours = toHours(validatedActualCentiHours);
-  const overconsumedCentiHours = Math.max(0, validatedActualCentiHours - allocatedCentiHours);
+  const validatedActualHours = toHours(effectiveActualCentiHours);
+  const overconsumedCentiHours = Math.max(0, effectiveActualCentiHours - allocatedCentiHours);
   const overconsumedHours = toHours(overconsumedCentiHours);
   
   // Si surconsommation, retourner immédiatement sans plan
   if (overconsumedCentiHours > 0) {
     diagnostics.push({
       code: "OVERCONSUMPTION",
-      message: `Le réalisé validé (${validatedActualHours}h) dépasse l'allocation (${toHours(allocatedCentiHours)}h) de ${overconsumedHours}h`
+      message: `Le réalisé renseigné (${validatedActualHours}h) dépasse l'allocation (${toHours(allocatedCentiHours)}h) de ${overconsumedHours}h`
     });
     
     return {
@@ -549,25 +563,39 @@ function buildAssignmentPlan(input) {
     
     let validatedEntry = null;
     let submittedEntry = null;
+    let explicitActualEntry = null;
+    let draftEntry = null;
     let mutableEntries = [];
     
     for (const entry of entries) {
-      if (entry.sheetStatus === 'validated') {
+      if (hasExplicitActualHours(entry)) {
+        explicitActualEntry = entry;
+      } else if (entry.sheetStatus === 'validated') {
         validatedEntry = entry;
       } else if (entry.sheetStatus === 'submitted') {
         submittedEntry = entry;
+      } else if (entry.sheetStatus === 'draft') {
+        draftEntry = entry;
       } else {
         mutableEntries.push(entry);
       }
     }
     
-    if (validatedEntry) {
+    if (explicitActualEntry) {
+      entriesToRespect.set(date, explicitActualEntry);
+    } else if (validatedEntry) {
       entriesToRespect.set(date, validatedEntry);
-      // validatedActualCentiHours déjà calculé plus haut pour toutes les entrées
-      // Ne pas re-compter ici pour éviter le double comptage
+      // Compatibilité avec les anciennes feuilles validées qui n'auraient pas
+      // matérialisé heures : leur proposition reste malgré tout verrouillée.
+      protectedPlannedCentiHours += toCentiHours(validatedEntry.plannedHours || 0);
     } else if (submittedEntry) {
       entriesToRespect.set(date, submittedEntry);
       protectedPlannedCentiHours += toCentiHours(submittedEntry.plannedHours || 0);
+    } else if (draftEntry) {
+      // Une semaine brouillon peut être en cours d'édition. Sa proposition
+      // reste stable jusqu'à une action explicite de l'utilisateur.
+      entriesToRespect.set(date, draftEntry);
+      protectedPlannedCentiHours += toCentiHours(draftEntry.plannedHours || 0);
     } else if (isBeforeReplan && mutableEntries.length > 0) {
       const entryToProtect = mutableEntries[0];
       entriesToRespect.set(date, entryToProtect);
@@ -581,7 +609,7 @@ function buildAssignmentPlan(input) {
   // À ce stade, overconsumedCentiHours === 0 (sinon retour immédiat)
   // Donc overconsumedHours === 0 également
   
-  const remainingAfterValidated = allocatedCentiHours - validatedActualCentiHours;
+  const remainingAfterValidated = allocatedCentiHours - effectiveActualCentiHours;
   const overprotectedCentiHours = Math.max(0, protectedPlannedCentiHours - remainingAfterValidated);
   const overprotectedHours = toHours(overprotectedCentiHours);
   
@@ -653,7 +681,13 @@ function buildAssignmentPlan(input) {
     if (distributableEntry) {
       distributableDates.push(date);
       const cap = capacityMap.get(date);
-      const availableCapacity = cap ? toCentiHours(cap.availableCapacityHours) : 0;
+      const availableCapacity = cap
+        ? toCentiHours(
+            capacityPolicy === 'allow-overload' && cap.distributionCapacityHours != null
+              ? cap.distributionCapacityHours
+              : cap.availableCapacityHours
+          )
+        : 0;
       capacityForDistribution.set(date, availableCapacity);
       continue;
     }
@@ -663,7 +697,13 @@ function buildAssignmentPlan(input) {
     }
     
     const cap = capacityMap.get(date);
-    const availableCapacity = cap ? toCentiHours(cap.availableCapacityHours) : 0;
+    const availableCapacity = cap
+      ? toCentiHours(
+          capacityPolicy === 'allow-overload' && cap.distributionCapacityHours != null
+            ? cap.distributionCapacityHours
+            : cap.availableCapacityHours
+        )
+      : 0;
     
     if (availableCapacity <= 0) {
       continue;
@@ -708,8 +748,11 @@ function buildAssignmentPlan(input) {
   let remainingToDistribute = remainingCentiHours;
   
   if (totalCapacityCentiHours > 0 && remainingToDistribute > 0) {
-    // Limiter à la capacité totale disponible
-    const toDistribute = Math.min(remainingToDistribute, totalCapacityCentiHours);
+    // En mode surcharge autorisée, la capacité sert de poids de lissage mais
+    // ne plafonne pas la demande. Les dépassements restent visibles dans le Plan.
+    const toDistribute = capacityPolicy === 'allow-overload'
+      ? remainingToDistribute
+      : Math.min(remainingToDistribute, totalCapacityCentiHours);
     
     // Étape 1: Calculer la part théorique de chaque date et prendre la partie entière
     const distribution = distributableDates.map(date => {
@@ -768,7 +811,7 @@ function buildAssignmentPlan(input) {
     for (const item of distribution) {
       let plannedCentiHours = item.assigned;
       
-      // Plafonner à la capacité (policy "cap")
+      // Plafonner uniquement avec la politique historique "cap".
       if (capacityPolicy === "cap") {
         plannedCentiHours = Math.min(plannedCentiHours, item.capacity);
       }
@@ -791,6 +834,20 @@ function buildAssignmentPlan(input) {
   }
   
   const unplannedCentiHours = remainingToDistribute;
+
+  if (capacityPolicy === 'allow-overload') {
+    const overloadedDates = desiredPlan.filter(item => {
+      const cap = capacityMap.get(item.date);
+      return cap && item.plannedHours > Number(cap.availableCapacityHours || 0) + 0.01;
+    });
+    if (overloadedDates.length > 0) {
+      diagnostics.push({
+        code: 'CAPACITY_OVERLOAD_ALLOWED',
+        dates: overloadedDates.map(item => item.date),
+        message: `${overloadedDates.length} jour(s) dépassent la capacité disponible`
+      });
+    }
+  }
   
   if (unplannedCentiHours > 0) {
     diagnostics.push({
@@ -1543,7 +1600,7 @@ function validateEntriesBelongToSheet(context) {
  * }}
  */
 function canSubmitSheet(context) {
-  const { actorMemberId, sheet, team, sheets, timeEntries } = context || {};
+  const { actorMemberId, actorIsAdmin = false, sheet, team, sheets, timeEntries } = context || {};
 
   // 1. Acteur identifié
   const actorId = normalizeMemberId(actorMemberId);
@@ -1576,7 +1633,7 @@ function canSubmitSheet(context) {
   const sheetMemberId = normalizeMemberId(sheet.membre);
 
   // 3. Acteur = membre de la feuille
-  if (actorId !== sheetMemberId) {
+  if (!actorIsAdmin && actorId !== sheetMemberId) {
     return {
       can: false,
       reason: 'Seul le propriétaire de la feuille peut la soumettre',
@@ -1596,7 +1653,7 @@ function canSubmitSheet(context) {
 
   // 5. Vérifier l'unicité (diagnostic de doublons)
   const weekStartIso = getWeekStartIso(sheet.semaine);
-  const uniquenessCheck = findUniqueSheetForWeek(actorId, weekStartIso, sheets);
+  const uniquenessCheck = findUniqueSheetForWeek(sheetMemberId, weekStartIso, sheets);
 
   if (uniquenessCheck.status === 'duplicate') {
     return {
@@ -1676,7 +1733,7 @@ function canSubmitSheet(context) {
  * @returns {{ can: boolean, reason: string, code: string }}
  */
 function canWithdrawSheet(context) {
-  const { actorMemberId, sheet, sheets } = context || {};
+  const { actorMemberId, actorIsAdmin = false, sheet, sheets } = context || {};
 
   const actorId = normalizeMemberId(actorMemberId);
   if (actorId === null) {
@@ -1704,7 +1761,7 @@ function canWithdrawSheet(context) {
     };
   }
 
-  if (normalizeMemberId(sheet.membre) !== actorId) {
+  if (!actorIsAdmin && normalizeMemberId(sheet.membre) !== actorId) {
     return {
       can: false,
       reason: 'Seul le propriétaire peut retirer sa soumission',
@@ -1785,7 +1842,7 @@ function canWithdrawSheet(context) {
  * @returns {{ can: boolean, reason: string, code: string }}
  */
 function canValidateSheet(context) {
-  const { actorMemberId, sheet, sheets, validationResult } = context || {};
+  const { actorMemberId, actorIsAdmin = false, sheet, sheets, validationResult } = context || {};
 
   // 1. Acteur identifié
   const actorId = normalizeMemberId(actorMemberId);
@@ -1826,7 +1883,7 @@ function canValidateSheet(context) {
   }
 
   // 4. Auto-validation interdite
-  if (normalizeMemberId(sheet.membre) === actorId) {
+  if (!actorIsAdmin && normalizeMemberId(sheet.membre) === actorId) {
     return {
       can: false,
       reason: 'Auto-validation interdite',
@@ -1836,7 +1893,7 @@ function canValidateSheet(context) {
 
   // 5. responsableValidation présent (photographie)
   const expectedManager = getExpectedValidationManagerId(sheet);
-  if (expectedManager === null) {
+  if (!actorIsAdmin && expectedManager === null) {
     return {
       can: false,
       reason: 'responsableValidation absent (photographie manquante)',
@@ -1845,7 +1902,7 @@ function canValidateSheet(context) {
   }
 
   // 6. Acteur = responsableValidation
-  if (!isExpectedValidationManager(actorMemberId, sheet)) {
+  if (!actorIsAdmin && !isExpectedValidationManager(actorMemberId, sheet)) {
     return {
       can: false,
       reason: 'Seul le responsable de validation photographié peut valider',
@@ -1923,7 +1980,7 @@ function canValidateSheet(context) {
  * @returns {{ can: boolean, reason: string, code: string }}
  */
 function canRejectSheet(context) {
-  const { actorMemberId, sheet, sheets, rejectReason } = context || {};
+  const { actorMemberId, actorIsAdmin = false, sheet, sheets, rejectReason } = context || {};
 
   // 1. Acteur identifié
   const actorId = normalizeMemberId(actorMemberId);
@@ -1964,7 +2021,7 @@ function canRejectSheet(context) {
   }
 
   // 4. Auto-rejet interdit
-  if (normalizeMemberId(sheet.membre) === actorId) {
+  if (!actorIsAdmin && normalizeMemberId(sheet.membre) === actorId) {
     return {
       can: false,
       reason: 'Auto-rejet interdit',
@@ -1974,7 +2031,7 @@ function canRejectSheet(context) {
 
   // 5. responsableValidation présent (photographie)
   const expectedManager = getExpectedValidationManagerId(sheet);
-  if (expectedManager === null) {
+  if (!actorIsAdmin && expectedManager === null) {
     return {
       can: false,
       reason: 'responsableValidation absent (photographie manquante)',
@@ -1983,7 +2040,7 @@ function canRejectSheet(context) {
   }
 
   // 6. Acteur = responsableValidation
-  if (!isExpectedValidationManager(actorMemberId, sheet)) {
+  if (!actorIsAdmin && !isExpectedValidationManager(actorMemberId, sheet)) {
     return {
       can: false,
       reason: 'Seul le responsable de validation photographié peut rejeter',
@@ -2057,7 +2114,7 @@ function canRejectSheet(context) {
  * @returns {{ can: boolean, reason: string, code: string }}
  */
 function canOpenManagerCorrection(context) {
-  const { actorMemberId, sheet, sheets, correctionReason } = context || {};
+  const { actorMemberId, actorIsAdmin = false, sheet, sheets, correctionReason } = context || {};
 
   // 1. Acteur identifié
   const actorId = normalizeMemberId(actorMemberId);
@@ -2098,7 +2155,7 @@ function canOpenManagerCorrection(context) {
   }
 
   // 4. Auto-correction interdite
-  if (normalizeMemberId(sheet.membre) === actorId) {
+  if (!actorIsAdmin && normalizeMemberId(sheet.membre) === actorId) {
     return {
       can: false,
       reason: 'Auto-correction interdite',
@@ -2108,7 +2165,7 @@ function canOpenManagerCorrection(context) {
 
   // 5. responsableValidation présent (photographie)
   const expectedManager = getExpectedValidationManagerId(sheet);
-  if (expectedManager === null) {
+  if (!actorIsAdmin && expectedManager === null) {
     return {
       can: false,
       reason: 'responsableValidation absent (photographie manquante)',
@@ -2117,7 +2174,7 @@ function canOpenManagerCorrection(context) {
   }
 
   // 6. Acteur = responsableValidation
-  if (!isExpectedValidationManager(actorMemberId, sheet)) {
+  if (!actorIsAdmin && !isExpectedValidationManager(actorMemberId, sheet)) {
     return {
       can: false,
       reason: 'Seul le responsable de validation photographié peut ouvrir une correction',
@@ -2188,7 +2245,7 @@ function canOpenManagerCorrection(context) {
  * @returns {{ can: boolean, reason: string, code: string }}
  */
 function canManagerEditActual(context) {
-  const { actorMemberId, sheet, timeEntry } = context || {};
+  const { actorMemberId, actorIsAdmin = false, sheet, timeEntry } = context || {};
 
   // 1. Acteur identifié
   const actorId = normalizeMemberId(actorMemberId);
@@ -2229,7 +2286,7 @@ function canManagerEditActual(context) {
   }
 
   // 4. Auto-édition interdite
-  if (normalizeMemberId(sheet.membre) === actorId) {
+  if (!actorIsAdmin && normalizeMemberId(sheet.membre) === actorId) {
     return {
       can: false,
       reason: 'Le propriétaire ne peut pas éditer en mode correction manager',
@@ -2239,7 +2296,7 @@ function canManagerEditActual(context) {
 
   // 5. responsableValidation présent
   const expectedManager = getExpectedValidationManagerId(sheet);
-  if (expectedManager === null) {
+  if (!actorIsAdmin && expectedManager === null) {
     return {
       can: false,
       reason: 'responsableValidation absent',
@@ -2248,7 +2305,7 @@ function canManagerEditActual(context) {
   }
 
   // 6. Acteur = responsableValidation
-  if (!isExpectedValidationManager(actorMemberId, sheet)) {
+  if (!actorIsAdmin && !isExpectedValidationManager(actorMemberId, sheet)) {
     return {
       can: false,
       reason: 'Seul le responsable de validation photographié peut éditer',
@@ -2320,7 +2377,7 @@ function canManagerEditActual(context) {
  * @returns {{ can: boolean, reason: string, code: string }}
  */
 function canRevalidateSheet(context) {
-  const { actorMemberId, sheet, sheets, validationResult } = context || {};
+  const { actorMemberId, actorIsAdmin = false, sheet, sheets, validationResult } = context || {};
 
   // 1. Acteur identifié
   const actorId = normalizeMemberId(actorMemberId);
@@ -2361,7 +2418,7 @@ function canRevalidateSheet(context) {
   }
 
   // 4. Auto-validation interdite
-  if (normalizeMemberId(sheet.membre) === actorId) {
+  if (!actorIsAdmin && normalizeMemberId(sheet.membre) === actorId) {
     return {
       can: false,
       reason: 'Auto-validation interdite',
@@ -2371,7 +2428,7 @@ function canRevalidateSheet(context) {
 
   // 5. responsableValidation présent
   const expectedManager = getExpectedValidationManagerId(sheet);
-  if (expectedManager === null) {
+  if (!actorIsAdmin && expectedManager === null) {
     return {
       can: false,
       reason: 'responsableValidation absent',
@@ -2380,7 +2437,7 @@ function canRevalidateSheet(context) {
   }
 
   // 6. Acteur = responsableValidation
-  if (!isExpectedValidationManager(actorMemberId, sheet)) {
+  if (!actorIsAdmin && !isExpectedValidationManager(actorMemberId, sheet)) {
     return {
       can: false,
       reason: 'Seul le responsable de validation photographié peut revalider',
@@ -2464,7 +2521,7 @@ function canRevalidateSheet(context) {
  * @returns {{ allowed: boolean, can: boolean, code: string, reason: string, actions: Array, diagnostics: Array, summary: Object }}
  */
 function buildSubmissionActions(params) {
-  const { actorMemberId, sheet, team, sheets, timeEntries, nowUnixSeconds } = params || {};
+  const { actorMemberId, actorIsAdmin = false, sheet, team, sheets, timeEntries, nowUnixSeconds } = params || {};
   const actions = [];
   const diagnostics = [];
   const summary = {};
@@ -2494,7 +2551,7 @@ function buildSubmissionActions(params) {
     };
   }
 
-  const authCheck = canSubmitSheet({ actorMemberId, sheet, team, sheets, timeEntries });
+  const authCheck = canSubmitSheet({ actorMemberId, actorIsAdmin, sheet, team, sheets, timeEntries });
   if (!authCheck.can) {
     return {
       allowed: false,
@@ -2604,7 +2661,7 @@ function buildSubmissionActions(params) {
  * @returns {{ allowed: boolean, can: boolean, code: string, reason: string, actions: Array, diagnostics: Array, summary: Object }}
  */
 function buildWithdrawActions(params) {
-  const { actorMemberId, sheet, sheets } = params || {};
+  const { actorMemberId, actorIsAdmin = false, sheet, sheets } = params || {};
   const actions = [];
   const diagnostics = [];
   const summary = {};
@@ -2658,7 +2715,7 @@ function buildWithdrawActions(params) {
     };
   }
 
-  const authCheck = canWithdrawSheet({ actorMemberId, sheet, sheets });
+  const authCheck = canWithdrawSheet({ actorMemberId, actorIsAdmin, sheet, sheets });
   if (!authCheck.can) {
     return {
       allowed: false,
@@ -2726,7 +2783,7 @@ function buildWithdrawActions(params) {
  * @returns {{ allowed: boolean, can: boolean, code: string, reason: string, actions: Array, diagnostics: Array, summary: Object }}
  */
 function buildValidationAction(params) {
-  const { actorMemberId, sheet, sheets, validationResult, nowUnixSeconds } = params || {};
+  const { actorMemberId, actorIsAdmin = false, sheet, sheets, validationResult, nowUnixSeconds } = params || {};
   const actions = [];
   const diagnostics = [];
   const summary = {};
@@ -2756,7 +2813,7 @@ function buildValidationAction(params) {
     };
   }
 
-  const authCheck = canValidateSheet({ actorMemberId, sheet, sheets, validationResult });
+  const authCheck = canValidateSheet({ actorMemberId, actorIsAdmin, sheet, sheets, validationResult });
   if (!authCheck.can) {
     return {
       allowed: false,
@@ -2823,7 +2880,7 @@ function buildValidationAction(params) {
  * @returns {{ allowed: boolean, can: boolean, code: string, reason: string, actions: Array, diagnostics: Array, summary: Object }}
  */
 function buildRejectionAction(params) {
-  const { actorMemberId, sheet, sheets, rejectReason } = params || {};
+  const { actorMemberId, actorIsAdmin = false, sheet, sheets, rejectReason } = params || {};
   const actions = [];
   const diagnostics = [];
   const summary = {};
@@ -2840,7 +2897,7 @@ function buildRejectionAction(params) {
     };
   }
 
-  const authCheck = canRejectSheet({ actorMemberId, sheet, sheets, rejectReason });
+  const authCheck = canRejectSheet({ actorMemberId, actorIsAdmin, sheet, sheets, rejectReason });
   if (!authCheck.can) {
     return {
       allowed: false,
@@ -2903,7 +2960,7 @@ function buildRejectionAction(params) {
  * @returns {{ allowed: boolean, can: boolean, code: string, reason: string, actions: Array, diagnostics: Array, summary: Object }}
  */
 function buildOpenManagerCorrectionActions(params) {
-  const { actorMemberId, sheet, sheets, correctionReason } = params || {};
+  const { actorMemberId, actorIsAdmin = false, sheet, sheets, correctionReason } = params || {};
   const actions = [];
   const diagnostics = [];
   const summary = {};
@@ -2920,7 +2977,7 @@ function buildOpenManagerCorrectionActions(params) {
     };
   }
 
-  const authCheck = canOpenManagerCorrection({ actorMemberId, sheet, sheets, correctionReason });
+  const authCheck = canOpenManagerCorrection({ actorMemberId, actorIsAdmin, sheet, sheets, correctionReason });
   if (!authCheck.can) {
     return {
       allowed: false,
@@ -2978,7 +3035,7 @@ function buildOpenManagerCorrectionActions(params) {
  * @returns {{ allowed: boolean, can: boolean, code: string, reason: string, actions: Array, diagnostics: Array, summary: Object }}
  */
 function buildRevalidationActions(params) {
-  const { actorMemberId, sheet, sheets, validationResult, nowUnixSeconds } = params || {};
+  const { actorMemberId, actorIsAdmin = false, sheet, sheets, validationResult, nowUnixSeconds } = params || {};
   const actions = [];
   const diagnostics = [];
   const summary = {};
@@ -3008,7 +3065,7 @@ function buildRevalidationActions(params) {
     };
   }
 
-  const authCheck = canRevalidateSheet({ actorMemberId, sheet, sheets, validationResult });
+  const authCheck = canRevalidateSheet({ actorMemberId, actorIsAdmin, sheet, sheets, validationResult });
   if (!authCheck.can) {
     return {
       allowed: false,
@@ -3079,7 +3136,7 @@ function buildRevalidationActions(params) {
  * @returns {{ allowed: boolean, can: boolean, code: string, reason: string, actions: Array, diagnostics: Array, summary: Object }}
  */
 function buildManagerActualUpdateAction(params) {
-  const { actorMemberId, sheet, timeEntry, hours } = params || {};
+  const { actorMemberId, actorIsAdmin = false, sheet, timeEntry, hours } = params || {};
   const actions = [];
   const diagnostics = [];
   const summary = {};
@@ -3123,7 +3180,7 @@ function buildManagerActualUpdateAction(params) {
   }
 
   // Vérification d'autorisation
-  const authCheck = canManagerEditActual({ actorMemberId, sheet, timeEntry });
+  const authCheck = canManagerEditActual({ actorMemberId, actorIsAdmin, sheet, timeEntry });
   if (!authCheck.can) {
     return {
       allowed: false,
@@ -5114,7 +5171,7 @@ async function executeTransition(params) {
 // ============================================================================
 
 async function submitSheet(params) {
-  const { grist, actorMemberId, sheetId, nowUnixSeconds } = params || {};
+  const { grist, actorMemberId, actorIsAdmin = false, sheetId, nowUnixSeconds } = params || {};
   const validation = validateCommonParams({ grist, sheetId, actorMemberId });
   if (!validation.valid) return { success: false, code: validation.code, sheetId, transition: 'submit' };
 
@@ -5126,7 +5183,7 @@ async function submitSheet(params) {
     sheetId,
     actorId: validation.actorId,
     transitionName: 'submit',
-    userContext: { actorMemberId, nowUnixSeconds: timestampCheck.value },
+    userContext: { actorMemberId, actorIsAdmin, nowUnixSeconds: timestampCheck.value },
     buildDecision: (snapshot, context) => {
       const { actorMemberId, nowUnixSeconds } = context;
 
@@ -5149,6 +5206,7 @@ async function submitSheet(params) {
 
       return workflow.buildSubmissionActions({
         actorMemberId,
+        actorIsAdmin: context.actorIsAdmin,
         sheet: snapshot.sheet,
         team: snapshot.team,
         sheets: snapshot.sheets,
@@ -5206,7 +5264,7 @@ async function submitSheet(params) {
 }
 
 async function withdrawSheet(params) {
-  const { grist, actorMemberId, sheetId } = params || {};
+  const { grist, actorMemberId, actorIsAdmin = false, sheetId } = params || {};
   const validation = validateCommonParams({ grist, sheetId, actorMemberId });
   if (!validation.valid) return { success: false, code: validation.code, sheetId, transition: 'withdraw' };
 
@@ -5215,10 +5273,11 @@ async function withdrawSheet(params) {
     sheetId,
     actorId: validation.actorId,
     transitionName: 'withdraw',
-    userContext: { actorMemberId },
+    userContext: { actorMemberId, actorIsAdmin },
     buildDecision: (snapshot, context) => {
       return workflow.buildWithdrawActions({
         actorMemberId: context.actorMemberId,
+        actorIsAdmin: context.actorIsAdmin,
         sheet: snapshot.sheet,
         sheets: snapshot.sheets
       });
@@ -5241,7 +5300,7 @@ async function withdrawSheet(params) {
 }
 
 async function validateSheet(params) {
-  const { grist, actorMemberId, sheetId, nowUnixSeconds } = params || {};
+  const { grist, actorMemberId, actorIsAdmin = false, sheetId, nowUnixSeconds } = params || {};
   const validation = validateCommonParams({ grist, sheetId, actorMemberId });
   if (!validation.valid) return { success: false, code: validation.code, sheetId, transition: 'validate' };
 
@@ -5253,10 +5312,11 @@ async function validateSheet(params) {
     sheetId,
     actorId: validation.actorId,
     transitionName: 'validate',
-    userContext: { actorMemberId, nowUnixSeconds: timestampCheck.value },
+    userContext: { actorMemberId, actorIsAdmin, nowUnixSeconds: timestampCheck.value },
     buildDecision: (snapshot, context) => {
       return workflow.buildValidationAction({
         actorMemberId: context.actorMemberId,
+        actorIsAdmin: context.actorIsAdmin,
         sheet: snapshot.sheet,
         sheets: snapshot.sheets,
         validationResult: context.validationResult,
@@ -5282,7 +5342,7 @@ async function validateSheet(params) {
 }
 
 async function rejectSheet(params) {
-  const { grist, actorMemberId, sheetId, rejectReason } = params || {};
+  const { grist, actorMemberId, actorIsAdmin = false, sheetId, rejectReason } = params || {};
   const validation = validateCommonParams({ grist, sheetId, actorMemberId });
   if (!validation.valid) return { success: false, code: validation.code, sheetId, transition: 'reject' };
 
@@ -5295,10 +5355,11 @@ async function rejectSheet(params) {
     sheetId,
     actorId: validation.actorId,
     transitionName: 'reject',
-    userContext: { actorMemberId, rejectReason },
+    userContext: { actorMemberId, actorIsAdmin, rejectReason },
     buildDecision: (snapshot, context) => {
       return workflow.buildRejectionAction({
         actorMemberId: context.actorMemberId,
+        actorIsAdmin: context.actorIsAdmin,
         sheet: snapshot.sheet,
         sheets: snapshot.sheets,
         rejectReason: context.rejectReason
@@ -5315,7 +5376,7 @@ async function rejectSheet(params) {
 }
 
 async function openManagerCorrection(params) {
-  const { grist, actorMemberId, sheetId, correctionReason } = params || {};
+  const { grist, actorMemberId, actorIsAdmin = false, sheetId, correctionReason } = params || {};
   const validation = validateCommonParams({ grist, sheetId, actorMemberId });
   if (!validation.valid) return { success: false, code: validation.code, sheetId, transition: 'open_correction' };
 
@@ -5328,10 +5389,11 @@ async function openManagerCorrection(params) {
     sheetId,
     actorId: validation.actorId,
     transitionName: 'open_correction',
-    userContext: { actorMemberId, correctionReason },
+    userContext: { actorMemberId, actorIsAdmin, correctionReason },
     buildDecision: (snapshot, context) => {
       return workflow.buildOpenManagerCorrectionActions({
         actorMemberId: context.actorMemberId,
+        actorIsAdmin: context.actorIsAdmin,
         sheet: snapshot.sheet,
         sheets: snapshot.sheets,
         correctionReason: context.correctionReason
@@ -5348,7 +5410,7 @@ async function openManagerCorrection(params) {
 }
 
 async function revalidateSheet(params) {
-  const { grist, actorMemberId, sheetId, nowUnixSeconds } = params || {};
+  const { grist, actorMemberId, actorIsAdmin = false, sheetId, nowUnixSeconds } = params || {};
   const validation = validateCommonParams({ grist, sheetId, actorMemberId });
   if (!validation.valid) return { success: false, code: validation.code, sheetId, transition: 'revalidate' };
 
@@ -5360,10 +5422,11 @@ async function revalidateSheet(params) {
     sheetId,
     actorId: validation.actorId,
     transitionName: 'revalidate',
-    userContext: { actorMemberId, nowUnixSeconds: timestampCheck.value },
+    userContext: { actorMemberId, actorIsAdmin, nowUnixSeconds: timestampCheck.value },
     buildDecision: (snapshot, context) => {
       return workflow.buildRevalidationActions({
         actorMemberId: context.actorMemberId,
+        actorIsAdmin: context.actorIsAdmin,
         sheet: snapshot.sheet,
         sheets: snapshot.sheets,
         validationResult: context.validationResult,
@@ -5385,7 +5448,7 @@ async function revalidateSheet(params) {
 }
 
 async function updateManagerActual(params) {
-  const { grist, actorMemberId, sheetId, timeEntryId, hours } = params || {};
+  const { grist, actorMemberId, actorIsAdmin = false, sheetId, timeEntryId, hours } = params || {};
   const validation = validateCommonParams({ grist, sheetId, actorMemberId });
   if (!validation.valid) return { success: false, code: validation.code, sheetId, transition: 'update_manager_actual' };
 
@@ -5454,6 +5517,7 @@ async function updateManagerActual(params) {
     // === DÉCISION 1 ===
     const decision1 = workflow.buildManagerActualUpdateAction({
       actorMemberId,
+      actorIsAdmin,
       sheet: snapshot1.sheet,
       timeEntry,
       hours: numericHours
@@ -5511,6 +5575,7 @@ async function updateManagerActual(params) {
       // Re-construire la décision avec snapshot 2
       finalDecision = workflow.buildManagerActualUpdateAction({
         actorMemberId,
+        actorIsAdmin,
         sheet: snapshot2.sheet,
         timeEntry: timeEntry2,
         hours: numericHours
@@ -5738,6 +5803,7 @@ function createUiAdapter(options) {
     service,
     grist,
     getActorMemberId,
+    getActor,
     reload,
     notify,
     setBusy,
@@ -5747,6 +5813,14 @@ function createUiAdapter(options) {
   // État interne pour empêcher le double-clic
   // Verrouillage par sheetId uniquement (pas par opération)
   const pendingOperations = new Set();
+
+  function resolveActor() {
+    const actor = typeof getActor === 'function' ? getActor() : null;
+    return {
+      actorMemberId: actor && actor.memberId ? actor.memberId : getActorMemberId(),
+      actorIsAdmin: !!(actor && actor.isAdmin)
+    };
+  }
   
   /**
    * Vérifie si une opération est déjà en cours pour cette feuille
@@ -5840,6 +5914,16 @@ function createUiAdapter(options) {
       }
     }
   }
+
+  async function callWorkflowService(operation, sheetId) {
+    try {
+      return await operation();
+    } catch (error) {
+      markOperationDone(sheetId);
+      if (typeof setBusy === 'function') setBusy(false);
+      throw error;
+    }
+  }
   
   /**
    * Soumet une feuille
@@ -5854,7 +5938,7 @@ function createUiAdapter(options) {
       return { success: false, code: 'OPERATION_PENDING' };
     }
     
-    const actorMemberId = getActorMemberId();
+    const { actorMemberId, actorIsAdmin } = resolveActor();
     if (!actorMemberId) {
       showNotification(USER_MESSAGES.ACTOR_NOT_IDENTIFIED, 'error');
       return { success: false, code: 'ACTOR_NOT_IDENTIFIED' };
@@ -5865,12 +5949,13 @@ function createUiAdapter(options) {
       setBusy(true);
     }
     
-    const result = await service.submitSheet({
+    const result = await callWorkflowService(() => service.submitSheet({
       grist,
       actorMemberId,
+      actorIsAdmin,
       sheetId,
       nowUnixSeconds: nowUnixSeconds()
-    });
+    }), sheetId);
     
     return await handleOperationResult(
       result,
@@ -5893,7 +5978,7 @@ function createUiAdapter(options) {
       return { success: false, code: 'OPERATION_PENDING' };
     }
     
-    const actorMemberId = getActorMemberId();
+    const { actorMemberId, actorIsAdmin } = resolveActor();
     if (!actorMemberId) {
       showNotification(USER_MESSAGES.ACTOR_NOT_IDENTIFIED, 'error');
       return { success: false, code: 'ACTOR_NOT_IDENTIFIED' };
@@ -5904,11 +5989,12 @@ function createUiAdapter(options) {
       setBusy(true);
     }
     
-    const result = await service.withdrawSheet({
+    const result = await callWorkflowService(() => service.withdrawSheet({
       grist,
       actorMemberId,
+      actorIsAdmin,
       sheetId
-    });
+    }), sheetId);
     
     return await handleOperationResult(
       result,
@@ -5931,7 +6017,7 @@ function createUiAdapter(options) {
       return { success: false, code: 'OPERATION_PENDING' };
     }
     
-    const actorMemberId = getActorMemberId();
+    const { actorMemberId, actorIsAdmin } = resolveActor();
     if (!actorMemberId) {
       showNotification(USER_MESSAGES.ACTOR_NOT_IDENTIFIED, 'error');
       return { success: false, code: 'ACTOR_NOT_IDENTIFIED' };
@@ -5942,12 +6028,13 @@ function createUiAdapter(options) {
       setBusy(true);
     }
     
-    const result = await service.validateSheet({
+    const result = await callWorkflowService(() => service.validateSheet({
       grist,
       actorMemberId,
+      actorIsAdmin,
       sheetId,
       nowUnixSeconds: nowUnixSeconds()
-    });
+    }), sheetId);
     
     return await handleOperationResult(
       result,
@@ -5975,7 +6062,7 @@ function createUiAdapter(options) {
       return { success: false, code: 'OPERATION_PENDING' };
     }
     
-    const actorMemberId = getActorMemberId();
+    const { actorMemberId, actorIsAdmin } = resolveActor();
     if (!actorMemberId) {
       showNotification(USER_MESSAGES.ACTOR_NOT_IDENTIFIED, 'error');
       return { success: false, code: 'ACTOR_NOT_IDENTIFIED' };
@@ -5986,12 +6073,13 @@ function createUiAdapter(options) {
       setBusy(true);
     }
     
-    const result = await service.rejectSheet({
+    const result = await callWorkflowService(() => service.rejectSheet({
       grist,
       actorMemberId,
+      actorIsAdmin,
       sheetId,
       rejectReason: String(reason).trim()
-    });
+    }), sheetId);
     
     return await handleOperationResult(
       result,
@@ -6019,7 +6107,7 @@ function createUiAdapter(options) {
       return { success: false, code: 'OPERATION_PENDING' };
     }
     
-    const actorMemberId = getActorMemberId();
+    const { actorMemberId, actorIsAdmin } = resolveActor();
     if (!actorMemberId) {
       showNotification(USER_MESSAGES.ACTOR_NOT_IDENTIFIED, 'error');
       return { success: false, code: 'ACTOR_NOT_IDENTIFIED' };
@@ -6030,12 +6118,13 @@ function createUiAdapter(options) {
       setBusy(true);
     }
     
-    const result = await service.openManagerCorrection({
+    const result = await callWorkflowService(() => service.openManagerCorrection({
       grist,
       actorMemberId,
+      actorIsAdmin,
       sheetId,
       correctionReason: String(reason).trim()
-    });
+    }), sheetId);
     
     return await handleOperationResult(
       result,
@@ -6071,7 +6160,7 @@ function createUiAdapter(options) {
       return { success: false, code: 'OPERATION_PENDING' };
     }
     
-    const actorMemberId = getActorMemberId();
+    const { actorMemberId, actorIsAdmin } = resolveActor();
     if (!actorMemberId) {
       showNotification(USER_MESSAGES.ACTOR_NOT_IDENTIFIED, 'error');
       return { success: false, code: 'ACTOR_NOT_IDENTIFIED' };
@@ -6082,13 +6171,14 @@ function createUiAdapter(options) {
       setBusy(true);
     }
     
-    const result = await service.updateManagerActual({
+    const result = await callWorkflowService(() => service.updateManagerActual({
       grist,
       actorMemberId,
+      actorIsAdmin,
       sheetId,
       timeEntryId,
       hours: numericHours
-    });
+    }), sheetId);
     
     return await handleOperationResult(
       result,
@@ -6111,7 +6201,7 @@ function createUiAdapter(options) {
       return { success: false, code: 'OPERATION_PENDING' };
     }
     
-    const actorMemberId = getActorMemberId();
+    const { actorMemberId, actorIsAdmin } = resolveActor();
     if (!actorMemberId) {
       showNotification(USER_MESSAGES.ACTOR_NOT_IDENTIFIED, 'error');
       return { success: false, code: 'ACTOR_NOT_IDENTIFIED' };
@@ -6122,12 +6212,13 @@ function createUiAdapter(options) {
       setBusy(true);
     }
     
-    const result = await service.revalidateSheet({
+    const result = await callWorkflowService(() => service.revalidateSheet({
       grist,
       actorMemberId,
+      actorIsAdmin,
       sheetId,
       nowUnixSeconds: nowUnixSeconds()
-    });
+    }), sheetId);
     
     return await handleOperationResult(
       result,
@@ -6151,867 +6242,6 @@ function createUiAdapter(options) {
 return {
   createUiAdapter,
   USER_MESSAGES
-};
-
-  }));
-
-  // Module: cra/identity/cra-identity-association
-  moduleFactories.set('cra/identity/cra-identity-association', (function() {
-    var exports = {};
-    var __require = function(id) {
-      if (!moduleCache.has(id)) {
-        if (!moduleFactories.has(id)) {
-          throw new Error('Module non résolu: ' + id);
-        }
-        moduleCache.set(id, moduleFactories.get(id)());
-      }
-      return moduleCache.get(id);
-    };
-    
-    /**
- * CRA Identity Association - Module pur d'identité et d'association
- * 
- * Ce module contient la logique métier pure pour :
- * - Résoudre l'identité d'un utilisateur Grist connecté
- * - Détecter les conflits de données (doublons)
- * - Lister les lignes Team claimables
- * - Construire une action d'association valide
- * 
- * PURTÉ : Aucune dépendance à Grist, au DOM, ou aux effets de bord.
- * Testable unitairement avec des données mockées.
- * 
- * @module core/cra/cra-identity-association
- */
-// ============================================================================
-// CONSTANTES - États d'identité
-// ============================================================================
-
-const IDENTITY_STATUS = {
-  IDENTIFIED: 'IDENTIFIED',
-  ASSOCIATION_REQUIRED: 'ASSOCIATION_REQUIRED',
-  INVALID_CURRENT_USER_ID: 'INVALID_CURRENT_USER_ID',
-  CURRENT_USER_ID_DUPLICATED: 'CURRENT_USER_ID_DUPLICATED',
-  GRIST_USER_ID_DUPLICATED: 'GRIST_USER_ID_DUPLICATED',
-  NO_CLAIMABLE_TEAM_ROW: 'NO_CLAIMABLE_TEAM_ROW',
-  DATA_CONFLICT: 'DATA_CONFLICT'
-};
-
-// Note : TEAM_EMAIL_DUPLICATED a été retiré car les doublons d'email
-// ne bloquent plus l'association en mode libre (provisoire).
-// La détection est conservée pour diagnostic via findDuplicateEmails().
-
-// ============================================================================
-// HELPERS DE NORMALISATION
-// ============================================================================
-
-/**
- * Normalise un Grist userId en entier positif ou null
- * @param {*} value - Valeur à normaliser
- * @returns {number|null} - Entier positif ou null
- */
-function normalizeGristUserId(value) {
-  if (value === null || value === undefined || value === '') {
-    return null;
-  }
-  
-  if (value === 0 || value === '0') {
-    return null;
-  }
-  
-  if (typeof value === 'string' && !/^[1-9]\d*$/.test(value)) {
-    return null;
-  }
-  
-  const numeric = Number(value);
-  
-  return (Number.isInteger(numeric) && numeric > 0) ? numeric : null;
-}
-
-/**
- * Normalise un email pour comparaison (lowercase + trim)
- * @param {*} value - Email à normaliser
- * @returns {string} - Email normalisé ou chaîne vide
- */
-function normalizeEmail(value) {
-  if (value === null || value === undefined) {
-    return '';
-  }
-  return String(value).trim().toLowerCase();
-}
-
-/**
- * Vérifie si une valeur est "non associée"
- * @param {*} value - Valeur à tester
- * @returns {boolean} - true si non associé
- */
-function isUnassociated(value) {
-  return (
-    value === null ||
-    value === undefined ||
-    value === '' ||
-    value === 0 ||
-    value === '0'
-  );
-}
-
-/**
- * Vérifie si un Grist userId est valide (entier strictement positif)
- * @param {*} value - Valeur à tester
- * @returns {boolean} - true si valide
- */
-function isValidGristUserId(value) {
-  const normalized = normalizeGristUserId(value);
-  return normalized !== null && normalized > 0;
-}
-
-// ============================================================================
-// DÉTECTION DES CONFLITS
-// ============================================================================
-
-/**
- * Détecte les doublons de gristUserId dans l'équipe
- * @param {Array} team - Liste des membres Team
- * @returns {Array} - Liste des userId dupliqués
- */
-function findDuplicateGristUserIds(team) {
-  const counts = new Map();
-  
-  for (const member of team) {
-    const userId = normalizeGristUserId(member.gristUserId);
-    if (userId !== null) {
-      counts.set(userId, (counts.get(userId) || 0) + 1);
-    }
-  }
-  
-  const duplicates = [];
-  for (const [userId, count] of counts) {
-    if (count > 1) {
-      duplicates.push(userId);
-    }
-  }
-  
-  return duplicates;
-}
-
-/**
- * Détecte les doublons d'email dans l'équipe
- * @param {Array} team - Liste des membres Team
- * @returns {Map<string, Array>} - Map email → membres
- */
-function findDuplicateEmails(team) {
-  const byEmail = new Map();
-  
-  for (const member of team) {
-    const email = normalizeEmail(member.email);
-    if (email !== '') {
-      if (!byEmail.has(email)) {
-        byEmail.set(email, []);
-      }
-      byEmail.get(email).push(member);
-    }
-  }
-  
-  const duplicates = new Map();
-  for (const [email, members] of byEmail) {
-    if (members.length > 1) {
-      duplicates.set(email, members);
-    }
-  }
-  
-  return duplicates;
-}
-
-/**
- * Vérifie si le currentUserId est dupliqué dans l'équipe
- * @param {Array} team - Liste des membres Team
- * @param {number} currentGristUserId - userId Grist actuel
- * @returns {Array} - Membres ayant ce userId
- */
-function findMembersByGristUserId(team, currentGristUserId) {
-  if (!isValidGristUserId(currentGristUserId)) {
-    return [];
-  }
-  
-  return team.filter(member => 
-    normalizeGristUserId(member.gristUserId) === currentGristUserId
-  );
-}
-
-// ============================================================================
-// RÉSOLUTION D'IDENTITÉ
-// ============================================================================
-
-/**
- * Résout l'identité de l'utilisateur Grist connecté
- * 
- * @param {Object} options - Options de résolution
- * @param {Array} options.team - Liste des membres Team
- * @param {*} options.currentGristUserId - userId Grist actuel (brut)
- * @param {string} [options.currentEmail] - email Grist actuel (optionnel)
- * @returns {Object} - Résultat de résolution
- */
-function resolveCurrentUserIdentity({ team, currentGristUserId, currentEmail }) {
-  const result = {
-    status: null,
-    currentUserMemberId: null,
-    member: null,
-    candidates: [],
-    conflictCodes: []
-  };
-  
-  // 1. Valider le currentGristUserId
-  const normalizedUserId = normalizeGristUserId(currentGristUserId);
-  
-  if (!isValidGristUserId(currentGristUserId)) {
-    result.status = IDENTITY_STATUS.INVALID_CURRENT_USER_ID;
-    result.conflictCodes.push('INVALID_USER_ID');
-    return result;
-  }
-  
-  // 2. Détecter les conflits bloquants
-  
-  // 2a. Doublons de gristUserId dans toute l'équipe (BLOQUANT)
-  const duplicateUserIds = findDuplicateGristUserIds(team);
-  if (duplicateUserIds.length > 0) {
-    result.status = IDENTITY_STATUS.GRIST_USER_ID_DUPLICATED;
-    result.conflictCodes.push('GRIST_USER_ID_DUPLICATED');
-    result.duplicateUserIds = duplicateUserIds;
-    return result;
-  }
-  
-  // 2b. Doublons d'email : NON BLOQUANT en mode libre
-  // On conserve la détection pour diagnostic/logging
-  const duplicateEmails = findDuplicateEmails(team);
-  if (duplicateEmails.size > 0) {
-    // Log pour diagnostic, mais ne bloque pas
-    console.warn('[CRA identity] Emails dupliqués détectés (mode libre)', {
-      duplicateEmails: Array.from(duplicateEmails.keys())
-    });
-    result.duplicateEmails = Array.from(duplicateEmails.keys());
-  }
-  
-  // 3. Chercher une correspondance par gristUserId
-  const matchingMembers = findMembersByGristUserId(team, normalizedUserId);
-  
-  if (matchingMembers.length > 1) {
-    // Cas théoriquement impossible après vérification des doublons, mais sécurité
-    result.status = IDENTITY_STATUS.CURRENT_USER_ID_DUPLICATED;
-    result.conflictCodes.push('CURRENT_USER_ID_DUPLICATED');
-    result.matchingMembers = matchingMembers;
-    return result;
-  }
-  
-  if (matchingMembers.length === 1) {
-    // Utilisateur déjà identifié
-    result.status = IDENTITY_STATUS.IDENTIFIED;
-    result.currentUserMemberId = matchingMembers[0].id;
-    result.member = matchingMembers[0];
-    return result;
-  }
-  
-  // 4. Aucune correspondance par userId → association requise
-  
-  // 4a. Vérifier s'il y a des candidats claimables
-  const candidates = listClaimableTeamMembers({
-    team,
-    currentGristUserId: normalizedUserId,
-    currentEmail: normalizeEmail(currentEmail)
-  });
-  
-  if (candidates.length === 0) {
-    result.status = IDENTITY_STATUS.NO_CLAIMABLE_TEAM_ROW;
-    result.conflictCodes.push('NO_CLAIMABLE_TEAM_ROW');
-    return result;
-  }
-  
-  // 4b. Association requise avec candidats disponibles
-  result.status = IDENTITY_STATUS.ASSOCIATION_REQUIRED;
-  result.currentUserMemberId = null;
-  result.candidates = candidates;
-  
-  return result;
-}
-
-// ============================================================================
-// LISTE DES CANDIDATS CLAIMABLES
-// ============================================================================
-
-/**
- * Liste les membres Team qui peuvent être claimés (mode libre)
- * 
- * Critères :
- * - email non vide
- * - gristUserId non associé (null, 0, '', etc.)
- * - actif (si la colonne existe et est false, exclure)
- * 
- * NOTE : Les emails dupliqués ne sont PLUS exclus en mode libre.
- * 
- * @param {Object} options - Options
- * @param {Array} options.team - Liste des membres Team
- * @param {number} options.currentGristUserId - userId Grist actuel
- * @param {string} [options.currentEmail] - email Grist actuel normalisé
- * @returns {Array} - Liste des candidats
- */
-function listClaimableTeamMembers({ team, currentGristUserId, currentEmail }) {
-  const candidates = [];
-  
-  for (const member of team) {
-    // 1. email non vide
-    const email = normalizeEmail(member.email);
-    if (email === '') {
-      continue;
-    }
-    
-    // 2. gristUserId non associé
-    if (!isUnassociated(member.gristUserId)) {
-      continue;
-    }
-    
-    // 3. actif (si la colonne existe et est explicitement false)
-    if (member.actif === false) {
-      continue;
-    }
-    
-    // En mode libre, on n'exclut PAS les emails dupliqués
-    
-    candidates.push({
-      id: member.id,
-      nom: member.nom,
-      email: email
-    });
-  }
-  
-  return candidates;
-}
-
-// ============================================================================
-// CONSTRUCTION D'UNE ACTION D'ASSOCIATION
-// ============================================================================
-
-/**
- * Construit une action d'association valide
- * 
- * @param {Object} options - Options
- * @param {Array} options.team - Liste des membres Team (pour vérification)
- * @param {number} options.selectedTeamMemberId - ID du membre sélectionné
- * @param {*} options.currentGristUserId - userId Grist actuel
- * @returns {Object} - Action d'association ou erreur
- */
-function buildIdentityClaim({ team, selectedTeamMemberId, currentGristUserId }) {
-  const result = {
-    allowed: false,
-    teamMemberId: null,
-    gristUserId: null,
-    code: null,
-    reason: null
-  };
-  
-  // 1. Valider le currentGristUserId
-  const normalizedUserId = normalizeGristUserId(currentGristUserId);
-  
-  if (!isValidGristUserId(currentGristUserId)) {
-    result.code = 'INVALID_CURRENT_USER_ID';
-    result.reason = 'Le userId Grist actuel est invalide';
-    return result;
-  }
-  
-  // 2. Valider le selectedTeamMemberId
-  const normalizedMemberId = normalizeGristUserId(selectedTeamMemberId);
-  
-  if (!isValidGristUserId(selectedTeamMemberId)) {
-    result.code = 'INVALID_TEAM_MEMBER_ID';
-    result.reason = 'L\'ID du membre Team est invalide';
-    return result;
-  }
-  
-  // 3. Trouver la ligne Team correspondante
-  const member = team.find(m => m.id === normalizedMemberId);
-  
-  if (!member) {
-    result.code = 'TEAM_MEMBER_NOT_FOUND';
-    result.reason = 'Le membre sélectionné n\'existe pas dans Team';
-    return result;
-  }
-  
-  // 4. Vérifier que la ligne n'est pas déjà associée
-  if (!isUnassociated(member.gristUserId)) {
-    result.code = 'TEAM_MEMBER_ALREADY_ASSOCIATED';
-    result.reason = 'Ce membre est déjà associé à un compte Grist';
-    return result;
-  }
-  
-  // 5. Vérifier qu'aucun autre membre n'a déjà ce userId
-  const existingAssociation = team.find(m => 
-    normalizeGristUserId(m.gristUserId) === normalizedUserId
-  );
-  
-  if (existingAssociation) {
-    result.code = 'GRIST_USER_ID_ALREADY_CLAIMED';
-    result.reason = 'Ce compte Grist est déjà associé à un autre membre';
-    return result;
-  }
-  
-  // 6. Construire l'action
-  result.allowed = true;
-  result.teamMemberId = normalizedMemberId;
-  result.gristUserId = normalizedUserId;
-  result.memberEmail = normalizeEmail(member.email);
-  
-  return result;
-}
-
-/**
- * Vérifie si une association est idempotente (déjà appliquée)
- * 
- * @param {Object} options - Options
- * @param {Array} options.team - Liste des membres Team
- * @param {number} options.teamMemberId - ID du membre Team
- * @param {*} options.currentGristUserId - userId Grist actuel
- * @returns {boolean} - true si déjà associée
- */
-function isAssociationAlreadyApplied({ team, teamMemberId, currentGristUserId }) {
-  const normalizedUserId = normalizeGristUserId(currentGristUserId);
-  const normalizedMemberId = normalizeGristUserId(teamMemberId);
-  
-  if (!isValidGristUserId(currentGristUserId) || !isValidGristUserId(teamMemberId)) {
-    return false;
-  }
-  
-  const member = team.find(m => m.id === normalizedMemberId);
-  
-  if (!member) {
-    return false;
-  }
-  
-  return normalizeGristUserId(member.gristUserId) === normalizedUserId;
-}
-
-// ============================================================================
-// EXPORT PUBLIC
-// ============================================================================
-
-return {
-  // Constantes
-  IDENTITY_STATUS,
-  
-  // Helpers de normalisation
-  normalizeGristUserId,
-  normalizeEmail,
-  isUnassociated,
-  isValidGristUserId,
-  
-  // Détection des conflits
-  findDuplicateGristUserIds,
-  findDuplicateEmails,
-  findMembersByGristUserId,
-  
-  // Résolution d'identité
-  resolveCurrentUserIdentity,
-  
-  // Liste des candidats
-  listClaimableTeamMembers,
-  
-  // Construction d'action
-  buildIdentityClaim,
-  isAssociationAlreadyApplied
-};
-
-  }));
-
-  // Module: cra/identity/cra-identity-claim-service
-  moduleFactories.set('cra/identity/cra-identity-claim-service', (function() {
-    var exports = {};
-    var __require = function(id) {
-      if (!moduleCache.has(id)) {
-        if (!moduleFactories.has(id)) {
-          throw new Error('Module non résolu: ' + id);
-        }
-        moduleCache.set(id, moduleFactories.get(id)());
-      }
-      return moduleCache.get(id);
-    };
-    
-    /**
- * CRA Identity Claim Service - Service d'association d'identité Grist
- * 
- * Ce service gère l'association effective entre :
- * - un compte Grist connecté (userId)
- * - une ligne Team (membre)
- * 
- * RESPONSABILITÉS :
- * 1. Vérifier la demande avec buildIdentityClaim()
- * 2. Poser un verrou d'opération (anti-double-clic)
- * 3. Envoyer l'écriture Grist : Team.gristUserId = userId
- * 4. Recharger le snapshot CRA
- * 5. Vérifier la postcondition : status === IDENTIFIED
- * 6. Libérer le verrou (succès ou erreur)
- * 
- * @module core/cra/cra-identity-claim-service
- */
-const {
-  IDENTITY_STATUS,
-  buildIdentityClaim,
-  resolveCurrentUserIdentity,
-  isAssociationAlreadyApplied
-} = __require('cra/identity/cra-identity-association');
-
-// ============================================================================
-// CONSTANTES - Codes d'erreur
-// ============================================================================
-
-const CLAIM_ERROR_CODES = {
-  IDENTITY_CLAIM_PENDING: 'IDENTITY_CLAIM_PENDING',
-  IDENTITY_CLAIM_CONFLICT: 'IDENTITY_CLAIM_CONFLICT',
-  IDENTITY_CLAIM_WRITE_FAILED: 'IDENTITY_CLAIM_WRITE_FAILED',
-  IDENTITY_CLAIM_RELOAD_FAILED: 'IDENTITY_CLAIM_RELOAD_FAILED',
-  IDENTITY_CLAIM_POSTCONDITION_FAILED: 'IDENTITY_CLAIM_POSTCONDITION_FAILED',
-  IDENTITY_CLAIM_INVALID_REQUEST: 'IDENTITY_CLAIM_INVALID_REQUEST',
-  IDENTITY_CLAIM_ALREADY_ASSOCIATED: 'IDENTITY_CLAIM_ALREADY_ASSOCIATED'
-};
-
-// ============================================================================
-// ÉTAT INTERNE - Verrouillage
-// ============================================================================
-
-let claimInProgress = false;
-let pendingClaimData = null;
-
-/**
- * Vérifie si une opération est en cours
- * @returns {boolean}
- */
-function isClaimPending() {
-  return claimInProgress;
-}
-
-/**
- * Pose le verrou d'opération
- * @param {Object} data - Données de l'opération
- * @returns {boolean} - true si verrou posé, false si déjà en cours
- */
-function lockClaim(data) {
-  if (claimInProgress) {
-    return false;
-  }
-  claimInProgress = true;
-  pendingClaimData = data;
-  return true;
-}
-
-/**
- * Libère le verrou d'opération
- */
-function unlockClaim() {
-  claimInProgress = false;
-  pendingClaimData = null;
-}
-
-// ============================================================================
-// SERVICE D'ASSOCIATION
-// ============================================================================
-
-/**
- * Associe le compte Grist connecté à une ligne Team
- * 
- * @param {Object} params - Paramètres
- * @param {Object} params.grist - API Grist (docApi requis)
- * @param {number} params.teamMemberId - ID du membre Team à associer
- * @param {*} params.currentGristUserId - userId Grist actuel
- * @param {Array} params.team - Snapshot Team actuel (pour validation)
- * @param {Function} [params.reloadSnapshot] - Fonction de rechargement
- * @returns {Object} - Résultat de l'opération
- */
-async function claimCurrentUserIdentity({
-  grist,
-  teamMemberId,
-  currentGristUserId,
-  team,
-  reloadSnapshot
-}) {
-  const result = {
-    success: false,
-    code: null,
-    reason: null,
-    before: null,
-    after: null,
-    teamMemberId: null,
-    gristUserId: null
-  };
-  
-  // === 1. VÉRIFICATION PRÉALABLE ===
-  
-  // 1a. Vérifier qu'aucune opération n'est en cours
-  if (claimInProgress) {
-    result.code = CLAIM_ERROR_CODES.IDENTITY_CLAIM_PENDING;
-    result.reason = 'Une opération d\'association est déjà en cours';
-    return result;
-  }
-  
-  // 1b. Vérifier si déjà associé (idempotence) - AVANT buildIdentityClaim
-  // Car buildIdentityClaim échouerait avec TEAM_MEMBER_ALREADY_ASSOCIATED
-  if (isAssociationAlreadyApplied({
-    team,
-    teamMemberId,
-    currentGristUserId
-  })) {
-    result.success = true;
-    result.code = 'ALREADY_APPLIED';
-    result.reason = 'Association déjà appliquée';
-    result.teamMemberId = teamMemberId;
-    result.gristUserId = currentGristUserId;
-    return result;
-  }
-  
-  // 1c. Valider la demande avec le module pur
-  const claimValidation = buildIdentityClaim({
-    team,
-    selectedTeamMemberId: teamMemberId,
-    currentGristUserId
-  });
-  
-  if (!claimValidation.allowed) {
-    result.code = CLAIM_ERROR_CODES.IDENTITY_CLAIM_INVALID_REQUEST;
-    result.reason = claimValidation.reason;
-    result.validationCode = claimValidation.code;
-    return result;
-  }
-  
-  // === 2. POSER LE VERROU ===
-  
-  const lockAcquired = lockClaim({
-    teamMemberId,
-    currentGristUserId,
-    timestamp: Date.now()
-  });
-  
-  if (!lockAcquired) {
-    result.code = CLAIM_ERROR_CODES.IDENTITY_CLAIM_PENDING;
-    result.reason = 'Impossible d\'acquérir le verrou (opération concurrente)';
-    return result;
-  }
-  
-  // === 3. ÉCRITURE GRIST ===
-  
-  let phase = 'write';
-  
-  try {
-    // Capturer l'état avant écriture
-    const memberBefore = team.find(m => m.id === teamMemberId);
-    result.before = memberBefore ? { ...memberBefore } : null;
-    
-    // Préparer l'action UpdateRecord
-    const actions = [
-      [
-        'UpdateRecord',
-        'Team',
-        teamMemberId,
-        {
-          gristUserId: currentGristUserId
-        }
-      ]
-    ];
-    
-    // Exécuter l'écriture
-    if (!grist || !grist.docApi || typeof grist.docApi.applyUserActions !== 'function') {
-      throw new Error('Grist API indisponible');
-    }
-    
-    await grist.docApi.applyUserActions(actions);
-    
-    // === 4. RECHARGEMENT ===
-    
-    phase = 'reload';
-    
-    if (typeof reloadSnapshot === 'function') {
-      try {
-        await reloadSnapshot();
-      } catch (reloadError) {
-        // Rechargement échoué, mais l'écriture a réussi
-        result.code = CLAIM_ERROR_CODES.IDENTITY_CLAIM_RELOAD_FAILED;
-        result.reason = 'Écriture réussie mais rechargement échoué';
-        result.reloadError = reloadError.message || String(reloadError);
-        result.teamMemberId = teamMemberId;
-        result.gristUserId = currentGristUserId;
-        return result;
-      }
-    } else {
-      // Pas de fonction de rechargement fournie
-      console.warn('[CRA identity claim] reloadSnapshot non fourni, rechargement manuel requis');
-    }
-    
-    // === 5. VÉRIFICATION POSTCONDITION ===
-    
-    phase = 'verify';
-    
-    // Recharger le snapshot Team pour vérification
-    const teamAfterData = await grist.docApi.fetchTable('Team');
-    const teamAfter = columnarToRows(teamAfterData);
-    const memberAfter = teamAfter.find(m => m.id === teamMemberId);
-    
-    result.after = memberAfter ? { ...memberAfter } : null;
-    
-    // Vérifier que gristUserId a été correctement mis à jour
-    const normalizedUserId = normalizeGristUserId(currentGristUserId);
-    const actualGristUserId = normalizeGristUserId(memberAfter?.gristUserId);
-    
-    if (actualGristUserId !== normalizedUserId) {
-      result.code = CLAIM_ERROR_CODES.IDENTITY_CLAIM_POSTCONDITION_FAILED;
-      result.reason = `gristUserId incorrect après écriture : attendu ${normalizedUserId}, obtenu ${actualGristUserId}`;
-      result.expectedUserId = normalizedUserId;
-      result.actualUserId = actualGristUserId;
-      result.teamMemberId = teamMemberId;
-      result.gristUserId = currentGristUserId;
-      return result;
-    }
-    
-    // Vérifier que l'identité est maintenant résolue
-    const identityResult = resolveCurrentUserIdentity({
-      team: teamAfter,
-      currentGristUserId
-    });
-    
-    if (identityResult.status !== IDENTITY_STATUS.IDENTIFIED) {
-      result.code = CLAIM_ERROR_CODES.IDENTITY_CLAIM_POSTCONDITION_FAILED;
-      result.reason = `Identité non résolue après association : status = ${identityResult.status}`;
-      result.identityStatus = identityResult.status;
-      result.teamMemberId = teamMemberId;
-      result.gristUserId = currentGristUserId;
-      return result;
-    }
-    
-    if (identityResult.currentUserMemberId !== teamMemberId) {
-      result.code = CLAIM_ERROR_CODES.IDENTITY_CLAIM_POSTCONDITION_FAILED;
-      result.reason = `currentUserMemberId incorrect : attendu ${teamMemberId}, obtenu ${identityResult.currentUserMemberId}`;
-      result.expectedMemberId = teamMemberId;
-      result.actualMemberId = identityResult.currentUserMemberId;
-      return result;
-    }
-    
-    // === 6. SUCCÈS ===
-    
-    result.success = true;
-    result.code = 'OK';
-    result.teamMemberId = teamMemberId;
-    result.gristUserId = currentGristUserId;
-    result.identityStatus = identityResult.status;
-    result.candidateCount = identityResult.candidates?.length || 0;
-    
-    return result;
-    
-  } catch (error) {
-    // Échec avec code d'erreur approprié selon la phase
-    if (phase === 'write') {
-      result.code = CLAIM_ERROR_CODES.IDENTITY_CLAIM_WRITE_FAILED;
-      result.reason = 'Erreur lors de l\'écriture : ' + (error.message || String(error));
-    } else if (phase === 'reload') {
-      result.code = CLAIM_ERROR_CODES.IDENTITY_CLAIM_RELOAD_FAILED;
-      result.reason = 'Erreur lors du rechargement : ' + (error.message || String(error));
-    } else if (phase === 'verify') {
-      result.code = CLAIM_ERROR_CODES.IDENTITY_CLAIM_POSTCONDITION_FAILED;
-      result.reason = 'Erreur lors de la vérification : ' + (error.message || String(error));
-    } else {
-      result.code = CLAIM_ERROR_CODES.IDENTITY_CLAIM_WRITE_FAILED;
-      result.reason = error.message || String(error);
-    }
-    
-    result.error = error;
-    result.teamMemberId = teamMemberId;
-    result.gristUserId = currentGristUserId;
-    
-    return result;
-  } finally {
-    // Libérer le verrou dans tous les cas
-    unlockClaim();
-  }
-}
-
-/**
- * Annule une opération en cours (pour débogage/urgence)
- * @returns {boolean} - true si une opération a été annulée
- */
-function cancelPendingClaim() {
-  if (claimInProgress) {
-    unlockClaim();
-    return true;
-  }
-  return false;
-}
-
-/**
- * Retourne l'état du service
- * @returns {Object} - État du service
- */
-function getServiceState() {
-  return {
-    claimInProgress,
-    pendingClaimData: pendingClaimData ? { ...pendingClaimData } : null
-  };
-}
-
-/**
- * Réinitialise le service (pour tests)
- */
-function resetService() {
-  unlockClaim();
-}
-
-// ============================================================================
-// HELPERS
-// ============================================================================
-
-/**
- * Normalise un Grist userId (copie locale pour indépendance)
- */
-function normalizeGristUserId(value) {
-  if (value === null || value === undefined || value === '') {
-    return null;
-  }
-  if (value === 0 || value === '0') {
-    return null;
-  }
-  const numeric = Number(value);
-  return (Number.isInteger(numeric) && numeric > 0) ? numeric : null;
-}
-
-/**
- * Convertit un tableau colonnaire Grist en tableau d'objets
- */
-function columnarToRows(data) {
-  if (!data || Array.isArray(data)) return data || [];
-  const cols = Object.keys(data);
-  if (!cols.length) return [];
-  const n = (data[cols[0]] && data[cols[0]].length) || 0;
-  const rows = [];
-  for (let i = 0; i < n; i++) {
-    const rec = {};
-    for (const col of cols) {
-      rec[col] = data[col][i];
-    }
-    rows.push(rec);
-  }
-  return rows;
-}
-
-// ============================================================================
-// EXPORT PUBLIC
-// ============================================================================
-
-return {
-  // Fonction principale
-  claimCurrentUserIdentity,
-  
-  // Gestion du verrou
-  isClaimPending,
-  lockClaim,
-  unlockClaim,
-  cancelPendingClaim,
-  
-  // État et réinitialisation
-  getServiceState,
-  resetService,
-  
-  // Codes d'erreur
-  CLAIM_ERROR_CODES
 };
 
   }));
@@ -7092,9 +6322,10 @@ function normalizeStatus(status) {
  * @param {Array} options.team - Liste des membres Team
  * @param {Array} options.sheets - Liste des feuilles Feuilles
  * @param {number} options.currentUserMemberId - ID de l'utilisateur connecté
+ * @param {boolean} options.isAdmin - Passe-droit fonctionnel complet
  * @returns {Object} - État de l'espace manager
  */
-function resolveManagerWorkspaceState({ team, sheets, currentUserMemberId }) {
+function resolveManagerWorkspaceState({ team, sheets, currentUserMemberId, isAdmin = false }) {
   const result = {
     isIdentified: false,
     managesSomeone: false,
@@ -7124,6 +6355,8 @@ function resolveManagerWorkspaceState({ team, sheets, currentUserMemberId }) {
       return false;
     }
     
+    if (isAdmin) return normalizeId(member.id) !== managerId;
+
     // Responsable direct doit correspondre
     const memberRespId = normalizeId(member.responsable);
     return memberRespId === managerId;
@@ -7136,7 +6369,7 @@ function resolveManagerWorkspaceState({ team, sheets, currentUserMemberId }) {
   // 3. Calculer les feuilles accessibles via responsableValidation
   const accessibleSheets = sheets.filter(sheet => {
     const sheetRespId = normalizeId(sheet.responsableValidation);
-    if (sheetRespId !== managerId) {
+    if (!isAdmin && sheetRespId !== managerId) {
       return false;
     }
     
@@ -7166,7 +6399,8 @@ function resolveManagerWorkspaceState({ team, sheets, currentUserMemberId }) {
   
   // 5. Visibilité finale
   // Afficher si : manager de quelqu'un OU a des feuilles accessibles
-  result.shouldShowManagerTab = result.managesSomeone || result.hasAccessibleSheets;
+  result.shouldShowManagerTab = isAdmin || result.managesSomeone || result.hasAccessibleSheets;
+  result.isAdmin = isAdmin;
   
   return result;
 }
@@ -7192,8 +6426,6 @@ return {
   var validator = __require('timesheets/timesheet-validator');
   var service = __require('cra/workflow/cra-sheet-validation-service');
   var adapterModule = __require('cra/ui/cra-sheet-ui-adapter');
-  var identityModule = __require('cra/identity/cra-identity-association');
-  var claimService = __require('cra/identity/cra-identity-claim-service');
   var managerModule = __require('cra/manager/cra-manager-workspace');
   
   global.TaskFlowCra = {
@@ -7243,25 +6475,6 @@ return {
     validator: {
       validateTimesheet: validator.validateTimesheet,
       ERROR_CODES: validator.ERROR_CODES
-    },
-    
-    // Identité (mode libre provisoire)
-    identity: {
-      IDENTITY_STATUS: identityModule.IDENTITY_STATUS,
-      normalizeGristUserId: identityModule.normalizeGristUserId,
-      normalizeEmail: identityModule.normalizeEmail,
-      isUnassociated: identityModule.isUnassociated,
-      isValidGristUserId: identityModule.isValidGristUserId,
-      resolveCurrentUserIdentity: identityModule.resolveCurrentUserIdentity,
-      listClaimableTeamMembers: identityModule.listClaimableTeamMembers,
-      buildIdentityClaim: identityModule.buildIdentityClaim,
-      isAssociationAlreadyApplied: identityModule.isAssociationAlreadyApplied
-    },
-    
-    claimService: {
-      claimCurrentUserIdentity: claimService.claimCurrentUserIdentity,
-      isClaimPending: claimService.isClaimPending,
-      CLAIM_ERROR_CODES: claimService.CLAIM_ERROR_CODES
     },
     
     // Espace manager

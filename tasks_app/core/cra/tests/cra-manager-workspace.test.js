@@ -72,6 +72,31 @@ describe('normalizeStatus', () => {
 // ============================================================================
 
 describe('resolveManagerWorkspaceState', () => {
+  test('un administrateur voit toutes les feuilles accessibles du workflow', () => {
+    const team = [
+      { id: 1, actif: true, estAdmin: true },
+      { id: 2, actif: true, responsable: 9 },
+      { id: 3, actif: true, responsable: 2 }
+    ];
+    const sheets = [
+      { id: 50, membre: 2, statut: 'soumis', responsableValidation: 9 },
+      { id: 51, membre: 3, statut: 'valide', responsableValidation: 2 },
+      { id: 52, membre: 3, statut: 'brouillon', responsableValidation: null }
+    ];
+
+    const result = resolveManagerWorkspaceState({
+      team,
+      sheets,
+      currentUserMemberId: 1,
+      isAdmin: true
+    });
+
+    expect(result.shouldShowManagerTab).toBe(true);
+    expect(result.accessibleSheets.map(sheet => sheet.id)).toEqual([50, 51]);
+    expect(result.pendingCount).toBe(1);
+    expect(result.isAdmin).toBe(true);
+  });
+
   // 1. Manager avec un subordonné actif, aucune feuille
   test('1. manager avec subordonné actif, aucune feuille', () => {
     const team = [

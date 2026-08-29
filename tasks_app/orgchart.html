@@ -5,6 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>TaskFlow - Organigramme</title>
 <script src="https://docs.getgrist.com/grist-plugin-api.js"></script>
+<script src="core/identity/taskflow-identity.js"></script>
+<script src="core/identity/taskflow-identity-runtime.js"></script>
+<script src="core/identity/taskflow-identity-claim-service.js"></script>
+<script src="core/identity/taskflow-identity-gate.js"></script>
 <script src="core/permissions/taskflow-permissions.js"></script>
 <style>
 :root {
@@ -202,7 +206,9 @@ const S = {
   gran: 'semaine',   // granularite de la periode COURANTE (semaine/mois/trimestre, sans navigation)
   selId: null,           // 'e:<id>' ou 'p:<id>'
   collapsed: new Set(),
-  meUserId: null,        // userId Grist du connecte
+  meUserId: null,        // Team.id de l'acteur commun (nom historique conserve)
+  actor: null,
+  permissionRuntime: null,
 };
 
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -420,6 +426,30 @@ async function applyAct(actions) {
 }
 window.ocSaveE = async (id, f, v) => { const e = S.entites.find(x => x.id === id); if (e) e[f] = v; render(); await applyAct([['UpdateRecord', 'Entites', id, { [f]: v }]]); };
 window.ocSaveP = async (id, f, v) => { const p = S.team.find(x => x.id === id); if (p) p[f] = v; if (f === 'capaciteHebdo') computeCharge(); render(); await applyAct([['UpdateRecord', 'Team', id, { [f]: v }]]); };
+window.ocSetIdentity = async (id, rawValue) => {
+  if (!S.actor || !S.actor.isAdmin) return;
+  const p = S.team.find(x => x.id === id); if (!p) return;
+  const nextId = rawValue === '' ? null : Number(rawValue);
+  if (nextId !== null && (!Number.isInteger(nextId) || nextId <= 0)) {
+    window.alert('Le userId Grist doit etre un entier strictement positif.');
+    render();
+    return;
+  }
+  const operation = nextId === null ? 'revoquer' : (p.gristUserId ? 'transferer' : 'associer');
+  if (!window.confirm('Confirmer : ' + operation + ' l\'identite Grist de ' + (p.nom || ('Team #' + id)) + ' ?')) {
+    render();
+    return;
+  }
+  const reason = window.prompt('Motif administratif obligatoire :', 'Correction de l\'association d\'identite');
+  if (!reason || !reason.trim()) { render(); return; }
+  console.info('[TaskFlow identite admin]', { operation, teamMemberId: id, reason: reason.trim() });
+  await ocSaveP(id, 'gristUserId', nextId);
+  if (S.permissionRuntime) {
+    S.permissionRuntime.invalidate();
+    await S.permissionRuntime.refresh({ force: true });
+    S.actor = S.permissionRuntime.getActor();
+  }
+};
 window.ocAddSous = async (pid) => {
   if (S.alone) { const nid = Math.max(0, ...S.entites.map(e => e.id)) + 1; S.entites.push({ id: nid, nom: 'Nouvelle entite', niveau: 'equipe', parent: pid, chef: 0 }); S.selId = 'e:' + nid; render(); return; }
   const r = await grist.docApi.applyUserActions([['AddRecord', 'Entites', null, { nom: 'Nouvelle entite', niveau: 'equipe', parent: pid }]]).catch(() => null);
@@ -427,7 +457,7 @@ window.ocAddSous = async (pid) => {
 };
 window.ocAddPers = async (eid) => {
   if (S.alone) { const nid = Math.max(0, ...S.team.map(p => p.id)) + 1; S.team.push({ id: nid, nom: 'Nouvelle personne', entite: eid, capaciteHebdo: 35 }); S.selId = 'p:' + nid; render(); return; }
-  const r = await grist.docApi.applyUserActions([['AddRecord', 'Team', null, { nom: 'Nouvelle personne', entite: eid, capaciteHebdo: 35 }]]).catch(() => null);
+  const r = await grist.docApi.applyUserActions([['AddRecord', 'Team', null, { nom: 'Nouvelle personne', entite: eid, capaciteHebdo: 35, actif: true, estAdmin: false }]]).catch(() => null);
   if (r) S.selId = 'p:' + r.retValues[0]; await loadGrist();
 };
 window.ocDelE = async (id) => { S.entites = S.entites.filter(e => e.id !== id); S.selId = null; render(); await applyAct([['RemoveRecord', 'Entites', id]]); };
@@ -466,6 +496,14 @@ function renderPanel() {
   } else {
     const p = S.team.find(x => x.id === id); if (!p) { panel.classList.remove('open'); return; }
     const pc = hoursOf(id), pcap = capPersonne(p), pr = pcap > 0 ? pc / pcap : 0;
+    const sameGristId = p.gristUserId ? S.team.filter(x => x.gristUserId === p.gristUserId).length : 0;
+    const identityStatus = !p.actif ? 'Inactif' : (sameGristId > 1 ? 'Conflit userId' : (p.gristUserId ? 'Associe' : 'Non associe'));
+    const adminIdentityFields = S.actor && S.actor.isAdmin
+      ? erow('Etat identite', '<strong>' + esc(identityStatus) + '</strong>')
+        + erow('User ID Grist', '<input type="number" min="1" value="' + (p.gristUserId || '') + '" placeholder="Non associe" onchange="ocSetIdentity(' + id + ',this.value)">')
+        + erow('Profil actif', '<input type="checkbox" ' + (p.actif ? 'checked' : '') + ' onchange="ocSaveP(' + id + ',\'actif\',this.checked)">')
+        + erow('Administrateur', '<input type="checkbox" ' + (p.estAdmin ? 'checked' : '') + ' onchange="ocSaveP(' + id + ',\'estAdmin\',this.checked)">')
+      : '';
     html += '<div class="edit">'
       + '<input class="etitle" value="' + esc(p.nom) + '" onchange="ocSaveP(' + id + ',\'nom\',this.value)">'
       + erow('Email', '<input value="' + esc(p.email || '') + '" placeholder="login Grist (pivot droits)" onchange="ocSaveP(' + id + ',\'email\',this.value)">')
@@ -473,6 +511,7 @@ function renderPanel() {
       + erow('Cap./sem', '<input type="number" value="' + (p.capaciteHebdo || '') + '" onchange="ocSaveP(' + id + ',\'capaciteHebdo\',+this.value)"> h')
       + erow('Entite', '<select onchange="ocSaveP(' + id + ',\'entite\',+this.value)">' + entOpts(p.entite, null) + '</select>')
       + erow('Responsable', '<select onchange="ocSaveP(' + id + ',\'responsable\',+this.value)">' + teamOpts(p.responsable, id) + '</select>')
+      + adminIdentityFields
       + '<div class="eact"><button class="del" onclick="ocDelP(' + id + ')">Supprimer</button></div>'
       + '</div>';
     html += '<div class="kpi-row">'
@@ -503,15 +542,6 @@ const colObjToRows = (data) => {
   return data.id.map((_, i) => { const o = {}; for (const k in data) o[k] = data[k][i]; return o; });
 };
 
-async function getMyUserId() {
-  try {
-    const t = await grist.docApi.getAccessToken({ readOnly: true });
-    const p = (t.token || '').split('.');
-    if (p.length === 3) return JSON.parse(atob(p[1].replace(/-/g, '+').replace(/_/g, '/'))).userId || null;
-  } catch (e) {}
-  return null;
-}
-
 async function loadGrist() {
   const tables = await grist.docApi.listTables();
   // Team + Tasks + Projects (peuvent exister) ; Entites = annuaire (opt-in)
@@ -521,14 +551,15 @@ async function loadGrist() {
   S.projects = await fetch('Projects') || [];
   const entites = await fetch('Entites');
 
-  S.team = team.map(t => ({ id: t.id, nom: t.nom, email: t.email || '', role: t.role || '', entite: t.entite || null, responsable: t.responsable || null, capaciteHebdo: Number(t.capaciteHebdo) || 35 }));
+  S.team = team.map(t => ({ id: t.id, nom: t.nom, email: t.email || '', role: t.role || '', entite: t.entite || null, responsable: t.responsable || null, capaciteHebdo: Number(t.capaciteHebdo) || 35, gristUserId: Number(t.gristUserId) || null, actif: t.actif !== false && t.actif !== 0, estAdmin: t.estAdmin === true || t.estAdmin === 1 }));
   S.tasks = tasks;
   S.entites = entites ? entites.map(e => ({ id: e.id, nom: e.nom, parent: e.parent || null, niveau: e.niveau || 'unite', chef: e.chef || null })) : [];
 
   S.entries = (await fetch('TimeEntries') || []).map(e => ({ membre: e.membre, date: e.date, heures: e.heures }));
   computeCharge();   // planifie (Tasks.charges) sur la periode
   computeRealise();  // reel (TimeEntries) sur la periode
-  S.meUserId = await getMyUserId();
+  S.actor = S.permissionRuntime ? S.permissionRuntime.getActor() : S.actor;
+  S.meUserId = S.actor && S.actor.identified ? S.actor.memberId : null;
   S.gOk = true;
   render();
 }
@@ -708,6 +739,20 @@ document.getElementById('aclModal').addEventListener('click', (e) => { if (e.tar
       onError: error => console.error('[Orgchart permissions] Initialisation impossible', error)
     });
     await permissionRuntime.refresh();
+    S.permissionRuntime = permissionRuntime;
+    S.actor = permissionRuntime.getActor();
+    const identityGate = TaskFlowIdentityGate.createIdentityGate({
+      grist,
+      permissionRuntime,
+      identityRuntime: permissionRuntime.getIdentityRuntime(),
+      reloadSnapshot: () => loadGrist(),
+      onAssociated: async () => {
+        S.actor = permissionRuntime.getActor();
+        await loadGrist();
+      }
+    });
+    permissionRuntime.identityGate = identityGate;
+    await identityGate.start();
     document.getElementById('aclBtn').style.display = 'none';
     // #7 respect des droits (standalone, sans TF) : bandeau lecture seule + garde sur les ecritures.
     (function () {
