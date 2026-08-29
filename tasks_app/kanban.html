@@ -187,6 +187,8 @@
         .form-label { display: block; font-size: 0.7rem; font-weight: 600; color: var(--text-muted); margin-bottom: 6px; text-transform: uppercase; }
         .form-input, .form-select, .form-textarea { width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 0.85rem; color: var(--text); background: var(--card-bg); transition: border-color 0.15s, box-shadow 0.15s; }
         .form-input:focus, .form-select:focus, .form-textarea:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-light); }
+        .action-task-picker { display: grid; gap: 6px; }
+        .action-task-picker-meta { color: var(--text-muted); font-size: 0.72rem; }
         .form-input.title-input { font-size: 1rem; font-weight: 600; border: none; padding: 8px 0; background: transparent; border-bottom: 2px solid var(--border); border-radius: 0; }
         .form-input.title-input:focus { border-bottom-color: var(--primary); box-shadow: none; }
         .form-textarea { min-height: 70px; resize: vertical; font-size: 0.8rem; }
@@ -1548,6 +1550,23 @@
         return Boolean(action) && normalizeId(action.assignee) === actorId(snapshot);
     }
 
+    function canSelectTaskForAction(snapshot, task) {
+        if (requireActor(snapshot)) return false;
+        if (actorIsAdmin(snapshot)) return true;
+        var project = projectForTask(snapshot, task);
+        return Boolean((project && canManageProject(snapshot, project)) || isTaskAssignee(snapshot, task));
+    }
+
+    function listActionTaskCandidates(snapshot) {
+        if (requireActor(snapshot)) return [];
+        var taskRows = snapshot && snapshot.tables && Array.isArray(snapshot.tables.Tasks)
+            ? snapshot.tables.Tasks
+            : [];
+        return taskRows.filter(function (task) {
+            return canSelectTaskForAction(snapshot, task);
+        });
+    }
+
     function recordLabel(table, record) {
         if (!record) return table;
         return record.titre || record.nom || (table + ' #' + (record.id || '?'));
@@ -2088,6 +2107,8 @@
         isDirectManagerOfProjectOwner: isDirectManagerOfProjectOwner,
         isTaskAssignee: isTaskAssignee,
         isActionOwner: isActionOwner,
+        canSelectTaskForAction: canSelectTaskForAction,
+        listActionTaskCandidates: listActionTaskCandidates,
         canCreateProject: canCreateProject,
         canUpdateProject: canUpdateProject,
         canCreateTask: canCreateTask,
@@ -7042,6 +7063,7 @@ if (typeof globalThis !== 'undefined') {
         let workLevel = localStorage.getItem('taskflow_kanban_worklevel') || 'all';
         let filters = { assignee: [], team: [], project: [], programme: [], task: [] };  // Filtres mutualisés avec Plan
         let filterManager = null;
+        let permissionRuntime = null;
         let panelState = { open: false, isNew: false, taskId: null, actionId: null, taskIndex: -1, columnTasks: [], columnKey: null, editData: null };  // NOUVEAU: actionId
         let sortableInstances = [];
         let saveTimeout = null;
@@ -8783,18 +8805,19 @@ if $projet and $projet.responsable:
             render();
         }
 
-        function openCreateActionPanel() { openCreateActionPanelForColumn(groupBy === 'statut' ? 'todo' : groupBy === 'priorite' ? '3' : projects.length ? String(projects[0].id) : 'none'); }
+        function openCreateActionPanel() { openCreateActionPanelForColumn(groupBy === 'statut' ? 'todo' : groupBy === 'priorite' ? '3' : 'none'); }
 
         function openCreateActionPanelForColumn(colKey) {  // NOUVEAU
             const today = new Date();
             let preset = {};
             if (groupBy === 'statut') preset.statut = colKey;
             else if (groupBy === 'priorite') preset.priorite = colKey;
-            else if (groupBy === 'projet') preset.task = colKey === 'none' ? null : { id: parseInt(colKey) };
+            else if (groupBy === 'projet') preset.taskProjectId = colKey === 'none' ? null : parseInt(colKey);
 
             panelState = {
                 open: true, isNew: true, actionId: null, taskIndex: -1, columnTasks: [], columnKey: colKey,
-                editData: { titre: '', description: '', statut: preset.statut || 'todo', priorite: preset.priorite || '3', progression: 0, dateDebut: dateToGrist(today), dateEcheance: dateToGrist(addDays(today, 7)), task: preset.task || null, assignee: null, estimationH: null, tags: [], couleur: null, ordre: 0 }
+                taskProjectId: preset.taskProjectId || null,
+                editData: { titre: '', description: '', statut: preset.statut || 'todo', priorite: preset.priorite || '3', progression: 0, dateDebut: dateToGrist(today), dateEcheance: dateToGrist(addDays(today, 7)), task: null, assignee: null, estimationH: null, tags: [], couleur: null, ordre: 0 }
             };
             renderPanelAction();
             openPanel();
@@ -8805,6 +8828,10 @@ if $projet and $projet.responsable:
         function openCreateActionForTask(taskId) {
             const today = new Date();
             const task = tasks.find(t => t.id === taskId);
+            if (gristReady && !getActionTaskCandidates().some(candidate => candidate.id === taskId)) {
+                showToast('Cette tâche est hors de votre périmètre', 'error');
+                return;
+            }
             panelState = {
                 open: true, isNew: true, actionId: null, taskIndex: -1, columnTasks: [], columnKey: null,
                 editData: { titre: '', description: '', statut: 'todo', priorite: '3', progression: 0, dateDebut: dateToGrist(today), dateEcheance: dateToGrist(addDays(today, 7)), task: taskId, assignee: null, estimationH: null, tags: [], couleur: null, ordre: 0 }
@@ -8839,6 +8866,60 @@ if $projet and $projet.responsable:
                 couleur: action.couleur || null,
                 ordre: action.ordre || 0
             };
+        }
+
+        function actionTaskId(value) {
+            return value && typeof value === 'object' ? value.id : value;
+        }
+
+        function getActionTaskCandidates() {
+            if (!gristReady) return tasks.slice();
+            const snapshot = permissionRuntime?.getSnapshot?.();
+            const permissions = window.TaskFlowPermissions;
+            if (!snapshot || !permissions?.listActionTaskCandidates) return [];
+            const currentSnapshot = permissions.createSnapshot({
+                Team: team,
+                Projects: projects,
+                Tasks: tasks
+            }, snapshot.actor);
+            const allowedIds = new Set(permissions.listActionTaskCandidates(currentSnapshot).map(task => task.id));
+            return tasks.filter(task => allowedIds.has(task.id) && (
+                !panelState.isNew || !panelState.taskProjectId ||
+                permissions.normalizeId(task.projet) === panelState.taskProjectId
+            ));
+        }
+
+        function actionTaskSearchText(task) {
+            const project = projects.find(item => item.id === task.projet);
+            return `${project?.nom || ''} ${task.titre || ''}`.toLocaleLowerCase('fr');
+        }
+
+        function actionTaskOptionsHtml(query) {
+            const selectedId = actionTaskId(panelState.editData?.task);
+            const normalizedQuery = String(query || '').trim().toLocaleLowerCase('fr');
+            let candidates = getActionTaskCandidates();
+            const selectedTask = tasks.find(task => task.id === selectedId);
+            if (!panelState.isNew && selectedTask && !candidates.some(task => task.id === selectedId)) {
+                candidates = candidates.concat(selectedTask);
+            }
+            candidates = candidates
+                .filter(task => task.id === selectedId || !normalizedQuery || actionTaskSearchText(task).includes(normalizedQuery))
+                .sort((left, right) => actionTaskSearchText(left).localeCompare(actionTaskSearchText(right), 'fr'));
+
+            const options = candidates.map(task => {
+                const project = projects.find(item => item.id === task.projet);
+                const label = `${project?.nom || 'Sans projet'} — ${task.titre || `Tâche #${task.id}`}`;
+                return `<option value="${task.id}" ${selectedId === task.id ? 'selected' : ''}>${escapeHtml(label)}</option>`;
+            }).join('');
+            const emptyResult = normalizedQuery && candidates.length === 0
+                ? '<option value="" disabled>Aucune tâche trouvée</option>'
+                : '';
+            return '<option value="">Aucune tâche</option>' + emptyResult + options;
+        }
+
+        function filterActionTaskChoices(query) {
+            const select = document.getElementById('actionTaskSelect');
+            if (select) select.innerHTML = actionTaskOptionsHtml(query);
         }
         
         // FIX: Synchroniser editData vers le action local dans actions[]
@@ -8889,6 +8970,7 @@ if $projet and $projet.responsable:
             const assigneeName = assignee ? getTeamMemberName(assignee) : null;
             const assigneeInitials = assigneeName ? assigneeName.split(' ').filter(Boolean).map(w => w[0]).slice(0,2).join('').toUpperCase() : '?';
             const assigneeColor = assignee ? getTeamMemberColor(assignee) : '#94a3b8';
+            const actionTaskCandidateCount = getActionTaskCandidates().length;
 
             const s = gristToDate(data.dateDebut), e = gristToDate(data.dateEcheance);
             const tagsArray = getChoiceListArray(data.tags || []);
@@ -8920,10 +9002,13 @@ if $projet and $projet.responsable:
                     <div class="prop-row">
                         <span class="prop-label">Tâche</span>
                         <div class="prop-value">
-                            <select class="form-select" onchange="updateActionField('task', this.value ? {id: parseInt(this.value)} : null)">
-                                <option value="">Aucune tâche</option>
-                                ${tasks.map(t => `<option value="${t.id}" ${data.task && (typeof data.task === 'object' ? data.task.id : data.task) === t.id ? 'selected' : ''}>${escapeHtml(t.titre)}</option>`).join('')}
-                            </select>
+                            <div class="action-task-picker">
+                                <input type="search" class="form-input" placeholder="Rechercher une tâche ou un projet…" aria-label="Rechercher une tâche accessible" oninput="filterActionTaskChoices(this.value)">
+                                <select id="actionTaskSelect" class="form-select" onchange="updateActionField('task', this.value ? {id: parseInt(this.value)} : null)">
+                                    ${actionTaskOptionsHtml('')}
+                                </select>
+                                <span class="action-task-picker-meta">${actionTaskCandidateCount} tâche${actionTaskCandidateCount !== 1 ? 's' : ''} accessible${actionTaskCandidateCount !== 1 ? 's' : ''} dans votre périmètre</span>
+                            </div>
                         </div>
                     </div>
                     <div class="prop-row">
@@ -9513,7 +9598,7 @@ if $projet and $projet.responsable:
             }
             
             CRA_ACTIVE = schemaState.ready;
-            const permissionRuntime = await TF.createPermissionRuntime(grist, {
+            permissionRuntime = await TF.createPermissionRuntime(grist, {
                 onIdentity: (identity) => {
                     if (!identity.identified) showToast('Identité non associée : modifications bloquées', 'error');
                 },

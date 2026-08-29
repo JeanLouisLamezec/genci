@@ -139,6 +139,14 @@ describe('TaskFlow permissions - projets et tâches', () => {
 });
 
 describe('TaskFlow permissions - actions', () => {
+  test('préfiltre les tâches liables avec la même portée que la création d’action', () => {
+    expect(permissions.listActionTaskCandidates(fixture(1)).map(task => task.id)).toEqual([100, 101, 200]);
+    expect(permissions.listActionTaskCandidates(fixture(3)).map(task => task.id)).toEqual([100, 101]);
+    expect(permissions.listActionTaskCandidates(fixture(2)).map(task => task.id)).toEqual([100, 101]);
+    expect(permissions.listActionTaskCandidates(fixture(4)).map(task => task.id)).toEqual([100]);
+    expect(permissions.listActionTaskCandidates(fixture(6)).map(task => task.id)).toEqual([101, 200]);
+  });
+
   test('exécutant affecté crée uniquement une action assignée à lui-même', () => {
     const snapshot = fixture(4);
     expect(authorize(snapshot, ['AddRecord', 'Actions', null, { titre: 'X', task: 100, assignee: 4 }]).allowed).toBe(true);

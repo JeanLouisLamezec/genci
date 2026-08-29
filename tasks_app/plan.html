@@ -1180,6 +1180,23 @@ window.addEventListener('unhandledrejection', function(e) {
         return Boolean(action) && normalizeId(action.assignee) === actorId(snapshot);
     }
 
+    function canSelectTaskForAction(snapshot, task) {
+        if (requireActor(snapshot)) return false;
+        if (actorIsAdmin(snapshot)) return true;
+        var project = projectForTask(snapshot, task);
+        return Boolean((project && canManageProject(snapshot, project)) || isTaskAssignee(snapshot, task));
+    }
+
+    function listActionTaskCandidates(snapshot) {
+        if (requireActor(snapshot)) return [];
+        var taskRows = snapshot && snapshot.tables && Array.isArray(snapshot.tables.Tasks)
+            ? snapshot.tables.Tasks
+            : [];
+        return taskRows.filter(function (task) {
+            return canSelectTaskForAction(snapshot, task);
+        });
+    }
+
     function recordLabel(table, record) {
         if (!record) return table;
         return record.titre || record.nom || (table + ' #' + (record.id || '?'));
@@ -1720,6 +1737,8 @@ window.addEventListener('unhandledrejection', function(e) {
         isDirectManagerOfProjectOwner: isDirectManagerOfProjectOwner,
         isTaskAssignee: isTaskAssignee,
         isActionOwner: isActionOwner,
+        canSelectTaskForAction: canSelectTaskForAction,
+        listActionTaskCandidates: listActionTaskCandidates,
         canCreateProject: canCreateProject,
         canUpdateProject: canUpdateProject,
         canCreateTask: canCreateTask,

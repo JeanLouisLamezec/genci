@@ -96,6 +96,22 @@ rôles admin et associations Grist.
 - le propriétaire peut modifier ou supprimer son action ;
 - il ne peut ni la réassigner, ni la déplacer vers une tâche étrangère.
 
+Dans le panneau de création ou d’édition d’une action du Kanban, le sélecteur de
+tâche applique ce même périmètre avant l’écriture :
+
+- l’administrateur voit toutes les tâches ;
+- le chef de projet voit toutes les tâches des projets dont il est responsable ;
+- le chef d’équipe voit toutes les tâches des projets de ses collaborateurs
+  directs ;
+- l’exécutant ne voit que les tâches auxquelles il est affecté.
+
+La recherche porte sur le titre de la tâche et le nom du projet. Ce préfiltrage
+est une aide UX pour les gros volumes ; il ne remplace ni la garde d’écriture du
+widget ni les ACL Grist. Le bouton d’ajout d’une colonne regroupée par projet
+resserre en plus la liste sur ce projet. Une tâche déjà liée à une action reste affichée pendant
+l’édition, même si le périmètre de l’utilisateur a changé, afin de ne pas masquer
+la valeur existante ; toute nouvelle destination demeure contrôlée à l’écriture.
+
 Les lots sont contrôlés séquentiellement sur un snapshot. Au premier refus, le
 lot entier n’est pas transmis à Grist.
 
