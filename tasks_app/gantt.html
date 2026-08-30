@@ -10,6 +10,7 @@
     <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
     <script src="core/filters/filter-manager.js"></script>
     <script src="core/gantt/gantt-visible-tree.js"></script>
+    <script src="core/gantt/gantt-task-date-constraints.js"></script>
     <script src="core/planning/task_assignment/task-assignment-service.js"></script>
     <script src="core/planning/gantt/gantt-task-assignment-integration.js?v=20260827"></script>
     <script src="core/planning/gantt/gantt-auto-planning-integration.js?v=20260827-retro"></script>
@@ -235,6 +236,7 @@
         .panel-btn.success { background: var(--success); }
         .panel-btn.danger { background: transparent; color: var(--danger); border: 1px solid var(--danger); }
         .panel-btn.danger:hover { background: var(--danger); color: white; }
+        .panel-validation-error { margin-bottom: 9px; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--danger) 40%, var(--border)); border-radius: 7px; background: var(--danger-light); color: var(--danger); font-size: .75rem; line-height: 1.4; }
         .panel-section { margin-bottom: 16px; padding-bottom: 14px; border-bottom: 1px solid var(--border); }
         .panel-section:last-child { border-bottom: none; }
         .panel-section-header { display: flex; align-items: center; gap: 8px; padding: 8px 12px; margin: 0 -16px 12px -16px; background: linear-gradient(135deg, var(--bg) 0%, rgba(79,70,229,0.03) 100%); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
@@ -7516,6 +7518,11 @@ if (typeof globalThis !== 'undefined') {
         const getTeamMemberName = (id) => { const m = team.find(x => x.id === id); return m?.nom || ''; };
         const getTeamMemberColor = (id) => { const m = team.find(x => x.id === id); return m?.couleur || '#3e5de7'; };
         const getInitials = (n) => n ? n.split(' ').map(x => x[0]).join('').toUpperCase().slice(0, 2) : '?';
+        const validateTaskDateConstraints = (task, taskSet = tasks, options = {}) => GanttTaskDateConstraints.validateTaskMutation(task, {
+            tasks: taskSet,
+            projects: projects,
+            ...options
+        });
 
         // Couleur d'une tâche selon le mode courant, avec override individuel (task.couleur)
         function getTaskColor(t) {
@@ -8612,12 +8619,20 @@ if (typeof globalThis !== 'undefined') {
         function openCreateTaskWithParent(parentId) {
             const today = new Date();
             const parent = parentId ? tasks.find(t => t.id === parentId) : null;
+            const defaultProjectId = parent?.projet || (projects.length > 0 ? projects[0].id : null);
+            const defaultProject = projects.find(p => p.id === defaultProjectId);
+            const scopeStart = gristToDate(parent?.dateDebut ?? defaultProject?.dateDebut);
+            const scopeEnd = gristToDate(parent?.dateEcheance ?? defaultProject?.dateFin);
+            let defaultStart = today;
+            if (scopeStart && scopeEnd && (today < scopeStart || today > scopeEnd)) defaultStart = scopeStart;
+            let defaultEnd = addDays(defaultStart, 7);
+            if (scopeEnd && defaultEnd > scopeEnd) defaultEnd = scopeEnd;
             panelState = {
                 open: true, isNew: true, taskId: null, taskIndex: -1, taskList: panelState.taskList,
                 editData: {
                     titre: '', description: '', type: 'tache', priorite: '3', statut: 'todo', progression: 0,
-                    dateDebut: dateToGrist(today), dateEcheance: dateToGrist(addDays(today, 7)),
-                    projet: parent?.projet || (projects.length > 0 ? projects[0].id : null),
+                    dateDebut: dateToGrist(defaultStart), dateEcheance: dateToGrist(defaultEnd),
+                    projet: defaultProjectId,
                     assignees: [], dependDe: [], tags: [], estimationH: null, tempsPasse: null, subtasks: [],
                     couleur: null, parentTask: parentId || null, charges: []
                 },
@@ -8642,6 +8657,12 @@ assignmentModes: {},
                 if (k.dateEcheance != null && (maxE == null || k.dateEcheance > maxE)) maxE = k.dateEcheance;
             }
             if (minS == null || maxE == null) { showToast('Aucun descendant avec dates', 'info'); return; }
+            const candidate = { ...t, dateDebut: minS, dateEcheance: maxE };
+            const dateValidation = validateTaskDateConstraints(candidate);
+            if (!dateValidation.ok) {
+                showToast('Ajustement impossible : ' + dateValidation.message, 'error');
+                return;
+            }
             t.dateDebut = minS; t.dateEcheance = maxE;
             if (panelState.editData) { panelState.editData.dateDebut = minS; panelState.editData.dateEcheance = maxE; }
             if (gristReady) {
@@ -9102,8 +9123,10 @@ assignmentModes: {},
                     '<div class="panel-footer-left"><button class="panel-btn danger" onclick="showDeleteConfirm()" style="width:auto;padding:10px 14px">Suppr.</button></div><div class="delete-confirm" id="deleteConfirm"><div class="delete-confirm-text">Supprimer ?</div><div class="delete-confirm-actions"><button class="delete-confirm-btn cancel" onclick="hideDeleteConfirm()">Annuler</button><button class="delete-confirm-btn confirm" onclick="confirmDelete()">Supprimer</button></div></div>' : '');
 
             if (panelState.isNew) {
-                const canCreate = data.titre && data.titre.trim().length > 0;
-                footer.innerHTML = '<div style="display:flex;gap:8px;width:100%"><button class="panel-btn" style="flex:0 0 auto;width:auto;padding:10px 16px;background:transparent;color:var(--text-muted);border:1px solid var(--border)" onclick="closePanel()">Annuler</button><button class="panel-btn success" onclick="createTask()" ' + (!canCreate ? 'disabled' : '') + ' style="flex:1;width:auto">Créer la tâche</button></div>';
+                const dateValidation = validateTaskDateConstraints(data);
+                const canCreate = data.titre && data.titre.trim().length > 0 && dateValidation.ok;
+                const validationHtml = dateValidation.ok ? '' : '<div class="panel-validation-error">' + escapeHtml('Création impossible : ' + dateValidation.message) + '</div>';
+                footer.innerHTML = validationHtml + '<div style="display:flex;gap:8px;width:100%"><button class="panel-btn" style="flex:0 0 auto;width:auto;padding:10px 16px;background:transparent;color:var(--text-muted);border:1px solid var(--border)" onclick="closePanel()">Annuler</button><button class="panel-btn success" onclick="createTask()" ' + (!canCreate ? 'disabled' : '') + ' style="flex:1;width:auto">Créer la tâche</button></div>';
             } else {
                 footer.innerHTML = '';
             }
@@ -9175,7 +9198,7 @@ assignmentModes: {},
 
             if (field === 'titre' && panelState.isNew) {
                 const btn = document.querySelector('.panel-footer .panel-btn.success');
-                if (btn) btn.disabled = !value || !value.trim();
+                if (btn) btn.disabled = !value || !value.trim() || !validateTaskDateConstraints(data).ok;
             }
 
             if (!panelState.isNew && !noSave && gristReady) saveTaskToGrist();
@@ -9374,8 +9397,18 @@ assignmentModes: {},
         async function saveTaskToGrist() {
             const data = panelState.editData;
             if (!data || panelState.isNew || !gristReady) return;
-            if (data.dateDebut && data.dateEcheance && data.dateDebut > data.dateEcheance) {
-                showToast('La date de début ne peut pas dépasser la date de fin', 'error');
+            // `syncLocalTask()` met à jour `tasks` avant la sauvegarde. Reconstruire
+            // ici le contexte avec le snapshot original évite de comparer la
+            // proposition avec elle-même et garantit le contrôle des dates.
+            const validationTasks = tasks.map(task => task.id === panelState.taskId
+                ? { ...task, ...(panelState.originalTask || {}), id: panelState.taskId }
+                : task);
+            const dateValidation = validateTaskDateConstraints(
+                { ...data, id: panelState.taskId },
+                validationTasks
+            );
+            if (!dateValidation.ok) {
+                showToast('Modification impossible : ' + dateValidation.message, 'error');
                 return;
             }
 
@@ -9639,8 +9672,9 @@ assignmentModes: {},
                 showToast('Titre requis', 'error');
                 return;
             }
-            if (data.dateDebut && data.dateEcheance && data.dateDebut > data.dateEcheance) {
-                showToast('La date de début ne peut pas dépasser la date de fin', 'error');
+            const dateValidation = validateTaskDateConstraints(data);
+            if (!dateValidation.ok) {
+                showToast('Création impossible : ' + dateValidation.message, 'error');
                 return;
             }
 
@@ -9865,6 +9899,9 @@ assignmentModes: {},
 
             const pxPerDay = effectivePxPerDay;
             const dx = e.clientX - dragState.startX;
+            // Un clic peut dériver de quelques pixels : ne pas le transformer en
+            // modification de dates, surtout dans les vues fortement dézoomées.
+            if (Math.abs(dx) < 4) return;
             const daysDelta = Math.round(dx / pxPerDay);
             const bar = document.querySelector('.gantt-bar[data-id="' + dragState.taskId + '"]');
             if (!bar) return;
@@ -9898,7 +9935,22 @@ assignmentModes: {},
 
             const pxPerDay = effectivePxPerDay;
             const dx = e.clientX - dragState.startX;
+            if (Math.abs(dx) < 4) {
+                dragState.active = false;
+                render();
+                return;
+            }
             const daysDelta = Math.round(dx / pxPerDay);
+            if (daysDelta === 0) {
+                dragState.active = false;
+                render();
+                return;
+            }
+
+            const originalDates = new Map(tasks.map(t => [t.id, {
+                dateDebut: t.dateDebut,
+                dateEcheance: t.dateEcheance
+            }]));
 
             let newStart = dragState.originalStart, newEnd = dragState.originalEnd;
             if (dragState.type === 'move') { newStart = addDays(dragState.originalStart, daysDelta); newEnd = addDays(dragState.originalEnd, daysDelta); }
@@ -9922,6 +9974,35 @@ assignmentModes: {},
 
             // GANTT-06: Propager les changements aux tâches dépendantes
             const cascadeUpdates = propagateDependencyDates(task.id);
+
+            // Valider l'ensemble des mutations locales avant la moindre écriture Grist.
+            // Pour un parent déplacé en bloc, les enfants sont contrôlés contre les
+            // nouvelles dates du parent déjà présentes dans `tasks`.
+            const changedIds = new Set([task.id]);
+            childUpdates.forEach(update => changedIds.add(update.id));
+            cascadeUpdates.forEach(update => changedIds.add(update.id));
+            let dateViolation = null;
+            for (const changedId of changedIds) {
+                const changedTask = tasks.find(candidate => candidate.id === changedId);
+                if (!changedTask) continue;
+                const validation = validateTaskDateConstraints(changedTask, tasks, { forceValidation: true });
+                if (!validation.ok) {
+                    dateViolation = validation;
+                    break;
+                }
+            }
+            if (dateViolation) {
+                tasks.forEach(candidate => {
+                    const original = originalDates.get(candidate.id);
+                    if (!original) return;
+                    candidate.dateDebut = original.dateDebut;
+                    candidate.dateEcheance = original.dateEcheance;
+                });
+                dragState.active = false;
+                showToast('Modification impossible : ' + dateViolation.message, 'error');
+                render();
+                return;
+            }
 
             if (gristReady) {
                 try {

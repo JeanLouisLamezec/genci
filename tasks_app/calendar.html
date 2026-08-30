@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Calendar - TaskFlow v15</title>
     <script src="https://docs.getgrist.com/grist-plugin-api.js"></script>
+    <script src="core/gantt/gantt-task-date-constraints.js"></script>
     <style>
         :root {
             /* Primary */
@@ -7432,6 +7433,10 @@ if (typeof globalThis !== 'undefined') {
         // UTILITIES
         // ═══════════════════════════════════════════════════════════════════════
         const showToast = (m, t) => { const c = document.getElementById('toastContainer'); const e = document.createElement('div'); e.className = 'toast ' + (t || ''); e.textContent = m; c.appendChild(e); setTimeout(() => e.remove(), 3000); };
+        const validateTaskDateConstraints = (task, taskSet = tasks) => GanttTaskDateConstraints.validateTaskMutation(task, {
+            tasks: taskSet,
+            projects: projects
+        });
         
         // GEN-03: Export functions
         function exportPrint() {
@@ -8644,12 +8649,20 @@ if (typeof globalThis !== 'undefined') {
         function openCreateTaskWithParent(parentId) {
             const today = new Date();
             const parent = parentId ? tasks.find(t => t.id === parentId) : null;
+            const defaultProjectId = parent?.projet || (projects.length > 0 ? projects[0].id : null);
+            const defaultProject = projects.find(p => p.id === defaultProjectId);
+            const scopeStart = gristToDate(parent?.dateDebut ?? defaultProject?.dateDebut);
+            const scopeEnd = gristToDate(parent?.dateEcheance ?? defaultProject?.dateFin);
+            let defaultStart = today;
+            if (scopeStart && scopeEnd && (today < scopeStart || today > scopeEnd)) defaultStart = scopeStart;
+            let defaultEnd = addDays(defaultStart, 7);
+            if (scopeEnd && defaultEnd > scopeEnd) defaultEnd = scopeEnd;
             panelState = {
                 open: true, mode: 'task', periodType: null, periodDate: null, periodTasks: [], taskId: null, taskIndex: -1, isNew: true,
                 editData: {
                     titre: '', description: '', type: 'tache', priorite: '3', statut: 'todo', progression: 0,
-                    dateDebut: dateToGrist(today), dateEcheance: dateToGrist(addDays(today, 7)),
-                    projet: parent?.projet || (projects.length > 0 ? projects[0].id : null),
+                    dateDebut: dateToGrist(defaultStart), dateEcheance: dateToGrist(defaultEnd),
+                    projet: defaultProjectId,
                     assignees: [], dependDe: [], tags: [], estimationH: null, tempsPasse: null, subtasks: [],
                     couleur: null, parentTask: parentId || null
                 }
@@ -8670,6 +8683,12 @@ if (typeof globalThis !== 'undefined') {
                 if (k.dateEcheance != null && (maxE == null || k.dateEcheance > maxE)) maxE = k.dateEcheance;
             }
             if (minS == null || maxE == null) { showToast('Aucun descendant avec dates', 'info'); return; }
+            const candidate = { ...t, dateDebut: minS, dateEcheance: maxE };
+            const dateValidation = validateTaskDateConstraints(candidate);
+            if (!dateValidation.ok) {
+                showToast('Ajustement impossible : ' + dateValidation.message, 'error');
+                return;
+            }
             t.dateDebut = minS; t.dateEcheance = maxE;
             if (panelState.editData) { panelState.editData.dateDebut = minS; panelState.editData.dateEcheance = maxE; }
             if (gristReady) {
@@ -9306,8 +9325,9 @@ if (typeof globalThis !== 'undefined') {
         async function saveTaskToGrist() {
             const data = panelState.editData;
             if (!data || panelState.isNew || !gristReady) return;
-            if (data.dateDebut && data.dateEcheance && data.dateDebut > data.dateEcheance) {
-                showToast('La date de début ne peut pas dépasser la date de fin', 'error');
+            const dateValidation = validateTaskDateConstraints({ ...data, id: panelState.taskId });
+            if (!dateValidation.ok) {
+                showToast('Modification impossible : ' + dateValidation.message, 'error');
                 return;
             }
 
@@ -9346,8 +9366,9 @@ if (typeof globalThis !== 'undefined') {
                 showToast('Le titre est requis', 'error');
                 return;
             }
-            if (data.dateDebut && data.dateEcheance && data.dateDebut > data.dateEcheance) {
-                showToast('La date de début ne peut pas dépasser la date de fin', 'error');
+            const dateValidation = validateTaskDateConstraints(data);
+            if (!dateValidation.ok) {
+                showToast('Création impossible : ' + dateValidation.message, 'error');
                 return;
             }
 

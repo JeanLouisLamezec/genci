@@ -7,6 +7,7 @@
 <script src="https://docs.getgrist.com/grist-plugin-api.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
 <script src="core/filters/filter-manager.js"></script>
+<script src="core/gantt/gantt-task-date-constraints.js"></script>
 <link rel="stylesheet" href="core/filters/filter-styles.css">
 <style>
         :root {
@@ -7346,6 +7347,10 @@ if (typeof globalThis !== 'undefined') {
         // UTILITIES
         // ═══════════════════════════════════════════════════════════════════════
         const showToast = (m, t) => { const c = document.getElementById('toastContainer'); const e = document.createElement('div'); e.className = 'toast ' + (t||''); e.textContent = m; c.appendChild(e); setTimeout(() => e.remove(), 3000); };
+        const validateTaskDateConstraints = (task, taskSet = tasks) => GanttTaskDateConstraints.validateTaskMutation(task, {
+            tasks: taskSet,
+            projects: projects
+        });
         
         // GEN-03: Export functions
         function exportPrint() {
@@ -9551,7 +9556,8 @@ if $projet and $projet.responsable:
         async function saveTaskToGrist() {
             const data = panelState.editData;
             if (!data || panelState.isNew || !gristReady) return;
-            if (data.dateDebut && data.dateEcheance && data.dateDebut > data.dateEcheance) { showToast('La date de début ne peut pas dépasser la date de fin', 'error'); return; }
+            const dateValidation = validateTaskDateConstraints({ ...data, id: panelState.taskId });
+            if (!dateValidation.ok) { showToast('Modification impossible : ' + dateValidation.message, 'error'); return; }
             syncLocalTask();  // FIX: Synchroniser localement avant envoi API
             const record = { titre: data.titre, description: data.description, type: data.type, priorite: data.priorite, statut: data.statut, progression: data.progression, dateDebut: data.dateDebut, dateEcheance: data.dateEcheance, projet: data.projet, assignees: toGristRefList(data.assignees), dependDe: toGristRefList(data.dependDe), tags: toGristChoiceList(data.tags), estimationH: data.estimationH, tempsPasse: data.tempsPasse, subtasks: subtasksToJson(data.subtasks), couleur: data.couleur || null, parentTask: data.parentTask || null, charges: TF.chargesToJson((data.charges || []).filter(c => data.assignees.includes(c.teamId))), dateCloture: data.dateCloture || null };
             try { await grist.docApi.applyUserActions([['UpdateRecord', 'Tasks', panelState.taskId, pruneTaskRecord(record)]]); showSaveIndicator(); } catch (e) { showToast('Erreur sauvegarde', 'error'); }
@@ -9592,7 +9598,8 @@ if $projet and $projet.responsable:
         async function createTask() {
             const data = panelState.editData;
             if (!data || !data.titre?.trim()) { showToast('Titre requis', 'error'); return; }
-            if (data.dateDebut && data.dateEcheance && data.dateDebut > data.dateEcheance) { showToast('La date de début ne peut pas dépasser la date de fin', 'error'); return; }
+            const dateValidation = validateTaskDateConstraints(data);
+            if (!dateValidation.ok) { showToast('Création impossible : ' + dateValidation.message, 'error'); return; }
             const record = { titre: data.titre, description: data.description || '', type: data.type || 'tache', priorite: data.priorite || '3', statut: data.statut || 'todo', progression: data.progression || 0, dateDebut: data.dateDebut, dateEcheance: data.dateEcheance, projet: data.projet, assignees: toGristRefList(data.assignees), dependDe: toGristRefList(data.dependDe), tags: toGristChoiceList(data.tags), estimationH: data.estimationH, tempsPasse: data.tempsPasse, subtasks: subtasksToJson(data.subtasks), couleur: data.couleur || null, parentTask: data.parentTask || null, charges: TF.chargesToJson((data.charges || []).filter(c => data.assignees.includes(c.teamId))), dateCloture: data.dateCloture || null };
             if (gristReady) {
                 try { await grist.docApi.applyUserActions([['AddRecord', 'Tasks', null, pruneTaskRecord(record)]]); showToast('Créée', 'success'); await loadAllData(); closePanel(); } catch (e) { showToast('Erreur création', 'error'); }
