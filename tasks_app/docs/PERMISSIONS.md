@@ -86,9 +86,11 @@ rôles admin et associations Grist.
 
 - admin, chef de projet et chef d’équipe du périmètre : création, modification,
   suppression et gestion des affectations ;
-- exécutant affecté : modification des champs ordinaires ;
-- l’exécutant ne peut pas modifier `projet`, `assignees`, `dependDe` ou
-  `parentTask`, ni supprimer la tâche.
+- exécutant affecté : modification des champs opérationnels ordinaires, comme
+  le statut ou la progression ;
+- l’exécutant ne peut pas modifier `dateDebut`, `dateEcheance`, `projet`,
+  `assignees`, `dependDe` ou `parentTask`, ni supprimer la tâche. Les dates de
+  planification sont réservées à l’administrateur et au périmètre projet.
 
 ### Actions
 
@@ -130,6 +132,12 @@ Une `TimeEntry` créée par un exécutant doit :
 En modification ordinaire, seuls `heures` et le rattachement contrôlé à la
 feuille sont acceptés. Dans `correction_manager`, le valideur photographié ne
 peut modifier que `heures`. Un administrateur possède le passe-droit complet.
+
+Le responsable du projet et son manager direct peuvent recalculer les lignes
+prévisionnelles issues d'une `TaskAssignment` active. Cette autorisation est
+limitée à `heuresPrevues`, aux instantanés de capacité, à `capaciteJour` et à
+`revisionPlan`. Elle n'autorise jamais la modification de `heures`, de
+`description`, d'`imputation` ni la suppression d'une saisie réalisée.
 
 ### Feuille
 

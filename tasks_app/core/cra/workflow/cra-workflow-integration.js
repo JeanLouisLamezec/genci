@@ -710,6 +710,7 @@
 
     const state = config.getState();
     const actorMemberId = normalizeId(state && state.currentUserMemberId);
+    const actorIsAdmin = Boolean(state && state.currentUserActor && state.currentUserActor.isAdmin);
     const targetMemberId = normalizeId(memberId);
     const weekStartIso = getWeekStartIso(weekStart);
     const trimmedReason = String(reason || '').trim();
@@ -723,7 +724,7 @@
       ? managerState.directReportIds
       : (Array.isArray(state.mesGeres) ? state.mesGeres : []);
     const isDirectReport = directReportIds.some(id => normalizeId(id) === targetMemberId);
-    if (!isDirectReport) return { success: false, code: 'NOT_DIRECT_REPORT' };
+    if (!actorIsAdmin && !isDirectReport) return { success: false, code: 'NOT_DIRECT_REPORT' };
 
     const weekEntries = (state.entries || []).filter(entry =>
       normalizeId(entry.membre) === targetMemberId &&
@@ -759,7 +760,7 @@
       if (['soumis', 'submitted', 'valide', 'validated'].includes(status)) {
         return { success: false, code: 'SHEET_REQUIRES_WORKFLOW_ACTION', sheetId };
       }
-      if (status === 'correction_manager' && normalizeId(sheet.responsableValidation) !== actorMemberId) {
+      if (!actorIsAdmin && status === 'correction_manager' && normalizeId(sheet.responsableValidation) !== actorMemberId) {
         return { success: false, code: 'NOT_EXPECTED_VALIDATION_MANAGER', sheetId };
       }
 
@@ -841,7 +842,8 @@
     }
     
     // Vérifier que le currentUserMemberId est le responsable validation
-    if (sheet.responsableValidation !== state.currentUserMemberId) {
+    const actorIsAdmin = Boolean(state.currentUserActor && state.currentUserActor.isAdmin);
+    if (!actorIsAdmin && normalizeId(sheet.responsableValidation) !== normalizeId(state.currentUserMemberId)) {
       return { success: false, code: 'NOT_EXPECTED_VALIDATION_MANAGER' };
     }
     

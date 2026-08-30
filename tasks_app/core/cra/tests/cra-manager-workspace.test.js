@@ -97,6 +97,21 @@ describe('resolveManagerWorkspaceState', () => {
     expect(result.isAdmin).toBe(true);
   });
 
+  test('un administrateur peut préparer l’historique d’un membre inactif', () => {
+    const result = resolveManagerWorkspaceState({
+      team: [
+        { id: 1, actif: true, estAdmin: true },
+        { id: 2, actif: false, responsable: 9 }
+      ],
+      sheets: [],
+      currentUserMemberId: 1,
+      isAdmin: true
+    });
+
+    expect(result.directReportIds).toEqual([2]);
+    expect(result.managesSomeone).toBe(true);
+  });
+
   // 1. Manager avec un subordonné actif, aucune feuille
   test('1. manager avec subordonné actif, aucune feuille', () => {
     const team = [

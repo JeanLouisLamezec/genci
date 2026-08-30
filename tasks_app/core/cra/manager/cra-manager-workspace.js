@@ -92,12 +92,14 @@ function resolveManagerWorkspaceState({ team, sheets, currentUserMemberId, isAdm
   
   // 2. Calculer les subordonnés directs
   const directReports = team.filter(member => {
+    // L'administrateur fonctionnel doit pouvoir régulariser l'historique de
+    // toute personne, y compris un membre désormais inactif.
+    if (isAdmin) return normalizeId(member.id) !== managerId;
+
     // Membre doit être actif
     if (member.actif === false) {
       return false;
     }
-    
-    if (isAdmin) return normalizeId(member.id) !== managerId;
 
     // Responsable direct doit correspondre
     const memberRespId = normalizeId(member.responsable);

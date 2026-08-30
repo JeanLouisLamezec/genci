@@ -76,4 +76,33 @@ describe('CraWorkflowIntegration - régularisation rétroactive', () => {
     ]);
     expect(enteredSheet).toMatchObject({ id: 50, membre: 2, statut: 'correction_manager' });
   });
+
+  test('un admin entre dans une correction photographiée sur un autre valideur', async () => {
+    jest.resetModules();
+    delete global.CraWorkflowIntegration;
+    require('../workflow/cra-workflow-integration.js');
+
+    const correctionSheet = {
+      id: 50,
+      membre: 2,
+      statut: 'correction_manager',
+      responsableValidation: 9
+    };
+    let enteredSheet = null;
+    global.CraWorkflowIntegration.configure({
+      grist: { docApi: {} },
+      taskFlowCra: { service: {}, createUiAdapter: jest.fn(() => ({})) },
+      getState: () => ({
+        currentUserMemberId: 1,
+        currentUserActor: { isAdmin: true },
+        feuilles: [correctionSheet]
+      }),
+      enterCorrectionMode: sheet => { enteredSheet = sheet; }
+    });
+
+    const result = await global.CraWorkflowIntegration.enterManagerCorrection(50);
+
+    expect(result).toMatchObject({ success: true, code: 'MANAGER_CORRECTION_MODE_ENTERED' });
+    expect(enteredSheet).toBe(correctionSheet);
+  });
 });

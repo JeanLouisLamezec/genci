@@ -95,4 +95,67 @@ describe('permissions communes CRA', () => {
     ]);
     expect(result.allowed).toBe(true);
   });
+
+  test('un responsable projet peut recalculer uniquement le prévisionnel de ses affectations', () => {
+    const planningSnapshot = permissions.createSnapshot({
+      Team: [
+        { id: 1, actif: true, estAdmin: false },
+        { id: 2, actif: true, estAdmin: false }
+      ],
+      Projects: [{ id: 10, responsable: 1 }],
+      Tasks: [{ id: 30, projet: 10, assignees: ['L', 2] }],
+      TaskAssignments: [{ id: 40, membre: 2, tache: 30, actif: true }],
+      TimeEntries: [
+        { id: 20, membre: 2, tache: 30, affectation: 40, heures: null, heuresPrevues: 4, feuille: null },
+        { id: 21, membre: 2, tache: 30, affectation: 40, heures: 3, heuresPrevues: 4, feuille: null }
+      ],
+      Feuilles: []
+    }, {
+      identified: true,
+      status: 'IDENTIFIED',
+      memberId: 1,
+      isAdmin: false
+    });
+
+    const creation = permissions.authorizeMutationBatch(planningSnapshot, [[
+      'AddRecord', 'TimeEntries', null, {
+        affectation: 40, tache: 30, membre: 2, date: 1704672000,
+        heuresPrevues: 2, heures: null, capaciteTheorique: 7,
+        capaciteDisponible: 7, capaciteJour: 50, revisionPlan: 1,
+        description: null, imputation: null
+      }
+    ]]);
+    const update = permissions.authorizeMutationBatch(planningSnapshot, [[
+      'UpdateRecord', 'TimeEntries', 20,
+      { heuresPrevues: 2, capaciteDisponible: 6, revisionPlan: 2 }
+    ]]);
+    const deletion = permissions.authorizeMutationBatch(planningSnapshot, [[
+      'RemoveRecord', 'TimeEntries', 20
+    ]]);
+
+    expect(creation).toMatchObject({ allowed: true, code: 'BATCH_ALLOWED' });
+    expect(update).toMatchObject({ allowed: true, code: 'BATCH_ALLOWED' });
+    expect(deletion).toMatchObject({ allowed: true, code: 'BATCH_ALLOWED' });
+  });
+
+  test('un responsable projet ne peut pas transformer le recalcul en modification du réalisé', () => {
+    const planningSnapshot = permissions.createSnapshot({
+      Team: [{ id: 1, actif: true }, { id: 2, actif: true }],
+      Projects: [{ id: 10, responsable: 1 }],
+      Tasks: [{ id: 30, projet: 10 }],
+      TaskAssignments: [{ id: 40, membre: 2, tache: 30, actif: true }],
+      TimeEntries: [{ id: 20, membre: 2, tache: 30, affectation: 40, heures: 3, heuresPrevues: 4, feuille: null }],
+      Feuilles: []
+    }, { identified: true, status: 'IDENTIFIED', memberId: 1, isAdmin: false });
+
+    const actualUpdate = permissions.authorizeMutationBatch(planningSnapshot, [[
+      'UpdateRecord', 'TimeEntries', 20, { heures: 8 }
+    ]]);
+    const actualDelete = permissions.authorizeMutationBatch(planningSnapshot, [[
+      'RemoveRecord', 'TimeEntries', 20
+    ]]);
+
+    expect(actualUpdate.allowed).toBe(false);
+    expect(actualDelete.allowed).toBe(false);
+  });
 });

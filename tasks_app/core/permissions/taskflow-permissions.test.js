@@ -109,9 +109,11 @@ describe('TaskFlow permissions - projets et tâches', () => {
     expect(authorize(topSnapshot, ['UpdateRecord', 'Tasks', 100, { titre: 'X' }]).allowed).toBe(false);
   });
 
-  test('exécutant affecté peut modifier mais jamais supprimer une tâche', () => {
+  test('exécutant affecté peut modifier un champ ordinaire mais jamais les dates ni supprimer une tâche', () => {
     const snapshot = fixture(4);
-    expect(authorize(snapshot, ['UpdateRecord', 'Tasks', 100, { dateDebut: 123 }]).allowed).toBe(true);
+    expect(authorize(snapshot, ['UpdateRecord', 'Tasks', 100, { progression: 50 }]).allowed).toBe(true);
+    expect(authorize(snapshot, ['UpdateRecord', 'Tasks', 100, { dateDebut: 123 }]).code).toBe('TASK_SCOPE_FIELDS_ADMIN_OR_MANAGER_REQUIRED');
+    expect(authorize(snapshot, ['UpdateRecord', 'Tasks', 100, { dateEcheance: 456 }]).allowed).toBe(false);
     expect(authorize(snapshot, ['RemoveRecord', 'Tasks', 100]).allowed).toBe(false);
     expect(authorize(snapshot, ['UpdateRecord', 'Tasks', 101, { titre: 'X' }]).allowed).toBe(false);
   });
@@ -196,8 +198,8 @@ describe('TaskFlow permissions - filtres personnels', () => {
 describe('TaskFlow permissions - lots atomiques', () => {
   test('refuse tout le lot dès qu’une tâche est hors périmètre', () => {
     const result = permissions.authorizeMutationBatch(fixture(4), [
-      ['UpdateRecord', 'Tasks', 100, { dateDebut: 1 }],
-      ['UpdateRecord', 'Tasks', 200, { dateDebut: 1 }]
+      ['UpdateRecord', 'Tasks', 100, { progression: 25 }],
+      ['UpdateRecord', 'Tasks', 200, { progression: 25 }]
     ]);
     expect(result.allowed).toBe(false);
     expect(result.code).toBe('TASK_OUTSIDE_SCOPE');

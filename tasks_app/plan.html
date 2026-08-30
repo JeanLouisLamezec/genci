@@ -1273,11 +1273,11 @@ window.addEventListener('unhandledrejection', function(e) {
         var project = projectForTask(snapshot, current);
         if (project && canManageProject(snapshot, project)) return allow('PROJECT_SCOPE');
         if (isTaskAssignee(snapshot, current)) {
-            var protectedFields = ['projet', 'assignees', 'dependDe', 'parentTask'];
+            var protectedFields = ['projet', 'assignees', 'dependDe', 'parentTask', 'dateDebut', 'dateEcheance'];
             var changesScope = Object.keys(proposed || {}).some(function (field) {
                 return protectedFields.indexOf(field) !== -1;
             });
-            if (changesScope) return deny('TASK_SCOPE_FIELDS_ADMIN_OR_MANAGER_REQUIRED', 'Un executant ne peut pas modifier le projet, les affectations ou les dependances de la tache.');
+            if (changesScope) return deny('TASK_SCOPE_FIELDS_ADMIN_OR_MANAGER_REQUIRED', 'Un executant ne peut pas modifier les dates de planification, le projet, les affectations ou les dependances de la tache.');
             return allow('TASK_ASSIGNEE');
         }
         return deny('TASK_OUTSIDE_SCOPE', 'La tache « ' + recordLabel('Tasks', current) + ' » est hors de votre perimetre.', {
@@ -1430,8 +1430,55 @@ window.addEventListener('unhandledrejection', function(e) {
         'capaciteTheorique', 'capaciteDisponible', 'revisionPlan', 'affectation', 'feuille', 'capaciteJour'
     ];
 
+    var PLANNING_TIME_ENTRY_CREATE_FIELDS = [
+        'affectation', 'tache', 'membre', 'date', 'heuresPrevues', 'heures',
+        'capaciteTheorique', 'capaciteDisponible', 'capaciteJour', 'revisionPlan',
+        'description', 'imputation'
+    ];
+    var PLANNING_TIME_ENTRY_UPDATE_FIELDS = [
+        'heuresPrevues', 'capaciteTheorique', 'capaciteDisponible', 'capaciteJour', 'revisionPlan'
+    ];
+
+    function planningAssignmentForEntry(snapshot, entry) {
+        return entry
+            ? ensureIndexes(snapshot).TaskAssignments.get(normalizeId(entry.affectation)) || null
+            : null;
+    }
+
+    function canManagePlanningEntry(snapshot, entry) {
+        var assignment = planningAssignmentForEntry(snapshot, entry);
+        if (!assignment || assignment.actif === false || assignment.actif === 0) return false;
+        if (normalizeId(assignment.membre) !== normalizeId(entry && entry.membre) ||
+            normalizeId(assignment.tache) !== normalizeId(entry && entry.tache)) return false;
+        var task = ensureIndexes(snapshot).Tasks.get(normalizeId(assignment.tache)) || null;
+        var project = projectForTask(snapshot, task);
+        return Boolean(task && project && canManageProject(snapshot, project));
+    }
+
+    function isPlanningOnlyCreation(proposed) {
+        return hasExactFields(proposed, PLANNING_TIME_ENTRY_CREATE_FIELDS) &&
+            proposed.heures == null && proposed.description == null && proposed.imputation == null;
+    }
+
+    function isPlanningOnlyUpdate(current, proposed, snapshot) {
+        var fields = Object.keys(proposed || {});
+        if (!current || fields.length === 0 || !hasOnlyFields(proposed, PLANNING_TIME_ENTRY_UPDATE_FIELDS)) return false;
+        var sheet = sheetForEntry(snapshot, current);
+        return !sheet || ['soumis', 'valide', 'correction_manager'].indexOf(normalizeStatus(sheet.statut)) === -1;
+    }
+
+    function isPlanningOnlyDeletion(current) {
+        if (!current) return false;
+        var actual = current.heures;
+        var hasActual = actual !== null && actual !== undefined && actual !== '' && Number(actual) !== 0;
+        return !hasActual && !current.feuille && !String(current.description || '').trim() && !String(current.imputation || '').trim();
+    }
+
     function canCreateTimeEntry(snapshot, proposed) {
         if (actorIsAdmin(snapshot)) return allow('ADMIN');
+        if (isPlanningOnlyCreation(proposed) && canManagePlanningEntry(snapshot, proposed)) {
+            return allow('PROJECT_SCOPE_PLANNING_CREATE');
+        }
         var sheet = ensureIndexes(snapshot).Feuilles.get(normalizeId(proposed && proposed.feuille)) || null;
         if (normalizeId(proposed && proposed.membre) !== actorId(snapshot) || !sheet || !isSheetOwner(snapshot, sheet)) {
             return deny('CRA_TIME_ENTRY_CREATE_FORBIDDEN', 'Vous ne pouvez creer que vos propres saisies dans votre feuille.');
@@ -1448,6 +1495,9 @@ window.addEventListener('unhandledrejection', function(e) {
 
     function canUpdateTimeEntry(snapshot, current, proposed) {
         if (actorIsAdmin(snapshot)) return allow('ADMIN');
+        if (isPlanningOnlyUpdate(current, proposed, snapshot) && canManagePlanningEntry(snapshot, current)) {
+            return allow('PROJECT_SCOPE_PLANNING_UPDATE');
+        }
         var sheet = sheetForEntry(snapshot, current);
         var ownsEntry = normalizeId(current && current.membre) === actorId(snapshot);
         var fields = Object.keys(proposed || {});
@@ -1475,6 +1525,9 @@ window.addEventListener('unhandledrejection', function(e) {
 
     function canDeleteTimeEntry(snapshot, current) {
         if (actorIsAdmin(snapshot)) return allow('ADMIN');
+        if (isPlanningOnlyDeletion(current) && canManagePlanningEntry(snapshot, current)) {
+            return allow('PROJECT_SCOPE_PLANNING_DELETE');
+        }
         var sheet = sheetForEntry(snapshot, current);
         if (normalizeId(current && current.membre) === actorId(snapshot) &&
             (!sheet || (isSheetOwner(snapshot, sheet) && ['brouillon', 'rejete'].indexOf(normalizeStatus(sheet.statut)) !== -1))) {
