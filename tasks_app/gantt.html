@@ -134,6 +134,13 @@
         .project-row .project-name { min-width: 0; flex: 1; font-size: 0.8rem; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .project-row .project-count { flex-shrink: 0; font-size: 0.65rem; color: var(--text-muted); }
         .grid-row.project-grid-row { background: color-mix(in srgb, var(--bg) 72%, var(--card-bg)); }
+        .gantt-project-span { --project-color: #64748b; position: absolute; height: 16px; border: 1px solid color-mix(in srgb, var(--project-color) 72%, #000); border-radius: 4px; background: var(--project-color); color: #fff; box-shadow: inset 0 -3px rgba(0,0,0,.16); z-index: 7; cursor: pointer; overflow: hidden; transition: filter .15s, box-shadow .15s; }
+        .gantt-project-span::before, .gantt-project-span::after { content: ''; position: absolute; top: -1px; bottom: -1px; width: 3px; background: rgba(0,0,0,.28); }
+        .gantt-project-span::before { left: 0; }
+        .gantt-project-span::after { right: 0; }
+        .gantt-project-span.clipped-left::before, .gantt-project-span.clipped-right::after { display: none; }
+        .gantt-project-span:hover { filter: brightness(1.08); box-shadow: inset 0 -3px rgba(0,0,0,.1), 0 2px 7px rgba(0,0,0,.18); z-index: 15; }
+        .gantt-project-span-label { display: block; padding: 0 7px; font-size: 0.65rem; font-weight: 700; line-height: 14px; text-shadow: 0 1px 2px rgba(0,0,0,.45); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .gantt-bar.dimmed, .gantt-milestone.dimmed { opacity: 0.4; }
         /* Barre parent = bande-résumé plus fine + chevrons */
         .gantt-bar.parent { height: 8px !important; margin-top: 8px; }
@@ -522,8 +529,9 @@
         .delete-confirm { background: var(--danger-light); }
 
         /* ═════ Barre d'outils — clusters propres + contrôles segmentés ═════ */
-        .header { flex-wrap: wrap; gap: 8px 10px; align-items: center; }
-        .header-left, .header-center, .header-right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+        .header { flex-wrap: wrap; gap: 10px 20px; align-items: center; }
+        .header-left, .header-center, .header-right { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+        .header-center { gap: 14px; }
         .header-right { margin-left: auto; }
         .btn, .filter-btn { white-space: nowrap; }
         .btn-nav { width: 34px; padding: 0; }
@@ -7333,8 +7341,11 @@ if (typeof globalThis !== 'undefined') {
         let CRA_ACTIVE = false; // Feuille de temps active -> tempsPasse = rollup CRA, saisie manuelle figee (anti-doublon)
         function pruneTaskRecord(rec) { if (TASK_COLS.size) { for (const k in rec) if (!TASK_COLS.has(k)) delete rec[k]; } return rec; }
         let statusCfg = TF.buildStatusConfig(TF.DEFAULT_STATUSES, 'default'); // #1 : statuts dynamiques, alimente par TF.loadStatusConfig
-        let currentView = localStorage.getItem('taskflow_gantt_view') || 'month';
+        // Chaque ouverture du widget démarre sur la vue opérationnelle de référence.
+        // Les changements de granularité restent conservés pendant la session courante.
+        let currentView = 'month';
         let viewStartDate = new Date();
+        let initialTodayFocusPending = true;
         let selectedTaskId = null;
         let sortMode = localStorage.getItem('taskflow_gantt_sort') || 'priority';
         let colorMode = localStorage.getItem('taskflow_gantt_colormode') || 'priority';
@@ -7754,10 +7765,13 @@ if (typeof globalThis !== 'undefined') {
         }
         function setView(view) {
             if (!VIEW_CONFIG[view]) return;
+            const today = new Date();
+            const focusDate = isTimelineDateVisible(today) ? today : (getTimelineCenterDate() || new Date(viewStartDate));
             currentView = view;
-            localStorage.setItem('taskflow_gantt_view', view);
+            viewStartDate = focusDate;
             document.documentElement.style.setProperty('--cell-width', VIEW_CONFIG[view].cellWidth + 'px');
             render();
+            requestAnimationFrame(() => centerTimelineOnDate(focusDate));
         }
         function navigate(dir) {
             const cfg = VIEW_CONFIG[currentView];
@@ -7768,7 +7782,40 @@ if (typeof globalThis !== 'undefined') {
             else if (cfg.navStep === 'year') viewStartDate = new Date(viewStartDate.getFullYear() + dir, 0, 1);
             render();
         }
-        function goToToday() { viewStartDate = new Date(); render(); }
+        function getTimelineCenterDate() {
+            const timeline = document.getElementById('timelineScroll');
+            if (!timeline || !Number.isFinite(effectivePxPerDay) || effectivePxPerDay <= 0) return null;
+            const centerOffsetDays = (timeline.scrollLeft + timeline.clientWidth / 2) / effectivePxPerDay;
+            return new Date(effectiveStart.getTime() + centerOffsetDays * 86400000);
+        }
+
+        function isTimelineDateVisible(date) {
+            const timeline = document.getElementById('timelineScroll');
+            if (!timeline || !date || !Number.isFinite(effectivePxPerDay) || effectivePxPerDay <= 0) return false;
+            const offset = getDaysDiff(effectiveStart, date) * effectivePxPerDay;
+            return offset >= timeline.scrollLeft && offset <= timeline.scrollLeft + timeline.clientWidth;
+        }
+
+        function centerTimelineOnDate(date) {
+            const timeline = document.getElementById('timelineScroll');
+            if (!timeline || !date || !Number.isFinite(effectivePxPerDay) || effectivePxPerDay <= 0) return;
+
+            const dateOffset = getDaysDiff(effectiveStart, date) * effectivePxPerDay;
+            const maxScroll = Math.max(0, timeline.scrollWidth - timeline.clientWidth);
+            const target = Math.max(0, Math.min(maxScroll, dateOffset - timeline.clientWidth / 2));
+            timeline.scrollLeft = target;
+
+            const monthsHeader = document.getElementById('monthsHeader');
+            const daysHeader = document.getElementById('daysHeader');
+            if (monthsHeader) monthsHeader.style.transform = 'translateX(-' + target + 'px)';
+            if (daysHeader) daysHeader.style.transform = 'translateX(-' + target + 'px)';
+        }
+
+        function goToToday() {
+            viewStartDate = new Date();
+            render();
+            requestAnimationFrame(() => centerTimelineOnDate(new Date()));
+        }
 
         function fitToTasks() {
             const ft = getFilteredTasks();
@@ -7806,7 +7853,6 @@ if (typeof globalThis !== 'undefined') {
             }
 
             viewStartDate = minDate;
-            localStorage.setItem('taskflow_gantt_view', currentView);
             document.documentElement.style.setProperty('--cell-width', VIEW_CONFIG[currentView].cellWidth + 'px');
             render();
         }
@@ -7912,6 +7958,10 @@ if (typeof globalThis !== 'undefined') {
             renderLegend();
             syncScroll();
             updateGanttOverlay();
+            if (initialTodayFocusPending) {
+                initialTodayFocusPending = false;
+                requestAnimationFrame(() => centerTimelineOnDate(new Date()));
+            }
         }
 
         function renderGanttSkeleton() {
@@ -8291,6 +8341,33 @@ if (typeof globalThis !== 'undefined') {
 
             // Barres et jalons — ordre Y = currentVisible (DFS avec expand/collapse)
             currentVisible.forEach((row, idx) => {
+                if (row.kind === 'project') {
+                    const project = row.project;
+                    let projectStart = gristToDate(project?.dateDebut);
+                    let projectEnd = gristToDate(project?.dateFin);
+                    if (!projectStart || !projectEnd) return;
+                    if (projectStart > projectEnd) [projectStart, projectEnd] = [projectEnd, projectStart];
+
+                    const rawLeft = Math.round(getDaysDiff(start, projectStart) * pxPerDay);
+                    const rawWidth = Math.max(Math.round((getDaysDiff(projectStart, projectEnd) + 1) * pxPerDay), 1);
+                    const rawRight = rawLeft + rawWidth;
+                    if (rawRight <= 0 || rawLeft >= totalWidth) return;
+
+                    const visibleLeft = Math.max(0, rawLeft);
+                    const visibleRight = Math.min(totalWidth, rawRight);
+                    const span = document.createElement('div');
+                    span.className = 'gantt-project-span' + (rawLeft < 0 ? ' clipped-left' : '') + (rawRight > totalWidth ? ' clipped-right' : '');
+                    span.style.setProperty('--project-color', row.color || '#64748b');
+                    span.style.left = visibleLeft + 'px';
+                    span.style.top = (idx * 44 + 14) + 'px';
+                    span.style.width = Math.max(visibleRight - visibleLeft, 3) + 'px';
+                    span.title = row.label + ' · ' + formatDateShort(projectStart) + ' → ' + formatDateShort(projectEnd);
+                    span.setAttribute('aria-label', span.title);
+                    span.innerHTML = '<span class="gantt-project-span-label">' + escapeHtml(row.label) + '</span>';
+                    span.onclick = () => toggleProject(row.key);
+                    grid.appendChild(span);
+                    return;
+                }
                 if (row.kind !== 'task') return;
                 const t = row.task;
                 const isParent = hasChildren(t);
