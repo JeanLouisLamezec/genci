@@ -56,13 +56,32 @@ describe('GanttVisibleTree - Projet > Tâche > Sous-tâche', () => {
     expect(result.rows[2]).toMatchObject({ depth: 2, dimmed: false });
   });
 
-  test('n’ajoute pas un descendant hors période', () => {
+  test('affiche un descendant hors période lorsque son parent est explicitement déplié', () => {
     const tasks = [
       { id: 20, titre: 'Parent courant', projet: 1, dateDebut: day('2026-08-01'), dateEcheance: day('2026-08-15') },
       { id: 21, titre: 'Enfant ancien', projet: 1, parentTask: 20, dateDebut: day('2024-01-01'), dateEcheance: day('2024-01-02') }
     ];
     const result = build({ tasks, expandedTaskIds: [20] });
-    expect(result.rows.filter(row => row.kind === 'task').map(row => row.task.id)).toEqual([20]);
+    expect(result.rows.filter(row => row.kind === 'task').map(row => row.task.id)).toEqual([20, 21]);
+    expect(result.rows.find(row => row.kind === 'task' && row.task.id === 21).dimmed).toBe(true);
+  });
+
+  test('conserve un descendant hors période masqué lorsque son parent est replié', () => {
+    const tasks = [
+      { id: 22, titre: 'Parent courant', projet: 1, dateDebut: day('2026-08-01'), dateEcheance: day('2026-08-15') },
+      { id: 23, titre: 'Enfant ancien', projet: 1, parentTask: 22, dateDebut: day('2024-01-01'), dateEcheance: day('2024-01-02') }
+    ];
+    const result = build({ tasks });
+    expect(result.rows.filter(row => row.kind === 'task').map(row => row.task.id)).toEqual([22]);
+  });
+
+  test('ne réintroduit pas un enfant exclu par les filtres métier', () => {
+    const tasks = [
+      { id: 24, titre: 'Parent courant', projet: 1, dateDebut: day('2026-08-01'), dateEcheance: day('2026-08-15') },
+      { id: 25, titre: 'Enfant filtré', projet: 1, parentTask: 24, dateDebut: day('2024-01-01'), dateEcheance: day('2024-01-02') }
+    ];
+    const result = build({ tasks, filteredTasks: [tasks[0]], expandedTaskIds: [24] });
+    expect(result.rows.filter(row => row.kind === 'task').map(row => row.task.id)).toEqual([24]);
   });
 
   test('masque un projet sans tâche dans la période', () => {

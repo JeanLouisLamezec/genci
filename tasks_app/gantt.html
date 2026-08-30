@@ -9059,13 +9059,6 @@ assignmentModes: {},
                                 return '<div class="charge-row" style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><span class="an" style="flex:0 0 120px">'+escapeHtml(getTeamMemberName(id))+'</span><input type="number" min="0" step="0.5" value="'+chargeOf(id)+'" onchange="updateCharge('+id+', this.value)" style="width:70px"><span style="font-size:0.75rem;color:var(--text-muted);margin-right:8px">h</span><select onchange="updateAssignmentMode('+id+', this.value)" style="flex:0 0 140px;font-size:0.78rem"><option value="uniforme" '+(mode==='uniforme'?'selected':'')+'>Régulier</option><option value="ponctuel" '+(mode==='ponctuel'?'selected':'')+'>Ponctuel</option></select></div>'; 
                             }).join('') + '<div style="margin-top:6px;font-size:0.78rem;color:var(--text-muted)">Total : <strong>' + chargeTotalH + '</strong> h</div></div>' : '') + chargeConsolHtml +
                         '</div></div>' : '') +
-                    (data.type === 'tache' && data.assignees.length > 0 && assignmentIntegration ?
-                        '<div class="panel-section"><div class="panel-section-header"><span class="panel-section-title">Type de planification</span></div>' +
-                        '<div style="font-size:0.78rem;color:var(--text-muted);padding:8px 0">Le type de planification est défini par personne dans la section "Charge par personne".</div>' +
-                        '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
-                            '<button class="btn" style="padding:6px 12px;font-size:0.78rem" onclick="setAllModes(\'uniforme\')">Appliquer Régulier à tous</button>' +
-                            '<button class="btn" style="padding:6px 12px;font-size:0.78rem" onclick="setAllModes(\'ponctuel\')">Appliquer Ponctuel à tous</button>' +
-                        '</div></div>' : '') +
                     (data.type === 'tache' ?
                         '<div class="prop-row pr-prog"><span class="prop-label">Progression</span><div class="prop-value">' +
                             '<div class="progress-inline-wrap"><div class="progress-bar-mini"><div class="progress-bar-mini-fill" id="progressBarFill" style="width:' + data.progression + '%"></div></div><span class="progress-pct-label" id="progressValue">' + data.progression + '%</span></div>' +
@@ -9152,21 +9145,6 @@ assignmentModes: {},
             }
             if (!panelState.assignmentModes) panelState.assignmentModes = {};
             panelState.assignmentModes[memberId] = value;
-            syncLocalTask();
-            if (!panelState.isNew && gristReady) saveTaskToGrist();
-            renderPanel();
-        }
-        function setAllModes(value) {
-            const data = panelState.editData; if (!data) return;
-            if (value !== 'uniforme' && value !== 'ponctuel') {
-                console.warn('[Gantt] Mode invalide:', value);
-                showToast('Mode invalide (utilisez "Régulier" ou "Ponctuel")', 'error');
-                return;
-            }
-            if (!panelState.assignmentModes) panelState.assignmentModes = {};
-            (data.assignees || []).forEach(function(id) {
-                panelState.assignmentModes[id] = value;
-            });
             syncLocalTask();
             if (!panelState.isNew && gristReady) saveTaskToGrist();
             renderPanel();
@@ -9937,13 +9915,11 @@ assignmentModes: {},
             const dx = e.clientX - dragState.startX;
             if (Math.abs(dx) < 4) {
                 dragState.active = false;
-                render();
                 return;
             }
             const daysDelta = Math.round(dx / pxPerDay);
             if (daysDelta === 0) {
                 dragState.active = false;
-                render();
                 return;
             }
 
@@ -10012,10 +9988,12 @@ assignmentModes: {},
                     await grist.docApi.applyUserActions(actions);
 
                     // Synchroniser les affectations pour TOUTES les tâches modifiées
+                    const extras = childUpdates.length + cascadeUpdates.length;
                     var allSuccess = true;
                     var syncErrors = [];
                     var tasksSynced = [];
                     var planningResults = [];
+                    var planningCommitted = false;
                     
                     if (assignmentIntegration) {
                         try {
@@ -10066,19 +10044,13 @@ assignmentModes: {},
                             });
                             
                             if (problematicResult) {
+                                allSuccess = false;
+                                syncErrors.push(problematicResult.code || 'Échec de la planification automatique');
                                 showPlanningResult(problematicResult);
                             } else if (planningResults.length > 0) {
-                                var hasCommitted = planningResults.some(function(r) {
+                                planningCommitted = planningResults.some(function(r) {
                                     return r.summary && r.summary.committed > 0;
                                 });
-                                if (hasCommitted) {
-                                    showToast(
-                                        extras > 0
-                                            ? 'Dates, affectations et planning mis à jour (+${extras} tâches liées)'
-                                            : 'Dates, affectations et planning mis à jour',
-                                        'success'
-                                    );
-                                }
                             }
                         } catch (syncErr) {
                             allSuccess = false;
@@ -10087,9 +10059,11 @@ assignmentModes: {},
                     }
                     
                     // Afficher le bon message selon le résultat
-                    const extras = childUpdates.length + cascadeUpdates.length;
                     if (allSuccess) {
-                        showToast(extras > 0 ? `Dates et affectations mises à jour (+${extras} tâches liées)` : 'Dates et affectations mises à jour', 'success');
+                        const successLabel = planningCommitted
+                            ? 'Dates, affectations et planning mis à jour'
+                            : 'Dates et affectations mises à jour';
+                        showToast(extras > 0 ? `${successLabel} (+${extras} tâches liées)` : successLabel, 'success');
                     } else {
                         console.warn('[Gantt] Échec partiel synchronisation:', syncErrors);
                         showToast('Dates mises à jour, mais échec synchronisation affectations', 'warning');

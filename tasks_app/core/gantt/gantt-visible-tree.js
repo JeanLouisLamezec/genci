@@ -111,6 +111,23 @@
                 }
             });
 
+            // Une expansion explicite doit toujours produire un résultat visible.
+            // Ajouter les enfants qui passent les filtres métier même lorsque leurs
+            // dates sont hors de la fenêtre courante ; ils seront rendus « dimmed »
+            // et leur barre restera naturellement hors champ sur la timeline.
+            var addedExpandedChild = true;
+            while (addedExpandedChild) {
+                addedExpandedChild = false;
+                tasks.forEach(function (task) {
+                    var parentId = task && task.parentTask;
+                    if (!parentId || branchIds.has(task.id) || !filteredIds.has(task.id)) return;
+                    if (!branchIds.has(parentId) || !expandedTaskIds.has(parentId)) return;
+                    if (!sameProject(task, projectKey, projectById)) return;
+                    branchIds.add(task.id);
+                    addedExpandedChild = true;
+                });
+            }
+
             var intervalStart = null;
             var intervalEnd = null;
             directTasks.forEach(function (task) {
