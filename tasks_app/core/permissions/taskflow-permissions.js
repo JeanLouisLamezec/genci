@@ -27,7 +27,8 @@
         'Actions',
         'KanbanSteps',
         'Feuilles',
-        'TimeEntries'
+        'TimeEntries',
+        'UserFilters'
     ];
 
     var PERMISSION_DATA_TABLES = CONTROLLED_TABLES.concat(['TaskAssignments']);
@@ -103,7 +104,8 @@
                 KanbanSteps: (data.KanbanSteps || data.kanbanSteps || []).slice(),
                 Feuilles: (data.Feuilles || data.feuilles || []).slice(),
                 TimeEntries: (data.TimeEntries || data.timeEntries || []).slice(),
-                TaskAssignments: (data.TaskAssignments || data.taskAssignments || []).slice()
+                TaskAssignments: (data.TaskAssignments || data.taskAssignments || []).slice(),
+                UserFilters: (data.UserFilters || data.userFilters || []).slice()
             },
             indexes: null
         };
@@ -121,7 +123,8 @@
                 KanbanSteps: indexById(snapshot.tables.KanbanSteps),
                 Feuilles: indexById(snapshot.tables.Feuilles),
                 TimeEntries: indexById(snapshot.tables.TimeEntries),
-                TaskAssignments: indexById(snapshot.tables.TaskAssignments)
+                TaskAssignments: indexById(snapshot.tables.TaskAssignments),
+                UserFilters: indexById(snapshot.tables.UserFilters)
             };
         }
         return snapshot.indexes;
@@ -453,6 +456,33 @@
         return deny('CRA_TIME_ENTRY_DELETE_FORBIDDEN', 'Cette saisie ne peut pas etre supprimee dans son etat actuel.');
     }
 
+    function canMutateUserFilters(snapshot, kind, current, proposed) {
+        if (actorIsAdmin(snapshot)) return allow('ADMIN');
+        var currentUserId = normalizeId(snapshot && snapshot.actor && snapshot.actor.gristUserId);
+        var ownerUserId = normalizeId(current && current.gristUserId);
+        var proposedUserId = normalizeId(proposed && proposed.gristUserId);
+
+        if (kind === 'create') {
+            if (proposedUserId !== currentUserId) {
+                return deny('USER_FILTER_OWNER_REQUIRED', 'Vous ne pouvez enregistrer que vos propres filtres.');
+            }
+            var duplicate = (snapshot.tables.UserFilters || []).some(function (row) {
+                return normalizeId(row.gristUserId) === currentUserId;
+            });
+            return duplicate
+                ? deny('USER_FILTER_ALREADY_EXISTS', 'Une ligne de filtres existe déjà pour ce compte Grist.')
+                : allow('USER_FILTER_OWNER');
+        }
+
+        if (ownerUserId !== currentUserId) {
+            return deny('USER_FILTER_OWNER_REQUIRED', 'Cette ligne de filtres appartient à un autre utilisateur.');
+        }
+        if (kind === 'update' && Object.prototype.hasOwnProperty.call(proposed || {}, 'gristUserId') && proposedUserId !== currentUserId) {
+            return deny('USER_FILTER_OWNER_CHANGE_FORBIDDEN', 'Le propriétaire des filtres ne peut pas être modifié.');
+        }
+        return allow('USER_FILTER_OWNER');
+    }
+
     function authorizeRecordMutation(snapshot, mutation) {
         var actorError = requireActor(snapshot);
         if (actorError) return actorError;
@@ -498,6 +528,10 @@
             if (kind === 'create') return canCreateTimeEntry(snapshot, proposed);
             if (kind === 'update') return canUpdateTimeEntry(snapshot, current, proposed);
             return canDeleteTimeEntry(snapshot, current);
+        }
+
+        if (table === 'UserFilters') {
+            return canMutateUserFilters(snapshot, kind, current, proposed);
         }
 
         return allow('UNCONTROLLED_TABLE');
@@ -761,6 +795,7 @@
         canCreateTimeEntry: canCreateTimeEntry,
         canUpdateTimeEntry: canUpdateTimeEntry,
         canDeleteTimeEntry: canDeleteTimeEntry,
+        canMutateUserFilters: canMutateUserFilters,
         authorizeRecordMutation: authorizeRecordMutation,
         authorizeMutationBatch: authorizeMutationBatch,
         decodeJwtPayload: decodeJwtPayload,

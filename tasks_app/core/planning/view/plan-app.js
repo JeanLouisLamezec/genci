@@ -100,6 +100,25 @@ async function startPlan() {
     console.info('[Plan boot] calling loadGrist');
     if (loadGristFn) await loadGristFn();
 
+    var currentGristUser = window.TaskFlowIdentityRuntime && window.TaskFlowIdentityRuntime.getCurrentGristUser
+      ? await window.TaskFlowIdentityRuntime.getCurrentGristUser(gristApi)
+      : null;
+    console.info('[Plan filters] identity', {
+      userId: currentGristUser && currentGristUser.userId
+    });
+    if (window.TaskFlowUserFilters && SObj && SObj.filterManager) {
+      SObj.userFilterStore = window.TaskFlowUserFilters.createStore(gristApi, {
+        gristUserId: currentGristUser && currentGristUser.userId,
+        sourceWidget: 'plan',
+        onError: function(error) { console.error('[Plan filtres personnels]', error); }
+      });
+      var savedFilters = await SObj.userFilterStore.load();
+      SObj.filterManager.setState(savedFilters, { origin: 'persistent', broadcast: false });
+      console.info('[Plan filters] loaded', savedFilters);
+    } else {
+      console.warn('[Plan filters] store unavailable');
+    }
+
     console.info('[Plan boot] READY');
 
     // Réagir aux changements de données
@@ -112,25 +131,6 @@ async function startPlan() {
           console.error('[Plan] Rechargement Grist impossible', error);
         });
       });
-    }
-
-    // Gérer les options (filtres externes)
-    try {
-      if (gristApi && gristApi.onOptions) {
-        gristApi.onOptions(function(options) {
-          if (SObj) {
-            SObj.extFilters = options && options.filters ? options.filters : null;
-          }
-          if (SObj && SObj.filterManager) {
-            SObj.filterManager.applyExternalFilters(options);
-          }
-          if (renderFn) {
-            renderFn();
-          }
-        });
-      }
-    } catch (error) {
-      console.warn('[Plan] onOptions indisponible', error);
     }
 
   } catch (error) {

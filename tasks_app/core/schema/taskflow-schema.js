@@ -37,7 +37,7 @@
     }
 
     // Version courante du schéma
-    var SCHEMA_VERSION = 6;
+    var SCHEMA_VERSION = 7;
 
     // Ordre de création des tables (important pour les dépendances)
     var TABLE_ORDER = [
@@ -54,6 +54,7 @@
         'MemberDailyCapacities',
         'Feuilles',
         'TimeEntries',
+        'UserFilters',
         'TaskFlow_Meta'
     ];
 
@@ -311,6 +312,19 @@
                 { id: 'statutFeuille',          opts: { type: 'Text', isFormula: true, formula: '$feuille.statut if $feuille else ""' } },
                 { id: 'responsableValidation',  opts: { type: 'Ref:Team', isFormula: true, formula: '$feuille.responsableValidation if $feuille else None' } },
                 { id: 'semaineFeuille',         opts: { type: 'Date', isFormula: true, formula: '$feuille.semaine if $feuille else None' } }
+            ]
+        },
+
+        // =========================================================================
+        // UserFilters — Filtres personnels partagés entre les widgets
+        // =========================================================================
+        UserFilters: {
+            label: 'Filtres utilisateurs',
+            columns: [
+                { id: 'gristUserId',      opts: dataColumn('Int') },
+                { id: 'filters',          opts: dataColumn('Text') },
+                { id: 'updatedAt',        opts: dataColumn('DateTime') },
+                { id: 'sourceWidget',     opts: dataColumn('Text') }
             ]
         },
 

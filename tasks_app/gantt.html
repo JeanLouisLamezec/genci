@@ -61,10 +61,6 @@
         .filter-option:hover { background: var(--bg); }
         .filter-option.active { background: var(--primary-light); color: var(--primary); }
         .filter-option .dot { width: 8px; height: 8px; border-radius: 50%; }
-        .active-filters { display: flex; gap: 6px; flex-wrap: wrap; }
-        .filter-chip { display: inline-flex; align-items: center; gap: 4px; padding: 4px 8px; background: var(--primary-light); color: var(--primary); border-radius: 12px; font-size: 0.7rem; font-weight: 500; }
-        .filter-chip button { background: none; border: none; color: var(--primary); cursor: pointer; font-size: 0.8rem; padding: 0; margin-left: 2px; }
-
         /* Gantt Container */
         .main-content { display: flex; flex: 1; min-height: 0; overflow: hidden; position: relative; }
         .gantt-wrapper { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden; transition: margin-right 0.25s ease; }
@@ -544,15 +540,6 @@
         .fm-foot { border-top: 1px solid var(--border); margin-top: 4px; padding: 4px; }
         .fm-clear { display: block; text-align: center; font-size: 0.74rem; color: var(--primary); cursor: pointer; padding: 6px; border-radius: 6px; font-weight: 550; }
         .fm-clear:hover { background: var(--p-50); }
-        .filter-chips { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; padding: 9px 18px; background: var(--card-bg); border-bottom: 1px solid var(--border); flex-shrink: 0; }
-        .fc-label { font-size: 0.72rem; color: var(--text-light); font-weight: 600; }
-        .fc-chip { display: inline-flex; align-items: center; gap: 7px; height: 27px; padding: 0 5px 0 11px; border-radius: 999px; background: var(--p-50, var(--primary-light)); color: var(--primary); border: 1px solid var(--primary); font-size: 0.73rem; font-weight: 550; white-space: nowrap; }
-        .fc-chip .fc-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: none; }
-        .fc-chip .fc-x { width: 17px; height: 17px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; opacity: .65; color: inherit; }
-        .fc-chip .fc-x:hover { opacity: 1; background: rgba(62,93,231,.18); }
-        .fc-clear-all { margin-left: auto; font-size: 0.72rem; color: var(--text-muted); cursor: pointer; padding: 5px 9px; border-radius: 7px; font-weight: 550; }
-        .fc-clear-all:hover { background: var(--bg); color: var(--text); }
-
         /* ═════ Responsive mobile (widget embarqué étroit) ═════ */
         @media (max-width: 560px) {
             .header { padding: 8px 12px; }
@@ -626,7 +613,6 @@
         </div>
     </div>
 
-    <div class="filter-chips" id="filterChips" style="display:none"></div>
     <div class="main-content">
         <div class="gantt-wrapper" id="ganttWrapper">
             <div class="gantt-header">
@@ -1409,7 +1395,8 @@
         'Actions',
         'KanbanSteps',
         'Feuilles',
-        'TimeEntries'
+        'TimeEntries',
+        'UserFilters'
     ];
 
     var PERMISSION_DATA_TABLES = CONTROLLED_TABLES.concat(['TaskAssignments']);
@@ -1485,7 +1472,8 @@
                 KanbanSteps: (data.KanbanSteps || data.kanbanSteps || []).slice(),
                 Feuilles: (data.Feuilles || data.feuilles || []).slice(),
                 TimeEntries: (data.TimeEntries || data.timeEntries || []).slice(),
-                TaskAssignments: (data.TaskAssignments || data.taskAssignments || []).slice()
+                TaskAssignments: (data.TaskAssignments || data.taskAssignments || []).slice(),
+                UserFilters: (data.UserFilters || data.userFilters || []).slice()
             },
             indexes: null
         };
@@ -1503,7 +1491,8 @@
                 KanbanSteps: indexById(snapshot.tables.KanbanSteps),
                 Feuilles: indexById(snapshot.tables.Feuilles),
                 TimeEntries: indexById(snapshot.tables.TimeEntries),
-                TaskAssignments: indexById(snapshot.tables.TaskAssignments)
+                TaskAssignments: indexById(snapshot.tables.TaskAssignments),
+                UserFilters: indexById(snapshot.tables.UserFilters)
             };
         }
         return snapshot.indexes;
@@ -1835,6 +1824,33 @@
         return deny('CRA_TIME_ENTRY_DELETE_FORBIDDEN', 'Cette saisie ne peut pas etre supprimee dans son etat actuel.');
     }
 
+    function canMutateUserFilters(snapshot, kind, current, proposed) {
+        if (actorIsAdmin(snapshot)) return allow('ADMIN');
+        var currentUserId = normalizeId(snapshot && snapshot.actor && snapshot.actor.gristUserId);
+        var ownerUserId = normalizeId(current && current.gristUserId);
+        var proposedUserId = normalizeId(proposed && proposed.gristUserId);
+
+        if (kind === 'create') {
+            if (proposedUserId !== currentUserId) {
+                return deny('USER_FILTER_OWNER_REQUIRED', 'Vous ne pouvez enregistrer que vos propres filtres.');
+            }
+            var duplicate = (snapshot.tables.UserFilters || []).some(function (row) {
+                return normalizeId(row.gristUserId) === currentUserId;
+            });
+            return duplicate
+                ? deny('USER_FILTER_ALREADY_EXISTS', 'Une ligne de filtres existe déjà pour ce compte Grist.')
+                : allow('USER_FILTER_OWNER');
+        }
+
+        if (ownerUserId !== currentUserId) {
+            return deny('USER_FILTER_OWNER_REQUIRED', 'Cette ligne de filtres appartient à un autre utilisateur.');
+        }
+        if (kind === 'update' && Object.prototype.hasOwnProperty.call(proposed || {}, 'gristUserId') && proposedUserId !== currentUserId) {
+            return deny('USER_FILTER_OWNER_CHANGE_FORBIDDEN', 'Le propriétaire des filtres ne peut pas être modifié.');
+        }
+        return allow('USER_FILTER_OWNER');
+    }
+
     function authorizeRecordMutation(snapshot, mutation) {
         var actorError = requireActor(snapshot);
         if (actorError) return actorError;
@@ -1880,6 +1896,10 @@
             if (kind === 'create') return canCreateTimeEntry(snapshot, proposed);
             if (kind === 'update') return canUpdateTimeEntry(snapshot, current, proposed);
             return canDeleteTimeEntry(snapshot, current);
+        }
+
+        if (table === 'UserFilters') {
+            return canMutateUserFilters(snapshot, kind, current, proposed);
         }
 
         return allow('UNCONTROLLED_TABLE');
@@ -2143,6 +2163,7 @@
         canCreateTimeEntry: canCreateTimeEntry,
         canUpdateTimeEntry: canUpdateTimeEntry,
         canDeleteTimeEntry: canDeleteTimeEntry,
+        canMutateUserFilters: canMutateUserFilters,
         authorizeRecordMutation: authorizeRecordMutation,
         authorizeMutationBatch: authorizeMutationBatch,
         decodeJwtPayload: decodeJwtPayload,
@@ -2155,6 +2176,193 @@
     if (typeof module !== 'undefined' && module.exports) module.exports = api;
 
 })(typeof window !== 'undefined' ? window : (typeof global !== 'undefined' ? global : this));
+
+
+/* ==========================================================================
+ * user-filter-store.js — Persistance personnelle simple des filtres TaskFlow
+ * ========================================================================== */
+(function(root, factory) {
+  var api = factory();
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  if (root) root.TaskFlowUserFilters = api;
+})(typeof globalThis !== 'undefined' ? globalThis : this, function() {
+  'use strict';
+
+  var FILTER_KEYS = ['assignee', 'team', 'project', 'programme', 'task'];
+
+  function normalizeFilters(input) {
+    var source = input && typeof input === 'object' ? input : {};
+    var result = {};
+    FILTER_KEYS.forEach(function(key) {
+      var seen = new Set();
+      result[key] = (Array.isArray(source[key]) ? source[key] : [])
+        .filter(function(value) { return value !== null && value !== undefined && value !== ''; })
+        .map(String)
+        .filter(function(value) {
+          if (seen.has(value)) return false;
+          seen.add(value);
+          return true;
+        })
+        .sort();
+    });
+    return result;
+  }
+
+  function signature(filters) {
+    return JSON.stringify(normalizeFilters(filters));
+  }
+
+  function parseFilters(value) {
+    if (!value) return normalizeFilters({});
+    try {
+      return normalizeFilters(typeof value === 'string' ? JSON.parse(value) : value);
+    } catch (error) {
+      return normalizeFilters({});
+    }
+  }
+
+  function columnarToRows(data) {
+    if (!data) return [];
+    if (Array.isArray(data)) return data.slice();
+    var keys = Object.keys(data);
+    var count = keys.length && Array.isArray(data[keys[0]]) ? data[keys[0]].length : 0;
+    var rows = [];
+    for (var index = 0; index < count; index++) {
+      var row = {};
+      keys.forEach(function(key) { row[key] = data[key][index]; });
+      rows.push(row);
+    }
+    return rows;
+  }
+
+  function normalizeUserId(value) {
+    var number = Number(value);
+    return Number.isInteger(number) && number > 0 ? number : null;
+  }
+
+  function createStore(grist, options) {
+    options = options || {};
+    var gristUserId = normalizeUserId(options.gristUserId);
+    var sourceWidget = String(options.sourceWidget || 'unknown');
+    var debounceMs = options.debounceMs === undefined
+      ? 0
+      : (Number(options.debounceMs) >= 0 ? Number(options.debounceMs) : 0);
+    var rowId = null;
+    var lastSavedSignature = null;
+    var pendingFilters = null;
+    var timer = null;
+    var writeChain = Promise.resolve();
+    var enabled = Boolean(grist && grist.docApi && gristUserId);
+
+    async function tableExists() {
+      if (!enabled) return false;
+      var tables = await grist.docApi.listTables();
+      return tables.indexOf('UserFilters') !== -1;
+    }
+
+    async function findOwnRow() {
+      if (!await tableExists()) return null;
+      var rows = columnarToRows(await grist.docApi.fetchTable('UserFilters'))
+        .filter(function(row) { return normalizeUserId(row.gristUserId) === gristUserId; })
+        .sort(function(left, right) {
+          var updatedDiff = Number(right.updatedAt || 0) - Number(left.updatedAt || 0);
+          return updatedDiff || Number(right.id || 0) - Number(left.id || 0);
+        });
+      return rows[0] || null;
+    }
+
+    async function load() {
+      if (!enabled) return normalizeFilters({});
+      try {
+        var row = await findOwnRow();
+        if (!row) return normalizeFilters({});
+        rowId = row.id;
+        var filters = parseFilters(row.filters);
+        lastSavedSignature = signature(filters);
+        return filters;
+      } catch (error) {
+        if (typeof options.onError === 'function') options.onError(error);
+        return normalizeFilters({});
+      }
+    }
+
+    async function writePending() {
+      if (!enabled || !pendingFilters) return { skipped: true };
+      var filters = pendingFilters;
+      pendingFilters = null;
+      var nextSignature = signature(filters);
+      if (nextSignature === lastSavedSignature) return { skipped: true };
+      if (!await tableExists()) return { skipped: true, reason: 'TABLE_MISSING' };
+
+      if (!rowId) {
+        var existing = await findOwnRow();
+        if (existing) rowId = existing.id;
+      }
+
+      var fields = {
+        filters: nextSignature,
+        updatedAt: Math.floor(Date.now() / 1000),
+        sourceWidget: sourceWidget
+      };
+      var action;
+      if (rowId) {
+        action = ['UpdateRecord', 'UserFilters', rowId, fields];
+      } else {
+        fields.gristUserId = gristUserId;
+        action = ['AddRecord', 'UserFilters', null, fields];
+      }
+
+      await grist.docApi.applyUserActions([action]);
+      if (!rowId) {
+        var created = await findOwnRow();
+        rowId = created && created.id;
+      }
+      lastSavedSignature = nextSignature;
+      return { skipped: false, rowId: rowId, filters: filters };
+    }
+
+    function flush() {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      writeChain = writeChain.then(writePending).catch(function(error) {
+        if (typeof options.onError === 'function') options.onError(error);
+        return { skipped: true, error: error };
+      });
+      return writeChain;
+    }
+
+    function scheduleSave(filters) {
+      if (!enabled) return;
+      pendingFilters = normalizeFilters(filters);
+      if (signature(pendingFilters) === lastSavedSignature) return;
+      if (debounceMs === 0) {
+        flush();
+        return;
+      }
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(flush, debounceMs);
+    }
+
+    return {
+      load: load,
+      scheduleSave: scheduleSave,
+      flush: flush,
+      isEnabled: function() { return enabled; },
+      getRowId: function() { return rowId; }
+    };
+  }
+
+  return {
+    FILTER_KEYS: FILTER_KEYS,
+    normalizeFilters: normalizeFilters,
+    signature: signature,
+    parseFilters: parseFilters,
+    columnarToRows: columnarToRows,
+    createStore: createStore
+  };
+});
 
 
 /* ============================================================================
@@ -2973,7 +3181,7 @@ if (typeof globalThis !== 'undefined') {
     }
 
     // Version courante du schéma
-    var SCHEMA_VERSION = 6;
+    var SCHEMA_VERSION = 7;
 
     // Ordre de création des tables (important pour les dépendances)
     var TABLE_ORDER = [
@@ -2990,6 +3198,7 @@ if (typeof globalThis !== 'undefined') {
         'MemberDailyCapacities',
         'Feuilles',
         'TimeEntries',
+        'UserFilters',
         'TaskFlow_Meta'
     ];
 
@@ -3247,6 +3456,19 @@ if (typeof globalThis !== 'undefined') {
                 { id: 'statutFeuille',          opts: { type: 'Text', isFormula: true, formula: '$feuille.statut if $feuille else ""' } },
                 { id: 'responsableValidation',  opts: { type: 'Ref:Team', isFormula: true, formula: '$feuille.responsableValidation if $feuille else None' } },
                 { id: 'semaineFeuille',         opts: { type: 'Date', isFormula: true, formula: '$feuille.semaine if $feuille else None' } }
+            ]
+        },
+
+        // =========================================================================
+        // UserFilters — Filtres personnels partagés entre les widgets
+        // =========================================================================
+        UserFilters: {
+            label: 'Filtres utilisateurs',
+            columns: [
+                { id: 'gristUserId',      opts: dataColumn('Int') },
+                { id: 'filters',          opts: dataColumn('Text') },
+                { id: 'updatedAt',        opts: dataColumn('DateTime') },
+                { id: 'sourceWidget',     opts: dataColumn('Text') }
             ]
         },
 
@@ -5067,6 +5289,36 @@ if (typeof globalThis !== 'undefined') {
     }
 
     // ========================================================================
+    // MIGRATION V6 → V7 — Filtres personnels persistants
+    // ========================================================================
+
+    async function migrateToV7(grist, metadata) {
+        log('Migration v6 → v7: user-filters-v7');
+
+        var docApi = getDocApi(grist);
+        var existingTables = metadata.tablesByName || {};
+        var actions = [];
+
+        if (!existingTables.UserFilters) {
+            actions.push(['AddTable', 'UserFilters', [
+                { id: 'gristUserId', type: 'Int', isFormula: false },
+                { id: 'filters', type: 'Text', isFormula: false },
+                { id: 'updatedAt', type: 'DateTime', isFormula: false },
+                { id: 'sourceWidget', type: 'Text', isFormula: false }
+            ]]);
+        }
+
+        if (actions.length > 0) await docApi.applyUserActions(actions);
+
+        return {
+            success: true,
+            message: 'Migration v7 appliquée',
+            actionsExecuted: actions.length,
+            metadata: actions.length ? await loadMigrationMetadata(grist) : metadata
+        };
+    }
+
+    // ========================================================================
     // LISTE DES MIGRATIONS
     // ========================================================================
     
@@ -5100,6 +5352,12 @@ if (typeof globalThis !== 'undefined') {
             name: 'functional-permissions-admin-v6',
             description: 'Ajout du marqueur Team.estAdmin pour les permissions fonctionnelles',
             run: migrateToV6
+        },
+        {
+            version: 7,
+            name: 'user-filters-v7',
+            description: 'Ajout des filtres personnels persistants entre widgets',
+            run: migrateToV7
         }
     ];
 
@@ -7095,6 +7353,7 @@ if (typeof globalThis !== 'undefined') {
         let panelState = { open: false, isNew: false, taskId: null, taskIndex: -1, taskList: [], editData: null };
         let assignmentIntegration = null;  // Global pour les fonctions de sauvegarde
         let permissionRuntime = null;       // Identité courante, notamment pour l'override admin de suppression
+        let userFilterStore = null;
         var planningService = null;  // Global pour le service de planning par membre
         let overlayPointerStart = { x: 0, y: 0 };
         let effectiveStart = new Date();    // Plage effective calculée à chaque render()
@@ -7615,59 +7874,14 @@ if (typeof globalThis !== 'undefined') {
         
         function updateFilterUI() {
           updateFilterCount();
-          renderFilterChips();
           // Mettre à jour l'UI du FilterManager
           if (filterManager) {
             filterManager._updateUIFromState();
           }
         }
         
-        function renderFilterChips() {
-            const bar = document.getElementById('filterChips'); if (!bar) return;
-            const X = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
-            const chip = (type, val, label, color) => { 
-              const dot = color ? `<span class="fc-dot" style="background:${color}"></span>` : ''; 
-              return `<span class="fc-chip">${dot}${label}<span class="fc-x" title="Retirer" onclick="removeFilterChip('${type}', ${val})">${X}</span></span>`; 
-            };
-            const chips = [];
-            filters.project.forEach(id => { const p = projects.find(x=>x.id===id); chips.push(chip('project', id, p?escapeHtml(p.nom):'Projet', p&&p.couleur)); });
-            filters.task.forEach(id => { const t = tasks.find(x=>x.id===id); chips.push(chip('task', id, t?escapeHtml(t.titre):'Tâche')); });
-            filters.assignee.forEach(id => { const m = team.find(x=>x.id===id); chips.push(chip('assignee', id, m?escapeHtml(m.nom):'Membre')); });
-            filters.team.forEach(id => { const m = team.find(x=>x.id===id); chips.push(chip('team', id, m?escapeHtml(m.nom):'Équipe')); });
-            if (!chips.length) { bar.style.display = 'none'; bar.innerHTML = ''; return; }
-            bar.style.display = 'flex';
-            bar.innerHTML = '<span class="fc-label">Filtres actifs</span>' + chips.join('') + '<span class="fc-clear-all" onclick="clearAllFilters()">Tout effacer</span>';
-        }
-        
-        function removeFilterChip(type, val) { 
-          if (filterManager) {
-            const currentFilters = filterManager.getState();
-            const arr = currentFilters[type];
-            const idx = arr.indexOf(val);
-            if (idx === -1) arr.push(val); else arr.splice(idx, 1);
-            filterManager.setState(currentFilters);
-          }
-        }
-        
-        function clearAllFilters() { 
-          if (filterManager) {
-            filterManager.clearAll();
-          }
-        }
-        
         function broadcastFilters() {
-            if (gristReady && typeof grist !== 'undefined' && grist.setOptions) {
-                try { 
-                  const normalizedFilters = {
-                    assignee: filters.assignee.map(String),
-                    team: filters.team.map(String),
-                    project: filters.project.map(String),
-                    programme: filters.programme.map(String),
-                    task: filters.task.map(String)
-                  };
-                  grist.setOptions({ filters: normalizedFilters }); 
-                } catch (e) { console.log('setOptions error:', e); }
-            }
+            if (userFilterStore) userFilterStore.scheduleSave(filters);
         }
         
         function getFilteredTasks() { 
@@ -9959,7 +10173,6 @@ assignmentModes: {},
               filters.programme = newFilters.programme || [];
               filters.task = newFilters.task || [];
               updateFilterUI();
-              broadcastFilters();
               render();
             },
             onBroadcast: (newFilters) => {
@@ -10072,6 +10285,14 @@ assignmentModes: {},
                 initialLoadError = e;
                 appMode = 'error';
             }
+
+            userFilterStore = TaskFlowUserFilters.createStore(grist, {
+                gristUserId: permissionRuntime.getActor()?.gristUserId,
+                sourceWidget: 'gantt',
+                onError: (error) => console.error('[Gantt filtres personnels]', error)
+            });
+            const savedFilters = await userFilterStore.load();
+            if (filterManager) filterManager.setState(savedFilters, { origin: 'persistent', broadcast: false });
             
             const totalLoadTime = performance.now() - loadStartTime;
             performance.mark('gantt-data-ready');
@@ -10102,32 +10323,6 @@ assignmentModes: {},
                             cur = tasks.find(t => t.id === cur.parentTask);
                         }
                         render();
-                    }
-                });
-                grist.onOptions((options, interaction) => {
-                    if (options?.filters) {
-                        const f = options.filters;
-                        // Appliquer les filtres via FilterManager (toujours, même si source='self')
-                        // Le FilterManager ne re-diffuse pas les changements externes
-                        if (filterManager) {
-                          const newFilters = {
-                            assignee: Array.isArray(f.assignee) ? f.assignee.map(String) : [],
-                            team: Array.isArray(f.team) ? f.team.map(String) : [],
-                            project: Array.isArray(f.project) ? f.project.map(String) : [],
-                            programme: Array.isArray(f.programme) ? f.programme.map(String) : [],
-                            task: Array.isArray(f.task) ? f.task.map(String) : []
-                          };
-                          filterManager.applyExternalFilters(newFilters);
-                        } else {
-                          // Fallback
-                          filters.project = Array.isArray(f.project) ? f.project.map(String) : [];
-                          filters.assignee = Array.isArray(f.assignee) ? f.assignee.map(String) : [];
-                          filters.team = Array.isArray(f.team) ? f.team.map(String) : [];
-                          filters.programme = Array.isArray(f.programme) ? f.programme.map(String) : [];
-                          filters.task = Array.isArray(f.task) ? f.task.map(String) : [];
-                          updateFilterUI();
-                          render();
-                        }
                     }
                 });
             } catch (e) {

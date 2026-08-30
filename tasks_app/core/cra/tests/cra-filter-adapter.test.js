@@ -11,7 +11,8 @@ const {
   normalizeCraFilters,
   craFilterSignature,
   sameCraFilters,
-  filterCraTasks
+  filterCraTasks,
+  resolveCraRelatedPersonIds
 } = CraFilterAdapter;
 
 // Données de test
@@ -257,6 +258,48 @@ describe('filterCraTasks', () => {
     );
     
     expect(result.length).toBe(0);
+  });
+});
+
+describe('resolveCraRelatedPersonIds', () => {
+  test('retourne null sans filtre projet/programme/tâche', () => {
+    expect(resolveCraRelatedPersonIds({ tasks: mockTasks, projects: mockProjects }, {
+      assignee: ['1'], team: ['10']
+    })).toBeNull();
+  });
+
+  test('résout les personnes liées au projet par toutes les sources CRA', () => {
+    const state = {
+      projects: mockProjects,
+      tasks: [
+        { id: 50, projet: 1, assignees: ['L', 1] },
+        { id: 52, projet: 2, assignees: ['L', 2] }
+      ],
+      assignments: [
+        { tache: 52, membre: 3, actif: true },
+        { tache: 52, membre: 9, actif: false },
+        { tache: 50, membre: 8, actif: true }
+      ],
+      entries: [
+        { tache: 52, membre: 4 },
+        { tache: 50, membre: 7 }
+      ],
+      extraRows: { 5: [52], 6: [50] }
+    };
+
+    expect(resolveCraRelatedPersonIds(state, { project: ['2'] }).sort()).toEqual([
+      '2', '3', '4', '5'
+    ]);
+  });
+
+  test('retourne une liste vide si aucune tâche ne correspond', () => {
+    expect(resolveCraRelatedPersonIds({
+      tasks: mockTasks,
+      projects: mockProjects,
+      assignments: [],
+      entries: [],
+      extraRows: {}
+    }, { project: ['999'] })).toEqual([]);
   });
 });
 

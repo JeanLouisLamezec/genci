@@ -1388,7 +1388,8 @@
         'Actions',
         'KanbanSteps',
         'Feuilles',
-        'TimeEntries'
+        'TimeEntries',
+        'UserFilters'
     ];
 
     var PERMISSION_DATA_TABLES = CONTROLLED_TABLES.concat(['TaskAssignments']);
@@ -1464,7 +1465,8 @@
                 KanbanSteps: (data.KanbanSteps || data.kanbanSteps || []).slice(),
                 Feuilles: (data.Feuilles || data.feuilles || []).slice(),
                 TimeEntries: (data.TimeEntries || data.timeEntries || []).slice(),
-                TaskAssignments: (data.TaskAssignments || data.taskAssignments || []).slice()
+                TaskAssignments: (data.TaskAssignments || data.taskAssignments || []).slice(),
+                UserFilters: (data.UserFilters || data.userFilters || []).slice()
             },
             indexes: null
         };
@@ -1482,7 +1484,8 @@
                 KanbanSteps: indexById(snapshot.tables.KanbanSteps),
                 Feuilles: indexById(snapshot.tables.Feuilles),
                 TimeEntries: indexById(snapshot.tables.TimeEntries),
-                TaskAssignments: indexById(snapshot.tables.TaskAssignments)
+                TaskAssignments: indexById(snapshot.tables.TaskAssignments),
+                UserFilters: indexById(snapshot.tables.UserFilters)
             };
         }
         return snapshot.indexes;
@@ -1814,6 +1817,33 @@
         return deny('CRA_TIME_ENTRY_DELETE_FORBIDDEN', 'Cette saisie ne peut pas etre supprimee dans son etat actuel.');
     }
 
+    function canMutateUserFilters(snapshot, kind, current, proposed) {
+        if (actorIsAdmin(snapshot)) return allow('ADMIN');
+        var currentUserId = normalizeId(snapshot && snapshot.actor && snapshot.actor.gristUserId);
+        var ownerUserId = normalizeId(current && current.gristUserId);
+        var proposedUserId = normalizeId(proposed && proposed.gristUserId);
+
+        if (kind === 'create') {
+            if (proposedUserId !== currentUserId) {
+                return deny('USER_FILTER_OWNER_REQUIRED', 'Vous ne pouvez enregistrer que vos propres filtres.');
+            }
+            var duplicate = (snapshot.tables.UserFilters || []).some(function (row) {
+                return normalizeId(row.gristUserId) === currentUserId;
+            });
+            return duplicate
+                ? deny('USER_FILTER_ALREADY_EXISTS', 'Une ligne de filtres existe déjà pour ce compte Grist.')
+                : allow('USER_FILTER_OWNER');
+        }
+
+        if (ownerUserId !== currentUserId) {
+            return deny('USER_FILTER_OWNER_REQUIRED', 'Cette ligne de filtres appartient à un autre utilisateur.');
+        }
+        if (kind === 'update' && Object.prototype.hasOwnProperty.call(proposed || {}, 'gristUserId') && proposedUserId !== currentUserId) {
+            return deny('USER_FILTER_OWNER_CHANGE_FORBIDDEN', 'Le propriétaire des filtres ne peut pas être modifié.');
+        }
+        return allow('USER_FILTER_OWNER');
+    }
+
     function authorizeRecordMutation(snapshot, mutation) {
         var actorError = requireActor(snapshot);
         if (actorError) return actorError;
@@ -1859,6 +1889,10 @@
             if (kind === 'create') return canCreateTimeEntry(snapshot, proposed);
             if (kind === 'update') return canUpdateTimeEntry(snapshot, current, proposed);
             return canDeleteTimeEntry(snapshot, current);
+        }
+
+        if (table === 'UserFilters') {
+            return canMutateUserFilters(snapshot, kind, current, proposed);
         }
 
         return allow('UNCONTROLLED_TABLE');
@@ -2122,6 +2156,7 @@
         canCreateTimeEntry: canCreateTimeEntry,
         canUpdateTimeEntry: canUpdateTimeEntry,
         canDeleteTimeEntry: canDeleteTimeEntry,
+        canMutateUserFilters: canMutateUserFilters,
         authorizeRecordMutation: authorizeRecordMutation,
         authorizeMutationBatch: authorizeMutationBatch,
         decodeJwtPayload: decodeJwtPayload,
@@ -2134,6 +2169,193 @@
     if (typeof module !== 'undefined' && module.exports) module.exports = api;
 
 })(typeof window !== 'undefined' ? window : (typeof global !== 'undefined' ? global : this));
+
+
+/* ==========================================================================
+ * user-filter-store.js — Persistance personnelle simple des filtres TaskFlow
+ * ========================================================================== */
+(function(root, factory) {
+  var api = factory();
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  if (root) root.TaskFlowUserFilters = api;
+})(typeof globalThis !== 'undefined' ? globalThis : this, function() {
+  'use strict';
+
+  var FILTER_KEYS = ['assignee', 'team', 'project', 'programme', 'task'];
+
+  function normalizeFilters(input) {
+    var source = input && typeof input === 'object' ? input : {};
+    var result = {};
+    FILTER_KEYS.forEach(function(key) {
+      var seen = new Set();
+      result[key] = (Array.isArray(source[key]) ? source[key] : [])
+        .filter(function(value) { return value !== null && value !== undefined && value !== ''; })
+        .map(String)
+        .filter(function(value) {
+          if (seen.has(value)) return false;
+          seen.add(value);
+          return true;
+        })
+        .sort();
+    });
+    return result;
+  }
+
+  function signature(filters) {
+    return JSON.stringify(normalizeFilters(filters));
+  }
+
+  function parseFilters(value) {
+    if (!value) return normalizeFilters({});
+    try {
+      return normalizeFilters(typeof value === 'string' ? JSON.parse(value) : value);
+    } catch (error) {
+      return normalizeFilters({});
+    }
+  }
+
+  function columnarToRows(data) {
+    if (!data) return [];
+    if (Array.isArray(data)) return data.slice();
+    var keys = Object.keys(data);
+    var count = keys.length && Array.isArray(data[keys[0]]) ? data[keys[0]].length : 0;
+    var rows = [];
+    for (var index = 0; index < count; index++) {
+      var row = {};
+      keys.forEach(function(key) { row[key] = data[key][index]; });
+      rows.push(row);
+    }
+    return rows;
+  }
+
+  function normalizeUserId(value) {
+    var number = Number(value);
+    return Number.isInteger(number) && number > 0 ? number : null;
+  }
+
+  function createStore(grist, options) {
+    options = options || {};
+    var gristUserId = normalizeUserId(options.gristUserId);
+    var sourceWidget = String(options.sourceWidget || 'unknown');
+    var debounceMs = options.debounceMs === undefined
+      ? 0
+      : (Number(options.debounceMs) >= 0 ? Number(options.debounceMs) : 0);
+    var rowId = null;
+    var lastSavedSignature = null;
+    var pendingFilters = null;
+    var timer = null;
+    var writeChain = Promise.resolve();
+    var enabled = Boolean(grist && grist.docApi && gristUserId);
+
+    async function tableExists() {
+      if (!enabled) return false;
+      var tables = await grist.docApi.listTables();
+      return tables.indexOf('UserFilters') !== -1;
+    }
+
+    async function findOwnRow() {
+      if (!await tableExists()) return null;
+      var rows = columnarToRows(await grist.docApi.fetchTable('UserFilters'))
+        .filter(function(row) { return normalizeUserId(row.gristUserId) === gristUserId; })
+        .sort(function(left, right) {
+          var updatedDiff = Number(right.updatedAt || 0) - Number(left.updatedAt || 0);
+          return updatedDiff || Number(right.id || 0) - Number(left.id || 0);
+        });
+      return rows[0] || null;
+    }
+
+    async function load() {
+      if (!enabled) return normalizeFilters({});
+      try {
+        var row = await findOwnRow();
+        if (!row) return normalizeFilters({});
+        rowId = row.id;
+        var filters = parseFilters(row.filters);
+        lastSavedSignature = signature(filters);
+        return filters;
+      } catch (error) {
+        if (typeof options.onError === 'function') options.onError(error);
+        return normalizeFilters({});
+      }
+    }
+
+    async function writePending() {
+      if (!enabled || !pendingFilters) return { skipped: true };
+      var filters = pendingFilters;
+      pendingFilters = null;
+      var nextSignature = signature(filters);
+      if (nextSignature === lastSavedSignature) return { skipped: true };
+      if (!await tableExists()) return { skipped: true, reason: 'TABLE_MISSING' };
+
+      if (!rowId) {
+        var existing = await findOwnRow();
+        if (existing) rowId = existing.id;
+      }
+
+      var fields = {
+        filters: nextSignature,
+        updatedAt: Math.floor(Date.now() / 1000),
+        sourceWidget: sourceWidget
+      };
+      var action;
+      if (rowId) {
+        action = ['UpdateRecord', 'UserFilters', rowId, fields];
+      } else {
+        fields.gristUserId = gristUserId;
+        action = ['AddRecord', 'UserFilters', null, fields];
+      }
+
+      await grist.docApi.applyUserActions([action]);
+      if (!rowId) {
+        var created = await findOwnRow();
+        rowId = created && created.id;
+      }
+      lastSavedSignature = nextSignature;
+      return { skipped: false, rowId: rowId, filters: filters };
+    }
+
+    function flush() {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      writeChain = writeChain.then(writePending).catch(function(error) {
+        if (typeof options.onError === 'function') options.onError(error);
+        return { skipped: true, error: error };
+      });
+      return writeChain;
+    }
+
+    function scheduleSave(filters) {
+      if (!enabled) return;
+      pendingFilters = normalizeFilters(filters);
+      if (signature(pendingFilters) === lastSavedSignature) return;
+      if (debounceMs === 0) {
+        flush();
+        return;
+      }
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(flush, debounceMs);
+    }
+
+    return {
+      load: load,
+      scheduleSave: scheduleSave,
+      flush: flush,
+      isEnabled: function() { return enabled; },
+      getRowId: function() { return rowId; }
+    };
+  }
+
+  return {
+    FILTER_KEYS: FILTER_KEYS,
+    normalizeFilters: normalizeFilters,
+    signature: signature,
+    parseFilters: parseFilters,
+    columnarToRows: columnarToRows,
+    createStore: createStore
+  };
+});
 
 
 /* ============================================================================
@@ -2952,7 +3174,7 @@ if (typeof globalThis !== 'undefined') {
     }
 
     // Version courante du schéma
-    var SCHEMA_VERSION = 6;
+    var SCHEMA_VERSION = 7;
 
     // Ordre de création des tables (important pour les dépendances)
     var TABLE_ORDER = [
@@ -2969,6 +3191,7 @@ if (typeof globalThis !== 'undefined') {
         'MemberDailyCapacities',
         'Feuilles',
         'TimeEntries',
+        'UserFilters',
         'TaskFlow_Meta'
     ];
 
@@ -3226,6 +3449,19 @@ if (typeof globalThis !== 'undefined') {
                 { id: 'statutFeuille',          opts: { type: 'Text', isFormula: true, formula: '$feuille.statut if $feuille else ""' } },
                 { id: 'responsableValidation',  opts: { type: 'Ref:Team', isFormula: true, formula: '$feuille.responsableValidation if $feuille else None' } },
                 { id: 'semaineFeuille',         opts: { type: 'Date', isFormula: true, formula: '$feuille.semaine if $feuille else None' } }
+            ]
+        },
+
+        // =========================================================================
+        // UserFilters — Filtres personnels partagés entre les widgets
+        // =========================================================================
+        UserFilters: {
+            label: 'Filtres utilisateurs',
+            columns: [
+                { id: 'gristUserId',      opts: dataColumn('Int') },
+                { id: 'filters',          opts: dataColumn('Text') },
+                { id: 'updatedAt',        opts: dataColumn('DateTime') },
+                { id: 'sourceWidget',     opts: dataColumn('Text') }
             ]
         },
 
@@ -5046,6 +5282,36 @@ if (typeof globalThis !== 'undefined') {
     }
 
     // ========================================================================
+    // MIGRATION V6 → V7 — Filtres personnels persistants
+    // ========================================================================
+
+    async function migrateToV7(grist, metadata) {
+        log('Migration v6 → v7: user-filters-v7');
+
+        var docApi = getDocApi(grist);
+        var existingTables = metadata.tablesByName || {};
+        var actions = [];
+
+        if (!existingTables.UserFilters) {
+            actions.push(['AddTable', 'UserFilters', [
+                { id: 'gristUserId', type: 'Int', isFormula: false },
+                { id: 'filters', type: 'Text', isFormula: false },
+                { id: 'updatedAt', type: 'DateTime', isFormula: false },
+                { id: 'sourceWidget', type: 'Text', isFormula: false }
+            ]]);
+        }
+
+        if (actions.length > 0) await docApi.applyUserActions(actions);
+
+        return {
+            success: true,
+            message: 'Migration v7 appliquée',
+            actionsExecuted: actions.length,
+            metadata: actions.length ? await loadMigrationMetadata(grist) : metadata
+        };
+    }
+
+    // ========================================================================
     // LISTE DES MIGRATIONS
     // ========================================================================
     
@@ -5079,6 +5345,12 @@ if (typeof globalThis !== 'undefined') {
             name: 'functional-permissions-admin-v6',
             description: 'Ajout du marqueur Team.estAdmin pour les permissions fonctionnelles',
             run: migrateToV6
+        },
+        {
+            version: 7,
+            name: 'user-filters-v7',
+            description: 'Ajout des filtres personnels persistants entre widgets',
+            run: migrateToV7
         }
     ];
 
@@ -7064,6 +7336,7 @@ if (typeof globalThis !== 'undefined') {
         let filters = { assignee: [], team: [], project: [], programme: [], task: [] };  // Filtres mutualisés avec Plan
         let filterManager = null;
         let permissionRuntime = null;
+        let userFilterStore = null;
         let panelState = { open: false, isNew: false, taskId: null, actionId: null, taskIndex: -1, columnTasks: [], columnKey: null, editData: null };  // NOUVEAU: actionId
         let sortableInstances = [];
         let saveTimeout = null;
@@ -8154,7 +8427,6 @@ if $projet and $projet.responsable:
               filters.task = newFilters.task || [];
               
               updateFilterCount();
-              broadcastKanbanFilters();
               // Mettre à jour la config avec les filtres pour le post-filter
               if (filterManager) {
                 filterManager.setWidgetConfig({
@@ -8207,7 +8479,7 @@ if $projet and $projet.responsable:
         }
         
         function broadcastKanbanFilters() {
-          try { grist.docApi.broadcast({ type: 'filters', data: filters }); } catch (e) {}
+          if (userFilterStore) userFilterStore.scheduleSave(filters);
         }
         async function setProjectColor(projectId, color) {
             const p = projects.find(x => x.id === projectId);
@@ -9608,6 +9880,14 @@ if $projet and $projet.responsable:
             
             console.log('[Kanban] → Calling loadAllData()...');
             try { await loadAllData(); console.log('[Kanban] ✓ loadAllData() complete'); } catch (e) { console.error('[Kanban] ✗ loadAllData error:', e); showToast('Chargement: ' + (e?.message || e), 'error'); }
+
+            userFilterStore = TaskFlowUserFilters.createStore(grist, {
+                gristUserId: permissionRuntime.getActor()?.gristUserId,
+                sourceWidget: 'kanban',
+                onError: (error) => console.error('[Kanban filtres personnels]', error)
+            });
+            const savedFilters = await userFilterStore.load();
+            if (filterManager) filterManager.setState(savedFilters, { origin: 'persistent', broadcast: false });
             
             const totalDuration = Date.now() - perfMark;
             if (PERF_DEBUG) {
@@ -9631,27 +9911,6 @@ if $projet and $projet.responsable:
                         }
                         render(); 
                     } 
-                });
-                grist.onOptions((options, interaction) => {
-                    if (options?.filters && interaction?.source !== 'self') {
-                        const f = options.filters;
-                        if (filterManager) {
-                          const newFilters = {
-                            assignee: Array.isArray(f.assignee) ? f.assignee.map(String) : [],
-                            team: Array.isArray(f.team) ? f.team.map(String) : [],
-                            project: Array.isArray(f.project) ? f.project.map(String) : [],
-                            task: Array.isArray(f.task) ? f.task.map(String) : []
-                          };
-                          filterManager.setState(newFilters);
-                        } else {
-                          filters.project = Array.isArray(f.project) ? f.project.map(String) : [];
-                          filters.assignee = Array.isArray(f.assignee) ? f.assignee.map(String) : [];
-                          filters.team = Array.isArray(f.team) ? f.team.map(String) : [];
-                          filters.task = Array.isArray(f.task) ? f.task.map(String) : [];
-                          updateFilterMenus();
-                          render();
-                        }
-                    }
                 });
                 { const s = document.getElementById('colorSelect'); if (s) s.value = colorMode; }
                 { const s = document.getElementById('levelSelect'); if (s) s.value = workLevel; }

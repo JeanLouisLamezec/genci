@@ -140,6 +140,53 @@
     });
   }
 
+  function refListIds(value) {
+    if (!Array.isArray(value)) return [];
+    var values = value[0] === 'L' ? value.slice(1) : value;
+    return values
+      .filter(function(id) { return id !== null && id !== undefined && id !== ''; })
+      .map(String);
+  }
+
+  /**
+   * Résout les personnes reliées au périmètre projet/programme/tâche actif.
+   * null signifie qu'aucun filtre de tâches ne doit restreindre les personnes.
+   */
+  function resolveCraRelatedPersonIds(S, filters) {
+    var normalized = normalizeCraFilters(filters);
+    var hasTaskScope = normalized.project.length > 0 ||
+      normalized.programme.length > 0 ||
+      normalized.task.length > 0;
+    if (!hasTaskScope) return null;
+
+    var filteredTasks = filterCraTasks(S.tasks || [], normalized, S.projects || []);
+    var taskIds = new Set(filteredTasks.map(function(task) { return String(task.id); }));
+    var memberIds = new Set();
+
+    filteredTasks.forEach(function(task) {
+      refListIds(task.assignees).forEach(function(memberId) { memberIds.add(memberId); });
+    });
+
+    (S.assignments || []).forEach(function(assignment) {
+      if (assignment.actif === false || !taskIds.has(String(assignment.tache))) return;
+      if (assignment.membre != null) memberIds.add(String(assignment.membre));
+    });
+
+    (S.entries || []).forEach(function(entry) {
+      if (!taskIds.has(String(entry.tache))) return;
+      if (entry.membre != null) memberIds.add(String(entry.membre));
+    });
+
+    Object.keys(S.extraRows || {}).forEach(function(memberId) {
+      var linked = (S.extraRows[memberId] || []).some(function(taskId) {
+        return taskIds.has(String(taskId));
+      });
+      if (linked) memberIds.add(String(memberId));
+    });
+
+    return Array.from(memberIds);
+  }
+
   /**
    * Diffuse les filtres vers Grist avec déduplication
    */
@@ -231,7 +278,8 @@
         filters: normalized,
         currentPersonId: S.selectedPersonId,
         previousVisibleIds: S.visiblePersonIds,
-        currentUserMemberId: S.currentUserMemberId
+        currentUserMemberId: S.currentUserMemberId,
+        relatedPersonIds: resolveCraRelatedPersonIds(S, normalized)
       });
 
       S.visiblePersonIds = peopleResult.visiblePersonIds;
@@ -323,7 +371,10 @@
       normalizeCraFilters: normalizeCraFilters,
       craFilterSignature: craFilterSignature,
       sameCraFilters: sameCraFilters,
-      filterCraTasks: filterCraTasks
+      filterCraTasks: filterCraTasks,
+      resolveRelatedPersonIds: function(filters) {
+        return resolveCraRelatedPersonIds(S, filters);
+      }
     };
   }
 
@@ -333,6 +384,7 @@
     craFilterSignature: craFilterSignature,
     sameCraFilters: sameCraFilters,
     filterCraTasks: filterCraTasks,
+    resolveCraRelatedPersonIds: resolveCraRelatedPersonIds,
     broadcastCraFilters: broadcastCraFilters,
     createCraFilterSynchronizer: createCraFilterSynchronizer,
     CRA_FILTER_DEBUG: CRA_FILTER_DEBUG,

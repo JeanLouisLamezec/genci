@@ -2,7 +2,7 @@
  * CRA Person Filter - Module de filtrage des personnes pour le CRA
  * 
  * Ce module gère le calcul des personnes visibles en fonction des filtres
- * assignee et team, avec une gestion correcte des types (IDs en chaînes).
+ * assignee/team et du périmètre de tâches résolu par le CRA.
  * 
  * Contrat de type :
  * - FilterManager produit des IDs en chaînes : ['1', '2']
@@ -11,14 +11,17 @@
  */
 
 /**
- * Vérifie si des filtres de personne ou d'équipe sont actifs
+ * Vérifie si un filtre pouvant réduire les personnes est actif.
  * @param {Object} filters - Filtres du FilterManager
  * @returns {boolean} true si au moins un filtre assignee ou team est actif
  */
 function hasActivePersonFilter(filters) {
   return Boolean(
     (filters && filters.assignee && filters.assignee.length) ||
-    (filters && filters.team && filters.team.length)
+    (filters && filters.team && filters.team.length) ||
+    (filters && filters.project && filters.project.length) ||
+    (filters && filters.programme && filters.programme.length) ||
+    (filters && filters.task && filters.task.length)
   );
 }
 
@@ -33,9 +36,10 @@ function hasActivePersonFilter(filters) {
  * 
  * @param {Array} team - Membres de l'équipe : [{ id: number, nom: string, entite: number|null }]
  * @param {Object} filters - Filtres du FilterManager : { assignee: string[], team: string[] }
+ * @param {Array|null} relatedPersonIds - Membres reliés au périmètre projet/programme/tâche ; null = pas de restriction
  * @returns {number[]} IDs des personnes visibles (type d'origine : nombres)
  */
-function computeVisiblePersonIds(team, filters) {
+function computeVisiblePersonIds(team, filters, relatedPersonIds) {
   const members = Array.isArray(team) ? team : [];
   
   const assigneeFilters = Array.isArray(filters && filters.assignee)
@@ -45,6 +49,10 @@ function computeVisiblePersonIds(team, filters) {
   const teamFilters = Array.isArray(filters && filters.team)
     ? filters.team.map(String)
     : [];
+
+  const relatedIds = relatedPersonIds == null
+    ? null
+    : new Set((Array.isArray(relatedPersonIds) ? relatedPersonIds : []).map(String));
   
   return members
     .filter(member => {
@@ -56,6 +64,10 @@ function computeVisiblePersonIds(team, filters) {
       }
       
       if (teamFilters.length > 0 && !teamFilters.includes(entityId)) {
+        return false;
+      }
+
+      if (relatedIds && !relatedIds.has(memberId)) {
         return false;
       }
       
@@ -118,10 +130,11 @@ function applyPersonFilters({
   filters,
   currentPersonId,
   previousVisibleIds,
-  currentUserMemberId
+  currentUserMemberId,
+  relatedPersonIds
 }) {
   const hasFilter = hasActivePersonFilter(filters);
-  const visiblePersonIds = computeVisiblePersonIds(team, filters);
+  const visiblePersonIds = computeVisiblePersonIds(team, filters, relatedPersonIds);
   
   let selectedPersonId = null;
   let isEmptyDueToFilter = false;

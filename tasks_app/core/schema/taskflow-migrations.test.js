@@ -149,12 +149,13 @@ describe('TaskFlow Migrations - v1 → v2', () => {
     }
   });
   
-  test("Les migrations v5 et v6 restent en attente depuis v4", () => {
+  test("Les migrations v5, v6 et v7 restent en attente depuis v4", () => {
     const currentVersion = 4;
     const pending = TaskFlowMigrations.getPendingMigrations(currentVersion);
-    expect(pending.length).toBe(2);
+    expect(pending.length).toBe(3);
     expect(pending[0].version).toBe(5);
     expect(pending[1].version).toBe(6);
+    expect(pending[2].version).toBe(7);
   });
   
   test('Aucune donnée existante n\'est supprimée', async () => {
@@ -176,42 +177,48 @@ describe('TaskFlow Migrations - v1 → v2', () => {
 describe('TaskFlow Migrations - Runner', () => {
   
   test('getPendingMigrations respecte la version cible', () => {
-    // Si currentVersion = 1 et SCHEMA.version = 6
+    // Si currentVersion = 1 et SCHEMA.version = 7
     const pending1 = TaskFlowMigrations.getPendingMigrations(1);
-    expect(pending1.length).toBe(5); // v2, v3, v4, v5 et v6
+    expect(pending1.length).toBe(6);
     expect(pending1[0].version).toBe(2);
     expect(pending1[1].version).toBe(3);
     expect(pending1[2].version).toBe(4);
     expect(pending1[3].version).toBe(5);
     expect(pending1[4].version).toBe(6);
+    expect(pending1[5].version).toBe(7);
     
     // Si currentVersion = 2
     const pending2 = TaskFlowMigrations.getPendingMigrations(2);
-    expect(pending2.length).toBe(4); // v3, v4, v5 et v6
+    expect(pending2.length).toBe(5);
     expect(pending2[0].version).toBe(3);
     expect(pending2[1].version).toBe(4);
     expect(pending2[2].version).toBe(5);
     expect(pending2[3].version).toBe(6);
+    expect(pending2[4].version).toBe(7);
     
     // Si currentVersion = 3
     const pending3 = TaskFlowMigrations.getPendingMigrations(3);
-    expect(pending3.length).toBe(3); // v4, v5 et v6
+    expect(pending3.length).toBe(4);
     expect(pending3[0].version).toBe(4);
     expect(pending3[1].version).toBe(5);
     expect(pending3[2].version).toBe(6);
+    expect(pending3[3].version).toBe(7);
     
     // Si currentVersion = 4
     const pending4 = TaskFlowMigrations.getPendingMigrations(4);
-    expect(pending4.length).toBe(2); // v5 et v6
+    expect(pending4.length).toBe(3);
     expect(pending4[0].version).toBe(5);
     expect(pending4[1].version).toBe(6);
+    expect(pending4[2].version).toBe(7);
     
     // Si currentVersion = 5
     const pending5 = TaskFlowMigrations.getPendingMigrations(5);
-    expect(pending5.length).toBe(1);
+    expect(pending5.length).toBe(2);
     expect(pending5[0].version).toBe(6);
+    expect(pending5[1].version).toBe(7);
 
-    expect(TaskFlowMigrations.getPendingMigrations(6)).toEqual([]);
+    expect(TaskFlowMigrations.getPendingMigrations(6).map(migration => migration.version)).toEqual([7]);
+    expect(TaskFlowMigrations.getPendingMigrations(7)).toEqual([]);
   });
   
   test('runMigrations met à jour la version après chaque migration réussie', async () => {
@@ -229,12 +236,13 @@ describe('TaskFlow Migrations - Runner', () => {
     const result = await TaskFlowMigrations.runMigrations(mockGrist, 1);
     
     expect(result.success).toBe(true);
-    expect(result.finalVersion).toBe(6);
+    expect(result.finalVersion).toBe(7);
     
     const meta = await mockGrist.fetchTable('TaskFlow_Meta');
-    expect(meta.schemaVersion[0]).toBe(6);
-    expect(meta.lastMigration[0]).toBe('functional-permissions-admin-v6');
+    expect(meta.schemaVersion[0]).toBe(7);
+    expect(meta.lastMigration[0]).toBe('user-filters-v7');
     expect(mockGrist.hasColumn('Team', 'estAdmin')).toBe(true);
+    expect(mockGrist.hasTable('UserFilters')).toBe(true);
   });
   
   test('getCurrentVersion lit la version dans TaskFlow_Meta', async () => {
@@ -419,42 +427,48 @@ describe('TaskFlow Migrations - v3 → v4', () => {
     expect(result2.actionsExecuted).toBe(0);
   });
   
-  test('getPendingMigrations retourne v4, v5 puis v6 depuis v3', () => {
+  test('getPendingMigrations retourne v4 à v7 depuis v3', () => {
     const pending = TaskFlowMigrations.getPendingMigrations(3);
-    expect(pending.length).toBe(3);
+    expect(pending.length).toBe(4);
     expect(pending[0].version).toBe(4);
     expect(pending[0].name).toBe('timesheet-validation-foundation-v4');
     expect(pending[1].version).toBe(5);
     expect(pending[1].name).toBe('timesheet-sheet-link-backfill-v5');
     expect(pending[2].version).toBe(6);
     expect(pending[2].name).toBe('functional-permissions-admin-v6');
+    expect(pending[3].version).toBe(7);
+    expect(pending[3].name).toBe('user-filters-v7');
   });
   
-  test('getPendingMigrations retourne v3, v4, v5 puis v6 depuis v2', () => {
+  test('getPendingMigrations retourne v3 à v7 depuis v2', () => {
     const pending = TaskFlowMigrations.getPendingMigrations(2);
-    expect(pending.length).toBe(4);
+    expect(pending.length).toBe(5);
     expect(pending[0].version).toBe(3);
     expect(pending[1].version).toBe(4);
     expect(pending[2].version).toBe(5);
     expect(pending[3].version).toBe(6);
+    expect(pending[4].version).toBe(7);
   });
   
-  test('getPendingMigrations retourne v5 puis v6 depuis v4', () => {
+  test('getPendingMigrations retourne v5 à v7 depuis v4', () => {
     const pending = TaskFlowMigrations.getPendingMigrations(4);
-    expect(pending.length).toBe(2);
+    expect(pending.length).toBe(3);
     expect(pending[0].version).toBe(5);
     expect(pending[0].name).toBe('timesheet-sheet-link-backfill-v5');
     expect(pending[1].version).toBe(6);
     expect(pending[1].name).toBe('functional-permissions-admin-v6');
+    expect(pending[2].version).toBe(7);
+    expect(pending[2].name).toBe('user-filters-v7');
   });
   
-  test('getPendingMigrations retourne v6 depuis v5', () => {
+  test('getPendingMigrations retourne v6 et v7 depuis v5', () => {
     const pending = TaskFlowMigrations.getPendingMigrations(5);
-    expect(pending.length).toBe(1);
+    expect(pending.length).toBe(2);
     expect(pending[0].version).toBe(6);
+    expect(pending[1].version).toBe(7);
   });
   
-  test('runMigrations termine en version 6 depuis v4', async () => {
+  test('runMigrations termine en version 7 depuis v4', async () => {
     const mockGrist = createMockGrist({
       initialData: {
         TaskFlow_Meta: [{ id: 1, schemaVersion: 4, lastMigration: 'timesheet-validation-foundation-v4' }],
@@ -469,12 +483,13 @@ describe('TaskFlow Migrations - v3 → v4', () => {
     const result = await TaskFlowMigrations.runMigrations(mockGrist, 4);
     
     expect(result.success).toBe(true);
-    expect(result.finalVersion).toBe(6);
+    expect(result.finalVersion).toBe(7);
     
     const meta = await mockGrist.fetchTable('TaskFlow_Meta');
-    expect(meta.schemaVersion[0]).toBe(6);
-    expect(meta.lastMigration[0]).toBe('functional-permissions-admin-v6');
+    expect(meta.schemaVersion[0]).toBe(7);
+    expect(meta.lastMigration[0]).toBe('user-filters-v7');
     expect(mockGrist.hasColumn('Team', 'estAdmin')).toBe(true);
+    expect(mockGrist.hasTable('UserFilters')).toBe(true);
   });
   
   test('Aucune suppression de colonnes existantes', async () => {

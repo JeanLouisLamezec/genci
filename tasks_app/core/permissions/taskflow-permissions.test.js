@@ -38,7 +38,8 @@ function fixture(actorMemberId = 1, overrides = {}) {
     Actions: actions,
     Entites: [{ id: 1, nom: 'Equipe' }],
     Programmes: [{ id: 1, nom: 'Programme' }],
-    KanbanSteps: [{ id: 1, nom: 'A faire' }]
+    KanbanSteps: [{ id: 1, nom: 'A faire' }],
+    UserFilters: overrides.userFilters || []
   }, identity);
 }
 
@@ -171,6 +172,24 @@ describe('TaskFlow permissions - actions', () => {
     expect(authorize(fixture(3), ['UpdateRecord', 'Actions', 1001, { assignee: 4 }]).allowed).toBe(true);
     expect(authorize(fixture(2), ['RemoveRecord', 'Actions', 1001]).allowed).toBe(true);
     expect(authorize(fixture(2), ['UpdateRecord', 'Actions', 2000, { titre: 'X' }]).allowed).toBe(false);
+  });
+});
+
+describe('TaskFlow permissions - filtres personnels', () => {
+  test('tout utilisateur associé peut créer uniquement sa propre ligne', () => {
+    const snapshot = fixture(4);
+    expect(authorize(snapshot, ['AddRecord', 'UserFilters', null, { gristUserId: 104, filters: '{}' }]).allowed).toBe(true);
+    expect(authorize(snapshot, ['AddRecord', 'UserFilters', null, { gristUserId: 106, filters: '{}' }]).code).toBe('USER_FILTER_OWNER_REQUIRED');
+  });
+
+  test('un utilisateur ne peut modifier que sa ligne et admin peut tout gérer', () => {
+    const rows = [
+      { id: 1, gristUserId: 104, filters: '{}' },
+      { id: 2, gristUserId: 106, filters: '{}' }
+    ];
+    expect(authorize(fixture(4, { userFilters: rows }), ['UpdateRecord', 'UserFilters', 1, { filters: '{"task":["1"]}' }]).allowed).toBe(true);
+    expect(authorize(fixture(4, { userFilters: rows }), ['UpdateRecord', 'UserFilters', 2, { filters: '{}' }]).allowed).toBe(false);
+    expect(authorize(fixture(1, { userFilters: rows }), ['RemoveRecord', 'UserFilters', 2]).allowed).toBe(true);
   });
 });
 

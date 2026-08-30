@@ -723,10 +723,10 @@ const filterTasks = memoize(
 
 ## 📝 Checklist d'Implémentation Future
 
-- [ ] Créer les tests unitaires FilterManager
+- [x] Créer les tests unitaires FilterManager
 - [ ] Implémenter FilterEngine pour centraliser la logique
 - [ ] Ajouter FilterNormalizer pour les IDs
-- [ ] Migrer vers FilterStore (état unique)
+- [x] Ajouter un store personnel simple partagé entre widgets
 - [ ] indexer projects/programmes pour la performance
 - [ ] Ajouter memoization sur filterTasks()
 - [ ] Documenter les cas edge (programme null, portefeuille seul, etc.)
@@ -750,3 +750,23 @@ const filterTasks = memoize(
 ---
 
 *Document généré pour faciliter la maintenance et l'évolution du système de filtrage TaskFlow.*
+
+## Persistance personnelle v7
+
+Les cinq filtres canoniques restent gérés par `FilterManager`. Leur état est
+maintenant sauvegardé automatiquement dans `UserFilters`, à raison d’une ligne
+par `gristUserId` :
+
+```text
+gristUserId | filters (JSON) | updatedAt | sourceWidget
+```
+
+Au chargement, Kanban, Gantt, Plan et CRA recherchent la ligne de l’utilisateur
+courant et l’appliquent sans la rediffuser. Après une modification locale, le
+widget réécrit immédiatement et silencieusement cette même ligne. Les écritures
+sont sérialisées et un état identique n’est pas réécrit. Le widget suivant
+recharge donc le dernier état enregistré. Les anciennes options Grist partagées
+ne sont plus utilisées pour transporter les filtres.
+
+Le JSON contient toujours `assignee`, `team`, `project`, `programme` et `task`,
+même lorsqu’un widget n’affiche pas toutes ces dimensions.

@@ -41,6 +41,12 @@ describe('hasActivePersonFilter', () => {
   test('doit retourner true avec les deux filtres', () => {
     expect(hasActivePersonFilter({ assignee: ['1'], team: ['10'] })).toBe(true);
   });
+
+  test('doit retourner true avec un filtre projet, programme ou tâche', () => {
+    expect(hasActivePersonFilter({ project: ['1'] })).toBe(true);
+    expect(hasActivePersonFilter({ programme: ['10'] })).toBe(true);
+    expect(hasActivePersonFilter({ task: ['50'] })).toBe(true);
+  });
 });
 
 describe('computeVisiblePersonIds - Fonction pure', () => {
@@ -153,6 +159,24 @@ describe('computeVisiblePersonIds - Fonction pure', () => {
       { assignee: ['1', '3'], team: ['10'] }
     );
     expect(result).toEqual([1, 3]);
+  });
+
+  test('doit restreindre les membres au périmètre projet résolu', () => {
+    const result = computeVisiblePersonIds(
+      mockTeam,
+      { project: ['1'] },
+      ['2', '4']
+    );
+    expect(result).toEqual([2, 4]);
+  });
+
+  test('doit combiner équipe et périmètre projet en intersection', () => {
+    const result = computeVisiblePersonIds(
+      mockTeam,
+      { team: ['10'], project: ['1'] },
+      ['2', '3', '4']
+    );
+    expect(result).toEqual([3]);
   });
 });
 
@@ -288,6 +312,20 @@ describe('applyPersonFilters - Intégration', () => {
     expect(result.visiblePersonIds).toEqual([1, 3]);
     expect(result.selectedPersonId).toBe(3);
     expect(result.isEmptyDueToFilter).toBe(false);
+  });
+
+  test('doit produire un état vide si le projet ne contient aucune personne', () => {
+    const result = applyPersonFilters({
+      team: mockTeam,
+      filters: { project: ['999'] },
+      relatedPersonIds: [],
+      currentPersonId: 1,
+      previousVisibleIds: [1],
+      currentUserMemberId: null
+    });
+    expect(result.visiblePersonIds).toEqual([]);
+    expect(result.selectedPersonId).toBe(null);
+    expect(result.isEmptyDueToFilter).toBe(true);
   });
 });
 

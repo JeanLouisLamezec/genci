@@ -7,9 +7,10 @@ permissions. Les widgets sont prêts pour une recette sur une copie du document.
 Ils ne sont pas encore certifiés pour une mise en production générale tant que
 les ACL Grist n’ont pas été alignées et testées avec plusieurs vrais comptes.
 
-La migration de schéma v6 `functional-permissions-admin-v6` est correcte : elle
-ajoute notamment `Team.estAdmin`. Elle n’installe pas d’ACL et ne transforme
-aucun utilisateur en administrateur.
+La migration de schéma v6 `functional-permissions-admin-v6` ajoute notamment
+`Team.estAdmin`. La migration v7 `user-filters-v7` ajoute la table additive
+`UserFilters`. Ces migrations n’installent pas d’ACL et ne transforment aucun
+utilisateur en administrateur.
 
 ## Les trois frontières
 
@@ -181,6 +182,13 @@ Dans le panneau d’une personne de l’Organigramme, un administrateur voit :
 Une association, un transfert ou une révocation demande confirmation et motif.
 La mutation est enregistrée dans l’historique Grist. Le motif est actuellement
 journalisé côté widget, pas persisté dans une table métier.
+
+## Filtres personnels
+
+Tout utilisateur associé peut créer, modifier et supprimer uniquement la ligne
+`UserFilters` portant son propre `gristUserId`. L’administrateur conserve son
+override global. Les filtres ne donnent jamais accès à des données
+supplémentaires : ils réduisent seulement les données déjà accessibles.
 
 ## ACL Grist et limite de mise en production
 

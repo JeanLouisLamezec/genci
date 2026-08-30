@@ -23,6 +23,7 @@ const FILES_TO_INJECT = [
     path.join(CORE_DIR, 'identity', 'taskflow-identity-claim-service.js'),
     path.join(CORE_DIR, 'identity', 'taskflow-identity-gate.js'),
     path.join(CORE_DIR, 'permissions', 'taskflow-permissions.js'),
+    path.join(CORE_DIR, 'filters', 'user-filter-store.js'),
     path.join(CORE_DIR, 'taskflow-core.js'),
     path.join(SCHEMA_DIR, 'taskflow-schema.js'),
     path.join(SCHEMA_DIR, 'taskflow-timesheet-backfill.js'),

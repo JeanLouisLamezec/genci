@@ -798,6 +798,36 @@
     }
 
     // ========================================================================
+    // MIGRATION V6 → V7 — Filtres personnels persistants
+    // ========================================================================
+
+    async function migrateToV7(grist, metadata) {
+        log('Migration v6 → v7: user-filters-v7');
+
+        var docApi = getDocApi(grist);
+        var existingTables = metadata.tablesByName || {};
+        var actions = [];
+
+        if (!existingTables.UserFilters) {
+            actions.push(['AddTable', 'UserFilters', [
+                { id: 'gristUserId', type: 'Int', isFormula: false },
+                { id: 'filters', type: 'Text', isFormula: false },
+                { id: 'updatedAt', type: 'DateTime', isFormula: false },
+                { id: 'sourceWidget', type: 'Text', isFormula: false }
+            ]]);
+        }
+
+        if (actions.length > 0) await docApi.applyUserActions(actions);
+
+        return {
+            success: true,
+            message: 'Migration v7 appliquée',
+            actionsExecuted: actions.length,
+            metadata: actions.length ? await loadMigrationMetadata(grist) : metadata
+        };
+    }
+
+    // ========================================================================
     // LISTE DES MIGRATIONS
     // ========================================================================
     
@@ -831,6 +861,12 @@
             name: 'functional-permissions-admin-v6',
             description: 'Ajout du marqueur Team.estAdmin pour les permissions fonctionnelles',
             run: migrateToV6
+        },
+        {
+            version: 7,
+            name: 'user-filters-v7',
+            description: 'Ajout des filtres personnels persistants entre widgets',
+            run: migrateToV7
         }
     ];
 

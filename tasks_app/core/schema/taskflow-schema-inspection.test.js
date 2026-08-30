@@ -7,19 +7,23 @@
  * 3. Ne pas signaler les colonnes légitimes finissant par un chiffre
  */
 
-describe('TaskFlow Schema v6', () => {
+describe('TaskFlow Schema v7', () => {
     
     // Charger le schéma
     require('./taskflow-schema.js');
     const SCHEMA = global.TASKFLOW_SCHEMA;
     
-    test('TASKFLOW_SCHEMA.version === 6 et Team.estAdmin est déclaré', () => {
-        expect(SCHEMA.version).toBe(6);
+    test('TASKFLOW_SCHEMA.version === 7 et UserFilters est déclaré', () => {
+        expect(SCHEMA.version).toBe(7);
         const teamColumns = SCHEMA.tables.Team.columns;
         const adminColumn = teamColumns.find(column => column.id === 'estAdmin');
         expect(adminColumn).toBeDefined();
         expect(adminColumn.opts.type).toBe('Bool');
         expect(adminColumn.opts.isFormula).toBe(false);
+        expect(SCHEMA.tableOrder).toContain('UserFilters');
+        expect(SCHEMA.tables.UserFilters.columns.map(column => column.id)).toEqual([
+            'gristUserId', 'filters', 'updatedAt', 'sourceWidget'
+        ]);
     });
     
     test('Feuilles a les nouvelles colonnes v4', () => {
