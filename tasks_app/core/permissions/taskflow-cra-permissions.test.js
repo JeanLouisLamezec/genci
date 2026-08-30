@@ -77,6 +77,29 @@ describe('permissions communes CRA', () => {
     expect(denied.code).toBe('CRA_TIME_ENTRY_ASSIGNMENT_REQUIRED');
   });
 
+  test('le rattachement puis la correction d une saisie orpheline reste reserve au proprietaire', () => {
+    const ownerSnapshot = snapshot(2);
+    ownerSnapshot.tables.TimeEntries[0].feuille = null;
+    ownerSnapshot.indexes = null;
+
+    const ownerResult = permissions.authorizeMutationBatch(ownerSnapshot, [
+      ['UpdateRecord', 'TimeEntries', 20, { feuille: 10 }],
+      ['UpdateRecord', 'TimeEntries', 20, { heures: 6 }]
+    ]);
+
+    const managerSnapshot = snapshot(1);
+    managerSnapshot.tables.TimeEntries[0].feuille = null;
+    managerSnapshot.indexes = null;
+    const managerResult = permissions.authorizeMutationBatch(managerSnapshot, [
+      ['UpdateRecord', 'TimeEntries', 20, { feuille: 10 }],
+      ['UpdateRecord', 'TimeEntries', 20, { heures: 6 }]
+    ]);
+
+    expect(ownerResult.allowed).toBe(true);
+    expect(managerResult.allowed).toBe(false);
+    expect(managerResult.code).toBe('CRA_TIME_ENTRY_UPDATE_FORBIDDEN');
+  });
+
   test('le responsable ne corrige que les heures en correction manager', () => {
     const accepted = permissions.authorizeMutationBatch(snapshot(1, false, 'correction_manager'), [[
       'UpdateRecord', 'TimeEntries', 20, { heures: 6 }

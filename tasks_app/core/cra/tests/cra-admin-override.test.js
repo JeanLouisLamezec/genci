@@ -1,6 +1,7 @@
 'use strict';
 
 const workflow = require('../workflow/cra-sheet-workflow.js');
+const controller = require('../controller/cra-time-entry-controller.js');
 
 const WEEK = '2026-08-24';
 
@@ -16,6 +17,12 @@ function sheet(overrides = {}) {
 }
 
 describe('CRA - passe-droit administrateur fonctionnel', () => {
+  test('un admin peut saisir directement dans le brouillon d’un autre membre', () => {
+    expect(controller.canDirectEditPersonSheet(1, true, 2)).toBe(true);
+    expect(controller.canDirectEditPersonSheet(1, false, 2)).toBe(false);
+    expect(controller.canDirectEditPersonSheet(2, false, 2)).toBe(true);
+  });
+
   test('un admin peut valider sa propre feuille même sans responsable photographié', () => {
     const current = sheet();
 

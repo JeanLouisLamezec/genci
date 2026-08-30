@@ -489,7 +489,7 @@ function determineEntryAction(existingEntry, actualHours, activeAssignment, curr
  * Vérifie si une semaine est verrouillée pour une personne donnée
  * 
  * CONTRAT DE VERROUILLAGE :
- * - Statuts verrouillés : 'soumis', 'valide', 'submitted', 'validated'
+ * - Statuts verrouillés : 'soumis', 'valide', 'correction_manager' et alias anglais
  * - Statuts éditables : 'brouillon', 'rejete', 'draft', 'rejected'
  * - Une feuille soumise ou validée bloque toute saisie
  * - Une feuille rejetée redevient éditable (retour en brouillon)
@@ -522,7 +522,14 @@ function isPersonWeekLocked(personId, weekStart, sheets) {
   }
   
   const status = String(sheet.statut || '').trim().toLowerCase();
-  const lockedStatuses = ['soumis', 'valide', 'submitted', 'validated'];
+  const lockedStatuses = [
+    'soumis',
+    'valide',
+    'submitted',
+    'validated',
+    'correction_manager',
+    'manager_correction'
+  ];
   
   if (lockedStatuses.includes(status)) {
     return {
@@ -621,6 +628,42 @@ function gristDateFromIso(dateIso) {
   }
 
   return Math.floor(date.getTime() / 1000);
+}
+
+/**
+ * Convertit une table Grist colonnaire en lignes sans dépendre du loader UI.
+ */
+function columnarTableToRows(table) {
+  if (!table || !Array.isArray(table.id)) return [];
+  const columns = Object.keys(table);
+  return table.id.map(function(_, index) {
+    const row = {};
+    columns.forEach(function(column) {
+      row[column] = Array.isArray(table[column]) ? table[column][index] : undefined;
+    });
+    return row;
+  });
+}
+
+/**
+ * Indique si l'acteur peut saisir directement dans la feuille d'une personne.
+ *
+ * Ce contrôle concerne uniquement le mode de saisie normal. Les feuilles
+ * soumises ou validées restent protégées par isPersonWeekLocked() et passent
+ * par le workflow de correction manager.
+ */
+function canDirectEditPersonSheet(actorMemberId, actorIsAdmin, personId) {
+  const actorId = Number(actorMemberId);
+  const targetId = Number(personId);
+
+  if (
+    !Number.isInteger(actorId) || actorId <= 0 ||
+    !Number.isInteger(targetId) || targetId <= 0
+  ) {
+    return false;
+  }
+
+  return Boolean(actorIsAdmin) || actorId === targetId;
 }
 
 /**
@@ -1041,7 +1084,17 @@ function dailyCapacityForPersonAndDate(personId, dayMs, dailyCapacities, team, a
  */
 async function saveCraCellChange(input, dependencies) {
   const { taskId, personId, dateIso, hours } = input;
-  const { tasks, projects, assignments, entries, sheets, dailyCapacities, team, grist } = dependencies;
+  const {
+    tasks,
+    projects,
+    assignments,
+    entries,
+    sheets,
+    dailyCapacities,
+    team,
+    grist,
+    ensureWeeklySheet
+  } = dependencies;
   const allowWeekends = input.allowWeekends || false;
   
   if (
@@ -1065,6 +1118,33 @@ async function saveCraCellChange(input, dependencies) {
     };
   }
   
+  const weekStartIso = weekStartIsoFromDateIso(dateIso);
+
+  if (!weekStartIso) {
+    return {
+      ok: false,
+      action: 'blocked',
+      code: 'INVALID_ENTRY_DATE'
+    };
+  }
+
+  // Une correction historique porte d'abord sur la ligne existante. Son
+  // affectation peut depuis avoir été désactivée, raccourcie ou supprimée :
+  // cela ne doit pas rendre le réalisé déjà saisi impossible à corriger.
+  const entryResult = resolveEditableCellEntry(
+    entries, taskId, dateIso, personId, null
+  );
+
+  if (entryResult.status === 'multiple') {
+    return {
+      ok: false,
+      action: 'blocked',
+      code: 'DUPLICATE_TIME_ENTRY'
+    };
+  }
+
+  const existingEntry = entryResult.entry;
+  const hasPlanningData = hasPlanningFields(existingEntry);
   const project = task.projet ? (projects || []).find(p => p.id === task.projet) : null;
   
   const projectContext = {
@@ -1073,66 +1153,65 @@ async function saveCraCellChange(input, dependencies) {
     allowWeekends: allowWeekends
   };
   
-  const assignmentResult = resolveActiveAssignment(
-    taskId,
-    personId,
-    dateIso,
-    assignments,
-    projectContext
-  );
-  
-  if (assignmentResult.status === 'invalid') {
+  let activeAssignment = null;
+
+  // Une nouvelle saisie, contrairement à une correction, doit toujours être
+  // couverte par une affectation active et valide à la date demandée.
+  if (!existingEntry && Number(hours) > 0) {
+    const assignmentResult = resolveActiveAssignment(
+      taskId,
+      personId,
+      dateIso,
+      assignments,
+      projectContext
+    );
+
+    if (assignmentResult.status === 'invalid') {
+      return {
+        ok: false,
+        action: 'blocked',
+        code: assignmentResult.code || 'INVALID_DISTRIBUTION_MODE'
+      };
+    }
+
+    if (assignmentResult.status === 'ambiguous') {
+      return {
+        ok: false,
+        action: 'blocked',
+        code: 'AMBIGUOUS_ACTIVE_ASSIGNMENT'
+      };
+    }
+
+    if (assignmentResult.status === 'missing') {
+      return {
+        ok: false,
+        action: 'blocked',
+        code: 'MISSING_ACTIVE_ASSIGNMENT'
+      };
+    }
+
+    activeAssignment = assignmentResult.assignment;
+  } else if (existingEntry && existingEntry.affectation) {
+    activeAssignment = (assignments || []).find(function(assignment) {
+      return Number(assignment.id) === Number(existingEntry.affectation);
+    }) || null;
+  }
+
+  // Effacer une cellule déjà vide ne crée ni feuille ni TimeEntry.
+  if (!existingEntry && Number(hours) <= 0) {
     return {
-      ok: false,
-      action: 'blocked',
-      code: assignmentResult.code || 'INVALID_DISTRIBUTION_MODE'
+      ok: true,
+      action: 'none',
+      entryId: null,
+      assignmentId: null,
+      sheetId: null,
+      fields: {},
+      actionsExecuted: 0
     };
   }
   
-  if (assignmentResult.status === 'ambiguous') {
-    return {
-      ok: false,
-      action: 'blocked',
-      code: 'AMBIGUOUS_ACTIVE_ASSIGNMENT'
-    };
-  }
-  
-  if (assignmentResult.status === 'missing') {
-    return {
-      ok: false,
-      action: 'blocked',
-      code: 'MISSING_ACTIVE_ASSIGNMENT'
-    };
-  }
-  
-  const activeAssignment = assignmentResult.assignment;
-  
-  const entryResult = resolveEditableCellEntry(
-    entries, taskId, dateIso, personId, activeAssignment
-  );
-  
-  if (entryResult.status === 'multiple') {
-    return {
-      ok: false,
-      action: 'blocked',
-      code: 'DUPLICATE_TIME_ENTRY'
-    };
-  }
-  
-  const existingEntry = entryResult.entry;
-  const hasPlanningData = hasPlanningFields(existingEntry);
-  
-  const weekStartIso = weekStartIsoFromDateIso(dateIso);
-  
-  if (!weekStartIso) {
-    return {
-      ok: false,
-      action: 'blocked',
-      code: 'INVALID_ENTRY_DATE'
-    };
-  }
-  
-  const matchingSheets = (sheets || []).filter(function(sheet) {
+  let availableSheets = sheets || [];
+  let matchingSheets = availableSheets.filter(function(sheet) {
     return (
       Number(sheet.membre) === Number(personId) &&
       gristDateKey(sheet.semaine) === weekStartIso
@@ -1140,23 +1219,128 @@ async function saveCraCellChange(input, dependencies) {
   });
   
   let currentSheet = null;
+
+  if (existingEntry && existingEntry.feuille) {
+    let linkedSheet = availableSheets.find(function(sheet) {
+      return Number(sheet.id) === Number(existingEntry.feuille);
+    });
+
+    // Le service de création de feuille et la TimeEntry peuvent avoir été
+    // écrits juste avant, alors que le cache du widget porte encore sur le
+    // snapshot précédent. Une référence absente du cache doit donc être
+    // confirmée par Grist avant d'être déclarée supprimée ou inaccessible.
+    if (
+      !linkedSheet &&
+      grist.docApi &&
+      typeof grist.docApi.fetchTable === 'function'
+    ) {
+      try {
+        availableSheets = columnarTableToRows(
+          await grist.docApi.fetchTable('Feuilles')
+        );
+        linkedSheet = availableSheets.find(function(sheet) {
+          return Number(sheet.id) === Number(existingEntry.feuille);
+        });
+        matchingSheets = availableSheets.filter(function(sheet) {
+          return Number(sheet.membre) === Number(personId) &&
+            gristDateKey(sheet.semaine) === weekStartIso;
+        });
+      } catch (error) {
+        return {
+          ok: false,
+          action: 'blocked',
+          code: 'WEEKLY_SHEET_REFRESH_FAILED',
+          error: error.message || String(error)
+        };
+      }
+    }
+
+    if (!linkedSheet) {
+      return {
+        ok: false,
+        action: 'blocked',
+        code: 'TIME_ENTRY_SHEET_NOT_FOUND',
+        sheetId: existingEntry.feuille
+      };
+    }
+
+    if (
+      Number(linkedSheet.membre) !== Number(personId) ||
+      gristDateKey(linkedSheet.semaine) !== weekStartIso
+    ) {
+      return {
+        ok: false,
+        action: 'blocked',
+        code: 'TIME_ENTRY_SHEET_MISMATCH',
+        sheetId: linkedSheet.id
+      };
+    }
+  }
+
+  let sheetCreated = false;
   
-  if (matchingSheets.length === 0) {
+  if (matchingSheets.length === 1) {
+    currentSheet = matchingSheets[0];
+  } else if (matchingSheets.length > 1) {
+    return {
+      ok: false,
+      action: 'blocked',
+      code: 'DUPLICATE_WEEKLY_SHEET',
+      sheetIds: matchingSheets.map(function(s) { return s.id; })
+    };
+  } else if (typeof ensureWeeklySheet === 'function') {
+    let ensured;
+    try {
+      ensured = await ensureWeeklySheet({
+        grist,
+        memberId: personId,
+        weekStartIso,
+        sheets: availableSheets,
+        entries: entries || [],
+        createOnlyWhenEntriesExist: false
+      });
+    } catch (error) {
+      return {
+        ok: false,
+        action: 'blocked',
+        code: 'WEEKLY_SHEET_CREATE_FAILED',
+        error: error.message || String(error)
+      };
+    }
+
+    if (!ensured || !ensured.success || !ensured.sheet || !ensured.sheetId) {
+      return {
+        ok: false,
+        action: 'blocked',
+        code: (ensured && ensured.code) || 'WEEKLY_SHEET_CREATE_FAILED',
+        error: ensured && (ensured.error || ensured.reason)
+      };
+    }
+    currentSheet = ensured.sheet;
+    sheetCreated = Boolean(ensured.created);
+  } else {
     return {
       ok: false,
       action: 'blocked',
       code: 'MISSING_WEEKLY_SHEET'
     };
   }
-  
-  if (matchingSheets.length === 1) {
-    currentSheet = matchingSheets[0];
-  } else {
+
+  const sheetStatus = String(currentSheet.statut || '').trim().toLowerCase();
+  if ([
+    'soumis',
+    'valide',
+    'submitted',
+    'validated',
+    'correction_manager',
+    'manager_correction'
+  ].includes(sheetStatus)) {
     return {
       ok: false,
       action: 'blocked',
-      code: 'DUPLICATE_WEEKLY_SHEET',
-      sheetIds: matchingSheets.map(function(s) { return s.id; })
+      code: 'SHEET_LOCKED',
+      sheetId: currentSheet.id,
+      sheetStatus
     };
   }
   
@@ -1177,8 +1361,10 @@ async function saveCraCellChange(input, dependencies) {
       ok: true,
       action: 'none',
       entryId: existingEntry ? existingEntry.id : null,
-      assignmentId: activeAssignment.id,
+      assignmentId: activeAssignment ? activeAssignment.id : (existingEntry && existingEntry.affectation) || null,
       sheetId: currentSheet ? currentSheet.id : null,
+      sheet: currentSheet || null,
+      sheetCreated,
       fields: {},
       actionsExecuted: 0
     };
@@ -1204,11 +1390,25 @@ async function saveCraCellChange(input, dependencies) {
     }
   } else if (actionResult.action === 'update' && existingEntry) {
     try {
-      await grist.docApi.applyUserActions([
-        ['UpdateRecord', 'TimeEntries', existingEntry.id, actionResult.fields]
+      const updateActions = [];
+      const returnedFields = Object.assign({}, actionResult.fields);
+      if (!existingEntry.feuille) {
+        // Deux actions distinctes sont intentionnelles : la garde ACL vérifie
+        // d'abord le rattachement à la feuille, puis l'édition des heures dans
+        // le snapshot mis à jour. Cela reste autorisé au propriétaire et à
+        // l'admin, sans ouvrir l'édition directe aux autres rôles.
+        updateActions.push(['UpdateRecord', 'TimeEntries', existingEntry.id, {
+          feuille: currentSheet.id
+        }]);
+        returnedFields.feuille = currentSheet.id;
+      }
+      updateActions.push([
+        'UpdateRecord', 'TimeEntries', existingEntry.id, actionResult.fields
       ]);
+      await grist.docApi.applyUserActions(updateActions);
+      actionResult = Object.assign({}, actionResult, { fields: returnedFields });
       entryId = existingEntry.id;
-      actionsExecuted = 1;
+      actionsExecuted = updateActions.length;
     } catch (error) {
       return {
         ok: false,
@@ -1273,8 +1473,10 @@ async function saveCraCellChange(input, dependencies) {
         ok: true,
         action: 'create',
         entryId: entryId,
-        assignmentId: activeAssignment.id,
+        assignmentId: activeAssignment ? activeAssignment.id : null,
         sheetId: currentSheet.id,
+        sheet: currentSheet,
+        sheetCreated,
         fields: fieldsToCreate,
         actionsExecuted: 1
       };
@@ -1293,8 +1495,10 @@ async function saveCraCellChange(input, dependencies) {
     ok: true,
     action: actionResult.action,
     entryId: entryId,
-    assignmentId: activeAssignment.id,
+    assignmentId: activeAssignment ? activeAssignment.id : (existingEntry && existingEntry.affectation) || null,
     sheetId: currentSheet ? currentSheet.id : null,
+    sheet: currentSheet || null,
+    sheetCreated,
     fields: actionResult.fields,
     actionsExecuted: actionsExecuted
   };
@@ -1313,6 +1517,7 @@ const CRAController = {
   parseStrictIsoDate,
   weekStartIsoFromDateIso,
   gristDateFromIso,
+  canDirectEditPersonSheet,
   extractAddedRecordId,
   dailyCapacityForPersonAndDate,
   hasExplicitActualHours,

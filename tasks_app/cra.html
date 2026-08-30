@@ -8,12 +8,12 @@
 <script src="core/filters/filter-manager.js"></script>
 <script src="core/cra/ui/cra-person-filter.js?v=20260830-filter-v2"></script>
 <script src="core/cra/ui/cra-filter-adapter.js?v=20260830-filter-v2"></script>
-<script src="core/cra/controller/cra-time-entry-controller.js"></script>
+<script src="core/cra/controller/cra-time-entry-controller.js?v=20260831-sheet-cache"></script>
 <script src="core/cra/loader/cra-data-loader.js"></script>
 <script src="core/generated/taskflow-planning-browser.js?v=20260827-retro"></script>
 
 <script src="core/generated/taskflow-cra-browser.js?v=20260830-admin"></script>
-<script src="core/cra/workflow/cra-workflow-integration.js?v=20260830-admin"></script>
+<script src="core/cra/workflow/cra-workflow-integration.js?v=20260831-admin-edit"></script>
 <script src="core/cra/export/cra-export-model.js"></script>
 <script src="core/cra/export/cra-export-pdf.js"></script>
 <script src="core/cra/export/cra-export-csv.js"></script>
@@ -6961,6 +6961,7 @@ const S = {
   dailyCapacities: [],      // MemberDailyCapacities
   // Identité (1.2.1 - SÉPARATION)
   currentUserMemberId: null,  // Utilisateur connecté (immuable)
+  currentUserActor: null,     // Acteur résolu, dont le passe-droit administrateur
   selectedPersonId: null,     // Personne affichée (change avec filtres)
   // Mode correction manager
   managerCorrectionSheetId: null  // ID de la feuille en mode correction
@@ -7873,9 +7874,10 @@ function updateSubmitBtn() {
   
   // Vérifier si la personne affichée est l'utilisateur courant
   const displayedPersonId = S.selectedPersonId || S.visiblePersonIds[0];
-  const isViewingOwnSheet = displayedPersonId === currentUserId;
+  const isAdmin = Boolean(S.currentUserActor && S.currentUserActor.isAdmin);
+  const isViewingOwnSheet = Number(displayedPersonId) === Number(currentUserId);
   
-  if (!isViewingOwnSheet) {
+  if (!isViewingOwnSheet && !isAdmin) {
     // Consultation d'une autre personne : bouton désactivé
     sb.textContent = 'Feuille d\'une autre personne';
     sb.disabled = true;
@@ -7884,8 +7886,9 @@ function updateSubmitBtn() {
     return;
   }
   
-  // Utilisateur consult sa propre feuille
-  const st = myStatutForPerson(currentUserId);
+  // L'admin agit sur la feuille affichée tout en restant l'acteur connecté.
+  const targetPersonId = isAdmin ? displayedPersonId : currentUserId;
+  const st = myStatutForPerson(targetPersonId);
   
   // 1.2.2 - Utiliser normalizeSheetStatus pour comparer
   const status = normalizeSheetStatus(st);
@@ -7902,7 +7905,7 @@ function updateSubmitBtn() {
     sb.className = 'btn ghost'; 
     sb.onclick = () => {
       if (typeof CraWorkflowIntegration !== 'undefined' && CraWorkflowIntegration.withdrawCurrentWeek) {
-        CraWorkflowIntegration.withdrawCurrentWeek();
+        CraWorkflowIntegration.withdrawCurrentWeek(targetPersonId);
       }
     }; 
   }
@@ -7912,7 +7915,7 @@ function updateSubmitBtn() {
     sb.className = 'btn'; 
     sb.onclick = () => {
       if (typeof CraWorkflowIntegration !== 'undefined' && CraWorkflowIntegration.submitCurrentWeek) {
-        CraWorkflowIntegration.submitCurrentWeek();
+        CraWorkflowIntegration.submitCurrentWeek(targetPersonId);
       }
     }; 
   }
@@ -7981,7 +7984,14 @@ function renderSaisie() {
     const st = myStatutForPerson(personId);
     // 1.2.2 - Utiliser normalizeSheetStatus pour le verrouillage
     const status = normalizeSheetStatus(st);
-    const isLocked = ['soumis', 'valide'].includes(status);
+    const isExplicitManagerCorrection = status === 'correction_manager' &&
+      Boolean(S.managerCorrectionSheetId) &&
+      S.feuilles.some(function(sheet) {
+        return Number(sheet.id) === Number(S.managerCorrectionSheetId) &&
+          Number(sheet.membre) === Number(personId);
+      });
+    const isLocked = ['soumis', 'valide', 'correction_manager'].includes(status) &&
+      !isExplicitManagerCorrection;
     
     // En-tête de section
     html += '<div class="person-section" style="margin-bottom:24px;padding:16px;background:var(--card-bg);border:1px solid var(--border);border-radius:8px;page-break-inside:avoid">'
@@ -8266,7 +8276,13 @@ async function setCell(taskId, dayMs, personId, qtyStr) {
     S.feuilles
   );
   
-  if (!S.managerCorrectionSheetId && personId !== S.currentUserMemberId) {
+  const canDirectEdit = CRAController.canDirectEditPersonSheet(
+    S.currentUserMemberId,
+    Boolean(S.currentUserActor && S.currentUserActor.isAdmin),
+    personId
+  );
+
+  if (!S.managerCorrectionSheetId && !canDirectEdit) {
     toast('Vous ne pouvez modifier que votre propre feuille');
     render();
     return;
@@ -8300,7 +8316,13 @@ async function setCell(taskId, dayMs, personId, qtyStr) {
     sheets: S.feuilles,
     dailyCapacities: S.dailyCapacities || [],
     team: S.team || [],
-    grist: effectiveGrist
+    grist: effectiveGrist,
+    ensureWeeklySheet: !S.alone &&
+      typeof TaskFlowCra !== 'undefined' &&
+      TaskFlowCra.service &&
+      typeof TaskFlowCra.service.ensureWeeklySheet === 'function'
+        ? TaskFlowCra.service.ensureWeeklySheet
+        : null
   });
   
   // TRAITER LE RÉSULTAT
@@ -8315,10 +8337,20 @@ async function setCell(taskId, dayMs, personId, qtyStr) {
       toast('Erreur : plusieurs entrées pour cette cellule');
     } else if (result.code === 'MISSING_WEEKLY_SHEET') {
       toast('Erreur : feuille introuvable pour cette semaine');
+    } else if (result.code === 'WEEKLY_SHEET_REFRESH_FAILED') {
+      toast('Impossible de vérifier la feuille de cette semaine');
+    } else if (result.code === 'WEEKLY_SHEET_CREATE_FAILED' || String(result.code || '').indexOf('WEEKLY_SHEET_') === 0) {
+      toast('La feuille de cette semaine n’a pas pu être créée');
     } else if (result.code === 'INVALID_ENTRY_DATE') {
       toast('Date de saisie invalide');
     } else if (result.code === 'DUPLICATE_WEEKLY_SHEET') {
       toast('Plusieurs feuilles existent pour cette personne et cette semaine');
+    } else if (result.code === 'SHEET_LOCKED') {
+      toast('Cette feuille est verrouillée. Utilisez le workflow de correction approprié.');
+    } else if (result.code === 'TIME_ENTRY_SHEET_NOT_FOUND') {
+      toast('La saisie référence une feuille supprimée ou inaccessible');
+    } else if (result.code === 'TIME_ENTRY_SHEET_MISMATCH') {
+      toast('La saisie est rattachée à une autre personne ou une autre semaine');
     } else if (result.code === 'GRIST_API_UNAVAILABLE') {
       toast('API Grist indisponible');
     } else if (result.code === 'TIME_ENTRY_WRITE_FAILED') {
@@ -8330,6 +8362,24 @@ async function setCell(taskId, dayMs, personId, qtyStr) {
     }
     render();
     return;
+  }
+
+  // Le contrôleur peut avoir matérialisé la feuille juste avant la TimeEntry.
+  // La conserver immédiatement évite que la prochaine édition travaille avec
+  // le snapshot Feuilles antérieur à cette création.
+  if (result.sheet && result.sheet.id) {
+    const localSheetIndex = S.feuilles.findIndex(function(sheet) {
+      return Number(sheet.id) === Number(result.sheet.id);
+    });
+    if (localSheetIndex === -1) {
+      S.feuilles.push(result.sheet);
+    } else {
+      S.feuilles[localSheetIndex] = Object.assign(
+        {},
+        S.feuilles[localSheetIndex],
+        result.sheet
+      );
+    }
   }
   
   // METTRE À JOUR L'ÉTAT LOCAL APRÈS SUCCÈS
@@ -8992,7 +9042,7 @@ function getAddedRecordId(actionResult, label) {
 /**
  * Wrapper de compatibilité pour submitWeekForPerson
  * Délègue à CraWorkflowIntegration.submitCurrentWeek()
- * Utilise uniquement S.currentUserMemberId comme acteur
+ * Conserve S.currentUserMemberId comme acteur, même pour une cible administrée.
  */
 async function submitWeekForPerson(personId) {
   // Vérifier que c'est bien l'acteur qui soumet sa propre feuille
@@ -9001,14 +9051,15 @@ async function submitWeekForPerson(personId) {
     return { success: false, code: 'ACTOR_NOT_IDENTIFIED' };
   }
   
-  if (personId !== S.currentUserMemberId) {
+  const isAdmin = Boolean(S.currentUserActor && S.currentUserActor.isAdmin);
+  if (Number(personId) !== Number(S.currentUserMemberId) && !isAdmin) {
     toast('Vous ne pouvez soumettre que votre propre feuille');
     return { success: false, code: 'NOT_SHEET_OWNER' };
   }
   
   // Délèguer à CraWorkflowIntegration
   if (typeof CraWorkflowIntegration !== 'undefined' && CraWorkflowIntegration.submitCurrentWeek) {
-    return await CraWorkflowIntegration.submitCurrentWeek();
+    return await CraWorkflowIntegration.submitCurrentWeek(personId);
   }
   
   toast('Adaptateur non initialisé');
@@ -9025,13 +9076,14 @@ async function withdrawWeekForPerson(personId) {
     return { success: false, code: 'ACTOR_NOT_IDENTIFIED' };
   }
   
-  if (personId !== S.currentUserMemberId) {
+  const isAdmin = Boolean(S.currentUserActor && S.currentUserActor.isAdmin);
+  if (Number(personId) !== Number(S.currentUserMemberId) && !isAdmin) {
     toast('Vous ne pouvez retirer que votre propre soumission');
     return { success: false, code: 'NOT_SHEET_OWNER' };
   }
   
   if (typeof CraWorkflowIntegration !== 'undefined' && CraWorkflowIntegration.withdrawCurrentWeek) {
-    return await CraWorkflowIntegration.withdrawCurrentWeek();
+    return await CraWorkflowIntegration.withdrawCurrentWeek(personId);
   }
   
   toast('Adaptateur non initialisé');

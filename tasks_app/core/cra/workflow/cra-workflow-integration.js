@@ -163,13 +163,12 @@
     ) || null;
   }
   
-  // CORRECTION v20260726-5 : Résoudre la feuille courante pour l'utilisateur connecté
-  function resolveCurrentUserSheet(state) {
-    const memberId =
-      normalizeId(state?.currentUserMemberId);
+  // Résoudre l'unique feuille d'un membre pour la semaine affichée.
+  function resolveMemberSheet(state, memberId) {
+    const normalizedMemberId = normalizeId(memberId);
 
     if (
-      memberId === null ||
+      normalizedMemberId === null ||
       !Array.isArray(state?.feuilles)
     ) {
       return {
@@ -192,7 +191,7 @@
 
     const matchingSheets =
       state.feuilles.filter(sheet =>
-        normalizeId(sheet.membre) === memberId &&
+        normalizeId(sheet.membre) === normalizedMemberId &&
         getWeekStartIso(sheet.semaine) ===
           expectedWeekIso
       );
@@ -219,6 +218,11 @@
       status: 'found',
       reason: 'SHEET_FOUND'
     };
+  }
+
+  // Compatibilité : feuille de l'utilisateur connecté.
+  function resolveCurrentUserSheet(state) {
+    return resolveMemberSheet(state, state?.currentUserMemberId);
   }
   
   // Helper : vérifier si une feuille est accessible au manager par snapshot
@@ -465,7 +469,7 @@
   }
   
   // Soumettre la semaine courante
-  async function submitCurrentWeek() {
+  async function submitCurrentWeek(memberId) {
     // CORRECTION : Vérifier le verrou pour empêcher le double-clic
     if (submitCurrentWeekPending) {
       console.warn('[CRA] submitCurrentWeek déjà en cours, ignoré');
@@ -486,17 +490,32 @@
         return { success: false, code: 'ACTOR_NOT_IDENTIFIED' };
       }
       
-      const actorMemberId = state.currentUserMemberId;
+      const actorMemberId = normalizeId(state.currentUserMemberId);
+      const actorIsAdmin = Boolean(state.currentUserActor && state.currentUserActor.isAdmin);
+      const requestedMemberId = memberId === undefined || memberId === null
+        ? actorMemberId
+        : normalizeId(memberId);
+
+      if (requestedMemberId === null) {
+        if (config.notify) config.notify('Personne cible invalide', 'error');
+        return { success: false, code: 'INVALID_TARGET_MEMBER' };
+      }
+
+      if (!actorIsAdmin && requestedMemberId !== actorMemberId) {
+        if (config.notify) config.notify('Vous ne pouvez soumettre que votre propre feuille', 'error');
+        return { success: false, code: 'NOT_SHEET_OWNER' };
+      }
       
       // LOG DE DIAGNOSTIC v20260726-4
       console.info('[CRA submit v20260726-4]', {
         actorMemberId: actorMemberId,
+        targetMemberId: requestedMemberId,
         weekStartRaw: state.weekStart,
         weekStartLocal: new Date(state.weekStart).toString(),
         weekStartIso: getWeekStartIso(state.weekStart),
         entryCount: state.entries ? state.entries.length : 0,
         memberEntries: (state.entries || [])
-          .filter(entry => Number(entry.membre) === Number(actorMemberId))
+          .filter(entry => Number(entry.membre) === Number(requestedMemberId))
           .map(entry => ({
             id: entry.id,
             date: entry.date,
@@ -513,7 +532,7 @@
       let sheetId = null;
       
       // 1. Essayer de trouver la feuille existante
-      const sheetResult = resolveCurrentUserSheet(state);
+      const sheetResult = resolveMemberSheet(state, requestedMemberId);
       
       if (sheetResult.status === 'duplicate') {
         if (config.notify) config.notify('Plusieurs feuilles existent pour cette semaine', 'error');
@@ -524,7 +543,7 @@
       if (sheetResult.status === 'none') {
         // Vérifier s'il y a des entrées pour cette semaine
         const memberWeekEntries = (state.entries || []).filter(e => {
-          if (e.membre !== actorMemberId) return false;
+          if (Number(e.membre) !== requestedMemberId) return false;
           const entryWeekIso = getWeekStartIso(e.date);
           return entryWeekIso === mondayIso;
         });
@@ -540,7 +559,7 @@
           try {
             const weeklySheetResult = await config.taskFlowCra.service.ensureWeeklySheet({
               grist: config.grist,
-              memberId: actorMemberId,
+              memberId: requestedMemberId,
               weekStartIso: mondayIso,
               sheets: state.feuilles,
               entries: state.entries,
@@ -580,7 +599,7 @@
         try {
           // Trouver les entrées orphelines du membre pour cette semaine
           const orphanEntries = (state.entries || []).filter(e => {
-            if (e.membre !== actorMemberId) return false;
+            if (Number(e.membre) !== requestedMemberId) return false;
             const entryWeekIso = getWeekStartIso(e.date);
             if (entryWeekIso !== mondayIso) return false;
             return e.feuille === null || e.feuille === 0 || e.feuille === undefined;
@@ -619,7 +638,7 @@
   }
   
   // Retirer la soumission
-  async function withdrawCurrentWeek() {
+  async function withdrawCurrentWeek(memberId) {
     if (!config || !adapter) {
       throw new Error('CraWorkflowIntegration non configuré');
     }
@@ -630,7 +649,23 @@
       return { success: false, code: 'ACTOR_NOT_IDENTIFIED' };
     }
     
-    const sheetResult = resolveCurrentUserSheet(state);
+    const actorMemberId = normalizeId(state.currentUserMemberId);
+    const actorIsAdmin = Boolean(state.currentUserActor && state.currentUserActor.isAdmin);
+    const requestedMemberId = memberId === undefined || memberId === null
+      ? actorMemberId
+      : normalizeId(memberId);
+
+    if (requestedMemberId === null) {
+      if (config.notify) config.notify('Personne cible invalide', 'error');
+      return { success: false, code: 'INVALID_TARGET_MEMBER' };
+    }
+
+    if (!actorIsAdmin && requestedMemberId !== actorMemberId) {
+      if (config.notify) config.notify('Vous ne pouvez retirer que votre propre soumission', 'error');
+      return { success: false, code: 'NOT_SHEET_OWNER' };
+    }
+
+    const sheetResult = resolveMemberSheet(state, requestedMemberId);
     if (sheetResult.status !== 'found' || !sheetResult.sheet) {
       if (config.notify) config.notify('Aucune feuille trouvée', 'error');
       return { success: false, code: 'NO_SHEET' };
@@ -908,6 +943,7 @@
     showCorrectionModal,
     // Helpers exportés pour tests
     resolveCurrentUserSheet,
+    resolveMemberSheet,
     findSheetForMemberWeek
   };
   

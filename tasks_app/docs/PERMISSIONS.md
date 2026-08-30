@@ -133,6 +133,20 @@ En modification ordinaire, seuls `heures` et le rattachement contrôlé à la
 feuille sont acceptés. Dans `correction_manager`, le valideur photographié ne
 peut modifier que `heures`. Un administrateur possède le passe-droit complet.
 
+La décision d’écriture distingue deux cas, dans cet ordre :
+
+1. une ligne `TimeEntries` existe déjà pour le membre, la tâche et la date :
+   elle peut être corrigée même si son affectation historique est désormais
+   inactive, terminée ou absente ;
+2. aucune ligne n’existe : une affectation active couvrant exactement la date
+   reste obligatoire avant toute création.
+
+Une feuille hebdomadaire absente est matérialisée en brouillon lors de la
+première saisie autorisée. Une ligne historique sans feuille est d’abord
+rattachée à cette feuille, puis ses heures sont modifiées dans le même lot ACL.
+Les doublons de feuilles, les rattachements vers une autre semaine ou un autre
+membre et les références vers une feuille introuvable restent bloquants.
+
 Le responsable du projet et son manager direct peuvent recalculer les lignes
 prévisionnelles issues d'une `TaskAssignment` active. Cette autorisation est
 limitée à `heuresPrevues`, aux instantanés de capacité, à `capaciteJour` et à
@@ -156,6 +170,15 @@ commande reconnue :
 | validé -> correction manager | `responsableValidation`, motif obligatoire |
 | correction manager -> validé | `responsableValidation` |
 | brouillon -> correction rétroactive | responsable direct |
+
+L’administrateur peut saisir directement dans le brouillon ou la feuille
+rejetée de n’importe quel membre, puis soumettre ou retirer cette feuille au
+nom du membre tout en restant l’acteur technique de l’opération. Une feuille
+soumise, validée ou en `correction_manager` demeure verrouillée dans la grille
+ordinaire : l’administrateur passe alors par les commandes de rejet, validation
+ou correction manager afin de préserver l’historique et les révisions du
+workflow. Le statut `correction_manager` n’est éditable que lorsque ce mode a
+été explicitement ouvert, et uniquement sur les entrées existantes.
 
 La soumission photographie le responsable direct dans
 `responsableValidation`. Un changement ultérieur d’annuaire ne transfère pas

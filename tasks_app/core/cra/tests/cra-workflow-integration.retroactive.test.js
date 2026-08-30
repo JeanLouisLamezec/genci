@@ -1,6 +1,75 @@
 'use strict';
 
 describe('CraWorkflowIntegration - régularisation rétroactive', () => {
+  test('un admin peut soumettre puis retirer la feuille affichée d’un autre membre', async () => {
+    jest.resetModules();
+    delete global.CraWorkflowIntegration;
+    require('../workflow/cra-workflow-integration.js');
+
+    const mondaySeconds = Math.floor(new Date(2026, 7, 31, 12).getTime() / 1000);
+    const targetSheet = {
+      id: 50,
+      membre: 2,
+      semaine: mondaySeconds,
+      statut: 'brouillon'
+    };
+    const adapter = {
+      submit: jest.fn(async () => ({ success: true })),
+      withdraw: jest.fn(async () => ({ success: true }))
+    };
+
+    global.CraWorkflowIntegration.configure({
+      grist: { docApi: { applyUserActions: jest.fn() } },
+      taskFlowCra: {
+        service: {},
+        createUiAdapter: jest.fn(() => adapter)
+      },
+      getState: () => ({
+        currentUserMemberId: 1,
+        currentUserActor: { isAdmin: true },
+        weekStart: mondaySeconds,
+        feuilles: [targetSheet],
+        entries: []
+      })
+    });
+
+    await expect(global.CraWorkflowIntegration.submitCurrentWeek(2))
+      .resolves.toMatchObject({ success: true });
+    await expect(global.CraWorkflowIntegration.withdrawCurrentWeek(2))
+      .resolves.toMatchObject({ success: true });
+    expect(adapter.submit).toHaveBeenCalledWith(50);
+    expect(adapter.withdraw).toHaveBeenCalledWith(50);
+  });
+
+  test('un non-admin ne peut pas piloter directement la feuille d’un autre membre', async () => {
+    jest.resetModules();
+    delete global.CraWorkflowIntegration;
+    require('../workflow/cra-workflow-integration.js');
+
+    const adapter = {
+      submit: jest.fn(),
+      withdraw: jest.fn()
+    };
+    global.CraWorkflowIntegration.configure({
+      grist: { docApi: {} },
+      taskFlowCra: { service: {}, createUiAdapter: jest.fn(() => adapter) },
+      getState: () => ({
+        currentUserMemberId: 1,
+        currentUserActor: { isAdmin: false },
+        weekStart: Math.floor(new Date(2026, 7, 31, 12).getTime() / 1000),
+        feuilles: [],
+        entries: []
+      })
+    });
+
+    await expect(global.CraWorkflowIntegration.submitCurrentWeek(2))
+      .resolves.toMatchObject({ success: false, code: 'NOT_SHEET_OWNER' });
+    await expect(global.CraWorkflowIntegration.withdrawCurrentWeek(2))
+      .resolves.toMatchObject({ success: false, code: 'NOT_SHEET_OWNER' });
+    expect(adapter.submit).not.toHaveBeenCalled();
+    expect(adapter.withdraw).not.toHaveBeenCalled();
+  });
+
   test('crée la feuille manager et rattache les TimeEntries prévisionnelles', async () => {
     jest.resetModules();
     delete global.CraWorkflowIntegration;
