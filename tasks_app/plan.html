@@ -6,13 +6,17 @@
 <title>Plan - TaskFlow</title>
 <script src="https://docs.getgrist.com/grist-plugin-api.js"></script>
 <script src="core/filters/filter-manager.js"></script>
+<script src="core/time/time-periods.js"></script>
+<script src="core/time/time-view-selector.js"></script>
 <script src="core/planning/time_entry/time-entry-loader.js"></script>
 <script src="core/planning/view/plan-period-aggregation.js"></script>
+<script src="core/planning/view/plan-filter-scope.js"></script>
 <script src="core/planning/forecast/rolling-load.js?v=20260827-retro"></script>
 <script src="core/generated/taskflow-planning-browser.js?v=20260827-retro"></script>
 <script src="core/planning/view/plan-canon-adapter.js?v=20260827-retro"></script>
 <link rel="stylesheet" href="core/theme/taskflow-theme.css">
 <link rel="stylesheet" href="core/filters/filter-styles.css">
+<link rel="stylesheet" href="core/time/time-view-selector.css">
 <style>
 /* Couleurs spécifiques au Plan (états de charge) */
 :root{
@@ -22,20 +26,37 @@
 html,body{height:100%}
 body{background:var(--bg);color:var(--text);font:14px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
 #app{display:flex;flex-direction:column;height:100vh}
-.bar{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--border);flex-wrap:wrap}
-.title{display:flex;align-items:center;gap:8px;font-size:1.1rem;font-weight:700;color:var(--primary)}
+.bar{display:grid;grid-template-columns:auto minmax(360px,1fr) auto;align-items:center;gap:12px;padding:10px 18px;border-bottom:1px solid var(--border)}
+.bar-left,.bar-right{display:flex;align-items:center;gap:10px;white-space:nowrap}
+.bar-time{display:flex;justify-content:center;min-width:0}
+.title{display:flex;align-items:center;gap:8px;font-size:1.1rem;font-weight:700;color:var(--primary);flex:none}
 .title .ic{font-size:1.2rem}
-.spacer{flex:1}
 .seg{display:inline-flex;border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
 .seg button{background:transparent;color:var(--text-muted);border:0;padding:5px 11px;cursor:pointer;font-size:0.82rem}
 .seg button.on{background:var(--primary);color:#fff}
 .btn{background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:var(--radius);padding:5px 10px;cursor:pointer;font-size:0.82rem}
 .btn:hover{background:var(--surface-3)}
 .btn.ghost{background:transparent;color:var(--text-muted)}
-.nav{display:inline-flex;align-items:center;gap:6px}
-.nav .range{font-size:0.82rem;color:var(--text-muted);min-width:104px;text-align:center}
-select.btn{appearance:none;padding-right:24px}
+.nav{display:inline-flex;align-items:center;gap:4px;padding:3px;background:var(--surface-2);border:1px solid var(--border);border-radius:calc(var(--radius) + 2px)}
+.nav>.btn{border-color:transparent;background:transparent}
+.nav .range{font-size:0.82rem;color:var(--text-muted);min-width:132px;text-align:center;padding:0 6px;white-space:nowrap}
+.bar-left select.btn{background:var(--surface-2)}
+select.btn{padding-right:8px}
 label.chk{display:inline-flex;align-items:center;gap:6px;font-size:0.8rem;color:var(--text-muted);cursor:pointer}
+.toolbar-field{display:inline-flex;align-items:center;gap:7px;font-size:.8rem;color:var(--text-muted);white-space:nowrap}
+.toolbar-dropdown{position:relative}
+.toolbar-dropdown summary{list-style:none;display:inline-flex;align-items:center;gap:6px;min-height:32px;white-space:nowrap}
+.toolbar-dropdown summary::-webkit-details-marker{display:none}
+.toolbar-dropdown[open] summary{border-color:var(--primary);color:var(--text)}
+.toolbar-options{position:absolute;top:calc(100% + 5px);right:0;z-index:1001;display:flex;flex-direction:column;gap:3px;min-width:190px;padding:8px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:0 8px 24px rgba(0,0,0,.16)}
+.toolbar-options .chk{padding:7px 8px;border-radius:6px;white-space:nowrap}
+.toolbar-options .chk:hover{background:var(--surface-2);color:var(--text)}
+.options-count{color:var(--primary);font-weight:700}
+@media (max-width:1100px){
+  .bar{grid-template-columns:auto 1fr;align-items:start}
+  .bar-time{grid-column:1/-1;grid-row:2}
+  .bar-right{justify-self:end}
+}
 .alerts{padding:7px 14px;font-size:0.78rem;color:var(--text-muted);border-bottom:1px solid var(--border);display:flex;gap:16px;flex-wrap:wrap}
 .alerts .warn{color:var(--warn)} .alerts .over{color:var(--over)}
 .gridwrap{flex:1;overflow:auto;position:relative}
@@ -131,47 +152,62 @@ tfoot td.colres{background:var(--surface-2);z-index:2}
 <body>
 <div id="app">
   <div class="bar">
-    <div class="title"><span class="ic">▦</span> Plan</div>
-    <div class="seg" id="segGran"></div>
-    <div class="nav">
-      <button class="btn ghost" id="navPrev">◀</button>
-      <span class="range" id="navRange">—</span>
-      <button class="btn ghost" id="navNext">▶</button>
-      <button class="btn ghost" id="navToday" style="display:none">Aujourd'hui</button>
+    <div class="bar-left">
+      <div class="title"><span class="ic">▦</span> Plan</div>
+      <label class="toolbar-field" title="Les filtres définissent le périmètre ; le groupement organise uniquement les contributions retenues"><span>Grouper</span>
+        <select class="btn" id="selGroup" aria-label="Grouper le plan de charge par">
+          <option value="person">Personne</option>
+          <option value="task">Tâche</option>
+          <option value="programme">Programme</option>
+          <option value="project">Projet</option>
+          <option value="role">Rôle</option>
+        </select>
+      </label>
     </div>
-    <div class="spacer"></div>
-    <label class="chk"><span>Grouper</span>
-      <select class="btn" id="selGroup">
-        <option value="person">Personne</option>
-        <option value="programme">Programme</option>
-        <option value="project">Projet</option>
-        <option value="role">Rôle</option>
-      </select>
-    </label>
-    <div class="seg" id="segMode"></div>
-    <div class="seg" id="segUnit"></div>
-    <div class="filter-dropdown">
-      <button class="filter-btn" id="btnFilterToggle" title="Filtres"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon></svg> Filtres <span class="filter-count" style="display:none"></span>▾</button>
-      <div class="filter-panel" id="filterPanel">
-        <div class="filter-sections">
-          <div id="filterTeamContainer"></div>
-          <div id="filterPersonContainer"></div>
-          <div id="filterProgramContainer"></div>
-          <div id="filterProjectContainer"></div>
-          <div id="filterTaskContainer"></div>
-        </div>
-        <div class="filter-actions">
-          <button class="btn ghost" id="btnClearFilters" title="Effacer tous les filtres">× Effacer tout</button>
-        </div>
+    <div class="bar-time">
+      <div class="nav">
+        <button class="btn ghost" id="navPrev" title="Période précédente">◀</button>
+        <button class="btn ghost" id="navToday">Aujourd'hui</button>
+        <button class="btn ghost" id="navNext" title="Période suivante">▶</button>
+        <span class="range" id="navRange">—</span>
+        <div class="time-view-controls" id="segGran" aria-label="Granularité temporelle"></div>
       </div>
     </div>
-    <label class="chk"><input type="checkbox" id="chkDone"> Inclure terminé</label>
-    <label class="chk" title="Estimer la charge des tâches sans charge à partir de leur estimation ÷ nb assignés"><input type="checkbox" id="chkDerive"> Estimer</label>
-    <label class="chk" title="Étaler la charge sur les jours ouvrés (lun-ven) seulement"><input type="checkbox" id="chkWorkdays"> Jours ouvrés</label>
-    <button class="btn" id="btnInit" title="Initialiser la charge des tâches sans charge depuis estimationH ÷ nb assignés">⚙ Init. charges</button>
-    <button class="btn" id="btnExport" title="Exporter le plan en CSV (COPIL)">⬇ CSV</button>
-    <button class="btn" id="btnTimeline" title="Timeline par personne : les tâches de chacun en barres sur la fenêtre">⊞ Timeline</button>
-    <button class="btn" id="btnPlanningPreview" title="Simulation avancée optionnelle — le plan affiché est déjà recalculé automatiquement">🔮 Simulation avancée</button>
+    <div class="bar-right">
+      <label class="toolbar-field"><span>Vue</span>
+        <select class="btn" id="selMode" aria-label="Vue du plan de charge">
+          <option value="prevu">Prévu</option>
+          <option value="realise">Réalisé</option>
+          <option value="reste">Reste</option>
+          <option value="dispo">Dispo</option>
+        </select>
+      </label>
+      <div class="seg" id="segUnit"></div>
+      <div class="filter-dropdown">
+        <button class="filter-btn" id="btnFilterToggle" title="Filtres"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon></svg> Filtres <span class="filter-count" style="display:none"></span>▾</button>
+        <div class="filter-panel" id="filterPanel">
+          <div class="filter-sections">
+            <div id="filterTeamContainer"></div>
+            <div id="filterPersonContainer"></div>
+            <div id="filterProgramContainer"></div>
+            <div id="filterProjectContainer"></div>
+            <div id="filterTaskContainer"></div>
+          </div>
+          <div class="filter-actions">
+            <button class="btn ghost" id="btnClearFilters" title="Effacer tous les filtres">× Effacer tout</button>
+          </div>
+        </div>
+      </div>
+      <details class="toolbar-dropdown" id="planOptions">
+        <summary class="btn">Options <span class="options-count" id="optionsCount"></span>▾</summary>
+        <div class="toolbar-options">
+          <label class="chk"><input type="checkbox" id="chkDone"> Inclure terminé</label>
+          <label class="chk" title="Estimer la charge des tâches sans charge à partir de leur estimation ÷ nb assignés"><input type="checkbox" id="chkDerive"> Estimer</label>
+          <label class="chk" title="Étaler la charge sur les jours ouvrés (lun-ven) seulement"><input type="checkbox" id="chkWorkdays"> Jours ouvrés</label>
+        </div>
+      </details>
+      <button class="btn" id="btnExport" title="Exporter le plan en CSV (COPIL)">⬇ CSV</button>
+    </div>
   </div>
   <div class="alerts" id="alerts"></div>
   <div class="gridwrap" id="gridwrap"><div class="empty"><div class="ic">▦</div><div>Chargement…</div></div></div>
@@ -6958,7 +6994,9 @@ let appMode = 'loading';
 const S = {
   tasks: [], team: [], projects: [], programmes: [], hasProg: false, entries: [], hasEntries: false,
   assignments: [],
-  granularity: 'week', offset: 0, horizon: 12,
+  granularity: TaskFlowTimePeriods.normalizeGranularity(localStorage.getItem('taskflow_plan_view') || 'week'),
+  offset: 0,
+  horizon: TaskFlowTimePeriods.defaultHorizon(localStorage.getItem('taskflow_plan_view') || 'week'),
   groupBy: 'person', unit: 'pct', includeDone: false, derive: true, mode: 'prevu', workdays: false, allocUnit: 'h',
   demo: false, timeline: false,
   filters: { assignee: [], team: [], project: [], task: [] },
@@ -6994,18 +7032,13 @@ const progById = (id) => S.programmes.find(p => p.id === id);
 // Programme d'une tâche = programme/portefeuille de son projet (clé string ; '0' = sans programme).
 // Rétrocompatible : supporte programme (nouveau) ou portefeuille (ancien)
 function progKeyOf(t) { const p = projById(t.projet); if (!p) return '0'; return String(p.programme || p.portefeuille || '0'); }
-const groupLabel = (g) => g === 'project' ? 'Projet' : g === 'role' ? 'Rôle' : g === 'programme' ? 'Programme' : 'Personne';
+const groupLabel = (g) => g === 'task' ? 'Tâche' : g === 'project' ? 'Projet' : g === 'role' ? 'Rôle' : g === 'programme' ? 'Programme' : 'Personne';
 const activeTeam = () => S.team.filter(m => m.actif !== false);
 const isTaskTerminal = (t) => TF.isTerminal(statusCfg, t.statut);
 const capOf = (m) => (Number(m && m.capaciteHebdo) > 0 ? Number(m.capaciteHebdo) : 35);
-const plabel = (p) => S.granularity === 'month' ? (p.slice(5) + '/' + p.slice(2, 4)) : ('S' + p.slice(6));
-const MOIS = ['janv', 'févr', 'mars', 'avr', 'mai', 'juin', 'juil', 'août', 'sept', 'oct', 'nov', 'déc'];
-function periodStarts(start, g, count) {
-  let d = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate()));
-  if (g === 'week') { const day = d.getUTCDay() || 7; d.setUTCDate(d.getUTCDate() - day + 1); } else { d = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1)); }
-  const out = []; for (let i = 0; i < count; i++) { out.push(new Date(d)); if (g === 'week') d.setUTCDate(d.getUTCDate() + 7); else d.setUTCMonth(d.getUTCMonth() + 1); } return out;
-}
-function subLabel(d) { return S.granularity === 'month' ? '' : (d.getUTCDate() + ' ' + MOIS[d.getUTCMonth()]); }
+const plabel = (period) => TaskFlowTimePeriods.formatLabel(period, S.granularity);
+const periodStarts = (start, granularity, count) => TaskFlowTimePeriods.starts(start, granularity, count);
+const subLabel = (date) => TaskFlowTimePeriods.formatSubLabel(date, S.granularity);
 const r1 = (n) => Math.round(n * 10) / 10;
 const currentLocalIso = () => {
   const date = new Date();
@@ -7091,6 +7124,12 @@ function effCharges(t) {
   const est = Number(t.estimationH) || 0, asg = getRefList(t.assignees);
   return (est > 0 && asg.length) ? asg.map(id => ({ teamId: id, heures: est / asg.length })) : [];
 }
+// Les filtres de personnes/équipes réduisent les contributions avant toute
+// ventilation. Une tâche Antoine + Guillaume reste visible pour Antoine, mais
+// la part de Guillaume ne doit jamais réapparaître dans les lignes projet.
+function scopedCharges(t) {
+  return PlanFilterScope.filterCharges(effCharges(t), S.filters, S.team);
+}
 // Réalisé : répartit tempsPasse de la tâche au prorata des charges propres par personne.
 function realCharges(t) {
   const cs = effCharges(t); const tot = cs.reduce((s, c) => s + c.heures, 0); const tp = Number(t.tempsPasse) || 0;
@@ -7112,7 +7151,7 @@ function entriesMatrix() {
     const t = byId[Number(e.tache)]; if (!t) continue;
     const mid = Number(e.membre), h = Number(e.heures) || 0; if (!mid || !h || e.date == null) continue;
     const key = kf(t, { teamId: mid, heures: h }); if (key == null) continue;
-    const pk = TF.periodKey(new Date(e.date * 1000), S.granularity);
+    const pk = TaskFlowTimePeriods.key(new Date(e.date * 1000), S.granularity);
     (out[key] || (out[key] = {}))[pk] = (out[key][pk] || 0) + h;
   }
   return out;
@@ -7127,9 +7166,10 @@ const taskWeeks = (t) => Math.max((Math.floor(t.dateEcheance * 1000 / 86400000) 
 const gToInput = (ts) => ts ? new Date(ts * 1000).toISOString().slice(0, 10) : '';
 const inputToG = (s) => s ? Math.floor(Date.parse(s + 'T00:00:00Z') / 1000) : null;
 function tasksForKey(key) {
+  if (S.groupBy === 'task') return planTasks().filter(t => String(t.id) === String(key)).map(t => t.id);
   if (S.groupBy === 'project') return planTasks().filter(t => String(t.projet || '0') === String(key)).map(t => t.id);
   if (S.groupBy === 'programme') return planTasks().filter(t => progKeyOf(t) === String(key)).map(t => t.id);
-  if (S.groupBy === 'person') return planTasks().filter(t => getRefList(t.assignees).includes(Number(key))).map(t => t.id);
+  if (S.groupBy === 'person') return planTasks().filter(t => scopedCharges(t).some(c => Number(c.teamId) === Number(key))).map(t => t.id);
   return [];
 }
 function toast(msg) { const el = document.getElementById('toast'); if (!el) return; el.textContent = msg; el.classList.add('show'); clearTimeout(toast._t); toast._t = setTimeout(() => el.classList.remove('show'), 2800); }
@@ -7174,6 +7214,7 @@ function initFilterManager() {
 
 function keyFn() {
   // Projet/Rôle = clé COMPOSITE "groupe|personne" → on garde la personne (vue ressource, distincte du Gantt).
+  if (S.groupBy === 'task') return (t, c) => String(t.id) + '|' + c.teamId;
   if (S.groupBy === 'project') return (t, c) => (t.projet ? String(t.projet) : '0') + '|' + c.teamId;
   if (S.groupBy === 'programme') return (t, c) => progKeyOf(t) + '|' + c.teamId;
   if (S.groupBy === 'role') return (t, c) => { const m = teamById(c.teamId); return ((m && m.role) ? m.role : '—') + '|' + c.teamId; };
@@ -7183,12 +7224,34 @@ function keyFn() {
 // Lignes (ressources/groupes) avec libellé + capacité nominale + membres (pour la capacité par période)
 function buildRows() {
   // Projet/Rôle : HIÉRARCHIQUE → ligne d'en-tête (groupe) + une sous-ligne par personne du groupe (capacité-aware).
+  if (S.groupBy === 'task') {
+    const out = [];
+    for (const t of planTasks()) {
+      const mems = scopedCharges(t)
+        .map(c => teamById(c.teamId))
+        .filter(Boolean)
+        .filter((member, index, all) => all.findIndex(candidate => candidate.id === member.id) === index);
+      if (!mems.length) continue;
+      const project = projById(t.projet);
+      const taskKey = String(t.id);
+      out.push({
+        key: 'h:' + taskKey,
+        isHeader: true,
+        label: t.titre || ('Tâche ' + taskKey),
+        color: t.couleur || (project && project.couleur) || '#64748b',
+        members: mems,
+        gkeys: mems.map(m => taskKey + '|' + m.id)
+      });
+      for (const m of mems) out.push({ key: taskKey + '|' + m.id, isSub: true, teamId: m.id, label: m.nom, color: m.couleur || '#6366f1', cap: capOf(m), members: [m] });
+    }
+    return out;
+  }
   if (S.groupBy === 'project') {
     const ps = {};
     for (const t of planTasks()) {
       const pk = t.projet ? String(t.projet) : '0';
       if (!ps[pk]) { const p = projById(t.projet); ps[pk] = { label: p ? p.nom : 'Sans projet', color: p ? p.couleur : '#64748b', mem: new Map() }; }
-      for (const c of effCharges(t)) { const m = teamById(c.teamId); if (m) ps[pk].mem.set(m.id, m); }
+      for (const c of scopedCharges(t)) { const m = teamById(c.teamId); if (m) ps[pk].mem.set(m.id, m); }
     }
     const out = [];
     for (const pk of Object.keys(ps)) {
@@ -7206,7 +7269,7 @@ function buildRows() {
       const progFilter = S.filters?.programme || [];
       if (progFilter.length > 0 && !progFilter.includes(String(pk))) continue;
       if (!ps[pk]) { const pf = progById(Number(pk)); ps[pk] = { label: pf ? pf.nom : 'Sans programme', color: (pf && pf.couleur) ? pf.couleur : '#64748b', mem: new Map() }; }
-      for (const c of effCharges(t)) { const m = teamById(c.teamId); if (m) ps[pk].mem.set(m.id, m); }
+      for (const c of scopedCharges(t)) { const m = teamById(c.teamId); if (m) ps[pk].mem.set(m.id, m); }
     }
     const out = [];
     for (const pk of Object.keys(ps)) {
@@ -7220,7 +7283,7 @@ function buildRows() {
   if (S.groupBy === 'role') {
     const rs = {};
     for (const t of planTasks()) {
-      for (const c of effCharges(t)) {
+      for (const c of scopedCharges(t)) {
         const m = teamById(c.teamId);
         if (m) {
           const r = m.role || '—';
@@ -7240,7 +7303,7 @@ function buildRows() {
   // Personne : ne garde que les personnes qui ont des tâches
   const personMap = new Map();
   for (const t of planTasks()) {
-    for (const c of effCharges(t)) {
+    for (const c of scopedCharges(t)) {
       const m = teamById(c.teamId);
       if (m) personMap.set(m.id, m);
     }
@@ -7311,17 +7374,28 @@ async function render() {
   }
   
   // segments
-  renderSeg('segGran', [['week', 'Sem'], ['month', 'Mois']], S.granularity, v => { S.granularity = v; S.offset = 0; render(); });
-  renderSeg('segMode', [['prevu', 'Prévu'], ['realise', 'Réalisé'], ['reste', 'Reste'], ['dispo', 'Dispo']], S.mode, v => { S.mode = v; if (v === 'dispo' && S.groupBy !== 'person') { S.groupBy = 'person'; document.getElementById('selGroup').value = 'person'; toast('Vue Dispo : groupement « Personne » (la marge ne se mesure qu\'au global, tous projets confondus)'); } render(); });
+  TaskFlowTimeViewSelector.render(document.getElementById('segGran'), {
+    views: TaskFlowTimePeriods.GRANULARITIES,
+    value: S.granularity,
+    onChange: v => {
+      S.granularity = v;
+      S.horizon = TaskFlowTimePeriods.defaultHorizon(v);
+      S.offset = 0;
+      localStorage.setItem('taskflow_plan_view', v);
+      render();
+    }
+  });
   renderSeg('segUnit', [['pct', '%'], ['hours', 'h']], S.unit, v => { S.unit = v; render(); });
   document.getElementById('selGroup').value = S.groupBy;
+  document.getElementById('selMode').value = S.mode;
   document.getElementById('chkDone').checked = S.includeDone;
   document.getElementById('chkDerive').checked = S.derive;
   document.getElementById('chkWorkdays').checked = S.workdays;
-  document.getElementById('navToday').style.display = S.offset !== 0 ? '' : 'none';
+  const enabledOptions = [S.includeDone, S.derive, S.workdays].filter(Boolean).length;
+  document.getElementById('optionsCount').textContent = enabledOptions ? '· ' + enabledOptions + ' ' : '';
 
-  const periods = TF.periodRange(TF.shiftPeriods(new Date(), S.granularity, S.offset), S.granularity, S.horizon);
-  const nowKey = TF.periodKey(new Date(), S.granularity);
+  const periods = TaskFlowTimePeriods.range(TaskFlowTimePeriods.shift(new Date(), S.granularity, S.offset), S.granularity, S.horizon);
+  const nowKey = TaskFlowTimePeriods.key(new Date(), S.granularity);
   document.getElementById('navRange').textContent = plabel(periods[0]) + ' → ' + plabel(periods[periods.length - 1]);
 
   // Les tâches continues proviennent des TimeEntries matérialisées sur toute
@@ -7345,7 +7419,7 @@ async function render() {
   const hasData = Object.keys(matrix).length > 0;
   if (!hasData) { wrap.innerHTML = '<div class="empty"><div class="ic">▦</div><div>Aucune charge datée à planifier</div><div style="font-size:.78rem">Renseignez la charge par personne + des dates sur les tâches.</div></div>'; renderAlerts(matrix, periods); return; }
 
-  const starts = periodStarts(TF.shiftPeriods(new Date(), S.granularity, S.offset), S.granularity, S.horizon);
+  const starts = periodStarts(TaskFlowTimePeriods.shift(new Date(), S.granularity, S.offset), S.granularity, S.horizon);
   let h = '<table class="grid"><thead><tr><th class="colres">Ressource</th>';
   periods.forEach((p, i) => { h += '<th class="' + (p === nowKey ? 'now' : '') + '"><div class="pk">' + plabel(p) + (p === nowKey ? ' •' : '') + '</div><div class="psub">' + subLabel(starts[i]) + '</div></th>'; });
   h += '<th class="sum">Σ fenêtre</th></tr></thead><tbody>';
@@ -7443,18 +7517,14 @@ function rebuildCanonPlanIndex() {
   try {
     var periodConfig = {
       granularity: S.granularity,
-      keys: TF.periodRange(TF.shiftPeriods(new Date(), S.granularity, S.offset), S.granularity, S.horizon)
+      keys: TaskFlowTimePeriods.range(TaskFlowTimePeriods.shift(new Date(), S.granularity, S.offset), S.granularity, S.horizon)
     };
 
     // Le plan ne doit intégrer que les tâches visibles après application des
     // filtres. Les écritures passées restent néanmoins conservées dans les
     // données canoniques et réduisent le reste à faire de chaque affectation.
     var visibleTaskIds = new Set(planTasks().map(function (task) { return Number(task.id); }));
-    var scopedCanonData = Object.assign({}, canonData, {
-      tasks: canonData.tasks.filter(function (task) { return visibleTaskIds.has(Number(task.id)); }),
-      assignments: canonData.assignments.filter(function (assignment) { return visibleTaskIds.has(Number(assignment.tache)); }),
-      timeEntries: canonData.timeEntries.filter(function (entry) { return visibleTaskIds.has(Number(entry.taskId)); })
-    });
+    var scopedCanonData = PlanFilterScope.scopeCanonData(canonData, visibleTaskIds, S.filters);
 
     canonPlanIndex = PlanCanonAdapter.buildCanonPlanIndex(scopedCanonData, periodConfig);
     rollingLoadIndex = PlanCanonAdapter.buildRollingLoadIndex(scopedCanonData, periodConfig, currentLocalIso());
@@ -7489,13 +7559,13 @@ function toggleTimeline() {
 }
 function renderTimeline() {
   const body = document.getElementById('tlBody');
-  const periods = TF.periodRange(TF.shiftPeriods(new Date(), S.granularity, S.offset), S.granularity, S.horizon);
-  const starts = periodStarts(TF.shiftPeriods(new Date(), S.granularity, S.offset), S.granularity, S.horizon);
+  const periods = TaskFlowTimePeriods.range(TaskFlowTimePeriods.shift(new Date(), S.granularity, S.offset), S.granularity, S.horizon);
+  const starts = periodStarts(TaskFlowTimePeriods.shift(new Date(), S.granularity, S.offset), S.granularity, S.horizon);
   const gName = groupLabel(S.groupBy).toLowerCase();
   const ttl = document.querySelector('#tlPanel .tlhead strong'); if (ttl) ttl.textContent = 'Timeline par ' + gName;
   document.getElementById('tlRange').textContent = '  ' + plabel(periods[0]) + ' → ' + plabel(periods[periods.length - 1]);
   const winStart = starts[0].getTime();
-  const winEnd = TF.shiftPeriods(starts[starts.length - 1], S.granularity, 1).getTime();
+  const winEnd = TaskFlowTimePeriods.shift(starts[starts.length - 1], S.granularity, 1).getTime();
   const span = (winEnd - winStart) || 1;
   // FOCUS = cellule ouverte dans la heatmap (clé = personne, ou composite "groupe|personne")
   const fKey = S._cellKey != null ? String(S._cellKey) : null;
@@ -7538,7 +7608,7 @@ function renderTimeline() {
       const col = (statusCfg.byValue[t.statut] || {}).fillColor || '#64748b';
       const hrs = (effCharges(t).find(c => String(c.teamId) === String(pid)) || {}).heures || 0;
       const hot = isF && fIdx >= 0 && ts < bandE && te > bandS; // tâche dans la période focalisée
-      const tp = TF.periodKey(new Date(Math.max(ts, winStart)), S.granularity); // période à ouvrir si "Ajuster"
+      const tp = TaskFlowTimePeriods.key(new Date(Math.max(ts, winStart)), S.granularity); // période à ouvrir si "Ajuster"
       h += '<div class="tl-row' + (grouped ? ' tl-ind' : '') + (isF ? ' tl-focus' : '') + '" data-lane="' + esc(laneKey) + '"><div class="tl-lbl" title="' + esc(t.titre) + '">' + esc(t.titre) + '</div><div class="tl-track">' + (bandStyle ? '<div class="tl-band" style="' + bandStyle + '"></div>' : '') + '<div class="tl-bar' + (hot ? ' hot' : '') + '" style="left:' + l.toFixed(1) + '%;width:' + w.toFixed(1) + '%;background:' + col + '" data-id="' + t.id + '" data-lane="' + esc(laneKey) + '" data-period="' + tp + '" title="' + esc(t.titre) + ' · ' + r1(hrs) + ' h — cliquer pour l’aperçu">' + esc(t.titre) + '</div></div></div>';
     }
   }
@@ -7553,9 +7623,9 @@ function startBarDrag(e, bar) {
   if (e.button !== 0) return;
   const taskId = Number(bar.dataset.id), fromLane = bar.dataset.lane, period = bar.dataset.period;
   const track = bar.parentElement, trackW = track.clientWidth || 1;
-  const starts = periodStarts(TF.shiftPeriods(new Date(), S.granularity, S.offset), S.granularity, S.horizon);
+  const starts = periodStarts(TaskFlowTimePeriods.shift(new Date(), S.granularity, S.offset), S.granularity, S.horizon);
   const winStart = starts[0].getTime();
-  const winEnd = TF.shiftPeriods(starts[starts.length - 1], S.granularity, 1).getTime();
+  const winEnd = TaskFlowTimePeriods.shift(starts[starts.length - 1], S.granularity, 1).getTime();
   const totalDays = (winEnd - winStart) / 86400000;
   const startX = e.clientX, startY = e.clientY;
   let dragging = false;
@@ -7736,8 +7806,8 @@ function tasksInCell(key, period) {
   }
   
   // Fallback legacy
-  const periodRange = TF.periodRange(TF.shiftPeriods(new Date(), S.granularity, S.offset), S.granularity, S.horizon);
-  const periodStartsArr = periodStarts(TF.shiftPeriods(new Date(), S.granularity, S.offset), S.granularity, S.horizon);
+  const periodRange = TaskFlowTimePeriods.range(TaskFlowTimePeriods.shift(new Date(), S.granularity, S.offset), S.granularity, S.horizon);
+  const periodStartsArr = periodStarts(TaskFlowTimePeriods.shift(new Date(), S.granularity, S.offset), S.granularity, S.horizon);
   const pi = periodRange.indexOf(period);
   const pstart = pi >= 0 ? periodStartsArr[pi] : new Date();
   const periodDuration = S.granularity === 'week' ? 7 : 30;
@@ -7788,8 +7858,8 @@ function memberAvail(period) {
   }
   
   // Fallback legacy
-  const pr = TF.periodRange(TF.shiftPeriods(new Date(), S.granularity, S.offset), S.granularity, S.horizon);
-  const ss = periodStarts(TF.shiftPeriods(new Date(), S.granularity, S.offset), S.granularity, S.horizon);
+  const pr = TaskFlowTimePeriods.range(TaskFlowTimePeriods.shift(new Date(), S.granularity, S.offset), S.granularity, S.horizon);
+  const ss = periodStarts(TaskFlowTimePeriods.shift(new Date(), S.granularity, S.offset), S.granularity, S.horizon);
   const pi = pr.indexOf(period);
   const pstart = pi >= 0 ? ss[pi] : new Date();
   
@@ -7827,8 +7897,8 @@ function openCell(key, period) {
   const editable = (S.groupBy === 'person' || (row && row.isSub)) && S.mode === 'prevu';
   const tid = row && row.teamId != null ? row.teamId : Number(key);
   const others = activeTeam().filter(m => m.id !== tid);
-  const _starts = periodStarts(TF.shiftPeriods(new Date(), S.granularity, S.offset), S.granularity, S.horizon);
-  const _pi = TF.periodRange(TF.shiftPeriods(new Date(), S.granularity, S.offset), S.granularity, S.horizon).indexOf(period);
+  const _starts = periodStarts(TaskFlowTimePeriods.shift(new Date(), S.granularity, S.offset), S.granularity, S.horizon);
+  const _pi = TaskFlowTimePeriods.range(TaskFlowTimePeriods.shift(new Date(), S.granularity, S.offset), S.granularity, S.horizon).indexOf(period);
   const capP = row && _pi >= 0 && canonData ? PlanCanonAdapter.getCapacityForRow(row, period, S.granularity, canonData.dailyCapacities, true) : 0;
   document.getElementById('pTitle').textContent = (row ? row.label : key) + ' — ' + plabel(period);
   const capTxt = capP > 0 ? ' · capacité ' + Math.round(capP) + 'h (' + Math.round(tot / capP * 100) + '%)' : '';
@@ -8101,7 +8171,7 @@ async function initCharges() {
 }
 // Export CSV (COPIL) de la grille courante.
 function exportCSV() {
-  const periods = TF.periodRange(TF.shiftPeriods(new Date(), S.granularity, S.offset), S.granularity, S.horizon);
+  const periods = TaskFlowTimePeriods.range(TaskFlowTimePeriods.shift(new Date(), S.granularity, S.offset), S.granularity, S.horizon);
   const matrix = TF.chargeMatrix(planTasks(), keyFn(), S.granularity, chargesFor, S.workdays);
   const rows = buildRows();
   const lines = [['Ressource', 'Capacité/sem'].concat(periods.map(plabel)).concat(['Total']).join(';')];
@@ -9009,31 +9079,23 @@ function bindToolbar() {
     if (S.groupBy !== 'person' && S.mode === 'dispo') { S.mode = 'prevu'; toast('Dispo indisponible en groupement « ' + groupLabel(S.groupBy) + ' » (marge = notion globale) — vue Prévu rétablie'); }
     render();
   };
+  document.getElementById('selMode').onchange = (e) => {
+    S.mode = e.target.value;
+    if (S.mode === 'dispo' && S.groupBy !== 'person') {
+      S.groupBy = 'person';
+      document.getElementById('selGroup').value = 'person';
+      toast('Vue Dispo : groupement « Personne » (la marge ne se mesure qu\'au global, tous projets confondus)');
+    }
+    render();
+  };
   document.getElementById('chkDone').onchange = (e) => { S.includeDone = e.target.checked; render(); };
   document.getElementById('chkDerive').onchange = (e) => { S.derive = e.target.checked; render(); };
   document.getElementById('chkWorkdays').onchange = (e) => { S.workdays = e.target.checked; render(); };
   document.getElementById('btnExport').onclick = exportCSV;
-  document.getElementById('btnInit').onclick = initCharges;
-  document.getElementById('btnTimeline').onclick = toggleTimeline;
   document.getElementById('tlClose').onclick = toggleTimeline;
   // Fermeture unifiée du panel (historique + prévisualisation)
   document.getElementById('pClose').addEventListener('click', closeActivePanel);
   document.getElementById('overlay').addEventListener('click', closeActivePanel);
-  // Bouton de prévisualisation du planning
-  const btnPreview = document.getElementById('btnPlanningPreview');
-  if (btnPreview) {
-    btnPreview.onclick = () => {
-      if (S.demo) {
-        toast('Prévisualisation disponible uniquement dans Grist');
-        return;
-      }
-      if (!planningService) {
-        toast('Service de planification non disponible');
-        return;
-      }
-      openPreviewPanel();
-    };
-  }
 }
 
 async function loadGrist(options = {}) {

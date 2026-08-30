@@ -86,6 +86,14 @@ describe('TaskFlow Planning Browser Bundle', () => {
     expect(typeof sandbox.window.TaskFlowRollingLoad.buildRollingLoadIndex).toBe('function');
     expect(sandbox.window.TaskFlowPlanning.rollingLoad).toBe(sandbox.window.TaskFlowRollingLoad);
   });
+
+  test('le moteur navigateur conserve les granularités longues', () => {
+    vm.runInContext(bundleContent, context);
+
+    expect(sandbox.window.TaskFlowRollingLoad.periodKey('2024-08-15', 'quarter')).toBe('2024-Q3');
+    expect(sandbox.window.TaskFlowRollingLoad.periodKey('2024-08-15', 'semester')).toBe('2024-H2');
+    expect(sandbox.window.TaskFlowRollingLoad.periodKey('2024-08-15', 'year')).toBe('2024');
+  });
   
   test('summarizeGristActions fonctionne correctement', () => {
     vm.runInContext(bundleContent, context);
@@ -468,8 +476,14 @@ describe('Intégration HTML - plan.html', () => {
     expect(planHtmlContent).toMatch(/taskflow-planning-browser\.js/);
   });
   
-  test('plan.html contient le bouton btnPlanningPreview', () => {
-    expect(planHtmlContent).toMatch(/id=["']btnPlanningPreview["']/);
+  test('plan.html utilise le sélecteur temporel commun sans les commandes avancées', () => {
+    expect(planHtmlContent).toMatch(/core\/time\/time-periods\.js/);
+    expect(planHtmlContent).toMatch(/core\/time\/time-view-selector\.js/);
+    expect(planHtmlContent).toMatch(/id=["']segGran["']/);
+    expect(planHtmlContent).toMatch(/views:\s*TaskFlowTimePeriods\.GRANULARITIES/);
+    expect(planHtmlContent).not.toMatch(/id=["']btnInit["']/);
+    expect(planHtmlContent).not.toMatch(/id=["']btnTimeline["']/);
+    expect(planHtmlContent).not.toMatch(/id=["']btnPlanningPreview["']/);
   });
   
   test('plan.html charge TaskAssignments dans loadGrist', () => {

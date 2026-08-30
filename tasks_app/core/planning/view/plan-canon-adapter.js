@@ -286,6 +286,9 @@ function rollingGroupKey(contribution, groupBy, canonData) {
   var task = tasks.find(function(item) { return Number(item.id) === Number(contribution.taskId); });
   var member = team.find(function(item) { return Number(item.id) === Number(contribution.memberId); });
 
+  if (groupBy === 'task') {
+    return String(contribution.taskId) + '|' + memberId;
+  }
   if (groupBy === 'project') {
     return String(task && task.projet ? task.projet : '0') + '|' + memberId;
   }
@@ -411,7 +414,7 @@ function formatCanonMatrixForRender(byMemberPeriod, groupBy, mode, canonData) {
       
       matrix[matrixKey][periodKey] = displayValue;
     }
-  } else if (groupBy === 'project' || groupBy === 'programme' || groupBy === 'role') {
+  } else if (groupBy === 'task' || groupBy === 'project' || groupBy === 'programme' || groupBy === 'role') {
     // Clé composite identique à celle du widget : "groupe|memberId".
     // La ventilation doit se faire entrée par entrée ; un total membre ne
     // permet pas de distinguer deux projets ou programmes sur la même période.
@@ -429,7 +432,9 @@ function formatCanonMatrixForRender(byMemberPeriod, groupBy, mode, canonData) {
         var member = team.find(function(item) { return Number(item.id) === Number(memberId2); });
         var groupKey = '0';
 
-        if (groupBy === 'project') {
+        if (groupBy === 'task') {
+          groupKey = String(entry.taskId);
+        } else if (groupBy === 'project') {
           groupKey = String(task && task.projet ? task.projet : '0');
         } else if (groupBy === 'programme') {
           var project = task && projects.find(function(item) {
@@ -698,7 +703,9 @@ function getTasksInCell(canonIndex, key, period, tasks, groupBy, canonData) {
     var taskId = entry.taskId;
     var entryTask = taskById[taskId];
 
-    if (groupKey !== null && groupBy === 'project') {
+    if (groupKey !== null && groupBy === 'task') {
+      if (String(taskId) !== groupKey) continue;
+    } else if (groupKey !== null && groupBy === 'project') {
       if (String(entryTask && entryTask.projet ? entryTask.projet : '0') !== groupKey) continue;
     } else if (groupKey !== null && groupBy === 'programme') {
       var project = entryTask && projects.find(function(item) {

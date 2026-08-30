@@ -16,6 +16,10 @@
 
 'use strict';
 
+var PlanTimePeriods = typeof TaskFlowTimePeriods !== 'undefined'
+  ? TaskFlowTimePeriods
+  : require('../../time/time-periods');
+
 // ============================================================================
 // HELPERS DE DATE - BORNES EXACTES UTC
 // ============================================================================
@@ -80,23 +84,13 @@ function generateDateRange(startStr, endStr) {
 }
 
 /**
- * Obtient la clé de période pour une date (semaine ISO ou mois)
+ * Obtient la clé canonique d'une période.
  * @param {Date} date - Date
- * @param {string} granularity - 'week' ou 'month'
+ * @param {string} granularity - week, month, quarter, semester ou year
  * @returns {string} Clé de période
  */
 function getPeriodKey(date, granularity) {
-  if (granularity === 'month') {
-    return date.getUTCFullYear() + '-' + String(date.getUTCMonth() + 1).padStart(2, '0');
-  }
-  
-  // Semaine ISO : YYYY-Www
-  const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
-  const day = d.getUTCDay() || 7;
-  d.setUTCDate(d.getUTCDate() + 4 - day);
-  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
-  const week = Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
-  return d.getUTCFullYear() + '-W' + String(week).padStart(2, '0');
+  return PlanTimePeriods.key(date, granularity);
 }
 
 /**
@@ -583,49 +577,12 @@ function buildPlanPeriodIndex(params) {
 
 /**
  * Obtient les bornes d'une période à partir de sa clé
- * @param {string} periodKey - Clé de période (YYYY-MM ou YYYY-Www)
- * @param {string} granularity - 'week' ou 'month'
+ * @param {string} periodKey - Clé canonique de période
+ * @param {string} granularity - week, month, quarter, semester ou year
  * @returns {Object|null} { start: Date, end: Date } ou null
  */
 function getPeriodBounds(periodKey, granularity) {
-  if (granularity === 'month') {
-    // YYYY-MM
-    const parts = periodKey.split('-');
-    if (parts.length !== 2) return null;
-    
-    const year = parseInt(parts[0], 10);
-    const month = parseInt(parts[1], 10) - 1;
-    
-    const start = new Date(Date.UTC(year, month, 1));
-    const end = new Date(Date.UTC(year, month + 1, 1));
-    
-    return { start, end };
-  }
-  
-  // Semaine ISO : YYYY-Www
-  const weekMatch = periodKey.match(/^(\d{4})-W(\d{2})$/);
-  if (!weekMatch) return null;
-  
-  const year = parseInt(weekMatch[1], 10);
-  const week = parseInt(weekMatch[2], 10);
-  
-  // Trouver le lundi de la semaine ISO
-  // La semaine 1 est celle contenant le 4 janvier
-  const jan4 = new Date(Date.UTC(year, 0, 4));
-  const jan4Day = jan4.getUTCDay() || 7;
-  const jan4Monday = new Date(jan4.getTime());
-  jan4Monday.setUTCDate(jan4Monday.getUTCDate() - jan4Day + 1);
-  
-  const monday = new Date(jan4Monday.getTime());
-  monday.setUTCDate(monday.getUTCDate() + (week - 1) * 7);
-  
-  const nextMonday = new Date(monday.getTime());
-  nextMonday.setUTCDate(nextMonday.getUTCDate() + 7);
-  
-  return {
-    start: monday,
-    end: nextMonday
-  };
+  return PlanTimePeriods.bounds(periodKey, granularity);
 }
 
 // ============================================================================

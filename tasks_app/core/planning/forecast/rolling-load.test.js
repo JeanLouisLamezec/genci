@@ -61,6 +61,19 @@ describe('RollingLoad - demande glissante non plafonnée', () => {
     expect(result.contributions[0].loadRatio).toBeCloseTo(30 / 70, 10);
   });
 
+  test.each([
+    ['quarter', ['2026-Q3', '2026-Q4', '2027-Q1', '2027-Q2']],
+    ['semester', ['2026-H2', '2027-H1']],
+    ['year', ['2026', '2027']]
+  ])('conserve exactement la charge avec la granularité %s', (granularity, keys) => {
+    const result = build({ periods: { granularity, keys } });
+    const total = result.contributions.reduce((sum, item) => sum + item.hours, 0);
+
+    expect(total).toBeCloseTo(30, 10);
+    expect(result.contributions.every(item => keys.includes(item.periodKey))).toBe(true);
+    expect(result.granularity).toBe(granularity);
+  });
+
   test('conserve une surcharge supérieure à 100 %', () => {
     const result = build({
       today: '2027-06-21',

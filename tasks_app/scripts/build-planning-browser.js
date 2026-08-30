@@ -24,6 +24,7 @@ const OUTPUT_FILE = path.join(OUTPUT_DIR, 'taskflow-planning-browser.js');
 // Modules à bundler (dans l'ordre de dépendance)
 // Les IDs doivent correspondre aux chemins relatifs depuis CORE_DIR
 const MODULES = [
+  { path: path.join(CORE_DIR, 'time', 'time-periods.js') },
   { path: path.join(CORE_DIR, 'planning', 'forecast', 'rolling-load.js') },
   { path: path.join(CORE_DIR, 'planning', 'planning-engine.js') },
   { path: path.join(CORE_DIR, 'planning', 'reconciliation', 'planning-reconciliation.js') },

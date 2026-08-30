@@ -451,7 +451,7 @@ describe('PlanCanonAdapter - projection glissante', function() {
     assert.strictEqual(matrix[1]['2026-W35'], 28);
     });
 
-    it('ventile la charge continue dans les clés projet et personne', function() {
+    it('ventile la charge continue dans les clés tâche, projet et personne', function() {
       var byMemberPeriod = {
         '1:2026-W35': {
           memberId: 1,
@@ -472,9 +472,12 @@ describe('PlanCanonAdapter - projection glissante', function() {
       };
 
       var matrix = PlanCanonAdapter.formatCanonMatrixForRender(byMemberPeriod, 'project', 'prevu', data);
+      var taskMatrix = PlanCanonAdapter.formatCanonMatrixForRender(byMemberPeriod, 'task', 'prevu', data);
 
       assert.strictEqual(matrix['100|1']['2026-W35'], 4);
       assert.strictEqual(matrix['200|1']['2026-W35'], 2);
+      assert.strictEqual(taskMatrix['10|1']['2026-W35'], 4);
+      assert.strictEqual(taskMatrix['11|1']['2026-W35'], 2);
     });
 
     it('filtre le détail matérialisé sur le projet de la cellule', function() {
@@ -495,6 +498,24 @@ describe('PlanCanonAdapter - projection glissante', function() {
       });
 
       assert.deepStrictEqual(details.map(function(item) { return item.taskId; }), [10]);
+    });
+
+    it('filtre le détail matérialisé sur la tâche de la cellule', function() {
+      var index = {
+        byMemberPeriod: {
+          '1:2026-W35': {
+            entries: [
+              { memberId: 1, taskId: 10, plannedHours: 4, actualHours: null },
+              { memberId: 1, taskId: 11, plannedHours: 6, actualHours: null }
+            ]
+          }
+        }
+      };
+      var tasks = [{ id: 10, titre: 'A' }, { id: 11, titre: 'B' }];
+
+      var details = PlanCanonAdapter.getTasksInCell(index, '11|1', '2026-W35', tasks, 'task', {});
+
+      assert.deepStrictEqual(details.map(function(item) { return item.taskId; }), [11]);
     });
 });
 

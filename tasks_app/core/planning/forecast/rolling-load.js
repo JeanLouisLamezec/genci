@@ -7,6 +7,10 @@
 
 'use strict';
 
+var RollingTimePeriods = typeof TaskFlowTimePeriods !== 'undefined'
+  ? TaskFlowTimePeriods
+  : require('../../time/time-periods');
+
 var TaskFlowRollingLoad = (function () {
   var DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -57,7 +61,7 @@ var TaskFlowRollingLoad = (function () {
   }
 
   function periodKey(iso, granularity) {
-    return granularity === 'month' ? iso.slice(0, 7) : isoWeekKey(iso);
+    return RollingTimePeriods.key(isoToDate(iso), granularity);
   }
 
   function finiteNonNegative(value) {
@@ -114,7 +118,7 @@ var TaskFlowRollingLoad = (function () {
     var team = input.team || [];
     var tasks = input.tasks || [];
     var periods = input.periods || {};
-    var granularity = periods.granularity === 'month' ? 'month' : 'week';
+    var granularity = RollingTimePeriods.normalizeGranularity(periods.granularity);
     var visiblePeriods = new Set(periods.keys || []);
     var today = dateToIso(input.today || new Date());
 

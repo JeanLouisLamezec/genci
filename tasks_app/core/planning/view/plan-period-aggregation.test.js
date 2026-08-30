@@ -95,6 +95,13 @@ describe('PlanPeriodAggregation - Helpers de date', function() {
       const key = getPeriodKey(date, 'week');
       assert.strictEqual(key, '2024-W02');
     });
+
+    it('doit retourner les clés trimestre, semestre et année', function() {
+      const date = new Date(Date.UTC(2024, 7, 15));
+      assert.strictEqual(getPeriodKey(date, 'quarter'), '2024-Q3');
+      assert.strictEqual(getPeriodKey(date, 'semester'), '2024-H2');
+      assert.strictEqual(getPeriodKey(date, 'year'), '2024');
+    });
   });
   
   describe('getWeekBounds', function() {
@@ -169,6 +176,15 @@ describe('PlanPeriodAggregation - Helpers de date', function() {
       const bounds = getPeriodBounds('2024-01', 'month');
       assert.strictEqual(formatDateUTC(bounds.start), '2024-01-01');
       assert.strictEqual(formatDateUTC(bounds.end), '2024-02-01');
+    });
+
+    it('doit retourner les bornes exactes des périodes longues', function() {
+      const quarter = getPeriodBounds('2024-Q4', 'quarter');
+      const semester = getPeriodBounds('2024-H2', 'semester');
+      const year = getPeriodBounds('2024', 'year');
+      assert.deepStrictEqual([formatDateUTC(quarter.start), formatDateUTC(quarter.end)], ['2024-10-01', '2025-01-01']);
+      assert.deepStrictEqual([formatDateUTC(semester.start), formatDateUTC(semester.end)], ['2024-07-01', '2025-01-01']);
+      assert.deepStrictEqual([formatDateUTC(year.start), formatDateUTC(year.end)], ['2024-01-01', '2025-01-01']);
     });
   });
 });
@@ -304,6 +320,27 @@ describe('PlanPeriodAggregation - Agrégation', function() {
       // Capacité disponible : 7 + 5 = 12h (absence de 2h le 09/01)
       assert.strictEqual(bob.availableCapacityHours, 12);
       assert.strictEqual(bob.absenceHours, 2);
+    });
+  });
+
+  describe('buildPlanPeriodIndex - Périodes longues', function() {
+    it('agrège les mêmes écritures et capacités au trimestre', function() {
+      const data = createTestData();
+      const result = buildPlanPeriodIndex({
+        periods: { granularity: 'quarter', keys: ['2024-Q1'] },
+        team: data.team,
+        assignments: data.assignments,
+        tasks: data.tasks,
+        projects: data.projects,
+        programmes: data.programmes,
+        timeEntries: data.timeEntries,
+        dailyCapacities: data.dailyCapacities
+      });
+
+      const alice = result.byMemberPeriod['1:2024-Q1'];
+      assert.strictEqual(alice.plannedHours, 10);
+      assert.strictEqual(alice.effectiveHours, 9.5);
+      assert.strictEqual(alice.availableCapacityHours, 14);
     });
   });
   
