@@ -3,6 +3,7 @@
 const {
   WITHOUT_PROJECT,
   taskOverlapsRange,
+  buildDefaultCollapsedProjectIds,
   buildVisibleRows
 } = require('./gantt-visible-tree.js');
 
@@ -41,6 +42,20 @@ describe('GanttVisibleTree - fenêtre temporelle', () => {
   test('utilise la date présente lorsqu’une seule borne est renseignée', () => {
     expect(taskOverlapsRange({ dateDebut: day('2026-08-12') }, rangeStart, rangeEndExclusive)).toBe(true);
     expect(taskOverlapsRange({ dateEcheance: day('2024-08-12') }, rangeStart, rangeEndExclusive)).toBe(false);
+  });
+});
+
+describe('GanttVisibleTree - état initial des projets', () => {
+  test('replie tous les projets et le groupe sans projet', () => {
+    const result = buildDefaultCollapsedProjectIds([
+      { id: 10, projet: 1 },
+      { id: 20, projet: null }
+    ], [
+      { id: 1, nom: 'Projet A' },
+      { id: 2, nom: 'Projet B' }
+    ]);
+
+    expect([...result]).toEqual(['1', '2', WITHOUT_PROJECT]);
   });
 });
 

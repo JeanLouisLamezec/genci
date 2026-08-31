@@ -60,6 +60,23 @@
         return projectKeyForTask(task, projectById) === projectKey;
     }
 
+    /**
+     * État initial du widget : chaque groupe projet est replié. Le groupe
+     * « Sans projet » est ajouté uniquement lorsqu'au moins une tâche y tombe.
+     */
+    function buildDefaultCollapsedProjectIds(tasks, projects) {
+        var projectById = new Map((projects || []).map(function (project) {
+            return [String(project.id), project];
+        }));
+        var result = new Set(projectById.keys());
+        if ((tasks || []).some(function (task) {
+            return projectKeyForTask(task, projectById) === WITHOUT_PROJECT;
+        })) {
+            result.add(WITHOUT_PROJECT);
+        }
+        return result;
+    }
+
     function buildVisibleRows(options) {
         options = options || {};
         var tasks = Array.isArray(options.tasks) ? options.tasks : [];
@@ -203,6 +220,7 @@
         toMillis: toMillis,
         taskInterval: taskInterval,
         taskOverlapsRange: taskOverlapsRange,
+        buildDefaultCollapsedProjectIds: buildDefaultCollapsedProjectIds,
         buildVisibleRows: buildVisibleRows
     };
 
