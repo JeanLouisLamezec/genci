@@ -757,11 +757,21 @@
 
         async function refresh(refreshOptions) {
             refreshOptions = refreshOptions || {};
-            if (valid && !refreshOptions.force) return snapshot;
-            if (loading) return loading;
-            loading = (async function () {
+            var force = !!refreshOptions.force;
+
+            // Toute décision d'écriture utilise force=true. Si un chargement
+            // plus ancien est encore actif, attendre sa fin puis reconstruire
+            // un snapshot neuf évite de conserver un ancien passe-droit admin.
+            if (force) {
+                while (loading) await loading;
+            } else {
+                if (loading) return loading;
+                if (valid) return snapshot;
+            }
+
+            var request = (async function () {
                 try {
-                var identityState = await identityRuntime.refresh({ force: !!refreshOptions.force });
+                var identityState = await identityRuntime.refresh({ force: force });
                 var existingTables = await grist.docApi.listTables();
                 var data = { Team: identityState.team || [] };
                 await Promise.all(PERMISSION_DATA_TABLES.map(async function (table) {
@@ -784,10 +794,11 @@
                     return snapshot;
                 }
             })();
+            loading = request;
             try {
-                return await loading;
+                return await request;
             } finally {
-                loading = null;
+                if (loading === request) loading = null;
             }
         }
 

@@ -109,9 +109,19 @@
 
         async function refresh(refreshOptions) {
             refreshOptions = refreshOptions || {};
-            if (valid && !refreshOptions.force) return state;
-            if (loading) return loading;
-            loading = (async function () {
+            var force = !!refreshOptions.force;
+
+            // Une vérification forcée protège une écriture. Elle ne doit jamais
+            // réutiliser une lecture commencée avant la demande, car Team peut
+            // avoir changé entre-temps (notamment estAdmin true -> false).
+            if (force) {
+                while (loading) await loading;
+            } else {
+                if (loading) return loading;
+                if (valid) return state;
+            }
+
+            var request = (async function () {
                 try {
                     state = await load();
                     valid = true;
@@ -125,10 +135,11 @@
                     return state;
                 }
             })();
+            loading = request;
             try {
-                return await loading;
+                return await request;
             } finally {
-                loading = null;
+                if (loading === request) loading = null;
             }
         }
 

@@ -576,9 +576,19 @@ tfoot td.left { text-align: left; color: var(--text-muted); font-weight: 600; }
 
         async function refresh(refreshOptions) {
             refreshOptions = refreshOptions || {};
-            if (valid && !refreshOptions.force) return state;
-            if (loading) return loading;
-            loading = (async function () {
+            var force = !!refreshOptions.force;
+
+            // Une vérification forcée protège une écriture. Elle ne doit jamais
+            // réutiliser une lecture commencée avant la demande, car Team peut
+            // avoir changé entre-temps (notamment estAdmin true -> false).
+            if (force) {
+                while (loading) await loading;
+            } else {
+                if (loading) return loading;
+                if (valid) return state;
+            }
+
+            var request = (async function () {
                 try {
                     state = await load();
                     valid = true;
@@ -592,10 +602,11 @@ tfoot td.left { text-align: left; color: var(--text-muted); font-weight: 600; }
                     return state;
                 }
             })();
+            loading = request;
             try {
-                return await loading;
+                return await request;
             } finally {
-                loading = null;
+                if (loading === request) loading = null;
             }
         }
 
@@ -1675,11 +1686,21 @@ tfoot td.left { text-align: left; color: var(--text-muted); font-weight: 600; }
 
         async function refresh(refreshOptions) {
             refreshOptions = refreshOptions || {};
-            if (valid && !refreshOptions.force) return snapshot;
-            if (loading) return loading;
-            loading = (async function () {
+            var force = !!refreshOptions.force;
+
+            // Toute décision d'écriture utilise force=true. Si un chargement
+            // plus ancien est encore actif, attendre sa fin puis reconstruire
+            // un snapshot neuf évite de conserver un ancien passe-droit admin.
+            if (force) {
+                while (loading) await loading;
+            } else {
+                if (loading) return loading;
+                if (valid) return snapshot;
+            }
+
+            var request = (async function () {
                 try {
-                var identityState = await identityRuntime.refresh({ force: !!refreshOptions.force });
+                var identityState = await identityRuntime.refresh({ force: force });
                 var existingTables = await grist.docApi.listTables();
                 var data = { Team: identityState.team || [] };
                 await Promise.all(PERMISSION_DATA_TABLES.map(async function (table) {
@@ -1702,10 +1723,11 @@ tfoot td.left { text-align: left; color: var(--text-muted); font-weight: 600; }
                     return snapshot;
                 }
             })();
+            loading = request;
             try {
-                return await loading;
+                return await request;
             } finally {
-                loading = null;
+                if (loading === request) loading = null;
             }
         }
 

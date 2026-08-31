@@ -60,6 +60,51 @@ describe('Runtime permissions - identité commune', () => {
     expect(grist.docApi.fetchTable.mock.calls.filter(([table]) => table === 'Team')).toHaveLength(2);
   });
 
+  test('une révocation admin ne peut pas être masquée par un chargement déjà en cours', async () => {
+    let releaseFirstTeamLoad;
+    let teamReadCount = 0;
+    const adminTeam = {
+      id: [7], nom: ['Alice'], email: ['alice@example.com'],
+      gristUserId: [101], actif: [true], estAdmin: [true]
+    };
+    const revokedTeam = {
+      id: [7], nom: ['Alice'], email: ['alice@example.com'],
+      gristUserId: [101], actif: [true], estAdmin: [false]
+    };
+    const tables = {
+      Tasks: { id: [1], titre: ['Hors périmètre'], projet: [0], assignees: [null] }
+    };
+    const grist = {
+      docApi: {
+        getAccessToken: jest.fn(async () => ({ token: token({ userId: 101, email: 'alice@example.com' }) })),
+        listTables: jest.fn(async () => ['Team', 'Tasks']),
+        fetchTable: jest.fn(async table => {
+          if (table !== 'Team') return tables[table] || { id: [] };
+          teamReadCount += 1;
+          if (teamReadCount === 1) {
+            return new Promise(resolve => { releaseFirstTeamLoad = () => resolve(adminTeam); });
+          }
+          return revokedTeam;
+        })
+      }
+    };
+    const runtime = permissions.createGristPermissionRuntime(grist);
+
+    const initialLoad = runtime.refresh();
+    while (!releaseFirstTeamLoad) await Promise.resolve();
+    const decisionPromise = runtime.authorize([
+      ['UpdateRecord', 'Tasks', 1, { titre: 'Modification interdite' }]
+    ]);
+
+    releaseFirstTeamLoad();
+    await initialLoad;
+    const decision = await decisionPromise;
+
+    expect(runtime.getActor().isAdmin).toBe(false);
+    expect(decision.allowed).toBe(false);
+    expect(teamReadCount).toBeGreaterThanOrEqual(2);
+  });
+
   test('autorise uniquement l’écriture exacte de la première association', async () => {
     const grist = gristFixture();
     const runtime = permissions.createGristPermissionRuntime(grist);
