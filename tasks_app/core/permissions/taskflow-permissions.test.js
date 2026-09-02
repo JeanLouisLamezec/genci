@@ -114,7 +114,10 @@ describe('TaskFlow permissions - projets et tâches', () => {
     expect(authorize(snapshot, ['UpdateRecord', 'Tasks', 100, { progression: 50 }]).allowed).toBe(true);
     expect(authorize(snapshot, ['UpdateRecord', 'Tasks', 100, { dateDebut: 123 }]).code).toBe('TASK_SCOPE_FIELDS_ADMIN_OR_MANAGER_REQUIRED');
     expect(authorize(snapshot, ['UpdateRecord', 'Tasks', 100, { dateEcheance: 456 }]).allowed).toBe(false);
-    expect(authorize(snapshot, ['RemoveRecord', 'Tasks', 100]).allowed).toBe(false);
+    const deleteDecision = authorize(snapshot, ['RemoveRecord', 'Tasks', 100]);
+    expect(deleteDecision.allowed).toBe(false);
+    expect(deleteDecision.code).toBe('TASK_DELETE_FORBIDDEN');
+    expect(deleteDecision.message).toContain('hors de votre périmètre');
     expect(authorize(snapshot, ['UpdateRecord', 'Tasks', 101, { titre: 'X' }]).allowed).toBe(false);
   });
 

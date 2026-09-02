@@ -1575,11 +1575,16 @@
                 
             } catch (e) {
                 log('Erreur suppression: ' + e.message);
+                var permissionDecision = e && e.permissionDecision ? e.permissionDecision : null;
                 return {
                     ok: false,
-                    code: 'DELETE_ERROR',
+                    code: e && e.tfPermissionDenied
+                        ? ((permissionDecision && permissionDecision.code) || 'PERMISSION_DENIED')
+                        : 'DELETE_ERROR',
                     message: e.message,
-                    details: e.stack
+                    details: e.stack,
+                    permissionDenied: Boolean(e && e.tfPermissionDenied),
+                    permissionDecision: permissionDecision
                 };
             }
         }

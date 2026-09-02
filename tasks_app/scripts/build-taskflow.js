@@ -18,6 +18,7 @@ const SCHEMA_DIR = path.join(CORE_DIR, 'schema');
 
 // Fichiers à injecter
 const FILES_TO_INJECT = [
+    path.join(CORE_DIR, 'ui', 'taskflow-notifications.js'),
     path.join(CORE_DIR, 'identity', 'taskflow-identity.js'),
     path.join(CORE_DIR, 'identity', 'taskflow-identity-runtime.js'),
     path.join(CORE_DIR, 'identity', 'taskflow-identity-claim-service.js'),

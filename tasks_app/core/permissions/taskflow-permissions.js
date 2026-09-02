@@ -262,7 +262,7 @@
         if (actorIsAdmin(snapshot)) return allow('ADMIN');
         var project = projectForTask(snapshot, current);
         if (project && canManageProject(snapshot, project)) return allow('PROJECT_SCOPE');
-        return deny('TASK_DELETE_FORBIDDEN', 'Seul le responsable du projet, son manager direct ou un administrateur peut supprimer cette tache.', {
+        return deny('TASK_DELETE_FORBIDDEN', 'Suppression refusée : la tâche « ' + recordLabel('Tasks', current) + ' » est hors de votre périmètre. Seuls le responsable du projet, son manager direct ou un administrateur peuvent la supprimer.', {
             resourceLabel: recordLabel('Tasks', current)
         });
     }

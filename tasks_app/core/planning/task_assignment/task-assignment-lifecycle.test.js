@@ -394,6 +394,26 @@ describe('Cycle de vie TaskAssignments - Intégration réelle', () => {
             expect(taskAssignmentsTable.id).toHaveLength(0);
         });
 
+        test('propage le motif fonctionnel lorsqu’une permission bloque la suppression', async () => {
+            const decision = {
+                allowed: false,
+                code: 'TASK_DELETE_FORBIDDEN',
+                message: 'Suppression refusée : cette tâche est hors de votre périmètre.'
+            };
+            const denied = new Error(decision.message);
+            denied.tfPermissionDenied = true;
+            denied.permissionDecision = decision;
+            mockGrist.docApi.applyUserActions.mockRejectedValueOnce(denied);
+
+            const result = await integration.deleteTasksWithAssignments([6]);
+
+            expect(result.ok).toBe(false);
+            expect(result.code).toBe('TASK_DELETE_FORBIDDEN');
+            expect(result.permissionDenied).toBe(true);
+            expect(result.permissionDecision).toEqual(decision);
+            expect(tasksTable.id).toContain(6);
+        });
+
         test('Suppression avec TimeEntries mutables', async () => {
             // Ajouter un TimeEntry mutable
             timeEntriesTable.id.push(1);
