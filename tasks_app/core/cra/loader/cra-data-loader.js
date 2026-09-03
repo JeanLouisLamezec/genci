@@ -212,6 +212,22 @@ function getIdentityAssociationModule() {
  * LOGS EXPLICITES : affiche les claims disponibles pour diagnostic
  */
 async function getCurrentGristUser(grist) {
+  const sharedRuntime = typeof globalThis !== 'undefined' && globalThis.TaskFlowIdentityRuntime;
+  if (sharedRuntime && typeof sharedRuntime.getCurrentGristUser === 'function') {
+    const cachedCurrentUser = typeof sharedRuntime.getLastResolvedCurrentUser === 'function'
+      ? sharedRuntime.getLastResolvedCurrentUser()
+      : null;
+    const currentUser = cachedCurrentUser && cachedCurrentUser.userId
+      ? cachedCurrentUser
+      : await sharedRuntime.getCurrentGristUser(grist);
+    console.info('[CRA identity]', {
+      source: currentUser?.source || 'taskflow-identity-runtime',
+      userId: currentUser?.userId || null,
+      hasEmail: !!currentUser?.email,
+      availableClaims: currentUser?.availableClaims || []
+    });
+    return currentUser;
+  }
   try {
     const tokenResult = await grist.docApi.getAccessToken({ readOnly: true });
     

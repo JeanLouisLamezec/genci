@@ -37,7 +37,7 @@
     }
 
     // Version courante du schéma
-    var SCHEMA_VERSION = 7;
+    var SCHEMA_VERSION = 8;
 
     // Ordre de création des tables (important pour les dépendances)
     var TABLE_ORDER = [
@@ -54,6 +54,7 @@
         'MemberDailyCapacities',
         'Feuilles',
         'TimeEntries',
+        'TaskFlowIdentityProbe',
         'UserFilters',
         'TaskFlow_Meta'
     ];
@@ -312,6 +313,35 @@
                 { id: 'statutFeuille',          opts: { type: 'Text', isFormula: true, formula: '$feuille.statut if $feuille else ""' } },
                 { id: 'responsableValidation',  opts: { type: 'Ref:Team', isFormula: true, formula: '$feuille.responsableValidation if $feuille else None' } },
                 { id: 'semaineFeuille',         opts: { type: 'Date', isFormula: true, formula: '$feuille.semaine if $feuille else None' } }
+            ]
+        },
+
+        // =========================================================================
+        // TaskFlowIdentityProbe — Résolution serveur du profil Team courant
+        // =========================================================================
+        TaskFlowIdentityProbe: {
+            label: 'Sondes d’identité TaskFlow',
+            columns: [
+                { id: 'gristUserId', opts: dataColumn('Int') },
+                { id: 'nonce',       opts: dataColumn('Text') },
+                {
+                    id: 'teamCandidate',
+                    opts: {
+                        type: 'Ref:Team',
+                        isFormula: false,
+                        recalcWhen: 2,
+                        formula: 'email = (user.Email or "").strip().lower()\nmatches = [member for member in Team.lookupRecords() if member.actif not in (False, 0, "0") and (member.email or "").strip().lower() == email]\nmatches[0] if email and len(matches) == 1 else None'
+                    }
+                },
+                {
+                    id: 'matchStatus',
+                    opts: {
+                        type: 'Text',
+                        isFormula: false,
+                        recalcWhen: 2,
+                        formula: 'email = (user.Email or "").strip().lower()\nmatches = [member for member in Team.lookupRecords() if member.actif not in (False, 0, "0") and (member.email or "").strip().lower() == email]\n"matched" if email and len(matches) == 1 else ("duplicate" if email and len(matches) > 1 else "not_found")'
+                    }
+                }
             ]
         },
 

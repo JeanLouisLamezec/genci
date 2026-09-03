@@ -49,6 +49,75 @@ describe('TaskFlowIdentityRuntime', () => {
     expect(state.actor.associationCandidate.id).toBe(7);
   });
 
+  test('résout automatiquement le profil Team avec une sonde serveur transitoire', async () => {
+    const team = {
+      id: [7], nom: ['Alice'], email: ['alice@example.com'],
+      gristUserId: [0], actif: [true], estAdmin: [false]
+    };
+    let probeRows = [];
+    let nextProbeId = 1;
+    const applyUserActions = jest.fn(async actions => {
+      actions.forEach(action => {
+        if (action[0] === 'AddRecord') {
+          probeRows.push(Object.assign({
+            id: nextProbeId++,
+            teamCandidate: 7,
+            matchStatus: 'matched'
+          }, action[3]));
+        } else if (action[0] === 'RemoveRecord') {
+          probeRows = probeRows.filter(row => row.id !== action[2]);
+        }
+      });
+      return [];
+    });
+    const grist = {
+      docApi: {
+        getAccessToken: jest.fn(async () => ({ token: token({ userId: 101, docId: 'doc-1' }) })),
+        listTables: jest.fn(async () => ['Team', 'TaskFlowIdentityProbe']),
+        applyUserActions,
+        fetchTable: jest.fn(async table => {
+          if (table === 'Team') return team;
+          if (table === 'TaskFlowIdentityProbe') {
+            const columns = { id: [], gristUserId: [], nonce: [], teamCandidate: [], matchStatus: [] };
+            probeRows.forEach(row => Object.keys(columns).forEach(key => columns[key].push(row[key])));
+            return columns;
+          }
+          throw new Error(`Table inattendue: ${table}`);
+        })
+      }
+    };
+    const runtime = runtimeModule.createGristIdentityRuntime(grist, { fetch: null });
+
+    const state = await runtime.refresh();
+
+    expect(state.currentUser).toMatchObject({
+      userId: 101,
+      email: 'alice@example.com',
+      source: 'grist-identity-probe'
+    });
+    expect(state.actor.status).toBe(identity.IDENTITY_STATUS.ASSOCIATION_CONFIRMATION_REQUIRED);
+    expect(state.actor.associationCandidate.id).toBe(7);
+    expect(applyUserActions.mock.calls.flatMap(call => call[0]).map(action => action[0]))
+      .toEqual(['AddRecord', 'RemoveRecord']);
+    expect(probeRows).toEqual([]);
+  });
+
+  test('reste en échec fermé quand la table de sonde v8 manque', async () => {
+    const grist = makeGrist({
+      payload: { userId: 101 },
+      team: { id: [7], email: ['alice@example.com'], gristUserId: [0], actif: [true] }
+    });
+    grist.docApi.listTables = jest.fn(async () => ['Team']);
+    grist.docApi.applyUserActions = jest.fn();
+    const runtime = runtimeModule.createGristIdentityRuntime(grist, { fetch: null });
+
+    const state = await runtime.refresh();
+
+    expect(state.actor.conflictCodes).toContain('CURRENT_EMAIL_MISSING');
+    expect(state.actor.identityProbeCode).toBe('IDENTITY_PROBE_TABLE_MISSING');
+    expect(grist.docApi.applyUserActions).not.toHaveBeenCalled();
+  });
+
   test('met les erreurs de chargement en échec fermé', async () => {
     const error = new Error('Team indisponible');
     const onError = jest.fn();

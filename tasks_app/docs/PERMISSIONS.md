@@ -9,8 +9,9 @@ les ACL Grist n’ont pas été alignées et testées avec plusieurs vrais compt
 
 La migration de schéma v6 `functional-permissions-admin-v6` ajoute notamment
 `Team.estAdmin`. La migration v7 `user-filters-v7` ajoute la table additive
-`UserFilters`. Ces migrations n’installent pas d’ACL et ne transforment aucun
-utilisateur en administrateur.
+`UserFilters`. La migration v8 `identity-probe-v8` ajoute la table technique
+`TaskFlowIdentityProbe`. Ces migrations n’installent pas d’ACL et ne
+transforment aucun utilisateur en administrateur.
 
 ## Les trois frontières
 
@@ -36,7 +37,14 @@ fallback d’identification autonome par email.
 
 - `gristUserId` doit être un entier positif et unique dans `Team` ;
 - la ligne Team doit être active ;
-- l’email sert uniquement à découvrir un candidat à l’association ;
+- le widget récupère le `userId` authentifié depuis le jeton documentaire ;
+- si ce `userId` n’est pas encore associé, il crée une ligne transitoire dans
+  `TaskFlowIdentityProbe` avec un nonce aléatoire ;
+- deux formules de déclenchement évaluées par Grist utilisent `user.Email` pour
+  retrouver l’unique profil Team actif portant la même adresse ; l’adresse
+  elle-même n’est jamais écrite dans la sonde ni demandée à l’utilisateur ;
+- le widget relit uniquement sa sonde, récupère la référence `teamCandidate`,
+  puis supprime la sonde au mieux ;
 - l’utilisateur doit confirmer cette association ;
 - l’écriture autonome ne peut modifier que `Team.gristUserId` sur ce candidat ;
 - après association, seul un administrateur peut transférer ou révoquer le lien ;
@@ -229,9 +237,12 @@ tables et ne protègent pas suffisamment les champs système CRA.
 
 L’ACL cible doit utiliser l’attribut Grist `user.UserID` relié à
 `Team.gristUserId`, des règles de colonnes avec `rec`/`newRec`, et un cas minimal
-pour la première association. Elle doit également retirer aux Editors le droit
-de modifier la structure. Cette ACL doit être posée par un Owner et testée avec
-« View As » puis avec de vrais comptes.
+pour la première association. `TaskFlowIdentityProbe` doit en plus être limitée
+au propriétaire de chaque sonde : création avec
+`newRec.gristUserId == user.UserID`, lecture et suppression avec
+`rec.gristUserId == user.UserID`, et mise à jour refusée. Elle doit également
+retirer aux Editors le droit de modifier la structure. Cette ACL doit être
+posée par un Owner et testée avec « View As » puis avec de vrais comptes.
 
 Tant que cette recette n’est pas passée, les widgets sont qualifiables en
 préproduction fonctionnelle, mais le document n’est pas certifié contre une
@@ -239,6 +250,8 @@ préproduction fonctionnelle, mais le document n’est pas certifié contre une
 
 ## Recette obligatoire
 
+- compte non associé avec profil Team actif portant le même email ;
+- migration v8 absente et ACL de sonde volontairement refusée ;
 - compte sans profil, puis nouvelle tentative après création Team ;
 - email absent, email dupliqué, `gristUserId` dupliqué et membre inactif ;
 - exécutant, chef d’équipe, chef de projet et administrateur ;

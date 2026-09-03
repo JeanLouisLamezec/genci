@@ -7,14 +7,14 @@
  * 3. Ne pas signaler les colonnes légitimes finissant par un chiffre
  */
 
-describe('TaskFlow Schema v7', () => {
+describe('TaskFlow Schema v8', () => {
     
     // Charger le schéma
     require('./taskflow-schema.js');
     const SCHEMA = global.TASKFLOW_SCHEMA;
     
-    test('TASKFLOW_SCHEMA.version === 7 et UserFilters est déclaré', () => {
-        expect(SCHEMA.version).toBe(7);
+    test('TASKFLOW_SCHEMA.version === 8 et les tables techniques sont déclarées', () => {
+        expect(SCHEMA.version).toBe(8);
         const teamColumns = SCHEMA.tables.Team.columns;
         const adminColumn = teamColumns.find(column => column.id === 'estAdmin');
         expect(adminColumn).toBeDefined();
@@ -24,6 +24,16 @@ describe('TaskFlow Schema v7', () => {
         expect(SCHEMA.tables.UserFilters.columns.map(column => column.id)).toEqual([
             'gristUserId', 'filters', 'updatedAt', 'sourceWidget'
         ]);
+        expect(SCHEMA.tableOrder).toContain('TaskFlowIdentityProbe');
+        expect(SCHEMA.tables.TaskFlowIdentityProbe.columns.map(column => column.id)).toEqual([
+            'gristUserId', 'nonce', 'teamCandidate', 'matchStatus'
+        ]);
+        const candidateColumn = SCHEMA.tables.TaskFlowIdentityProbe.columns
+            .find(column => column.id === 'teamCandidate');
+        expect(candidateColumn.opts).toMatchObject({
+            type: 'Ref:Team', isFormula: false, recalcWhen: 2
+        });
+        expect(candidateColumn.opts.formula).toContain('user.Email');
     });
     
     test('Feuilles a les nouvelles colonnes v4', () => {

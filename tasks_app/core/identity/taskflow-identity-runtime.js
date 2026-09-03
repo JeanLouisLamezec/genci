@@ -12,6 +12,8 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function (identityDomain) {
     'use strict';
 
+    var lastResolvedCurrentUser = null;
+
     function requireIdentityDomain() {
         if (!identityDomain || typeof identityDomain.resolveActorIdentity !== 'function') {
             throw new Error('Domaine d\'identité TaskFlow non chargé');
@@ -56,16 +58,94 @@
         }
     }
 
+    function normalizeUserId(value) {
+        var numeric = Number(value);
+        return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
+    }
+
+    function normalizeEmail(value) {
+        return String(value || '').trim().toLowerCase();
+    }
+
+    function createProbeNonce() {
+        if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+            return crypto.randomUUID();
+        }
+        return 'tf-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+    }
+
+    async function discoverTeamCandidate(grist, expectedUserId, team, options) {
+        options = options || {};
+        var docApi = grist && grist.docApi;
+        if (!docApi || !expectedUserId || typeof docApi.applyUserActions !== 'function') {
+            return { success: false, code: 'IDENTITY_PROBE_UNAVAILABLE' };
+        }
+
+        var tables;
+        try {
+            tables = typeof docApi.listTables === 'function' ? await docApi.listTables() : [];
+        } catch (error) {
+            return { success: false, code: 'IDENTITY_PROBE_UNAVAILABLE', error: error };
+        }
+        if (tables.indexOf('TaskFlowIdentityProbe') === -1) {
+            return { success: false, code: 'IDENTITY_PROBE_TABLE_MISSING' };
+        }
+
+        var nonce = createProbeNonce();
+        var probeRowId = null;
+        try {
+            await docApi.applyUserActions([[
+                'AddRecord', 'TaskFlowIdentityProbe', null,
+                { gristUserId: expectedUserId, nonce: nonce }
+            ]]);
+            var rawProbe = await docApi.fetchTable('TaskFlowIdentityProbe');
+            var rows = columnarToRows(rawProbe).filter(function (row) {
+                return normalizeUserId(row.gristUserId) === expectedUserId && String(row.nonce || '') === nonce;
+            });
+            var probe = rows.sort(function (left, right) {
+                return Number(right.id || 0) - Number(left.id || 0);
+            })[0] || null;
+            if (!probe) return { success: false, code: 'IDENTITY_PROBE_NOT_VISIBLE' };
+            probeRowId = normalizeUserId(probe.id);
+
+            var status = String(probe.matchStatus || '').trim().toLowerCase();
+            var candidateId = normalizeUserId(probe.teamCandidate);
+            var candidate = (team || []).find(function (member) {
+                return normalizeUserId(member.id) === candidateId;
+            }) || null;
+            if (status === 'duplicate') return { success: false, code: 'IDENTITY_PROBE_EMAIL_DUPLICATED' };
+            if (status !== 'matched' || !candidate) {
+                return { success: false, code: 'IDENTITY_PROBE_TEAM_NOT_FOUND' };
+            }
+            return { success: true, code: 'IDENTITY_PROBE_MATCHED', candidate: candidate };
+        } catch (error) {
+            return { success: false, code: 'IDENTITY_PROBE_FAILED', error: error };
+        } finally {
+            if (probeRowId && options.keepIdentityProbe !== true) {
+                try {
+                    await docApi.applyUserActions([['RemoveRecord', 'TaskFlowIdentityProbe', probeRowId]]);
+                } catch (cleanupError) {
+                    // La sonde porte un nonce et aucune adresse email. Un nettoyage admin pourra la retirer.
+                }
+            }
+        }
+    }
+
     async function getCurrentGristUser(grist) {
         try {
             var tokenResult = await grist.docApi.getAccessToken({ readOnly: true });
             var payload = decodeJwtPayload(tokenResult && tokenResult.token);
             if (!payload) return { userId: null, email: null };
+            var userId = normalizeUserId(payload.userId != null
+                ? payload.userId
+                : (payload.user && payload.user.id != null ? payload.user.id : payload.sub));
+            var email = normalizeEmail(payload.email || (payload.user && payload.user.email) || payload.loginEmail);
+            var source = email ? 'access-token' : null;
             return {
-                userId: payload.userId != null
-                    ? payload.userId
-                    : (payload.user && payload.user.id != null ? payload.user.id : payload.sub),
-                email: payload.email || (payload.user && payload.user.email) || payload.loginEmail || null
+                userId: userId,
+                email: email || null,
+                source: source,
+                availableClaims: Object.keys(payload)
             };
         } catch (error) {
             return { userId: null, email: null, error: error };
@@ -104,6 +184,33 @@
                 currentGristUserId: currentUser.userId,
                 currentEmail: currentUser.email
             });
+            if (!actor.identified && (actor.conflictCodes || []).indexOf('CURRENT_EMAIL_MISSING') !== -1) {
+                var probe = await discoverTeamCandidate(grist, currentUser.userId, team, options);
+                if (probe.success) {
+                    currentUser.email = normalizeEmail(probe.candidate.email);
+                    currentUser.source = 'grist-identity-probe';
+                    actor = requireIdentityDomain().resolveActorIdentity({
+                        team: team,
+                        currentGristUserId: currentUser.userId,
+                        currentEmail: currentUser.email
+                    });
+                } else {
+                    actor.identityProbeCode = probe.code;
+                    actor.identityProbeError = probe.error || null;
+                }
+            }
+            lastResolvedCurrentUser = Object.assign({}, currentUser);
+            if (!actor.identified && typeof console !== 'undefined' && console.info) {
+                console.info('[TaskFlow identity]', {
+                    status: actor.status,
+                    conflictCodes: actor.conflictCodes || [],
+                    hasGristUserId: !!currentUser.userId,
+                    hasEmail: !!currentUser.email,
+                    emailSource: currentUser.source || null,
+                    availableClaims: currentUser.availableClaims || [],
+                    identityProbeCode: actor.identityProbeCode || null
+                });
+            }
             return { actor: actor, currentUser: currentUser, team: team };
         }
 
@@ -167,7 +274,11 @@
     return {
         columnarToRows: columnarToRows,
         decodeJwtPayload: decodeJwtPayload,
+        discoverTeamCandidate: discoverTeamCandidate,
         getCurrentGristUser: getCurrentGristUser,
+        getLastResolvedCurrentUser: function () {
+            return lastResolvedCurrentUser && Object.assign({}, lastResolvedCurrentUser);
+        },
         createGristIdentityRuntime: createGristIdentityRuntime
     };
 });

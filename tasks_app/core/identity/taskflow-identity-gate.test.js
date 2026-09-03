@@ -63,7 +63,7 @@ describe('TaskFlowIdentityGate', () => {
 
     await gate.start();
     expect(document.body.textContent).toContain('Association impossible');
-    expect(document.body.textContent).toContain('Associer mon compte');
+    expect(document.body.textContent).toContain('Réessayer');
 
     document.querySelector('[data-tf-identity-action="retry"]').click();
     await flush();
@@ -71,5 +71,25 @@ describe('TaskFlowIdentityGate', () => {
 
     expect(identityRuntime.refresh).toHaveBeenLastCalledWith({ force: true });
     expect(document.body.textContent).toContain('Alice');
+  });
+
+  test('explique la migration manquante sans demander l’email au compte', async () => {
+    const unavailable = {
+      identified: false,
+      status: 'ASSOCIATION_UNAVAILABLE',
+      conflictCodes: ['CURRENT_EMAIL_MISSING'],
+      identityProbeCode: 'IDENTITY_PROBE_TABLE_MISSING'
+    };
+    const identityRuntime = {
+      refresh: jest.fn(async () => ({ actor: unavailable })),
+      getActor: () => unavailable
+    };
+    const gate = createIdentityGate({ identityRuntime, claimService: { claim: jest.fn() }, document });
+
+    await gate.start();
+    expect(document.body.textContent).toContain('migration TaskFlow v8');
+    expect(document.body.textContent).not.toContain('Adresse e-mail Team');
+    expect(document.querySelector('#taskflow-identity-email')).toBeNull();
+    expect(document.querySelector('[data-tf-identity-action="retry"]')).not.toBeNull();
   });
 });

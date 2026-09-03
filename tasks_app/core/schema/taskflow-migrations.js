@@ -13,6 +13,8 @@
  * Version 4: Fondation du workflow de validation des feuilles de temps
  * Version 5: Rattachement des entrées de temps aux feuilles hebdomadaires
  * Version 6: Marqueur d'administration fonctionnelle Team.estAdmin
+ * Version 7: Filtres personnels persistants
+ * Version 8: Sonde serveur pour l'association automatique des comptes Grist
  * ============================================================================ */
 
 (function (global) {
@@ -828,6 +830,59 @@
     }
 
     // ========================================================================
+    // MIGRATION V7 → V8 — Association automatique du compte Grist
+    // ========================================================================
+
+    async function migrateToV8(grist, metadata) {
+        log('Migration v7 → v8: identity-probe-v8');
+
+        var docApi = getDocApi(grist);
+        var existingTables = metadata.tablesByName || {};
+        var existingColumns = metadata.columnsByKey || {};
+        var actions = [];
+        var probeColumns = [
+            { id: 'gristUserId', type: 'Int', isFormula: false },
+            { id: 'nonce', type: 'Text', isFormula: false },
+            {
+                id: 'teamCandidate',
+                type: 'Ref:Team',
+                isFormula: false,
+                recalcWhen: 2,
+                formula: 'email = (user.Email or "").strip().lower()\nmatches = [member for member in Team.lookupRecords() if member.actif not in (False, 0, "0") and (member.email or "").strip().lower() == email]\nmatches[0] if email and len(matches) == 1 else None'
+            },
+            {
+                id: 'matchStatus',
+                type: 'Text',
+                isFormula: false,
+                recalcWhen: 2,
+                formula: 'email = (user.Email or "").strip().lower()\nmatches = [member for member in Team.lookupRecords() if member.actif not in (False, 0, "0") and (member.email or "").strip().lower() == email]\n"matched" if email and len(matches) == 1 else ("duplicate" if email and len(matches) > 1 else "not_found")'
+            }
+        ];
+
+        if (!existingTables.TaskFlowIdentityProbe) {
+            actions.push(['AddTable', 'TaskFlowIdentityProbe', probeColumns]);
+        } else {
+            for (var index = 0; index < probeColumns.length; index++) {
+                var column = probeColumns[index];
+                if (!existingColumns['TaskFlowIdentityProbe.' + column.id]) {
+                    var options = Object.assign({}, column);
+                    delete options.id;
+                    actions.push(['AddColumn', 'TaskFlowIdentityProbe', column.id, options]);
+                }
+            }
+        }
+
+        if (actions.length > 0) await docApi.applyUserActions(actions);
+
+        return {
+            success: true,
+            message: 'Migration v8 appliquée',
+            actionsExecuted: actions.length,
+            metadata: actions.length ? await loadMigrationMetadata(grist) : metadata
+        };
+    }
+
+    // ========================================================================
     // LISTE DES MIGRATIONS
     // ========================================================================
     
@@ -867,6 +922,12 @@
             name: 'user-filters-v7',
             description: 'Ajout des filtres personnels persistants entre widgets',
             run: migrateToV7
+        },
+        {
+            version: 8,
+            name: 'identity-probe-v8',
+            description: 'Ajout de la sonde serveur pour associer automatiquement un compte Grist à Team',
+            run: migrateToV8
         }
     ];
 

@@ -28,6 +28,28 @@
         if (codes.indexOf('TEAM_EMAIL_NOT_FOUND') !== -1) {
             return 'Aucun profil Team actif ne correspond à votre email Grist. Demandez à un administrateur de créer ou corriger votre profil, puis réessayez.';
         }
+        if (codes.indexOf('CURRENT_EMAIL_MISSING') !== -1) {
+            var probeCode = actor && actor.identityProbeCode;
+            if (probeCode === 'IDENTITY_PROBE_TABLE_MISSING') {
+                return 'L’association automatique n’est pas encore installée dans ce document. Un administrateur doit appliquer la migration TaskFlow v8, puis vous pourrez réessayer.';
+            }
+            if (probeCode === 'IDENTITY_PROBE_EMAIL_DUPLICATED') {
+                return 'Plusieurs profils Team actifs correspondent à l’email de votre compte Grist. Un administrateur doit corriger ce doublon avant une nouvelle tentative.';
+            }
+            if (probeCode === 'IDENTITY_PROBE_TEAM_NOT_FOUND') {
+                return 'Aucun profil Team actif ne correspond à l’email de votre compte Grist. Demandez à un administrateur de vérifier votre adresse dans Team, puis réessayez.';
+            }
+            if (probeCode === 'IDENTITY_PROBE_NOT_VISIBLE' || probeCode === 'IDENTITY_PROBE_FAILED') {
+                return 'La vérification automatique de votre compte Grist a échoué. Un administrateur doit vérifier les droits de la table TaskFlowIdentityProbe, puis vous pourrez réessayer.';
+            }
+            return 'L’email de votre compte Grist n’a pas pu être résolu automatiquement. Vérifiez votre profil Team avec un administrateur, puis réessayez.';
+        }
+        if (codes.indexOf('INVALID_CURRENT_USER_ID') !== -1) {
+            return 'Grist ne fournit pas un identifiant utilisateur exploitable. Vérifiez que vous êtes connecté avec un compte nominatif, puis rechargez le document.';
+        }
+        if (codes.indexOf('TEAM_MEMBER_ALREADY_ASSOCIATED') !== -1) {
+            return 'Le profil Team correspondant à votre email est déjà associé à un autre compte Grist. Un administrateur doit supprimer cette ancienne association avant de réessayer.';
+        }
         if (codes.indexOf('CURRENT_EMAIL_DUPLICATED') !== -1 || actor && actor.status === 'EMAIL_DUPLICATED') {
             return 'Plusieurs profils Team utilisent votre email. Un administrateur doit corriger ce doublon avant une nouvelle tentative.';
         }
@@ -113,6 +135,20 @@
             return state;
         }
 
+        function bindAction(actor) {
+            if (!gateElement) return;
+            var button = gateElement.querySelector('[data-tf-identity-action]');
+            if (!button) return;
+            button.addEventListener('click', function () {
+                var action = button.getAttribute('data-tf-identity-action');
+                if (action === 'associate') {
+                    associate(actor.associationCandidate.id);
+                } else {
+                    retry();
+                }
+            });
+        }
+
         function render(actor, errorMessage) {
             if (!actor || actor.status === 'IDENTITY_DATA_UNAVAILABLE') {
                 shell('Identité indisponible', escapeHtml(errorMessage || unavailableMessage(actor)), 'Réessayer', 'retry');
@@ -135,21 +171,11 @@
                     'Association impossible',
                     (errorMessage ? '<p style="color:#b91c1c;margin:0 0 10px">' + escapeHtml(errorMessage) + '</p>' : '') +
                     '<p style="margin:0">' + escapeHtml(unavailableMessage(actor)) + '</p>',
-                    busy ? 'Vérification…' : 'Associer mon compte',
+                    busy ? 'Vérification…' : 'Réessayer',
                     'retry'
                 );
             }
-
-            if (!gateElement) return;
-            var button = gateElement.querySelector('[data-tf-identity-action]');
-            if (!button) return;
-            button.addEventListener('click', function () {
-                if (button.getAttribute('data-tf-identity-action') === 'associate') {
-                    associate(actor.associationCandidate.id);
-                } else {
-                    retry();
-                }
-            });
+            bindAction(actor);
         }
 
         async function start() {
