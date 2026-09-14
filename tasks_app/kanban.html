@@ -1961,6 +1961,64 @@
         return record.titre || record.nom || (table + ' #' + (record.id || '?'));
     }
 
+    function validateTaskStructure(snapshot, task, currentTaskId) {
+        task = task || {};
+        var taskId = normalizeId(currentTaskId || task.id);
+        var parentId = normalizeId(task.parentTask);
+        var taskIndex = ensureIndexes(snapshot).Tasks;
+        var parent = parentId ? taskIndex.get(parentId) : null;
+        var isMilestone = task.type === 'jalon';
+
+        if (isMilestone && !parentId) {
+            return deny(
+                'MILESTONE_PARENT_REQUIRED',
+                'Un jalon doit être rattaché à une tâche du même projet.'
+            );
+        }
+        if (parentId && !parent) {
+            return deny(
+                'TASK_PARENT_NOT_FOUND',
+                'La tâche parente sélectionnée est introuvable.'
+            );
+        }
+        if (parent && parent.type === 'jalon') {
+            return deny(
+                'MILESTONE_CANNOT_BE_PARENT',
+                'Un jalon ne peut pas contenir une tâche ou un autre jalon.'
+            );
+        }
+        if (parent && normalizeId(parent.projet) !== normalizeId(task.projet)) {
+            return deny(
+                'TASK_PARENT_PROJECT_MISMATCH',
+                'La tâche parente doit appartenir au même projet.'
+            );
+        }
+        if (isMilestone && taskId) {
+            var hasChildren = (snapshot.tables.Tasks || []).some(function (candidate) {
+                return normalizeId(candidate && candidate.parentTask) === taskId;
+            });
+            if (hasChildren) {
+                return deny(
+                    'MILESTONE_CHILDREN_FORBIDDEN',
+                    'Un jalon ne peut pas contenir de tâche. Détachez ses enfants avant de poursuivre.'
+                );
+            }
+        }
+        if (isMilestone) {
+            var invalidDependency = normalizeRefList(task.dependDe).some(function (dependencyId) {
+                var dependency = taskIndex.get(dependencyId);
+                return dependency && dependency.type === 'jalon';
+            });
+            if (invalidDependency) {
+                return deny(
+                    'MILESTONE_DEPENDENCY_INVALID',
+                    'Un jalon doit dépendre d’une tâche, pas d’un autre jalon.'
+                );
+            }
+        }
+        return null;
+    }
+
     function canCreateProject(snapshot, proposed) {
         if (actorIsAdmin(snapshot)) return allow('ADMIN');
         var responsibleId = normalizeId(proposed && proposed.responsable);
@@ -1982,6 +2040,8 @@
     }
 
     function canCreateTask(snapshot, proposed) {
+        var structureError = validateTaskStructure(snapshot, proposed);
+        if (structureError) return structureError;
         if (actorIsAdmin(snapshot)) return allow('ADMIN');
         var project = projectForTask(snapshot, proposed);
         if (project && canManageProject(snapshot, project)) return allow('PROJECT_SCOPE');
@@ -1989,6 +2049,9 @@
     }
 
     function canUpdateTask(snapshot, current, proposed) {
+        var nextTask = Object.assign({}, current || {}, proposed || {});
+        var structureError = validateTaskStructure(snapshot, nextTask, current && current.id);
+        if (structureError) return structureError;
         if (actorIsAdmin(snapshot)) return allow('ADMIN');
         var project = projectForTask(snapshot, current);
         if (project && canManageProject(snapshot, project)) return allow('PROJECT_SCOPE');
@@ -8727,7 +8790,7 @@ if $projet and $projet.responsable:
                     ['AddRecord', 'Tasks', null, { titre: 'Analyse', priorite: '1', statut: 'done', progression: 100, projet: 1, type: 'tache', dateDebut: day(-10), dateEcheance: day(-5), assignees: ['L', 1] }],
                     ['AddRecord', 'Tasks', null, { titre: 'Dev Backend', priorite: '1', statut: 'inprogress', progression: 40, projet: 1, type: 'tache', dateDebut: day(-4), dateEcheance: day(10), assignees: ['L', 1, 2], dependDe: ['L', 1], estimationH: 32, tempsPasse: 12 }],
                     ['AddRecord', 'Tasks', null, { titre: 'Design UI', priorite: '2', statut: 'review', progression: 80, projet: 2, type: 'tache', dateDebut: day(-5), dateEcheance: day(2), assignees: ['L', 3] }],
-                    ['AddRecord', 'Tasks', null, { titre: 'Livraison', priorite: '1', statut: 'todo', projet: 1, type: 'jalon', dateDebut: day(15), dateEcheance: day(15), dependDe: ['L', 2] }],
+                    ['AddRecord', 'Tasks', null, { titre: 'Livraison', priorite: '1', statut: 'todo', projet: 1, type: 'jalon', dateDebut: day(15), dateEcheance: day(15), parentTask: 2, dependDe: ['L', 2] }],
                     ['AddRecord', 'Tasks', null, { titre: 'Tests QA', priorite: '3', statut: 'todo', projet: 2, type: 'tache', dateDebut: day(5), dateEcheance: day(12), tags: ['L', 'qa'] }]
                 ]);
                 const devBackendId = Array.isArray(res?.retValues) ? res.retValues[1] : 2;
@@ -10502,7 +10565,7 @@ if $projet and $projet.responsable:
                 { id: 1, titre: 'Analyse besoins', priorite: '1', projet: 1, dateDebut: day(-10), dateEcheance: day(-5), progression: 100, statut: 'done', type: 'tache', assignees: ['L', 1], tags: ['L', 'documentation'] },
                 { id: 2, titre: 'Dev Backend', priorite: '1', projet: 1, dateDebut: day(-4), dateEcheance: day(2), progression: 60, statut: 'inprogress', type: 'tache', dependDe: ['L', 1], assignees: ['L', 1, 2], estimationH: 32, tempsPasse: 12 },
                 { id: 3, titre: 'Design UI', priorite: '2', projet: 2, dateDebut: day(-5), dateEcheance: day(1), progression: 80, statut: 'review', type: 'tache', assignees: ['L', 3] },
-                { id: 4, titre: 'Livraison MVP', priorite: '1', projet: 1, dateDebut: day(15), dateEcheance: day(15), progression: 0, statut: 'todo', type: 'jalon', dependDe: ['L', 2], assignees: ['L', 1] },
+                { id: 4, titre: 'Livraison MVP', priorite: '1', projet: 1, dateDebut: day(15), dateEcheance: day(15), progression: 0, statut: 'todo', type: 'jalon', parentTask: 2, dependDe: ['L', 2], assignees: ['L', 1] },
                 { id: 5, titre: 'Tests QA', priorite: '3', projet: 2, dateDebut: day(5), dateEcheance: day(12), progression: 0, statut: 'todo', type: 'tache', assignees: ['L', 2], tags: ['L', 'qa', 'tests'] },
                 { id: 6, titre: 'Documentation', priorite: '4', projet: 3, dateDebut: day(-2), dateEcheance: day(-1), progression: 20, statut: 'inprogress', type: 'tache', assignees: ['L', 3] },
                 { id: 7, titre: 'Correction bugs', priorite: '2', projet: 1, dateDebut: day(0), dateEcheance: day(3), progression: 10, statut: 'inprogress', type: 'tache', assignees: ['L', 2] },

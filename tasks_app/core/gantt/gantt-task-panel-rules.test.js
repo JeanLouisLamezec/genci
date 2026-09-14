@@ -27,10 +27,11 @@ describe('GanttTaskPanelRules - unités de charge', () => {
 
 describe('GanttTaskPanelRules - parents de sous-tâche', () => {
   const tasks = [
-    { id: 1, titre: 'Courante', projet: 10 },
-    { id: 2, titre: 'Même projet', projet: 10 },
+    { id: 1, titre: 'Courante', projet: 10, type: 'tache' },
+    { id: 2, titre: 'Même projet', projet: 10, type: 'tache' },
     { id: 3, titre: 'Autre projet', projet: 20 },
-    { id: 4, titre: 'Sans projet', projet: null }
+    { id: 4, titre: 'Sans projet', projet: null },
+    { id: 5, titre: 'Jalon', projet: 10, type: 'jalon' }
   ];
 
   test('ne propose que les tâches du projet courant', () => {
@@ -38,8 +39,18 @@ describe('GanttTaskPanelRules - parents de sous-tâche', () => {
   });
 
   test('filtre aussi les dépendances possibles sur le projet courant', () => {
-    expect(rules.filterTasksByProject(tasks, 10).map(task => task.id)).toEqual([1, 2]);
+    expect(rules.filterTasksByProject(tasks, 10).map(task => task.id)).toEqual([1, 2, 5]);
     expect(rules.filterTasksByProject(tasks, 20).map(task => task.id)).toEqual([3]);
+  });
+
+  test('un jalon ne peut jamais servir de parent structurel', () => {
+    expect(rules.filterParentTasks(tasks, 1, 10, () => true).map(task => task.id)).toEqual([2]);
+    expect(rules.canBeStructuralParent(tasks[4])).toBe(false);
+  });
+
+  test('les dépendances proposées à un jalon excluent les autres jalons', () => {
+    expect(rules.filterDependencyTasks(tasks, 10, 'jalon').map(task => task.id)).toEqual([1, 2]);
+    expect(rules.filterDependencyTasks(tasks, 10, 'tache').map(task => task.id)).toEqual([1, 2, 5]);
   });
 
   test('respecte aussi le contrôle de cycle existant', () => {
@@ -48,5 +59,52 @@ describe('GanttTaskPanelRules - parents de sous-tâche', () => {
 
   test('isole les tâches sans projet des tâches appartenant à un projet', () => {
     expect(rules.filterParentTasks(tasks, null, null, () => true).map(task => task.id)).toEqual([4]);
+  });
+});
+
+describe('GanttTaskPanelRules - modèle des jalons', () => {
+  const tasks = [
+    { id: 1, titre: 'Tâche porteuse', projet: 10, type: 'tache' },
+    { id: 2, titre: 'Jalon', projet: 10, type: 'jalon', parentTask: 1 },
+    { id: 3, titre: 'Autre jalon', projet: 10, type: 'jalon', parentTask: 1 },
+    { id: 4, titre: 'Enfant legacy', projet: 10, type: 'tache', parentTask: 2 }
+  ];
+
+  test('exige une tâche porteuse pour créer un jalon', () => {
+    expect(rules.validateHierarchy({ type: 'jalon', projet: 10, parentTask: null }, tasks)).toMatchObject({
+      ok: false,
+      code: 'MILESTONE_PARENT_REQUIRED'
+    });
+  });
+
+  test('accepte un jalon rattaché à une vraie tâche du même projet', () => {
+    expect(rules.validateHierarchy({ type: 'jalon', projet: 10, parentTask: 1 }, tasks)).toMatchObject({
+      ok: true
+    });
+  });
+
+  test('refuse toute tâche placée dans un jalon', () => {
+    expect(rules.validateHierarchy({ type: 'tache', projet: 10, parentTask: 2 }, tasks)).toMatchObject({
+      ok: false,
+      code: 'MILESTONE_CANNOT_BE_PARENT'
+    });
+  });
+
+  test('refuse de conserver des enfants legacy sous un jalon', () => {
+    expect(rules.validateHierarchy(tasks[1], tasks, 2)).toMatchObject({
+      ok: false,
+      code: 'MILESTONE_CHILDREN_FORBIDDEN'
+    });
+  });
+});
+
+describe('GanttTaskPanelRules - projets proposés à la création', () => {
+  test('ne garde que les projets actifs autorisés', () => {
+    const projects = [
+      { id: 1, actif: true },
+      { id: 2, actif: true },
+      { id: 3, actif: false }
+    ];
+    expect(rules.filterCreatableProjects(projects, project => project.id === 2).map(project => project.id)).toEqual([2]);
   });
 });

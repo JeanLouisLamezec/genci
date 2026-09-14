@@ -12,7 +12,7 @@
     <script src="core/gantt/gantt-visible-tree.js?v=20260831-collapsed-default"></script>
     <script src="core/gantt/gantt-task-date-constraints.js"></script>
     <script src="core/gantt/gantt-date-change-transaction.js?v=20260901"></script>
-    <script src="core/gantt/gantt-task-panel-rules.js?v=20260831-charge-units"></script>
+    <script src="core/gantt/gantt-task-panel-rules.js?v=20260910-milestones"></script>
     <script src="core/planning/task_assignment/task-assignment-service.js"></script>
     <script src="core/planning/gantt/gantt-task-assignment-integration.js?v=20260827"></script>
     <script src="core/planning/gantt/gantt-auto-planning-integration.js?v=20260827-retro"></script>
@@ -1976,6 +1976,64 @@
         return record.titre || record.nom || (table + ' #' + (record.id || '?'));
     }
 
+    function validateTaskStructure(snapshot, task, currentTaskId) {
+        task = task || {};
+        var taskId = normalizeId(currentTaskId || task.id);
+        var parentId = normalizeId(task.parentTask);
+        var taskIndex = ensureIndexes(snapshot).Tasks;
+        var parent = parentId ? taskIndex.get(parentId) : null;
+        var isMilestone = task.type === 'jalon';
+
+        if (isMilestone && !parentId) {
+            return deny(
+                'MILESTONE_PARENT_REQUIRED',
+                'Un jalon doit être rattaché à une tâche du même projet.'
+            );
+        }
+        if (parentId && !parent) {
+            return deny(
+                'TASK_PARENT_NOT_FOUND',
+                'La tâche parente sélectionnée est introuvable.'
+            );
+        }
+        if (parent && parent.type === 'jalon') {
+            return deny(
+                'MILESTONE_CANNOT_BE_PARENT',
+                'Un jalon ne peut pas contenir une tâche ou un autre jalon.'
+            );
+        }
+        if (parent && normalizeId(parent.projet) !== normalizeId(task.projet)) {
+            return deny(
+                'TASK_PARENT_PROJECT_MISMATCH',
+                'La tâche parente doit appartenir au même projet.'
+            );
+        }
+        if (isMilestone && taskId) {
+            var hasChildren = (snapshot.tables.Tasks || []).some(function (candidate) {
+                return normalizeId(candidate && candidate.parentTask) === taskId;
+            });
+            if (hasChildren) {
+                return deny(
+                    'MILESTONE_CHILDREN_FORBIDDEN',
+                    'Un jalon ne peut pas contenir de tâche. Détachez ses enfants avant de poursuivre.'
+                );
+            }
+        }
+        if (isMilestone) {
+            var invalidDependency = normalizeRefList(task.dependDe).some(function (dependencyId) {
+                var dependency = taskIndex.get(dependencyId);
+                return dependency && dependency.type === 'jalon';
+            });
+            if (invalidDependency) {
+                return deny(
+                    'MILESTONE_DEPENDENCY_INVALID',
+                    'Un jalon doit dépendre d’une tâche, pas d’un autre jalon.'
+                );
+            }
+        }
+        return null;
+    }
+
     function canCreateProject(snapshot, proposed) {
         if (actorIsAdmin(snapshot)) return allow('ADMIN');
         var responsibleId = normalizeId(proposed && proposed.responsable);
@@ -1997,6 +2055,8 @@
     }
 
     function canCreateTask(snapshot, proposed) {
+        var structureError = validateTaskStructure(snapshot, proposed);
+        if (structureError) return structureError;
         if (actorIsAdmin(snapshot)) return allow('ADMIN');
         var project = projectForTask(snapshot, proposed);
         if (project && canManageProject(snapshot, project)) return allow('PROJECT_SCOPE');
@@ -2004,6 +2064,9 @@
     }
 
     function canUpdateTask(snapshot, current, proposed) {
+        var nextTask = Object.assign({}, current || {}, proposed || {});
+        var structureError = validateTaskStructure(snapshot, nextTask, current && current.id);
+        if (structureError) return structureError;
         if (actorIsAdmin(snapshot)) return allow('ADMIN');
         var project = projectForTask(snapshot, current);
         if (project && canManageProject(snapshot, project)) return allow('PROJECT_SCOPE');
@@ -8077,6 +8140,23 @@ if (typeof globalThis !== 'undefined') {
             projects: projects,
             ...options
         });
+        const validateTaskHierarchy = (task, taskSet = tasks, taskId = panelState.taskId) =>
+            GanttTaskPanelRules.validateHierarchy(task, taskSet, taskId);
+
+        function canCreateTaskInProject(project) {
+            if (!project || project.actif === false) return false;
+            if (!gristReady) return true;
+            const permissions = window.TaskFlowPermissions;
+            const snapshot = permissionRuntime && permissionRuntime.getSnapshot
+                ? permissionRuntime.getSnapshot()
+                : null;
+            if (!permissions || typeof permissions.canCreateTask !== 'function' || !snapshot) return false;
+            return Boolean(permissions.canCreateTask(snapshot, { projet: project.id }).allowed);
+        }
+
+        function getCreatableProjects() {
+            return GanttTaskPanelRules.filterCreatableProjects(projects, canCreateTaskInProject);
+        }
 
         // Couleur d'une tâche selon le mode courant, avec override individuel (task.couleur)
         function getTaskColor(t) {
@@ -8331,7 +8411,7 @@ if (typeof globalThis !== 'undefined') {
             viewStartDate = focusDate;
             document.documentElement.style.setProperty('--cell-width', VIEW_CONFIG[view].cellWidth + 'px');
             render();
-            requestAnimationFrame(() => centerTimelineOnDate(focusDate));
+            scheduleCenterTimelineOnDate(focusDate);
         }
         function navigate(dir) {
             const cfg = VIEW_CONFIG[currentView];
@@ -8340,7 +8420,14 @@ if (typeof globalThis !== 'undefined') {
             else if (cfg.navStep === 'quarter') viewStartDate = new Date(viewStartDate.getFullYear(), viewStartDate.getMonth() + dir * 3, 1);
             else if (cfg.navStep === 'semester') viewStartDate = new Date(viewStartDate.getFullYear(), viewStartDate.getMonth() + dir * 6, 1);
             else if (cfg.navStep === 'year') viewStartDate = new Date(viewStartDate.getFullYear() + dir, 0, 1);
+            // La plage effective peut commencer plusieurs années avant la période
+            // demandée lorsqu'une tâche longue la chevauche. Le render reconstruit
+            // alors la grille avec scrollLeft=0 : sans recentrage, l'en-tête
+            // affiche systématiquement la première année (par ex. 2024) même si
+            // la navigation vise 2028.
+            const focusDate = addDays(getViewStartDate(), Math.floor(getTotalDays() / 2));
             render();
+            scheduleCenterTimelineOnDate(focusDate);
         }
         function getTimelineCenterDate() {
             const timeline = document.getElementById('timelineScroll');
@@ -8371,10 +8458,21 @@ if (typeof globalThis !== 'undefined') {
             if (daysHeader) daysHeader.style.transform = 'translateX(-' + target + 'px)';
         }
 
+        let timelineFocusRequest = 0;
+        function scheduleCenterTimelineOnDate(date) {
+            const request = ++timelineFocusRequest;
+            const focusDate = new Date(date);
+            requestAnimationFrame(() => {
+                // En cas de clics rapides, seul le dernier déplacement demandé
+                // est appliqué et une ancienne frame ne peut pas ramener le Gantt.
+                if (request === timelineFocusRequest) centerTimelineOnDate(focusDate);
+            });
+        }
+
         function goToToday() {
             viewStartDate = new Date();
             render();
-            requestAnimationFrame(() => centerTimelineOnDate(new Date()));
+            scheduleCenterTimelineOnDate(new Date());
         }
 
         function fitToTasks() {
@@ -8520,7 +8618,7 @@ if (typeof globalThis !== 'undefined') {
             updateGanttOverlay();
             if (initialTodayFocusPending) {
                 initialTodayFocusPending = false;
-                requestAnimationFrame(() => centerTimelineOnDate(new Date()));
+                scheduleCenterTimelineOnDate(new Date());
             }
         }
 
@@ -8659,19 +8757,28 @@ if (typeof globalThis !== 'undefined') {
             let monthsHtml = '', daysHtml = '';
 
             if (cfg.unit === 'month') {
-                // Vue Année : itérer sur les mois réels de la plage effective
+                // Vue Année : l'année occupe toute la largeur de ses mois.
+                // Auparavant, son libellé était posé dans la seule cellule de
+                // janvier, ce qui donnait des années isolées et mal alignées.
                 const effEnd = addDays(start, totalDays);
                 let cur = new Date(start.getFullYear(), start.getMonth(), 1);
-                let idx = 0;
+                const yearGroups = [];
                 while (cur < effEnd) {
                     const m = cur.getMonth();
                     const y = cur.getFullYear();
                     const isCurrentMonth = (new Date().getMonth() === m && new Date().getFullYear() === y);
-                    monthsHtml += '<div class="month-cell" style="width:' + effectiveCellWidth + 'px">' + (m === 0 || idx === 0 ? y : '') + '</div>';
+                    let yearGroup = yearGroups[yearGroups.length - 1];
+                    if (!yearGroup || yearGroup.year !== y) {
+                        yearGroup = { year: y, cells: 0 };
+                        yearGroups.push(yearGroup);
+                    }
+                    yearGroup.cells++;
                     daysHtml += '<div class="day-cell ' + (isCurrentMonth ? 'today' : '') + '" style="width:' + effectiveCellWidth + 'px">' + MONTHS_SHORT[m] + '</div>';
                     cur = new Date(y, m + 1, 1);
-                    idx++;
                 }
+                yearGroups.forEach(group => {
+                    monthsHtml += '<div class="month-cell" style="width:' + (group.cells * effectiveCellWidth) + 'px">' + group.year + '</div>';
+                });
 
             } else if (cfg.unit === 'week') {
                 // Vues Trimestre/Semestre : regrouper les cellules-semaine par mois
@@ -8689,7 +8796,7 @@ if (typeof globalThis !== 'undefined') {
                 }
                 weekGroups.forEach((g, gi) => {
                     const w = g.cells * effectiveCellWidth;
-                    const label = (g.month === 0 || gi === 0) ? g.year + ' · ' + MONTHS_SHORT[g.month] : MONTHS_SHORT[g.month];
+                    const label = MONTHS_SHORT[g.month] + ' ' + g.year;
                     monthsHtml += '<div class="month-cell" style="width:' + w + 'px">' + label + '</div>';
                 });
                 // Une cellule-jour par bloc de 7 jours, centrée sur le lundi ISO
@@ -8706,15 +8813,17 @@ if (typeof globalThis !== 'undefined') {
 
             } else {
                 // Vues Semaine/Mois : une cellule par jour — largeur explicite alignée sur les cellules-mois
-                let currentMonth = -1, monthStartIdx = 0;
+                let currentMonth = -1, currentYear = null, monthStartIdx = 0;
                 for (let i = 0; i < totalDays; i++) {
                     const d = addDays(start, i);
                     const m = d.getMonth();
-                    if (m !== currentMonth) {
+                    const y = d.getFullYear();
+                    if (m !== currentMonth || y !== currentYear) {
                         if (currentMonth !== -1) {
-                            monthsHtml += '<div class="month-cell" style="width:' + ((i - monthStartIdx) * effectiveCellWidth) + 'px">' + MONTHS_SHORT[currentMonth] + '</div>';
+                            monthsHtml += '<div class="month-cell" style="width:' + ((i - monthStartIdx) * effectiveCellWidth) + 'px">' + MONTHS_SHORT[currentMonth] + ' ' + currentYear + '</div>';
                         }
                         currentMonth = m;
+                        currentYear = y;
                         monthStartIdx = i;
                     }
                     const isWe = isWeekend(d);
@@ -8722,7 +8831,7 @@ if (typeof globalThis !== 'undefined') {
                     const isMonthStart = d.getDate() === 1;
                     daysHtml += '<div class="day-cell ' + (isWe ? 'weekend ' : '') + (isT ? 'today ' : '') + (isMonthStart ? 'month-start' : '') + '" style="width:' + effectiveCellWidth + 'px">' + d.getDate() + '</div>';
                 }
-                monthsHtml += '<div class="month-cell" style="width:' + ((totalDays - monthStartIdx) * effectiveCellWidth) + 'px">' + MONTHS_SHORT[currentMonth] + '</div>';
+                monthsHtml += '<div class="month-cell" style="width:' + ((totalDays - monthStartIdx) * effectiveCellWidth) + 'px">' + MONTHS_SHORT[currentMonth] + ' ' + currentYear + '</div>';
             }
 
             document.getElementById('monthsHeader').innerHTML = monthsHtml;
@@ -9169,12 +9278,35 @@ if (typeof globalThis !== 'undefined') {
             }
         }
 
-        function openCreatePanel() { openCreateTaskWithParent(null); }
+        async function openCreatePanel() { await openCreateTaskWithParent(null); }
         // WBS-02: création d'une sous-tâche (ou tâche racine si parentId === null)
-        function openCreateTaskWithParent(parentId) {
+        async function openCreateTaskWithParent(parentId) {
+            if (gristReady && permissionRuntime && typeof permissionRuntime.refresh === 'function') {
+                try {
+                    await permissionRuntime.refresh({ force: true });
+                } catch (error) {
+                    console.warn('[Gantt permissions] Actualisation avant création impossible', error);
+                    showToast('Impossible de vérifier vos droits de création. Réessayez.', 'error');
+                    return;
+                }
+            }
+
             const today = new Date();
             const parent = parentId ? tasks.find(t => t.id === parentId) : null;
-            const defaultProjectId = parent?.projet || (projects.length > 0 ? projects[0].id : null);
+            if (parent && !GanttTaskPanelRules.canBeStructuralParent(parent)) {
+                showToast('Création impossible : un jalon ne peut pas contenir de tâche.', 'error');
+                return;
+            }
+            const creatableProjects = getCreatableProjects();
+            if (parent && !creatableProjects.some(project => GanttTaskPanelRules.sameProject(project.id, parent.projet))) {
+                showToast('Création impossible : vous n’avez pas les droits sur ce projet.', 'error');
+                return;
+            }
+            if (!creatableProjects.length) {
+                showToast('Aucun projet autorisé : vous devez être responsable du projet, manager direct ou administrateur.', 'error');
+                return;
+            }
+            const defaultProjectId = parent?.projet || creatableProjects[0].id;
             const defaultProject = projects.find(p => p.id === defaultProjectId);
             const scopeStart = gristToDate(parent?.dateDebut ?? defaultProject?.dateDebut);
             const scopeEnd = gristToDate(parent?.dateEcheance ?? defaultProject?.dateFin);
@@ -9201,7 +9333,13 @@ if (typeof globalThis !== 'undefined') {
             setTimeout(() => { const el = document.getElementById('taskTitle'); if (el) el.focus(); }, 100);
         }
         // WBS-02: détacher la tâche courante de son parent (devient racine)
-        function detachFromParent() { updateField('parentTask', null); }
+        function detachFromParent() {
+            if (panelState.editData && panelState.editData.type === 'jalon') {
+                showToast('Un jalon doit rester rattaché à une tâche.', 'error');
+                return;
+            }
+            updateField('parentTask', null);
+        }
         // WBS-05: ajuste les dates du parent aux bornes (min/max) de ses descendants
         async function adjustParentDatesToChildren() {
             const t = tasks.find(x => x.id === panelState.taskId);
@@ -9229,9 +9367,17 @@ if (typeof globalThis !== 'undefined') {
         }
         // WBS-02: changer le parent (via dropdown de sélection)
         function setParent(newParentId) {
+            if (!newParentId) {
+                detachFromParent();
+                return;
+            }
             const parent = tasks.find(function(task) { return task.id === newParentId; });
             if (!parent || !GanttTaskPanelRules.sameProject(parent.projet, panelState.editData && panelState.editData.projet)) {
                 showToast('Parent impossible : sélectionnez une tâche du même projet.', 'error');
+                return;
+            }
+            if (!GanttTaskPanelRules.canBeStructuralParent(parent)) {
+                showToast('Parent impossible : un jalon ne peut pas contenir de tâche.', 'error');
                 return;
             }
             if (panelState.taskId && !canSetParent(panelState.taskId, newParentId)) {
@@ -9482,7 +9628,8 @@ if (typeof globalThis !== 'undefined') {
             const priorityColor = PRIORITY_COLORS[getTaskPriority(data)] || '#94a3b8';
             const currentProject = projects.find(p => p.id === data.projet);
             const projectColor = currentProject?.couleur || '#94a3b8';
-            const projectOptions = projects.filter(p => p.actif !== false).map(p =>
+            const selectableProjects = panelState.isNew ? getCreatableProjects() : projects.filter(p => p.actif !== false);
+            const projectOptions = selectableProjects.map(p =>
                 '<option value="' + p.id + '" ' + (data.projet === p.id ? 'selected' : '') + '>' + escapeHtml(p.nom) + '</option>'
             ).join('');
             const subtasksDone = (data.subtasks || []).filter(st => st.done).length;
@@ -9514,7 +9661,7 @@ if (typeof globalThis !== 'undefined') {
             const chargeTotalH = (data.charges || []).reduce((sum, c) => (data.assignees.includes(c.teamId) ? sum + (Number(c.heures) || 0) : sum), 0);
             const chargeValidation = getTaskChargeValidation(data);
             const chargeValidationHtml = chargeValidation.ok ? '' : '<div class="panel-validation-error" style="margin-top:8px;margin-bottom:0">' + escapeHtml(getChargeValidationMessage(chargeValidation)) + '</div>';
-            const parentCandidates = panelState.isNew ? [] : GanttTaskPanelRules.filterParentTasks(tasks, panelState.taskId, data.projet, canSetParent);
+            const parentCandidates = GanttTaskPanelRules.filterParentTasks(tasks, panelState.taskId, data.projet, canSetParent);
             const chargeDescs = (!panelState.isNew && panelState.taskId) ? getAllDescendants(panelState.taskId) : [];
             const chargeConsol = chargeDescs.length ? TF.chargeByMember([{ charges: TF.chargesToJson(data.charges) }].concat(chargeDescs)) : null;
             const chargeConsolHtml = (chargeConsol && Object.keys(chargeConsol).length) ? ('<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border)"><div class="prop-label" style="margin-bottom:6px">Consolidé (avec sous-tâches)</div>' + Object.keys(chargeConsol).map(function(tid){ return '<div class="charge-row"><span class="an">' + escapeHtml(getTeamMemberName(Number(tid))) + '</span><span style="font-weight:600;font-size:0.82rem">' + chargeConsol[tid] + ' h</span></div>'; }).join('') + '<div style="margin-top:6px;font-size:0.78rem;color:var(--text-muted)">Total consolidé : <strong>' + Object.values(chargeConsol).reduce(function(s,h){ return s + h; }, 0) + '</strong> h</div></div>') : '';
@@ -9523,7 +9670,7 @@ if (typeof globalThis !== 'undefined') {
                 return d ? '<span class="multi-select-chip">' + escapeHtml(d.titre) + '<span class="remove" onclick="event.stopPropagation();removeDependency(' + id + ')">×</span></span>' : '';
             }).join('');
             const dependencyCandidates = panelState.isNew ? tasks : getAvailableDependencies(panelState.taskId);
-            const availableDeps = GanttTaskPanelRules.filterTasksByProject(dependencyCandidates, data.projet);
+            const availableDeps = GanttTaskPanelRules.filterDependencyTasks(dependencyCandidates, data.projet, data.type);
             const depsOptions = availableDeps.map(t =>
                 '<div class="multi-select-option ' + (data.dependDe.includes(t.id) ? 'selected' : '') + '" onclick="toggleDependency(' + t.id + ')"><input type="checkbox" ' + (data.dependDe.includes(t.id) ? 'checked' : '') + ' onclick="event.stopPropagation();toggleDependency(' + t.id + ')">' + escapeHtml(t.titre) + '</div>'
             ).join('');
@@ -9585,22 +9732,23 @@ if (typeof globalThis !== 'undefined') {
                             ? '<span class="project-color-dot" style="background:' + projectColor + '" title="Changer la couleur du projet" onclick="event.stopPropagation();this.nextElementSibling.classList.toggle(\'open\')"></span>' +
                               '<div class="color-picker-pop">' + COLOR_PRESETS.map(c => '<span class="color-swatch" style="background:' + c + '" onclick="event.stopPropagation();setProjectColor(' + currentProject.id + ',\'' + c + '\')"></span>').join('') + '</div>'
                             : '<span class="project-color-dot" style="background:' + projectColor + '"></span>') +
-                        '<select class="form-select" onchange="updateField(\'projet\', parseInt(this.value) || null)"><option value="">Aucun projet</option>' + projectOptions + '</select>' +
+                        '<select class="form-select" onchange="updateField(\'projet\', parseInt(this.value) || null)">' +
+                            (panelState.isNew ? '' : '<option value="">Aucun projet</option>') + projectOptions +
+                        '</select>' +
                     '</div></div></div>' +
                     // WBS-02: prop-row "Parent" — affichée uniquement si pertinente :
                     // - tâche existante : oui (permet reparenter/détacher)
                     // - nouvelle sous-tâche (parentTask pré-rempli) : oui (chip parent visible)
                     // - nouvelle tâche racine : masquée (pas de bruit)
-                    ((!panelState.isNew || data.parentTask)
-                        ? '<div class="prop-row"><span class="prop-label">Parent</span><div class="prop-value">' +
-                            (data.parentTask
-                                ? '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">' +
-                                    '<span class="multi-select-chip" ' + (panelState.isNew ? '' : 'onclick="openTaskPanel(' + data.parentTask + ')"') + ' style="' + (panelState.isNew ? '' : 'cursor:pointer;') + 'background:var(--primary-light);color:var(--primary)">↑ ' + escapeHtml((tasks.find(t => t.id === data.parentTask) || {}).titre || '(inconnu)') + '</span>' +
-                                    '<button class="btn" style="padding:4px 10px;font-size:0.72rem" onclick="detachFromParent()">Détacher</button>' +
-                                  '</div>'
-                                : '<select class="form-select" onchange="if(this.value)setParent(parseInt(this.value))"><option value="">— Tâche racine —</option>' +
-                                    parentCandidates.map(t => '<option value="' + t.id + '">' + escapeHtml(t.titre) + '</option>').join('') +
-                                  '</select>') +
+                    ((!panelState.isNew || data.parentTask || data.type === 'jalon')
+                        ? '<div class="prop-row"><span class="prop-label">' + (data.type === 'jalon' ? 'Tâche de rattachement *' : 'Parent') + '</span><div class="prop-value">' +
+                            '<select class="form-select" onchange="setParent(parseInt(this.value) || null)">' +
+                                '<option value="" ' + (data.type === 'jalon' ? 'disabled' : '') + ' ' + (!data.parentTask ? 'selected' : '') + '>' +
+                                    (data.type === 'jalon' ? '— Sélectionnez une tâche —' : '— Tâche racine —') +
+                                '</option>' +
+                                parentCandidates.map(t => '<option value="' + t.id + '" ' + (data.parentTask === t.id ? 'selected' : '') + '>' + escapeHtml(t.titre) + '</option>').join('') +
+                            '</select>' +
+                            (data.type === 'jalon' ? '<div style="margin-top:5px;font-size:0.72rem;color:var(--text-muted)">Le jalon sera affiché sous cette tâche.</div>' : '') +
                         '</div></div>'
                         : '') +
                     '<div class="prop-row"><span class="prop-label">Couleur</span><div class="prop-value"><div style="display:flex;gap:8px;align-items:center">' +
@@ -9658,9 +9806,14 @@ if (typeof globalThis !== 'undefined') {
                             '<span class="prereq-badge ' + (k.statut || 'todo') + '">' + kprog + '%</span>' +
                         '</div>';
                     }).join('');
-                    const addBtn = '<button class="panel-btn" style="width:auto;padding:6px 12px;font-size:0.78rem;margin-top:6px;margin-right:6px" onclick="openCreateTaskWithParent(' + panelState.taskId + ')">+ Sous-tâche</button>';
-                    const adjustBtn = kids.length ? '<button class="btn" style="padding:6px 12px;font-size:0.78rem;margin-top:6px" onclick="adjustParentDatesToChildren()" title="Aligner les dates du parent sur min/max des descendants">↔ Ajuster dates</button>' : '';
+                    const addBtn = data.type === 'jalon' ? '' : '<button class="panel-btn" style="width:auto;padding:6px 12px;font-size:0.78rem;margin-top:6px;margin-right:6px" onclick="openCreateTaskWithParent(' + panelState.taskId + ')">+ Sous-tâche</button>';
+                    const adjustBtn = data.type !== 'jalon' && kids.length ? '<button class="btn" style="padding:6px 12px;font-size:0.78rem;margin-top:6px" onclick="adjustParentDatesToChildren()" title="Aligner les dates du parent sur min/max des descendants">↔ Ajuster dates</button>' : '';
+                    const legacyWarning = data.type === 'jalon' && kids.length
+                        ? '<div class="panel-validation-error">Données incohérentes : un jalon ne peut pas contenir de tâche. Ouvrez les enfants ci-dessous et détachez-les.</div>'
+                        : '';
+                    if (data.type === 'jalon' && !kids.length) return '';
                     return '<div class="panel-section"><div class="panel-section-header"><span class="panel-section-title">Sous-tâches (hiérarchie)</span>' + (kids.length ? '<span class="panel-section-badge">' + kids.length + '</span>' : '') + '</div>' +
+                        legacyWarning +
                         parentLink +
                         (kids.length ? '<div class="prereq-list">' + kidsList + '</div>' : '<div class="prereq-empty">Aucune sous-tâche. Décomposez cette tâche en étapes planifiables.</div>') +
                         addBtn + adjustBtn + '</div>';
@@ -9668,16 +9821,15 @@ if (typeof globalThis !== 'undefined') {
 
                 (data.type === 'jalon' ?
                     '<div class="panel-section"><div class="panel-section-header"><span class="panel-section-title">Prérequis</span>' + (data.dependDe.length ? '<span class="panel-section-badge">' + doneCount + '/' + data.dependDe.length + '</span>' : '') + '</div>' +
-                    '<div class="prereq-list">' + (prereqHtml || '<div class="prereq-empty">Aucune dépendance — liez des tâches amont via le panneau d\'une tâche.</div>') + '</div></div>' :
+                    '<div class="prereq-list">' + (prereqHtml || '<div class="prereq-empty">Aucune dépendance — sélectionnez les tâches amont dans « Détails ».</div>') + '</div></div>' :
                     '<div class="panel-section"><div class="panel-section-header"><span class="panel-section-title">' + (data.type === 'reunion' ? 'Points à traiter' : 'Checklist') + '</span>' + (subtasksTotal > 0 ? '<span class="panel-section-badge">' + subtasksDone + '/' + subtasksTotal + '</span>' : '') + '</div>' +
                     '<div class="subtask-list">' + (data.subtasks || []).map(function(st) { return '<div class="subtask-item ' + (st.done ? 'done' : '') + '"><input type="checkbox" class="subtask-checkbox" ' + (st.done ? 'checked' : '') + ' onchange="toggleSubtask(' + st.id + ')"><input class="subtask-text" value="' + escapeHtml(st.text) + '" onchange="editSubtask(' + st.id + ', this.value)" onkeydown="if(event.key===\'Enter\')this.blur()"><button class="subtask-remove" onclick="removeSubtask(' + st.id + ')">×</button></div>'; }).join('') + '</div>' +
                     '<div class="subtask-add"><input type="text" id="newSubtaskInput" placeholder="Ajouter..." onkeydown="handleSubtaskKeydown(event)"><button onclick="addSubtask()">+</button></div></div>') +
 
-                (data.type !== 'jalon' ?
+                (data.type !== 'reunion' ?
                     '<div class="panel-section"><div class="panel-section-header"><span class="panel-section-title">Détails</span></div>' +
                     '<div class="form-group"><div class="tags-input" onclick="document.getElementById(\'tagInput\').focus()">' + tagsChips + '<input type="text" id="tagInput" placeholder="' + (data.tags.length ? '' : 'Ajouter un tag...') + '" onkeydown="handleTagKeydown(event)"></div></div>' +
-                    (data.type !== 'reunion' ?
-                        '<div class="form-group"><div class="multi-select" id="depsSelect"><div class="multi-select-trigger" onclick="toggleMultiSelect(\'depsSelect\')"><div class="multi-select-values">' + (depsChips || '<span class="multi-select-placeholder">Dépendances...</span>') + '</div><span class="multi-select-arrow">▾</span></div><div class="multi-select-dropdown">' + (depsOptions || '<div class="multi-select-empty">Aucune</div>') + '</div></div>' + blockedHtml + '</div>' : '') +
+                    '<div class="form-group"><div class="multi-select" id="depsSelect"><div class="multi-select-trigger" onclick="toggleMultiSelect(\'depsSelect\')"><div class="multi-select-values">' + (depsChips || '<span class="multi-select-placeholder">Dépendances...</span>') + '</div><span class="multi-select-arrow">▾</span></div><div class="multi-select-dropdown">' + (depsOptions || '<div class="multi-select-empty">Aucune</div>') + '</div></div>' + blockedHtml + '</div>' +
                     '</div>' : '') +
 
                 (!panelState.isNew ?
@@ -9685,10 +9837,14 @@ if (typeof globalThis !== 'undefined') {
 
             if (panelState.isNew) {
                 const dateValidation = validateTaskDateConstraints(data);
+                const hierarchyValidation = validateTaskHierarchy(data);
                 const newTaskChargeValidation = getTaskChargeValidation(data);
-                const canCreate = data.titre && data.titre.trim().length > 0 && dateValidation.ok && newTaskChargeValidation.ok;
+                const projectAllowed = getCreatableProjects().some(project => GanttTaskPanelRules.sameProject(project.id, data.projet));
+                const canCreate = data.titre && data.titre.trim().length > 0 && dateValidation.ok && hierarchyValidation.ok && newTaskChargeValidation.ok && projectAllowed;
                 const validationMessages = [];
                 if (!dateValidation.ok) validationMessages.push('Création impossible : ' + dateValidation.message);
+                if (!hierarchyValidation.ok) validationMessages.push('Création impossible : ' + hierarchyValidation.message);
+                if (!projectAllowed) validationMessages.push('Création impossible : ce projet est hors de votre périmètre.');
                 const validationHtml = validationMessages.length ? '<div class="panel-validation-error">' + escapeHtml(validationMessages.join(' ')) + '</div>' : '';
                 footer.innerHTML = validationHtml + '<div style="display:flex;gap:8px;width:100%"><button class="panel-btn" style="flex:0 0 auto;width:auto;padding:10px 16px;background:transparent;color:var(--text-muted);border:1px solid var(--border)" onclick="closePanel()">Annuler</button><button class="panel-btn success" onclick="createTask()" ' + (!canCreate ? 'disabled' : '') + ' style="flex:1;width:auto">Créer la tâche</button></div>';
             } else {
@@ -9744,6 +9900,11 @@ if (typeof globalThis !== 'undefined') {
             const data = panelState.editData;
             if (!data) return;
 
+            if (field === 'type' && value === 'jalon' && panelState.taskId && getChildren(panelState.taskId).length) {
+                showToast('Conversion impossible : une tâche contenant des enfants ne peut pas devenir un jalon.', 'error');
+                return;
+            }
+
             if (field === 'dateDebut' || field === 'dateEcheance') {
                 value = value ? dateToGrist(new Date(value)) : null;
             }
@@ -9763,7 +9924,9 @@ if (typeof globalThis !== 'undefined') {
                 const previousDependencyCount = (data.dependDe || []).length;
                 data.dependDe = (data.dependDe || []).filter(function(dependencyId) {
                     const dependency = tasks.find(function(task) { return task.id === dependencyId; });
-                    return dependency && GanttTaskPanelRules.sameProject(dependency.projet, value);
+                    return dependency &&
+                        GanttTaskPanelRules.sameProject(dependency.projet, value) &&
+                        (data.type !== 'jalon' || !GanttTaskPanelRules.isMilestone(dependency));
                 });
                 if (data.dependDe.length !== previousDependencyCount) {
                     showToast('Dépendances hors projet retirées.', 'info');
@@ -9772,6 +9935,11 @@ if (typeof globalThis !== 'undefined') {
 
             if (field === 'type' && value === 'jalon' && data.dateDebut) {
                 data.dateEcheance = data.dateDebut;
+                data.dependDe = (data.dependDe || []).filter(function(dependencyId) {
+                    const dependency = tasks.find(function(task) { return task.id === dependencyId; });
+                    return dependency && !GanttTaskPanelRules.isMilestone(dependency);
+                });
+                if (!data.parentTask) noSave = true;
             }
 
             // FIX: Synchroniser le task local pour affichage immédiat
@@ -9941,6 +10109,10 @@ if (typeof globalThis !== 'undefined') {
                 showToast('Dépendance impossible : sélectionnez une tâche du même projet.', 'error');
                 return;
             }
+            if (data.type === 'jalon' && GanttTaskPanelRules.isMilestone(dependency)) {
+                showToast('Dépendance impossible : un jalon doit dépendre d’une tâche, pas d’un autre jalon.', 'error');
+                return;
+            }
             const idx = data.dependDe.indexOf(id);
             if (idx === -1) data.dependDe.push(id);
             else data.dependDe.splice(idx, 1);
@@ -10014,6 +10186,15 @@ if (typeof globalThis !== 'undefined') {
             );
             if (!dateValidation.ok) {
                 showToast('Modification impossible : ' + dateValidation.message, 'error');
+                return;
+            }
+            const hierarchyValidation = validateTaskHierarchy(
+                { ...data, id: panelState.taskId },
+                validationTasks,
+                panelState.taskId
+            );
+            if (!hierarchyValidation.ok) {
+                showToast('Modification impossible : ' + hierarchyValidation.message, 'error');
                 return;
             }
 
@@ -10285,6 +10466,17 @@ if (typeof globalThis !== 'undefined') {
             const dateValidation = validateTaskDateConstraints(data);
             if (!dateValidation.ok) {
                 showToast('Création impossible : ' + dateValidation.message, 'error');
+                return;
+            }
+            const hierarchyValidation = validateTaskHierarchy(data, tasks, null);
+            if (!hierarchyValidation.ok) {
+                showToast('Création impossible : ' + hierarchyValidation.message, 'error');
+                renderPanel();
+                return;
+            }
+            if (!getCreatableProjects().some(project => GanttTaskPanelRules.sameProject(project.id, data.projet))) {
+                showToast('Création impossible : ce projet est hors de votre périmètre.', 'error');
+                renderPanel();
                 return;
             }
             const chargeValidation = getTaskChargeValidation(data);
@@ -11209,7 +11401,7 @@ if (typeof globalThis !== 'undefined') {
                 { id: 1, titre: 'Analyse besoins', priorite: '1', projet: 1, dateDebut: day(-10), dateEcheance: day(-5), progression: 100, statut: 'done', type: 'tache', assignees: ['L', 1], tags: ['L', 'documentation'] },
                 { id: 2, titre: 'Dev Backend', priorite: '1', projet: 1, dateDebut: day(-4), dateEcheance: day(2), progression: 60, statut: 'inprogress', type: 'tache', dependDe: ['L', 1], assignees: ['L', 1, 2], estimationH: 32, tempsPasse: 12 },
                 { id: 3, titre: 'Design UI', priorite: '2', projet: 2, dateDebut: day(-5), dateEcheance: day(1), progression: 80, statut: 'review', type: 'tache', assignees: ['L', 3] },
-                { id: 4, titre: 'Livraison MVP', priorite: '1', projet: 1, dateDebut: day(15), dateEcheance: day(15), progression: 0, statut: 'todo', type: 'jalon', dependDe: ['L', 2], assignees: ['L', 1] },
+                { id: 4, titre: 'Livraison MVP', priorite: '1', projet: 1, dateDebut: day(15), dateEcheance: day(15), progression: 0, statut: 'todo', type: 'jalon', parentTask: 2, dependDe: ['L', 2], assignees: ['L', 1] },
                 { id: 5, titre: 'Tests QA', priorite: '3', projet: 2, dateDebut: day(5), dateEcheance: day(12), progression: 0, statut: 'todo', type: 'tache', assignees: ['L', 2], tags: ['L', 'qa', 'tests'] },
                 { id: 6, titre: 'Documentation', priorite: '4', projet: 3, dateDebut: day(-2), dateEcheance: day(-1), progression: 20, statut: 'inprogress', type: 'tache', assignees: ['L', 3] },
                 { id: 7, titre: 'Correction bugs', priorite: '2', projet: 1, dateDebut: day(0), dateEcheance: day(3), progression: 10, statut: 'inprogress', type: 'tache', assignees: ['L', 2] },

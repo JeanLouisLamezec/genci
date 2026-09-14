@@ -90,6 +90,74 @@ describe('TaskFlow permissions - projets et tâches', () => {
     expect(authorize(snapshot, ['UpdateRecord', 'Tasks', 200, { titre: 'X' }]).allowed).toBe(false);
   });
 
+  test('un jalon doit être rattaché à une vraie tâche du même projet', () => {
+    const snapshot = fixture(3);
+    expect(authorize(snapshot, ['AddRecord', 'Tasks', null, {
+      titre: 'Jalon isolé',
+      type: 'jalon',
+      projet: 10
+    }])).toMatchObject({
+      allowed: false,
+      code: 'MILESTONE_PARENT_REQUIRED'
+    });
+    expect(authorize(snapshot, ['AddRecord', 'Tasks', null, {
+      titre: 'Jalon valide',
+      type: 'jalon',
+      projet: 10,
+      parentTask: 100
+    }]).allowed).toBe(true);
+  });
+
+  test('une tâche ne peut pas être placée sous un jalon, même par un admin', () => {
+    const tasks = [
+      { id: 100, titre: 'Tâche', projet: 10, type: 'tache' },
+      { id: 110, titre: 'Jalon', projet: 10, type: 'jalon', parentTask: 100 }
+    ];
+    const snapshot = fixture(1, { tasks });
+    expect(authorize(snapshot, ['AddRecord', 'Tasks', null, {
+      titre: 'Enfant invalide',
+      type: 'tache',
+      projet: 10,
+      parentTask: 110
+    }])).toMatchObject({
+      allowed: false,
+      code: 'MILESTONE_CANNOT_BE_PARENT'
+    });
+  });
+
+  test('une tâche qui contient déjà des enfants ne peut pas devenir un jalon', () => {
+    const tasks = [
+      { id: 100, titre: 'Parent', projet: 10, type: 'tache' },
+      { id: 110, titre: 'Enfant', projet: 10, type: 'tache', parentTask: 100 }
+    ];
+    const snapshot = fixture(1, { tasks });
+    expect(authorize(snapshot, ['UpdateRecord', 'Tasks', 100, {
+      type: 'jalon',
+      parentTask: 110
+    }])).toMatchObject({
+      allowed: false,
+      code: 'MILESTONE_CHILDREN_FORBIDDEN'
+    });
+  });
+
+  test('un jalon ne peut pas dépendre d’un autre jalon', () => {
+    const tasks = [
+      { id: 100, titre: 'Tâche', projet: 10, type: 'tache' },
+      { id: 110, titre: 'Jalon amont', projet: 10, type: 'jalon', parentTask: 100 }
+    ];
+    const snapshot = fixture(1, { tasks });
+    expect(authorize(snapshot, ['AddRecord', 'Tasks', null, {
+      titre: 'Jalon aval',
+      type: 'jalon',
+      projet: 10,
+      parentTask: 100,
+      dependDe: ['L', 110]
+    }])).toMatchObject({
+      allowed: false,
+      code: 'MILESTONE_DEPENDENCY_INVALID'
+    });
+  });
+
   test('chef d’équipe agit sur les projets de ses chefs de projet directs', () => {
     const snapshot = fixture(2);
     expect(authorize(snapshot, ['UpdateRecord', 'Projects', 10, { nom: 'X' }]).allowed).toBe(true);

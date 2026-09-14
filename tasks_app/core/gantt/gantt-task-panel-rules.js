@@ -64,11 +64,91 @@
         });
     }
 
+    function isMilestone(task) {
+        return Boolean(task) && task.type === 'jalon';
+    }
+
+    function canBeStructuralParent(task) {
+        return Boolean(task) && !isMilestone(task);
+    }
+
     function filterParentTasks(tasks, currentTaskId, projectId, canSetParent) {
         var currentId = normalizeId(currentTaskId);
         return filterTasksByProject(tasks, projectId).filter(function (task) {
-            if (!task || normalizeId(task.id) === currentId) return false;
+            if (!canBeStructuralParent(task) || normalizeId(task.id) === currentId) return false;
             return typeof canSetParent !== 'function' || canSetParent(currentTaskId, task.id);
+        });
+    }
+
+    function filterDependencyTasks(tasks, projectId, sourceType) {
+        return filterTasksByProject(tasks, projectId).filter(function (task) {
+            // Un jalon matérialise l'aboutissement de vraies tâches. Il ne peut
+            // donc pas dépendre d'un autre jalon.
+            return sourceType !== 'jalon' || !isMilestone(task);
+        });
+    }
+
+    function validateHierarchy(task, tasks, currentTaskId) {
+        task = task || {};
+        tasks = Array.isArray(tasks) ? tasks : [];
+        var taskId = normalizeId(currentTaskId || task.id);
+        var parentId = normalizeId(task.parentTask);
+        var parent = parentId ? tasks.find(function (candidate) {
+            return normalizeId(candidate && candidate.id) === parentId;
+        }) : null;
+
+        if (isMilestone(task) && !parentId) {
+            return {
+                ok: false,
+                code: 'MILESTONE_PARENT_REQUIRED',
+                message: 'Un jalon doit être rattaché à une tâche du même projet.'
+            };
+        }
+
+        if (parentId && !parent) {
+            return {
+                ok: false,
+                code: 'PARENT_NOT_FOUND',
+                message: 'La tâche parente sélectionnée est introuvable.'
+            };
+        }
+
+        if (parent && !canBeStructuralParent(parent)) {
+            return {
+                ok: false,
+                code: 'MILESTONE_CANNOT_BE_PARENT',
+                message: 'Un jalon ne peut pas contenir une tâche ou un autre jalon.'
+            };
+        }
+
+        if (parent && !sameProject(parent.projet, task.projet)) {
+            return {
+                ok: false,
+                code: 'PARENT_PROJECT_MISMATCH',
+                message: 'La tâche parente doit appartenir au même projet.'
+            };
+        }
+
+        if (isMilestone(task) && taskId) {
+            var hasChildren = tasks.some(function (candidate) {
+                return normalizeId(candidate && candidate.parentTask) === taskId;
+            });
+            if (hasChildren) {
+                return {
+                    ok: false,
+                    code: 'MILESTONE_CHILDREN_FORBIDDEN',
+                    message: 'Ce jalon contient déjà des tâches. Détachez-les avant de l’enregistrer comme jalon.'
+                };
+            }
+        }
+
+        return { ok: true, code: 'HIERARCHY_VALID', message: '' };
+    }
+
+    function filterCreatableProjects(projects, canCreateTaskInProject) {
+        return (Array.isArray(projects) ? projects : []).filter(function (project) {
+            if (!project || project.actif === false) return false;
+            return typeof canCreateTaskInProject !== 'function' || canCreateTaskInProject(project);
         });
     }
 
@@ -81,7 +161,12 @@
         validatePositiveCharges: validatePositiveCharges,
         sameProject: sameProject,
         filterTasksByProject: filterTasksByProject,
-        filterParentTasks: filterParentTasks
+        isMilestone: isMilestone,
+        canBeStructuralParent: canBeStructuralParent,
+        filterParentTasks: filterParentTasks,
+        filterDependencyTasks: filterDependencyTasks,
+        validateHierarchy: validateHierarchy,
+        filterCreatableProjects: filterCreatableProjects
     };
 
     global.GanttTaskPanelRules = api;

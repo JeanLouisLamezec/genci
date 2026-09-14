@@ -1517,6 +1517,64 @@ tfoot td.left { text-align: left; color: var(--text-muted); font-weight: 600; }
         return record.titre || record.nom || (table + ' #' + (record.id || '?'));
     }
 
+    function validateTaskStructure(snapshot, task, currentTaskId) {
+        task = task || {};
+        var taskId = normalizeId(currentTaskId || task.id);
+        var parentId = normalizeId(task.parentTask);
+        var taskIndex = ensureIndexes(snapshot).Tasks;
+        var parent = parentId ? taskIndex.get(parentId) : null;
+        var isMilestone = task.type === 'jalon';
+
+        if (isMilestone && !parentId) {
+            return deny(
+                'MILESTONE_PARENT_REQUIRED',
+                'Un jalon doit être rattaché à une tâche du même projet.'
+            );
+        }
+        if (parentId && !parent) {
+            return deny(
+                'TASK_PARENT_NOT_FOUND',
+                'La tâche parente sélectionnée est introuvable.'
+            );
+        }
+        if (parent && parent.type === 'jalon') {
+            return deny(
+                'MILESTONE_CANNOT_BE_PARENT',
+                'Un jalon ne peut pas contenir une tâche ou un autre jalon.'
+            );
+        }
+        if (parent && normalizeId(parent.projet) !== normalizeId(task.projet)) {
+            return deny(
+                'TASK_PARENT_PROJECT_MISMATCH',
+                'La tâche parente doit appartenir au même projet.'
+            );
+        }
+        if (isMilestone && taskId) {
+            var hasChildren = (snapshot.tables.Tasks || []).some(function (candidate) {
+                return normalizeId(candidate && candidate.parentTask) === taskId;
+            });
+            if (hasChildren) {
+                return deny(
+                    'MILESTONE_CHILDREN_FORBIDDEN',
+                    'Un jalon ne peut pas contenir de tâche. Détachez ses enfants avant de poursuivre.'
+                );
+            }
+        }
+        if (isMilestone) {
+            var invalidDependency = normalizeRefList(task.dependDe).some(function (dependencyId) {
+                var dependency = taskIndex.get(dependencyId);
+                return dependency && dependency.type === 'jalon';
+            });
+            if (invalidDependency) {
+                return deny(
+                    'MILESTONE_DEPENDENCY_INVALID',
+                    'Un jalon doit dépendre d’une tâche, pas d’un autre jalon.'
+                );
+            }
+        }
+        return null;
+    }
+
     function canCreateProject(snapshot, proposed) {
         if (actorIsAdmin(snapshot)) return allow('ADMIN');
         var responsibleId = normalizeId(proposed && proposed.responsable);
@@ -1538,6 +1596,8 @@ tfoot td.left { text-align: left; color: var(--text-muted); font-weight: 600; }
     }
 
     function canCreateTask(snapshot, proposed) {
+        var structureError = validateTaskStructure(snapshot, proposed);
+        if (structureError) return structureError;
         if (actorIsAdmin(snapshot)) return allow('ADMIN');
         var project = projectForTask(snapshot, proposed);
         if (project && canManageProject(snapshot, project)) return allow('PROJECT_SCOPE');
@@ -1545,6 +1605,9 @@ tfoot td.left { text-align: left; color: var(--text-muted); font-weight: 600; }
     }
 
     function canUpdateTask(snapshot, current, proposed) {
+        var nextTask = Object.assign({}, current || {}, proposed || {});
+        var structureError = validateTaskStructure(snapshot, nextTask, current && current.id);
+        if (structureError) return structureError;
         if (actorIsAdmin(snapshot)) return allow('ADMIN');
         var project = projectForTask(snapshot, current);
         if (project && canManageProject(snapshot, project)) return allow('PROJECT_SCOPE');
