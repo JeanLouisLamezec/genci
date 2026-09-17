@@ -62,6 +62,18 @@ describe('GanttTaskDateConstraints - sous-tâche', () => {
     expect(validate({ projet: 1, parentTask: 10, dateDebut: day('2026-04-20'), dateEcheance: day('2026-05-01') }).code).toBe('PARENT_RANGE');
   });
 
+  test('refuse explicitement un jalon placé après sa tâche de rattachement', () => {
+    const result = validate({
+      type: 'jalon',
+      projet: 1,
+      parentTask: 10,
+      dateDebut: day('2026-05-01'),
+      dateEcheance: day('2026-05-01')
+    });
+    expect(result).toMatchObject({ ok: false, code: 'PARENT_RANGE' });
+    expect(result.message).toContain('le jalon doit rester compris');
+  });
+
   test('refuse les dates manquantes dans un périmètre borné', () => {
     expect(validate({ projet: 1, dateDebut: day('2026-03-01') }).code).toBe('TASK_DATES_REQUIRED');
   });

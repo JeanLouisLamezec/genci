@@ -272,6 +272,56 @@
         return null;
     }
 
+    function taskDateMillis(value) {
+        if (value instanceof Date) return value.getTime();
+        if (typeof value === 'number' && Number.isFinite(value)) {
+            return Math.abs(value) < 100000000000 ? value * 1000 : value;
+        }
+        if (typeof value === 'string' && value) {
+            var parsed = Date.parse(value);
+            return Number.isNaN(parsed) ? null : parsed;
+        }
+        return null;
+    }
+
+    function validateMilestoneTemporalScope(snapshot, task, currentTask) {
+        task = task || {};
+        if (task.type !== 'jalon') return null;
+
+        // Ne pas bloquer une modification sans rapport avec les dates sur une
+        // ancienne ligne incohérente. En création ou dès que le périmètre
+        // temporel change, le contrôle redevient strict et précède l'override admin.
+        if (currentTask) {
+            var unchanged = currentTask.type === task.type &&
+                normalizeId(currentTask.parentTask) === normalizeId(task.parentTask) &&
+                normalizeId(currentTask.projet) === normalizeId(task.projet) &&
+                taskDateMillis(currentTask.dateDebut) === taskDateMillis(task.dateDebut) &&
+                taskDateMillis(currentTask.dateEcheance) === taskDateMillis(task.dateEcheance);
+            if (unchanged) return null;
+        }
+
+        var start = taskDateMillis(task.dateDebut);
+        var end = taskDateMillis(task.dateEcheance);
+        if (start === null || end === null) {
+            return deny('MILESTONE_DATE_REQUIRED', 'Un jalon doit avoir une date comprise dans sa tâche de rattachement.');
+        }
+        if (start !== end) {
+            return deny('MILESTONE_SINGLE_DATE_REQUIRED', 'Un jalon correspond à une date unique.');
+        }
+
+        var parent = ensureIndexes(snapshot).Tasks.get(normalizeId(task.parentTask));
+        if (!parent) return null; // Le garde structurel fournit le motif précis.
+        var parentStart = taskDateMillis(parent.dateDebut);
+        var parentEnd = taskDateMillis(parent.dateEcheance);
+        if (parentStart === null || parentEnd === null || parentStart > parentEnd) {
+            return deny('MILESTONE_PARENT_DATES_INVALID', 'La tâche de rattachement doit avoir une plage de dates valide.');
+        }
+        if (start < parentStart || end > parentEnd) {
+            return deny('MILESTONE_OUTSIDE_PARENT_RANGE', 'Le jalon doit rester compris dans la plage de sa tâche de rattachement.');
+        }
+        return null;
+    }
+
     function canCreateProject(snapshot, proposed) {
         if (actorIsAdmin(snapshot)) return allow('ADMIN');
         var responsibleId = normalizeId(proposed && proposed.responsable);
@@ -295,6 +345,8 @@
     function canCreateTask(snapshot, proposed) {
         var structureError = validateTaskStructure(snapshot, proposed);
         if (structureError) return structureError;
+        var temporalError = validateMilestoneTemporalScope(snapshot, proposed, null);
+        if (temporalError) return temporalError;
         if (actorIsAdmin(snapshot)) return allow('ADMIN');
         var project = projectForTask(snapshot, proposed);
         if (project && canManageProject(snapshot, project)) return allow('PROJECT_SCOPE');
@@ -305,6 +357,8 @@
         var nextTask = Object.assign({}, current || {}, proposed || {});
         var structureError = validateTaskStructure(snapshot, nextTask, current && current.id);
         if (structureError) return structureError;
+        var temporalError = validateMilestoneTemporalScope(snapshot, nextTask, current);
+        if (temporalError) return temporalError;
         if (actorIsAdmin(snapshot)) return allow('ADMIN');
         var project = projectForTask(snapshot, current);
         if (project && canManageProject(snapshot, project)) return allow('PROJECT_SCOPE');

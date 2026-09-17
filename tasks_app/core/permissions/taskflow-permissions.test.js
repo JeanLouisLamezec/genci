@@ -91,7 +91,9 @@ describe('TaskFlow permissions - projets et tâches', () => {
   });
 
   test('un jalon doit être rattaché à une vraie tâche du même projet', () => {
-    const snapshot = fixture(3);
+    const snapshot = fixture(3, {
+      tasks: [{ id: 100, titre: 'Tâche porteuse', projet: 10, type: 'tache', dateDebut: 1000, dateEcheance: 3000 }]
+    });
     expect(authorize(snapshot, ['AddRecord', 'Tasks', null, {
       titre: 'Jalon isolé',
       type: 'jalon',
@@ -104,8 +106,53 @@ describe('TaskFlow permissions - projets et tâches', () => {
       titre: 'Jalon valide',
       type: 'jalon',
       projet: 10,
-      parentTask: 100
+      parentTask: 100,
+      dateDebut: 2000,
+      dateEcheance: 2000
     }]).allowed).toBe(true);
+  });
+
+  test('un jalon reste dans les dates de sa tâche porteuse, même pour un admin', () => {
+    const tasks = [
+      { id: 100, titre: 'Tâche porteuse', projet: 10, type: 'tache', dateDebut: 1000, dateEcheance: 3000 },
+      { id: 110, titre: 'Jalon', projet: 10, type: 'jalon', parentTask: 100, dateDebut: 2000, dateEcheance: 2000 }
+    ];
+    const snapshot = fixture(1, { tasks });
+    expect(authorize(snapshot, ['UpdateRecord', 'Tasks', 110, {
+      dateDebut: 4000,
+      dateEcheance: 4000
+    }])).toMatchObject({
+      allowed: false,
+      code: 'MILESTONE_OUTSIDE_PARENT_RANGE'
+    });
+  });
+
+  test('un jalon ne peut pas être rattaché à une tâche d’un autre projet', () => {
+    const tasks = [
+      { id: 100, titre: 'Tâche projet 10', projet: 10, type: 'tache', dateDebut: 1000, dateEcheance: 3000 },
+      { id: 200, titre: 'Tâche projet 20', projet: 20, type: 'tache', dateDebut: 1000, dateEcheance: 3000 }
+    ];
+    const snapshot = fixture(1, { tasks });
+    expect(authorize(snapshot, ['AddRecord', 'Tasks', null, {
+      titre: 'Jalon mal rattaché',
+      type: 'jalon',
+      projet: 10,
+      parentTask: 200,
+      dateDebut: 2000,
+      dateEcheance: 2000
+    }])).toMatchObject({
+      allowed: false,
+      code: 'TASK_PARENT_PROJECT_MISMATCH'
+    });
+  });
+
+  test('une modification non temporelle reste possible sur un ancien jalon hors plage', () => {
+    const tasks = [
+      { id: 100, titre: 'Tâche porteuse', projet: 10, type: 'tache', dateDebut: 1000, dateEcheance: 3000 },
+      { id: 110, titre: 'Jalon legacy', projet: 10, type: 'jalon', parentTask: 100, dateDebut: 4000, dateEcheance: 4000 }
+    ];
+    const snapshot = fixture(1, { tasks });
+    expect(authorize(snapshot, ['UpdateRecord', 'Tasks', 110, { titre: 'Titre corrigé' }]).allowed).toBe(true);
   });
 
   test('une tâche ne peut pas être placée sous un jalon, même par un admin', () => {

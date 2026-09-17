@@ -99,9 +99,10 @@
                 );
             }
             if (start < parentStart || end > parentEnd) {
+                var subject = task.type === 'jalon' ? 'le jalon' : 'la sous-tâche';
                 return failure(
                     'PARENT_RANGE',
-                    'la sous-tâche doit rester comprise entre le ' + formatDate(parentStart) + ' et le ' + formatDate(parentEnd) +
+                    subject + ' doit rester compris' + (task.type === 'jalon' ? '' : 'e') + ' entre le ' + formatDate(parentStart) + ' et le ' + formatDate(parentEnd) +
                         ', dates de la tâche parente « ' + parentName + ' ».',
                     { parent: parent, allowedStart: parentStart, allowedEnd: parentEnd }
                 );

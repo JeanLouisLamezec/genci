@@ -83,6 +83,17 @@ describe('GanttTaskPanelRules - modèle des jalons', () => {
     });
   });
 
+  test('refuse un jalon rattaché à une tâche d’un autre projet', () => {
+    const otherProjectTask = { id: 5, titre: 'Autre projet', projet: 20, type: 'tache' };
+    expect(rules.validateHierarchy(
+      { type: 'jalon', projet: 10, parentTask: 5 },
+      tasks.concat([otherProjectTask])
+    )).toMatchObject({
+      ok: false,
+      code: 'PARENT_PROJECT_MISMATCH'
+    });
+  });
+
   test('refuse toute tâche placée dans un jalon', () => {
     expect(rules.validateHierarchy({ type: 'tache', projet: 10, parentTask: 2 }, tasks)).toMatchObject({
       ok: false,

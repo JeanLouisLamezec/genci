@@ -597,7 +597,7 @@
         <div class="header-center">
             <button class="btn btn-nav" onclick="navigate(-1)">◀</button>
             <button class="btn" onclick="goToToday()">Aujourd'hui</button>
-            <button class="btn" onclick="fitToTasks()" title="Ajuster la vue aux tâches">Ajuster</button>
+            <button class="btn" onclick="fitToTasks()" title="Afficher toute la période couverte par les tâches actuellement filtrées, sans modifier leurs dates">Tout afficher</button>
             <button class="btn btn-nav" onclick="navigate(1)">▶</button>
             <span class="current-period" id="currentPeriod"></span>
             <div class="time-view-controls" id="timeViewSelector" aria-label="Granularité temporelle"></div>
@@ -2034,6 +2034,56 @@
         return null;
     }
 
+    function taskDateMillis(value) {
+        if (value instanceof Date) return value.getTime();
+        if (typeof value === 'number' && Number.isFinite(value)) {
+            return Math.abs(value) < 100000000000 ? value * 1000 : value;
+        }
+        if (typeof value === 'string' && value) {
+            var parsed = Date.parse(value);
+            return Number.isNaN(parsed) ? null : parsed;
+        }
+        return null;
+    }
+
+    function validateMilestoneTemporalScope(snapshot, task, currentTask) {
+        task = task || {};
+        if (task.type !== 'jalon') return null;
+
+        // Ne pas bloquer une modification sans rapport avec les dates sur une
+        // ancienne ligne incohérente. En création ou dès que le périmètre
+        // temporel change, le contrôle redevient strict et précède l'override admin.
+        if (currentTask) {
+            var unchanged = currentTask.type === task.type &&
+                normalizeId(currentTask.parentTask) === normalizeId(task.parentTask) &&
+                normalizeId(currentTask.projet) === normalizeId(task.projet) &&
+                taskDateMillis(currentTask.dateDebut) === taskDateMillis(task.dateDebut) &&
+                taskDateMillis(currentTask.dateEcheance) === taskDateMillis(task.dateEcheance);
+            if (unchanged) return null;
+        }
+
+        var start = taskDateMillis(task.dateDebut);
+        var end = taskDateMillis(task.dateEcheance);
+        if (start === null || end === null) {
+            return deny('MILESTONE_DATE_REQUIRED', 'Un jalon doit avoir une date comprise dans sa tâche de rattachement.');
+        }
+        if (start !== end) {
+            return deny('MILESTONE_SINGLE_DATE_REQUIRED', 'Un jalon correspond à une date unique.');
+        }
+
+        var parent = ensureIndexes(snapshot).Tasks.get(normalizeId(task.parentTask));
+        if (!parent) return null; // Le garde structurel fournit le motif précis.
+        var parentStart = taskDateMillis(parent.dateDebut);
+        var parentEnd = taskDateMillis(parent.dateEcheance);
+        if (parentStart === null || parentEnd === null || parentStart > parentEnd) {
+            return deny('MILESTONE_PARENT_DATES_INVALID', 'La tâche de rattachement doit avoir une plage de dates valide.');
+        }
+        if (start < parentStart || end > parentEnd) {
+            return deny('MILESTONE_OUTSIDE_PARENT_RANGE', 'Le jalon doit rester compris dans la plage de sa tâche de rattachement.');
+        }
+        return null;
+    }
+
     function canCreateProject(snapshot, proposed) {
         if (actorIsAdmin(snapshot)) return allow('ADMIN');
         var responsibleId = normalizeId(proposed && proposed.responsable);
@@ -2057,6 +2107,8 @@
     function canCreateTask(snapshot, proposed) {
         var structureError = validateTaskStructure(snapshot, proposed);
         if (structureError) return structureError;
+        var temporalError = validateMilestoneTemporalScope(snapshot, proposed, null);
+        if (temporalError) return temporalError;
         if (actorIsAdmin(snapshot)) return allow('ADMIN');
         var project = projectForTask(snapshot, proposed);
         if (project && canManageProject(snapshot, project)) return allow('PROJECT_SCOPE');
@@ -2067,6 +2119,8 @@
         var nextTask = Object.assign({}, current || {}, proposed || {});
         var structureError = validateTaskStructure(snapshot, nextTask, current && current.id);
         if (structureError) return structureError;
+        var temporalError = validateMilestoneTemporalScope(snapshot, nextTask, current);
+        if (temporalError) return temporalError;
         if (actorIsAdmin(snapshot)) return allow('ADMIN');
         var project = projectForTask(snapshot, current);
         if (project && canManageProject(snapshot, project)) return allow('PROJECT_SCOPE');
@@ -9278,9 +9332,9 @@ if (typeof globalThis !== 'undefined') {
             }
         }
 
-        async function openCreatePanel() { await openCreateTaskWithParent(null); }
+        async function openCreatePanel() { await openCreateTaskWithParent(null, selectedTaskId); }
         // WBS-02: création d'une sous-tâche (ou tâche racine si parentId === null)
-        async function openCreateTaskWithParent(parentId) {
+        async function openCreateTaskWithParent(parentId, dependencyId) {
             if (gristReady && permissionRuntime && typeof permissionRuntime.refresh === 'function') {
                 try {
                     await permissionRuntime.refresh({ force: true });
@@ -9293,6 +9347,9 @@ if (typeof globalThis !== 'undefined') {
 
             const today = new Date();
             const parent = parentId ? tasks.find(t => t.id === parentId) : null;
+            const contextualDependency = !parentId && dependencyId
+                ? tasks.find(t => String(t.id) === String(dependencyId))
+                : null;
             if (parent && !GanttTaskPanelRules.canBeStructuralParent(parent)) {
                 showToast('Création impossible : un jalon ne peut pas contenir de tâche.', 'error');
                 return;
@@ -9306,7 +9363,16 @@ if (typeof globalThis !== 'undefined') {
                 showToast('Aucun projet autorisé : vous devez être responsable du projet, manager direct ou administrateur.', 'error');
                 return;
             }
-            const defaultProjectId = parent?.projet || creatableProjects[0].id;
+            const contextualProjectAllowed = contextualDependency && creatableProjects.some(project =>
+                GanttTaskPanelRules.sameProject(project.id, contextualDependency.projet)
+            );
+            const filteredProject = !parent && !contextualProjectAllowed && filters.project && filters.project.length === 1
+                ? creatableProjects.find(project => GanttTaskPanelRules.sameProject(project.id, filters.project[0]))
+                : null;
+            const defaultProjectId = parent?.projet ||
+                (contextualProjectAllowed ? contextualDependency.projet : null) ||
+                (filteredProject && filteredProject.id) ||
+                creatableProjects[0].id;
             const defaultProject = projects.find(p => p.id === defaultProjectId);
             const scopeStart = gristToDate(parent?.dateDebut ?? defaultProject?.dateDebut);
             const scopeEnd = gristToDate(parent?.dateEcheance ?? defaultProject?.dateFin);
@@ -9320,7 +9386,9 @@ if (typeof globalThis !== 'undefined') {
                     titre: '', description: '', type: 'tache', priorite: '3', statut: 'todo', progression: 0,
                     dateDebut: dateToGrist(defaultStart), dateEcheance: dateToGrist(defaultEnd),
                     projet: defaultProjectId,
-                    assignees: [], dependDe: [], tags: [], estimationH: null, tempsPasse: null, subtasks: [],
+                    assignees: [],
+                    dependDe: contextualProjectAllowed ? [contextualDependency.id] : [],
+                    tags: [], estimationH: null, tempsPasse: null, subtasks: [],
                     couleur: null, parentTask: parentId || null, charges: []
                 },
                 assignmentModes: {},
@@ -9724,7 +9792,7 @@ if (typeof globalThis !== 'undefined') {
                         '</div></div></div>' : '') +
                     '<div class="prop-row"><span class="prop-label">Date' + (data.type === 'jalon' ? '' : 's') + '</span><div class="prop-value">' +
                         (data.type === 'jalon' ?
-                            '<div class="dates-inline"><input type="date" value="' + formatDateISO(s) + '" onchange="updateField(\'dateDebut\', this.value); updateField(\'dateEcheance\', this.value)"><button class="today-btn" onclick="setTodayDate()">Auj.</button></div>' :
+                            '<div class="dates-inline"><input type="date" value="' + formatDateISO(s) + '" onchange="updateMilestoneDate(this.value)"><button class="today-btn" onclick="setTodayDate()">Auj.</button></div>' :
                             '<div class="dates-inline"><input type="date" value="' + formatDateISO(s) + '" onchange="updateField(\'dateDebut\', this.value)"><span class="dates-arrow">→</span><input type="date" value="' + formatDateISO(e) + '" onchange="updateField(\'dateEcheance\', this.value)"><button class="today-btn" onclick="setTodayDate()">Auj.</button></div>') +
                     '</div></div>' +
                     '<div class="prop-row"><span class="prop-label">Projet</span><div class="prop-value"><div class="project-select-wrap">' +
@@ -9896,6 +9964,57 @@ if (typeof globalThis !== 'undefined') {
             if (!panelState.isNew && gristReady) saveTaskToGrist();
             renderPanel();
         }
+
+        function getPanelValidationTasks() {
+            return tasks.map(task => task.id === panelState.taskId
+                ? { ...task, ...(panelState.originalTask || {}), id: panelState.taskId }
+                : task);
+        }
+
+        function restoreRejectedTaskScope(options) {
+            const data = panelState.editData;
+            const original = panelState.originalTask;
+            if (!data || !original || panelState.isNew) return;
+            options = options || {};
+            if (options.temporal) {
+                data.dateDebut = original.dateDebut;
+                data.dateEcheance = original.dateEcheance;
+                data.projet = original.projet;
+                data.parentTask = original.parentTask;
+            }
+            if (options.hierarchy) {
+                data.type = original.type;
+                data.projet = original.projet;
+                data.parentTask = original.parentTask;
+                data.dependDe = [...(original.dependDe || [])];
+            }
+            syncLocalTask();
+            renderPanel();
+            render();
+        }
+
+        function updateMilestoneDate(value) {
+            const data = panelState.editData;
+            if (!data) return;
+            const date = value ? dateToGrist(new Date(value)) : null;
+            const candidate = { ...data, dateDebut: date, dateEcheance: date };
+            const validation = validateTaskDateConstraints(
+                panelState.isNew ? candidate : { ...candidate, id: panelState.taskId },
+                panelState.isNew ? tasks : getPanelValidationTasks()
+            );
+            if (!validation.ok) {
+                showToast('Modification impossible : ' + validation.message, 'error');
+                renderPanel();
+                return;
+            }
+            data.dateDebut = date;
+            data.dateEcheance = date;
+            syncLocalTask();
+            renderPanel();
+            if (!panelState.isNew) render();
+            if (!panelState.isNew && gristReady) saveTaskToGrist();
+        }
+
         function updateField(field, value, noSave) {
             const data = panelState.editData;
             if (!data) return;
@@ -9983,8 +10102,11 @@ if (typeof globalThis !== 'undefined') {
             if (!data) return;
             const today = new Date();
             today.setHours(12, 0, 0, 0);
+            if (data.type === 'jalon') {
+                updateMilestoneDate(formatDateISO(today));
+                return;
+            }
             data.dateDebut = dateToGrist(today);
-            if (data.type === 'jalon') data.dateEcheance = data.dateDebut;
             syncLocalTask();
             if (!panelState.isNew && gristReady) saveTaskToGrist();
             renderPanel();
@@ -10177,15 +10299,14 @@ if (typeof globalThis !== 'undefined') {
             // `syncLocalTask()` met à jour `tasks` avant la sauvegarde. Reconstruire
             // ici le contexte avec le snapshot original évite de comparer la
             // proposition avec elle-même et garantit le contrôle des dates.
-            const validationTasks = tasks.map(task => task.id === panelState.taskId
-                ? { ...task, ...(panelState.originalTask || {}), id: panelState.taskId }
-                : task);
+            const validationTasks = getPanelValidationTasks();
             const dateValidation = validateTaskDateConstraints(
                 { ...data, id: panelState.taskId },
                 validationTasks
             );
             if (!dateValidation.ok) {
                 showToast('Modification impossible : ' + dateValidation.message, 'error');
+                restoreRejectedTaskScope({ temporal: true });
                 return;
             }
             const hierarchyValidation = validateTaskHierarchy(
@@ -10195,6 +10316,7 @@ if (typeof globalThis !== 'undefined') {
             );
             if (!hierarchyValidation.ok) {
                 showToast('Modification impossible : ' + hierarchyValidation.message, 'error');
+                restoreRejectedTaskScope({ hierarchy: true });
                 return;
             }
 
