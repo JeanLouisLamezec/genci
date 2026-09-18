@@ -23,6 +23,47 @@ describe('GanttTaskPanelRules - unités de charge', () => {
       missingMemberIds: [2]
     });
   });
+
+  test('autorise une répartition inférieure ou égale au temps prévu', () => {
+    expect(rules.validateChargeBudget(
+      [1, 2],
+      [{ teamId: 1, heures: 3000 }, { teamId: 2, heures: 1000 }],
+      4000
+    )).toMatchObject({
+      ok: true,
+      totalChargeHours: 4000,
+      estimatedHours: 4000,
+      excessHours: 0
+    });
+
+    expect(rules.validateChargeBudget(
+      [1, 2],
+      [{ teamId: 1, heures: 2500 }, { teamId: 2, heures: 500 }],
+      4000
+    )).toMatchObject({ ok: true, totalChargeHours: 3000 });
+  });
+
+  test('refuse une répartition supérieure au temps prévu', () => {
+    expect(rules.validateChargeBudget(
+      [1, 2],
+      [{ teamId: 1, heures: 2000 }, { teamId: 2, heures: 2500 }],
+      4000
+    )).toEqual({
+      ok: false,
+      code: 'CHARGE_BUDGET_EXCEEDED',
+      totalChargeHours: 4500,
+      estimatedHours: 4000,
+      excessHours: 500
+    });
+  });
+
+  test('ignore les anciennes charges de personnes qui ne sont plus affectées', () => {
+    expect(rules.validateChargeBudget(
+      [1],
+      [{ teamId: 1, heures: 7 }, { teamId: 2, heures: 200 }],
+      7
+    )).toMatchObject({ ok: true, totalChargeHours: 7 });
+  });
 });
 
 describe('GanttTaskPanelRules - parents de sous-tâche', () => {

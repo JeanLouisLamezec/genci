@@ -12,7 +12,7 @@
     <script src="core/gantt/gantt-visible-tree.js?v=20260831-collapsed-default"></script>
     <script src="core/gantt/gantt-task-date-constraints.js"></script>
     <script src="core/gantt/gantt-date-change-transaction.js?v=20260901"></script>
-    <script src="core/gantt/gantt-task-panel-rules.js?v=20260910-milestones"></script>
+    <script src="core/gantt/gantt-task-panel-rules.js?v=20260918-charge-budget"></script>
     <script src="core/planning/task_assignment/task-assignment-service.js"></script>
     <script src="core/planning/gantt/gantt-task-assignment-integration.js?v=20260827"></script>
     <script src="core/planning/gantt/gantt-auto-planning-integration.js?v=20260827-retro"></script>
@@ -9676,6 +9676,45 @@ if (typeof globalThis !== 'undefined') {
             if (t) openTaskPanel(t.id);
         }
 
+        function applyTaskPanelLayout(content) {
+            const props = content.querySelector('.props-list');
+            if (!props) return;
+
+            ['status', 'progress'].forEach(function(field) {
+                const row = props.querySelector('[data-panel-field="' + field + '"]');
+                if (row) row.remove();
+            });
+
+            const detailsSection = content.querySelector('[data-panel-section="details"]');
+            const dependencyGroup = detailsSection && detailsSection.querySelector('#depsSelect')
+                ? detailsSection.querySelector('#depsSelect').closest('.form-group')
+                : null;
+            let dependencyRow = null;
+            if (dependencyGroup) {
+                dependencyRow = document.createElement('div');
+                dependencyRow.className = 'prop-row';
+                dependencyRow.dataset.panelField = 'dependency';
+                dependencyRow.innerHTML = '<span class="prop-label">Dépendance</span><div class="prop-value"></div>';
+                dependencyGroup.style.marginBottom = '0';
+                dependencyRow.querySelector('.prop-value').appendChild(dependencyGroup);
+            }
+
+            // Création et consultation partagent le même ordre visuel :
+            // contexte, calendrier, affectation, style.
+            const orderedFields = ['project', 'parent', 'dependency', 'dates', 'assignees', 'time', 'color', 'priority'];
+            orderedFields.forEach(function(field) {
+                const row = field === 'dependency'
+                    ? dependencyRow
+                    : props.querySelector('[data-panel-field="' + field + '"]');
+                if (row) props.appendChild(row);
+            });
+
+            if (detailsSection) detailsSection.remove();
+            content.querySelectorAll('[data-panel-section="checklist-or-prerequisites"]').forEach(function(section) {
+                section.remove();
+            });
+        }
+
         function renderPanel() {
             const header = document.getElementById('panelHeader');
             const content = document.getElementById('panelContent');
@@ -9776,26 +9815,25 @@ if (typeof globalThis !== 'undefined') {
                     '<span class="type-pill ' + (data.type === 'jalon' ? 'selected' : '') + '" onclick="updateField(\'type\',\'jalon\')">◆ Jalon</span>' +
                     '<span class="type-pill ' + (data.type === 'reunion' ? 'selected' : '') + '" onclick="updateField(\'type\',\'reunion\')"> Réunion</span>' +
                 '</div>' +
-                (currentProject ? '<div class="panel-crumb"><span class="pd" style="background:' + projectColor + '"></span>' + escapeHtml(currentProject.nom) + '</div>' : '') +
                 '<input type="text" class="panel-title-edit" id="taskTitle" placeholder="' + titlePlaceholder + '" value="' + escapeHtml(data.titre) + '" oninput="updateField(\'titre\', this.value, true)">' +
 
                 '<div class="props-list">' +
-                    '<div class="prop-row pr-status"><span class="prop-label">Statut</span><div class="prop-value"><div class="status-selector">' +
+                    '<div class="prop-row pr-status" data-panel-field="status"><span class="prop-label">Statut</span><div class="prop-value"><div class="status-selector">' +
                         (data.type !== 'jalon' ? statusCfg.list : statusCfg.list.filter(s => s.value === statusCfg.firstValue || s.value === statusCfg.terminalValue)).map(s => '<div class="status-pill ' + (data.statut === s.value ? 'selected' : '') + '" data-status="' + escapeHtml(s.value) + '" onclick="updateField(\'statut\', this.dataset.status)"><span class="panel-pill-dot" style="background:' + s.fillColor + '"></span>' + escapeHtml(s.label) + '</div>').join('') +
                     '</div></div></div>' +
                     (data.type !== 'reunion' ?
-                        '<div class="prop-row"><span class="prop-label">Priorité</span><div class="prop-value"><div class="priority-selector">' +
+                        '<div class="prop-row" data-panel-field="priority"><span class="prop-label">Priorité</span><div class="prop-value"><div class="priority-selector">' +
                             '<div class="priority-pill p1 ' + (data.priorite == '1' ? 'selected' : '') + '" onclick="updateField(\'priorite\',\'1\')"><span class="panel-pill-dot" style="background:' + PRIORITY_COLORS[1] + '"></span>Critique</div>' +
                             '<div class="priority-pill p2 ' + (data.priorite == '2' ? 'selected' : '') + '" onclick="updateField(\'priorite\',\'2\')"><span class="panel-pill-dot" style="background:' + PRIORITY_COLORS[2] + '"></span>Haute</div>' +
                             '<div class="priority-pill p3 ' + (data.priorite == '3' ? 'selected' : '') + '" onclick="updateField(\'priorite\',\'3\')"><span class="panel-pill-dot" style="background:' + PRIORITY_COLORS[3] + '"></span>Moyenne</div>' +
                             '<div class="priority-pill p4 ' + (data.priorite == '4' ? 'selected' : '') + '" onclick="updateField(\'priorite\',\'4\')"><span class="panel-pill-dot" style="background:' + PRIORITY_COLORS[4] + '"></span>Basse</div>' +
                         '</div></div></div>' : '') +
-                    '<div class="prop-row"><span class="prop-label">Date' + (data.type === 'jalon' ? '' : 's') + '</span><div class="prop-value">' +
+                    '<div class="prop-row" data-panel-field="dates"><span class="prop-label">Date' + (data.type === 'jalon' ? '' : 's') + '</span><div class="prop-value">' +
                         (data.type === 'jalon' ?
                             '<div class="dates-inline"><input type="date" value="' + formatDateISO(s) + '" onchange="updateMilestoneDate(this.value)"><button class="today-btn" onclick="setTodayDate()">Auj.</button></div>' :
                             '<div class="dates-inline"><input type="date" value="' + formatDateISO(s) + '" onchange="updateField(\'dateDebut\', this.value)"><span class="dates-arrow">→</span><input type="date" value="' + formatDateISO(e) + '" onchange="updateField(\'dateEcheance\', this.value)"><button class="today-btn" onclick="setTodayDate()">Auj.</button></div>') +
                     '</div></div>' +
-                    '<div class="prop-row"><span class="prop-label">Projet</span><div class="prop-value"><div class="project-select-wrap">' +
+                    '<div class="prop-row" data-panel-field="project"><span class="prop-label">Projet</span><div class="prop-value"><div class="project-select-wrap">' +
                         (currentProject
                             ? '<span class="project-color-dot" style="background:' + projectColor + '" title="Changer la couleur du projet" onclick="event.stopPropagation();this.nextElementSibling.classList.toggle(\'open\')"></span>' +
                               '<div class="color-picker-pop">' + COLOR_PRESETS.map(c => '<span class="color-swatch" style="background:' + c + '" onclick="event.stopPropagation();setProjectColor(' + currentProject.id + ',\'' + c + '\')"></span>').join('') + '</div>'
@@ -9804,33 +9842,29 @@ if (typeof globalThis !== 'undefined') {
                             (panelState.isNew ? '' : '<option value="">Aucun projet</option>') + projectOptions +
                         '</select>' +
                     '</div></div></div>' +
-                    // WBS-02: prop-row "Parent" — affichée uniquement si pertinente :
-                    // - tâche existante : oui (permet reparenter/détacher)
-                    // - nouvelle sous-tâche (parentTask pré-rempli) : oui (chip parent visible)
-                    // - nouvelle tâche racine : masquée (pas de bruit)
-                    ((!panelState.isNew || data.parentTask || data.type === 'jalon')
-                        ? '<div class="prop-row"><span class="prop-label">' + (data.type === 'jalon' ? 'Tâche de rattachement *' : 'Parent') + '</span><div class="prop-value">' +
-                            '<select class="form-select" onchange="setParent(parseInt(this.value) || null)">' +
-                                '<option value="" ' + (data.type === 'jalon' ? 'disabled' : '') + ' ' + (!data.parentTask ? 'selected' : '') + '>' +
-                                    (data.type === 'jalon' ? '— Sélectionnez une tâche —' : '— Tâche racine —') +
-                                '</option>' +
-                                parentCandidates.map(t => '<option value="' + t.id + '" ' + (data.parentTask === t.id ? 'selected' : '') + '>' + escapeHtml(t.titre) + '</option>').join('') +
-                            '</select>' +
-                            (data.type === 'jalon' ? '<div style="margin-top:5px;font-size:0.72rem;color:var(--text-muted)">Le jalon sera affiché sous cette tâche.</div>' : '') +
-                        '</div></div>'
-                        : '') +
-                    '<div class="prop-row"><span class="prop-label">Couleur</span><div class="prop-value"><div style="display:flex;gap:8px;align-items:center">' +
+                    // WBS-02: le parent fait partie du contexte de création, y compris
+                    // pour une tâche racine afin de rendre ce choix explicite.
+                    '<div class="prop-row" data-panel-field="parent"><span class="prop-label">' + (data.type === 'jalon' ? 'Tâche de rattachement *' : 'Parent') + '</span><div class="prop-value">' +
+                        '<select class="form-select" onchange="setParent(parseInt(this.value) || null)">' +
+                            '<option value="" ' + (data.type === 'jalon' ? 'disabled' : '') + ' ' + (!data.parentTask ? 'selected' : '') + '>' +
+                                (data.type === 'jalon' ? '— Sélectionnez une tâche —' : '— Tâche racine —') +
+                            '</option>' +
+                            parentCandidates.map(t => '<option value="' + t.id + '" ' + (data.parentTask === t.id ? 'selected' : '') + '>' + escapeHtml(t.titre) + '</option>').join('') +
+                        '</select>' +
+                        (data.type === 'jalon' ? '<div style="margin-top:5px;font-size:0.72rem;color:var(--text-muted)">Le jalon sera affiché sous cette tâche.</div>' : '') +
+                    '</div></div>' +
+                    '<div class="prop-row" data-panel-field="color"><span class="prop-label">Couleur</span><div class="prop-value"><div style="display:flex;gap:8px;align-items:center">' +
                         '<input type="color" value="' + (data.couleur || getTaskColor(data)) + '" onchange="updateField(\'couleur\', this.value)" style="width:36px;height:28px;border:1px solid var(--border);border-radius:6px;cursor:pointer;padding:2px">' +
                         (data.couleur
                             ? '<button class="btn" style="padding:4px 10px;font-size:0.72rem" onclick="updateField(\'couleur\', null)">Réinitialiser</button>'
                             : '<span style="font-size:0.72rem;color:var(--text-muted)">Héritée du mode « ' + colorMode + ' »</span>') +
                     '</div></div></div>' +
-                    '<div class="prop-row"><span class="prop-label">' + assignLabel + '</span><div class="prop-value">' +
+                    '<div class="prop-row" data-panel-field="assignees"><span class="prop-label">' + assignLabel + '</span><div class="prop-value">' +
                         (data.assignees.length ? '<div class="asg-list">' + data.assignees.map(function(id){ var nm=getTeamMemberName(id)||'?'; var initials=nm.split(' ').filter(Boolean).map(function(w){return w[0];}).slice(0,2).join('').toUpperCase(); var mem=team.find(function(x){return x.id===id;}); return '<div class="asg"><span class="asg-ava" style="background:'+getTeamMemberColor(id)+'">'+escapeHtml(initials)+'</span><span class="an">'+escapeHtml(nm)+'</span>'+(mem&&mem.role?'<span class="ar">'+escapeHtml(mem.role)+'</span>':'')+'<button class="asg-x" title="Retirer" onclick="removeAssignee('+id+')">×</button></div>'; }).join('') + '</div>' : '') +
                         '<div class="multi-select" id="assigneesSelect"><button class="addbtn" onclick="toggleMultiSelect(\'assigneesSelect\')"><span style="font-size:1rem;line-height:1">+</span> ' + (data.type === 'reunion' ? 'Ajouter un participant' : 'Assigner un membre') + '</button><div class="multi-select-dropdown">' + (assigneesOptions || '<div class="multi-select-empty">Aucun membre</div>') + '</div></div>' +
                     '</div></div>' +
                     (data.type === 'tache' ?
-                        '<div class="prop-row"><span class="prop-label">Temps &amp; charge</span><div class="prop-value">' +
+                        '<div class="prop-row" data-panel-field="time"><span class="prop-label">Temps prévu</span><div class="prop-value">' +
                             '<div class="tc-grid">' +
                                 '<div class="tc-box"><div class="tcl">Estimé</div><div class="tcv"><input type="number" min="0" step="0.5" value="' + (estim || '') + '" placeholder="0" onchange="updateField(\'estimationH\', parseFloat(this.value) || null)"><small>h</small></div></div>' +
                                 '<div class="tc-box"><div class="tcl">Passé</div><div class="tcv"><input type="number" min="0" step="0.5" value="' + (passe || '') + '" placeholder="0" ' + (CRA_ACTIVE ? 'readonly title="Saisi via la Feuille de temps" ' : '') + 'onchange="updateField(\'tempsPasse\', parseFloat(this.value) || null)"><small>h</small></div></div>' +
@@ -9844,7 +9878,7 @@ if (typeof globalThis !== 'undefined') {
                             }).join('') + chargeValidationHtml + '<div style="margin-top:6px;font-size:0.78rem;color:var(--text-muted)">Total : <strong>' + chargeTotalH + '</strong> h (' + GanttTaskPanelRules.hoursToDisplayValue(chargeTotalH, 'j') + ' j)</div></div>' : '') + chargeConsolHtml +
                         '</div></div>' : '') +
                     (data.type === 'tache' ?
-                        '<div class="prop-row pr-prog"><span class="prop-label">Progression</span><div class="prop-value">' +
+                        '<div class="prop-row pr-prog" data-panel-field="progress"><span class="prop-label">Progression</span><div class="prop-value">' +
                             '<div class="progress-inline-wrap"><div class="progress-bar-mini"><div class="progress-bar-mini-fill" id="progressBarFill" style="width:' + data.progression + '%"></div></div><span class="progress-pct-label" id="progressValue">' + data.progression + '%</span></div>' +
                             '<input type="range" class="progress-slider" min="0" max="100" value="' + data.progression + '" oninput="document.getElementById(\'progressValue\').textContent=this.value+\'%\';document.getElementById(\'progressBarFill\').style.width=this.value+\'%\'" onchange="updateField(\'progression\', parseInt(this.value))">' +
                             '<div class="progress-presets">' +
@@ -9888,20 +9922,22 @@ if (typeof globalThis !== 'undefined') {
                 })() : '') +
 
                 (data.type === 'jalon' ?
-                    '<div class="panel-section"><div class="panel-section-header"><span class="panel-section-title">Prérequis</span>' + (data.dependDe.length ? '<span class="panel-section-badge">' + doneCount + '/' + data.dependDe.length + '</span>' : '') + '</div>' +
+                    '<div class="panel-section" data-panel-section="checklist-or-prerequisites"><div class="panel-section-header"><span class="panel-section-title">Prérequis</span>' + (data.dependDe.length ? '<span class="panel-section-badge">' + doneCount + '/' + data.dependDe.length + '</span>' : '') + '</div>' +
                     '<div class="prereq-list">' + (prereqHtml || '<div class="prereq-empty">Aucune dépendance — sélectionnez les tâches amont dans « Détails ».</div>') + '</div></div>' :
-                    '<div class="panel-section"><div class="panel-section-header"><span class="panel-section-title">' + (data.type === 'reunion' ? 'Points à traiter' : 'Checklist') + '</span>' + (subtasksTotal > 0 ? '<span class="panel-section-badge">' + subtasksDone + '/' + subtasksTotal + '</span>' : '') + '</div>' +
+                    '<div class="panel-section" data-panel-section="checklist-or-prerequisites"><div class="panel-section-header"><span class="panel-section-title">' + (data.type === 'reunion' ? 'Points à traiter' : 'Checklist') + '</span>' + (subtasksTotal > 0 ? '<span class="panel-section-badge">' + subtasksDone + '/' + subtasksTotal + '</span>' : '') + '</div>' +
                     '<div class="subtask-list">' + (data.subtasks || []).map(function(st) { return '<div class="subtask-item ' + (st.done ? 'done' : '') + '"><input type="checkbox" class="subtask-checkbox" ' + (st.done ? 'checked' : '') + ' onchange="toggleSubtask(' + st.id + ')"><input class="subtask-text" value="' + escapeHtml(st.text) + '" onchange="editSubtask(' + st.id + ', this.value)" onkeydown="if(event.key===\'Enter\')this.blur()"><button class="subtask-remove" onclick="removeSubtask(' + st.id + ')">×</button></div>'; }).join('') + '</div>' +
                     '<div class="subtask-add"><input type="text" id="newSubtaskInput" placeholder="Ajouter..." onkeydown="handleSubtaskKeydown(event)"><button onclick="addSubtask()">+</button></div></div>') +
 
                 (data.type !== 'reunion' ?
-                    '<div class="panel-section"><div class="panel-section-header"><span class="panel-section-title">Détails</span></div>' +
+                    '<div class="panel-section" data-panel-section="details"><div class="panel-section-header"><span class="panel-section-title">Détails</span></div>' +
                     '<div class="form-group"><div class="tags-input" onclick="document.getElementById(\'tagInput\').focus()">' + tagsChips + '<input type="text" id="tagInput" placeholder="' + (data.tags.length ? '' : 'Ajouter un tag...') + '" onkeydown="handleTagKeydown(event)"></div></div>' +
                     '<div class="form-group"><div class="multi-select" id="depsSelect"><div class="multi-select-trigger" onclick="toggleMultiSelect(\'depsSelect\')"><div class="multi-select-values">' + (depsChips || '<span class="multi-select-placeholder">Dépendances...</span>') + '</div><span class="multi-select-arrow">▾</span></div><div class="multi-select-dropdown">' + (depsOptions || '<div class="multi-select-empty">Aucune</div>') + '</div></div>' + blockedHtml + '</div>' +
                     '</div>' : '') +
 
                 (!panelState.isNew ?
                     '<div class="panel-footer-left"><button class="panel-btn danger" onclick="showDeleteConfirm()" style="width:auto;padding:10px 14px">Suppr.</button></div><div class="delete-confirm" id="deleteConfirm"><div class="delete-confirm-text">Supprimer ?</div><div class="delete-confirm-actions"><button class="delete-confirm-btn cancel" onclick="hideDeleteConfirm()">Annuler</button><button class="delete-confirm-btn confirm" onclick="confirmDelete()">Supprimer</button></div></div>' : '');
+
+            applyTaskPanelLayout(content);
 
             if (panelState.isNew) {
                 const dateValidation = validateTaskDateConstraints(data);
@@ -9925,9 +9961,36 @@ if (typeof globalThis !== 'undefined') {
         // ═══════════════════════════════════════════════════════════════════════
         function getTaskChargeValidation(data) {
             if (!data || data.type !== 'tache') return { ok: true, missingMemberIds: [] };
-            return GanttTaskPanelRules.validatePositiveCharges(data.assignees, data.charges);
+            const positiveValidation = GanttTaskPanelRules.validatePositiveCharges(data.assignees, data.charges);
+            if (!positiveValidation.ok) {
+                return {
+                    ...positiveValidation,
+                    code: 'MISSING_POSITIVE_CHARGE'
+                };
+            }
+            return GanttTaskPanelRules.validateChargeBudget(data.assignees, data.charges, data.estimationH);
         }
-        function getChargeValidationMessage(validation) {
+        function formatChargeHours(value) {
+            return new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 3 }).format(Number(value) || 0) + ' h';
+        }
+        function getChargeValidationMessage(validation, changedMemberId) {
+            if (validation && validation.code === 'CHARGE_BUDGET_EXCEEDED') {
+                if (validation.estimatedHours <= 0) {
+                    return 'Renseignez un Temps prévu supérieur à 0 avant de répartir la charge entre les personnes.';
+                }
+                let message = 'La somme des charges par personne (' + formatChargeHours(validation.totalChargeHours) +
+                    ') dépasse le Temps prévu de la tâche (' + formatChargeHours(validation.estimatedHours) + ').';
+                if (changedMemberId) {
+                    const currentData = panelState.editData || {};
+                    const memberCharge = GanttTaskPanelRules.chargeHoursForMember(currentData.charges, changedMemberId);
+                    const otherCharges = Math.max(0, validation.totalChargeHours - memberCharge);
+                    const availableForMember = Math.max(0, validation.estimatedHours - otherCharges);
+                    message += ' Maximum disponible pour ' + getTeamMemberName(changedMemberId) + ' : ' + formatChargeHours(availableForMember) + '.';
+                } else {
+                    message += ' Réduisez les charges de ' + formatChargeHours(validation.excessHours) + ' au total.';
+                }
+                return message;
+            }
             const names = (validation.missingMemberIds || []).map(getTeamMemberName).filter(Boolean);
             const suffix = names.length ? ' pour ' + names.join(', ') : '';
             return 'Renseignez une charge supérieure à 0' + suffix + ' avant d\'enregistrer l\'affectation.';
@@ -9946,6 +10009,9 @@ if (typeof globalThis !== 'undefined') {
             if (existing) existing.heures = h; else data.charges.push({ teamId: memberId, heures: h });
             const validation = getTaskChargeValidation(data);
             if (!validation.ok) {
+                if (validation.code === 'CHARGE_BUDGET_EXCEEDED') {
+                    showToast(getChargeValidationMessage(validation, memberId), 'error');
+                }
                 renderPanel();
                 return;
             }
@@ -10032,6 +10098,17 @@ if (typeof globalThis !== 'undefined') {
 
             data[field] = value;
 
+            if (field === 'estimationH') {
+                const chargeValidation = getTaskChargeValidation(data);
+                if (!chargeValidation.ok) {
+                    if (chargeValidation.code === 'CHARGE_BUDGET_EXCEEDED') {
+                        showToast(getChargeValidationMessage(chargeValidation), 'error');
+                    }
+                    renderPanel();
+                    return;
+                }
+            }
+
             if (field === 'projet') {
                 if (data.parentTask) {
                     const parent = tasks.find(function(task) { return task.id === data.parentTask; });
@@ -10069,6 +10146,7 @@ if (typeof globalThis !== 'undefined') {
                 renderPanel();
                 if (!panelState.isNew) render();
             }
+            if (field === 'estimationH') renderPanel();
 
             if (field === 'titre' && panelState.isNew) {
                 const btn = document.querySelector('.panel-footer .panel-btn.success');
@@ -10325,6 +10403,9 @@ if (typeof globalThis !== 'undefined') {
             const originalData = cloneEditableTaskData(panelState.originalTask || {});
             const chargeValidation = getTaskChargeValidation(saveData);
             if (!chargeValidation.ok) {
+                if (chargeValidation.code === 'CHARGE_BUDGET_EXCEEDED') {
+                    showToast(getChargeValidationMessage(chargeValidation), 'error');
+                }
                 renderPanel();
                 return;
             }
@@ -10603,6 +10684,9 @@ if (typeof globalThis !== 'undefined') {
             }
             const chargeValidation = getTaskChargeValidation(data);
             if (!chargeValidation.ok) {
+                if (chargeValidation.code === 'CHARGE_BUDGET_EXCEEDED') {
+                    showToast(getChargeValidationMessage(chargeValidation), 'error');
+                }
                 renderPanel();
                 return;
             }

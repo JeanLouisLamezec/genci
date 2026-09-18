@@ -52,6 +52,35 @@
         };
     }
 
+    function sumAssignedChargeHours(assigneeIds, charges) {
+        var uniqueMemberIds = [];
+        (Array.isArray(assigneeIds) ? assigneeIds : []).forEach(function (memberId) {
+            var normalizedId = normalizeId(memberId);
+            if (normalizedId && uniqueMemberIds.indexOf(normalizedId) < 0) {
+                uniqueMemberIds.push(normalizedId);
+            }
+        });
+        return roundHours(uniqueMemberIds.reduce(function (total, memberId) {
+            return total + chargeHoursForMember(charges, memberId);
+        }, 0));
+    }
+
+    function validateChargeBudget(assigneeIds, charges, estimatedHours) {
+        var totalChargeHours = sumAssignedChargeHours(assigneeIds, charges);
+        var numericEstimate = Number(estimatedHours);
+        var normalizedEstimate = Number.isFinite(numericEstimate) && numericEstimate > 0
+            ? roundHours(numericEstimate)
+            : 0;
+        var excessHours = roundHours(Math.max(0, totalChargeHours - normalizedEstimate));
+        return {
+            ok: excessHours === 0,
+            code: excessHours === 0 ? 'CHARGE_BUDGET_VALID' : 'CHARGE_BUDGET_EXCEEDED',
+            totalChargeHours: totalChargeHours,
+            estimatedHours: normalizedEstimate,
+            excessHours: excessHours
+        };
+    }
+
     function sameProject(leftProjectId, rightProjectId) {
         var left = normalizeId(leftProjectId);
         var right = normalizeId(rightProjectId);
@@ -159,6 +188,8 @@
         hoursToDisplayValue: hoursToDisplayValue,
         chargeHoursForMember: chargeHoursForMember,
         validatePositiveCharges: validatePositiveCharges,
+        sumAssignedChargeHours: sumAssignedChargeHours,
+        validateChargeBudget: validateChargeBudget,
         sameProject: sameProject,
         filterTasksByProject: filterTasksByProject,
         isMilestone: isMilestone,
