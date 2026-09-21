@@ -117,6 +117,32 @@
         });
     }
 
+    function resolveCreationContext(tasks, selectedTaskId, selectedProjectId) {
+        var selectedId = normalizeId(selectedTaskId);
+        var selectedTask = selectedId && (Array.isArray(tasks) ? tasks : []).find(function (task) {
+            return normalizeId(task && task.id) === selectedId;
+        });
+        if (!selectedTask) {
+            return {
+                projectId: normalizeId(selectedProjectId),
+                parentTaskId: null,
+                dependencyTaskId: null
+            };
+        }
+        if (canBeStructuralParent(selectedTask)) {
+            return {
+                projectId: selectedTask.projet || null,
+                parentTaskId: selectedTask.id,
+                dependencyTaskId: null
+            };
+        }
+        return {
+            projectId: selectedTask.projet || null,
+            parentTaskId: null,
+            dependencyTaskId: selectedTask.id
+        };
+    }
+
     function validateHierarchy(task, tasks, currentTaskId) {
         task = task || {};
         tasks = Array.isArray(tasks) ? tasks : [];
@@ -196,6 +222,7 @@
         canBeStructuralParent: canBeStructuralParent,
         filterParentTasks: filterParentTasks,
         filterDependencyTasks: filterDependencyTasks,
+        resolveCreationContext: resolveCreationContext,
         validateHierarchy: validateHierarchy,
         filterCreatableProjects: filterCreatableProjects
     };

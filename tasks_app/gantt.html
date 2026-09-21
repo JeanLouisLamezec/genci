@@ -12,7 +12,7 @@
     <script src="core/gantt/gantt-visible-tree.js?v=20260831-collapsed-default"></script>
     <script src="core/gantt/gantt-task-date-constraints.js"></script>
     <script src="core/gantt/gantt-date-change-transaction.js?v=20260901"></script>
-    <script src="core/gantt/gantt-task-panel-rules.js?v=20260918-charge-budget"></script>
+    <script src="core/gantt/gantt-task-panel-rules.js?v=20260921-project-context"></script>
     <script src="core/planning/task_assignment/task-assignment-service.js"></script>
     <script src="core/planning/gantt/gantt-task-assignment-integration.js?v=20260827"></script>
     <script src="core/planning/gantt/gantt-auto-planning-integration.js?v=20260827-retro"></script>
@@ -133,6 +133,7 @@
         .task-row.parent .task-name { font-weight: 600; }
         .project-row { display: flex; align-items: center; gap: 8px; height: var(--row-height); padding: 0 12px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--bg) 72%, var(--card-bg)); cursor: pointer; }
         .project-row:hover { background: var(--primary-light); }
+        .project-row.selected { background: color-mix(in srgb, var(--primary-light) 82%, var(--card-bg)); box-shadow: inset 3px 0 var(--primary); }
         .project-row .project-color { width: 4px; height: 26px; border-radius: 3px; flex-shrink: 0; }
         .project-row .project-name { min-width: 0; flex: 1; font-size: 0.8rem; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .project-row .project-count { flex-shrink: 0; font-size: 0.65rem; color: var(--text-muted); }
@@ -143,6 +144,7 @@
         .gantt-project-span::after { right: 0; }
         .gantt-project-span.clipped-left::before, .gantt-project-span.clipped-right::after { display: none; }
         .gantt-project-span:hover { filter: brightness(1.08); box-shadow: inset 0 -3px rgba(0,0,0,.1), 0 2px 7px rgba(0,0,0,.18); z-index: 15; }
+        .gantt-project-span.selected { outline: 2px solid var(--primary); outline-offset: 2px; z-index: 16; }
         .gantt-project-span-label { display: block; padding: 0 7px; font-size: 0.65rem; font-weight: 700; line-height: 14px; text-shadow: 0 1px 2px rgba(0,0,0,.45); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .gantt-bar.dimmed, .gantt-milestone.dimmed { opacity: 0.4; }
         /* Barre parent = bande-résumé plus fine + chevrons */
@@ -8008,6 +8010,7 @@ if (typeof globalThis !== 'undefined') {
         let viewStartDate = new Date();
         let initialTodayFocusPending = true;
         let selectedTaskId = null;
+        let selectedProjectId = null;
         let sortMode = localStorage.getItem('taskflow_gantt_sort') || 'priority';
         let colorMode = localStorage.getItem('taskflow_gantt_colormode') || 'priority';
         // WBS-02: état expand/collapse par tâche parente
@@ -8325,6 +8328,9 @@ if (typeof globalThis !== 'undefined') {
         }
         function toggleProject(projectKey) {
             const key = String(projectKey);
+            const selectedProject = projects.find(project => GanttTaskPanelRules.sameProject(project.id, key));
+            selectedProjectId = selectedProject ? selectedProject.id : null;
+            selectedTaskId = null;
             if (collapsedProjects.has(key)) collapsedProjects.delete(key); else collapsedProjects.add(key);
             render();
         }
@@ -8905,7 +8911,8 @@ if (typeof globalThis !== 'undefined') {
                 if (row.kind === 'project') {
                     const key = escapeHtml(String(row.key));
                     const chevron = '<span class="tree-chevron' + (!row.collapsed ? ' expanded' : '') + '">▶</span>';
-                    html += '<div class="project-row" data-kind="project" data-project-key="' + key + '" onclick="toggleProject(this.dataset.projectKey)">' +
+                    const selectedClass = selectedProjectId != null && GanttTaskPanelRules.sameProject(selectedProjectId, row.key) ? ' selected' : '';
+                    html += '<div class="project-row' + selectedClass + '" data-kind="project" data-project-key="' + key + '" onclick="toggleProject(this.dataset.projectKey)">' +
                         chevron +
                         '<span class="project-color" style="background:' + escapeHtml(row.color) + '"></span>' +
                         '<span class="project-name">' + escapeHtml(row.label) + '</span>' +
@@ -9079,7 +9086,9 @@ if (typeof globalThis !== 'undefined') {
                     const visibleLeft = Math.max(0, rawLeft);
                     const visibleRight = Math.min(totalWidth, rawRight);
                     const span = document.createElement('div');
-                    span.className = 'gantt-project-span' + (rawLeft < 0 ? ' clipped-left' : '') + (rawRight > totalWidth ? ' clipped-right' : '');
+                    span.className = 'gantt-project-span' +
+                        (selectedProjectId != null && GanttTaskPanelRules.sameProject(selectedProjectId, row.key) ? ' selected' : '') +
+                        (rawLeft < 0 ? ' clipped-left' : '') + (rawRight > totalWidth ? ' clipped-right' : '');
                     span.style.setProperty('--project-color', row.color || '#64748b');
                     span.style.left = visibleLeft + 'px';
                     span.style.top = (idx * 44 + 14) + 'px';
@@ -9255,7 +9264,6 @@ if (typeof globalThis !== 'undefined') {
             document.getElementById('ganttWrapper').classList.remove('panel-open');
             document.getElementById('panelOverlay').classList.remove('visible');
             panelState = { open: false, isNew: false, taskId: null, taskIndex: -1, taskList: panelState.taskList, editData: null, chargeUnits: {} };
-            selectedTaskId = null;
             render();
         }
         function confirmClosePanel() {
@@ -9269,6 +9277,7 @@ if (typeof globalThis !== 'undefined') {
             if (!task) return;
 
             selectedTaskId = taskId;
+            selectedProjectId = task.projet || null;
             const idx = panelState.taskList.findIndex(t => t.id === taskId);
 
             const initialData = cloneTaskData(task);
@@ -9332,9 +9341,16 @@ if (typeof globalThis !== 'undefined') {
             }
         }
 
-        async function openCreatePanel() { await openCreateTaskWithParent(null, selectedTaskId); }
+        async function openCreatePanel() {
+            const creationContext = GanttTaskPanelRules.resolveCreationContext(tasks, selectedTaskId, selectedProjectId);
+            await openCreateTaskWithParent(
+                creationContext.parentTaskId,
+                creationContext.dependencyTaskId,
+                creationContext.projectId
+            );
+        }
         // WBS-02: création d'une sous-tâche (ou tâche racine si parentId === null)
-        async function openCreateTaskWithParent(parentId, dependencyId) {
+        async function openCreateTaskWithParent(parentId, dependencyId, preferredProjectId) {
             if (gristReady && permissionRuntime && typeof permissionRuntime.refresh === 'function') {
                 try {
                     await permissionRuntime.refresh({ force: true });
@@ -9346,7 +9362,7 @@ if (typeof globalThis !== 'undefined') {
             }
 
             const today = new Date();
-            const parent = parentId ? tasks.find(t => t.id === parentId) : null;
+            const parent = parentId ? tasks.find(t => String(t.id) === String(parentId)) : null;
             const contextualDependency = !parentId && dependencyId
                 ? tasks.find(t => String(t.id) === String(dependencyId))
                 : null;
@@ -9366,14 +9382,22 @@ if (typeof globalThis !== 'undefined') {
             const contextualProjectAllowed = contextualDependency && creatableProjects.some(project =>
                 GanttTaskPanelRules.sameProject(project.id, contextualDependency.projet)
             );
-            const filteredProject = !parent && !contextualProjectAllowed && filters.project && filters.project.length === 1
+            const preferredProject = !parent && !contextualProjectAllowed && preferredProjectId
+                ? creatableProjects.find(project => GanttTaskPanelRules.sameProject(project.id, preferredProjectId))
+                : null;
+            if (!parent && !contextualProjectAllowed && preferredProjectId && !preferredProject) {
+                showToast('Création impossible : vous n’avez pas les droits sur ce projet.', 'error');
+                return;
+            }
+            const filteredProject = !parent && !contextualProjectAllowed && !preferredProject && filters.project && filters.project.length === 1
                 ? creatableProjects.find(project => GanttTaskPanelRules.sameProject(project.id, filters.project[0]))
                 : null;
             const defaultProjectId = parent?.projet ||
                 (contextualProjectAllowed ? contextualDependency.projet : null) ||
+                (preferredProject && preferredProject.id) ||
                 (filteredProject && filteredProject.id) ||
                 creatableProjects[0].id;
-            const defaultProject = projects.find(p => p.id === defaultProjectId);
+            const defaultProject = projects.find(p => GanttTaskPanelRules.sameProject(p.id, defaultProjectId));
             const scopeStart = gristToDate(parent?.dateDebut ?? defaultProject?.dateDebut);
             const scopeEnd = gristToDate(parent?.dateEcheance ?? defaultProject?.dateFin);
             let defaultStart = today;
@@ -9389,7 +9413,7 @@ if (typeof globalThis !== 'undefined') {
                     assignees: [],
                     dependDe: contextualProjectAllowed ? [contextualDependency.id] : [],
                     tags: [], estimationH: null, tempsPasse: null, subtasks: [],
-                    couleur: null, parentTask: parentId || null, charges: []
+                    couleur: null, parentTask: parent ? parent.id : null, charges: []
                 },
                 assignmentModes: {},
                 originalAssignmentModes: {},
@@ -9733,11 +9757,11 @@ if (typeof globalThis !== 'undefined') {
             const s = gristToDate(data.dateDebut);
             const e = gristToDate(data.dateEcheance);
             const priorityColor = PRIORITY_COLORS[getTaskPriority(data)] || '#94a3b8';
-            const currentProject = projects.find(p => p.id === data.projet);
+            const currentProject = projects.find(p => GanttTaskPanelRules.sameProject(p.id, data.projet));
             const projectColor = currentProject?.couleur || '#94a3b8';
             const selectableProjects = panelState.isNew ? getCreatableProjects() : projects.filter(p => p.actif !== false);
             const projectOptions = selectableProjects.map(p =>
-                '<option value="' + p.id + '" ' + (data.projet === p.id ? 'selected' : '') + '>' + escapeHtml(p.nom) + '</option>'
+                '<option value="' + p.id + '" ' + (GanttTaskPanelRules.sameProject(data.projet, p.id) ? 'selected' : '') + '>' + escapeHtml(p.nom) + '</option>'
             ).join('');
             const subtasksDone = (data.subtasks || []).filter(st => st.done).length;
             const subtasksTotal = (data.subtasks || []).length;
@@ -11526,6 +11550,7 @@ if (typeof globalThis !== 'undefined') {
                             return;
                         }
                         let cur = tasks.find(t => t.id === rec.id), guard = 0;
+                        selectedProjectId = cur?.projet || null;
                         const selectedProjectKey = cur && projects.some(p => String(p.id) === String(cur.projet))
                             ? String(cur.projet)
                             : GanttVisibleTree.WITHOUT_PROJECT;
@@ -11647,9 +11672,10 @@ if (typeof globalThis !== 'undefined') {
                 document.querySelectorAll('.color-picker-pop, .member-color-picker').forEach(p => p.classList.remove('open'));
             }
             // GEN-01: Désélection si clic en dehors d'une barre, du panel ou des contrôles
-            if (!e.target.closest('.gantt-bar, .gantt-milestone, .panel, .task-row, .toolbar, .filter-dropdown, .time-view-controls')) {
-                if (selectedTaskId !== null && !panelState.open) {
+            if (!e.target.closest('.gantt-bar, .gantt-milestone, .gantt-project-span, .project-row, .panel, .panel-overlay, .task-row, .toolbar, .filter-dropdown, .time-view-controls')) {
+                if ((selectedTaskId !== null || selectedProjectId !== null) && !panelState.open) {
                     selectedTaskId = null;
+                    selectedProjectId = null;
                     render();
                 }
             }

@@ -101,6 +101,30 @@ describe('GanttTaskPanelRules - parents de sous-tâche', () => {
   test('isole les tâches sans projet des tâches appartenant à un projet', () => {
     expect(rules.filterParentTasks(tasks, null, null, () => true).map(task => task.id)).toEqual([4]);
   });
+
+  test('préremplit le projet et le parent depuis la tâche sélectionnée', () => {
+    expect(rules.resolveCreationContext(tasks, 2)).toEqual({
+      projectId: 10,
+      parentTaskId: 2,
+      dependencyTaskId: null
+    });
+  });
+
+  test('préremplit le projet cliqué lorsqu’aucune tâche n’est sélectionnée', () => {
+    expect(rules.resolveCreationContext(tasks, null, 20)).toEqual({
+      projectId: 20,
+      parentTaskId: null,
+      dependencyTaskId: null
+    });
+  });
+
+  test('ne transforme pas un jalon sélectionné en parent', () => {
+    expect(rules.resolveCreationContext(tasks, 5)).toEqual({
+      projectId: 10,
+      parentTaskId: null,
+      dependencyTaskId: 5
+    });
+  });
 });
 
 describe('GanttTaskPanelRules - modèle des jalons', () => {
