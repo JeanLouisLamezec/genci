@@ -10,6 +10,7 @@ const {
 const day = value => Date.parse(value + 'T00:00:00Z') / 1000;
 const rangeStart = new Date('2026-08-01T00:00:00Z');
 const rangeEndExclusive = new Date('2026-09-01T00:00:00Z');
+const today = new Date('2026-08-15T12:00:00Z');
 
 function build(options = {}) {
   const tasks = options.tasks || [];
@@ -19,6 +20,7 @@ function build(options = {}) {
     projects: options.projects || [{ id: 1, nom: 'Alpha' }],
     rangeStart,
     rangeEndExclusive,
+    today,
     expandedTaskIds: new Set(options.expandedTaskIds || []),
     collapsedProjectIds: new Set(options.collapsedProjectIds || [])
   });
@@ -79,6 +81,23 @@ describe('GanttVisibleTree - Projet > Tâche > Sous-tâche', () => {
     const result = build({ tasks, expandedTaskIds: [20] });
     expect(result.rows.filter(row => row.kind === 'task').map(row => row.task.id)).toEqual([20, 21]);
     expect(result.rows.find(row => row.kind === 'task' && row.task.id === 21).dimmed).toBe(true);
+  });
+
+  test('ne grise pas un descendant futur même lorsqu’il est hors de la fenêtre affichée', () => {
+    const tasks = [
+      { id: 60, titre: 'Parent courant', projet: 1, dateDebut: day('2026-08-01'), dateEcheance: day('2026-08-20') },
+      { id: 61, titre: 'Enfant futur', projet: 1, parentTask: 60, dateDebut: day('2027-01-01'), dateEcheance: day('2027-01-10') }
+    ];
+    const result = build({ tasks, expandedTaskIds: [60] });
+    expect(result.rows.find(row => row.kind === 'task' && row.task.id === 61)).toMatchObject({ dimmed: false });
+  });
+
+  test('grise une tâche dont la période est terminée même si elle est dans la fenêtre affichée', () => {
+    const tasks = [
+      { id: 62, titre: 'Tâche terminée', projet: 1, dateDebut: day('2026-08-01'), dateEcheance: day('2026-08-14') }
+    ];
+    const result = build({ tasks });
+    expect(result.rows.find(row => row.kind === 'task' && row.task.id === 62)).toMatchObject({ dimmed: true });
   });
 
   test('conserve un descendant hors période masqué lorsque son parent est replié', () => {

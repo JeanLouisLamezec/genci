@@ -9,7 +9,7 @@
     <script src="core/time/time-view-selector.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
     <script src="core/filters/filter-manager.js"></script>
-    <script src="core/gantt/gantt-visible-tree.js?v=20260831-collapsed-default"></script>
+    <script src="core/gantt/gantt-visible-tree.js?v=20260922-past-dimming"></script>
     <script src="core/gantt/gantt-task-date-constraints.js"></script>
     <script src="core/gantt/gantt-date-change-transaction.js?v=20260901"></script>
     <script src="core/gantt/gantt-task-panel-rules.js?v=20260921-project-context"></script>
@@ -8365,6 +8365,7 @@ if (typeof globalThis !== 'undefined') {
             currentVisibleModel = GanttVisibleTree.buildVisibleRows({
                 tasks, projects, filteredTasks: getFilteredTasks(),
                 rangeStart, rangeEndExclusive,
+                today: new Date(),
                 expandedTaskIds: expandedTasks,
                 collapsedProjectIds: collapsedProjects,
                 sortTasks: sortFratrie
@@ -8957,7 +8958,7 @@ if (typeof globalThis !== 'undefined') {
                 const indent = depth * 18;
                 const classes = ['task-row', selected ? 'selected' : '', dimmed ? 'dimmed' : '', isParent ? 'parent' : ''].filter(Boolean).join(' ');
 
-                html += '<div class="' + classes + '" data-kind="task" data-project-key="' + escapeHtml(String(row.projectKey)) + '" data-id="' + t.id + '" onclick="openTaskPanel(' + t.id + ')"' + (dimmed ? ' title="Hors de la période affichée — visible car sa branche est dépliée"' : '') + ' style="padding-left:' + (12 + indent) + 'px">' +
+                html += '<div class="' + classes + '" data-kind="task" data-project-key="' + escapeHtml(String(row.projectKey)) + '" data-id="' + t.id + '" onclick="openTaskPanel(' + t.id + ')"' + (dimmed ? ' title="Cette tâche est grisée car sa date de fin est passée."' : '') + ' style="padding-left:' + (12 + indent) + 'px">' +
                     '<span class="drag-handle">☰</span>' +
                     chevron +
                     '<div class="task-priority-bar p' + p + '"></div>' +
@@ -9225,7 +9226,7 @@ if (typeof globalThis !== 'undefined') {
             el.addEventListener('mouseenter', () => {
                 let html = '<div class="tooltip-title">' + escapeHtml(task.titre) + '</div>';
                 if (dimmed) {
-                    html += '<div class="tooltip-row"><span>Affichage</span><span>Hors période · contexte déplié</span></div>';
+                    html += '<div class="tooltip-row"><span>Affichage</span><span>Période terminée · date de fin passée</span></div>';
                 }
                 TOOLTIP_FIELDS.forEach(field => {
                     const value = field.format(task);

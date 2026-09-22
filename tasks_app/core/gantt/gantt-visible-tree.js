@@ -7,7 +7,9 @@
  * La fenêtre temporelle est traitée comme [rangeStart, rangeEndExclusive). Une
  * tâche est visible si elle chevauche cette fenêtre. Les ancêtres hors période
  * sont conservés uniquement comme contexte ; les descendants hors période ne
- * sont jamais ajoutés implicitement.
+ * sont jamais ajoutés implicitement. L'état « dimmed » est indépendant de la
+ * fenêtre affichée : il signale uniquement une tâche dont la date de fin est
+ * antérieure à aujourd'hui.
  * ========================================================================== */
 (function (global) {
     'use strict';
@@ -48,6 +50,15 @@
         var endExclusive = toMillis(rangeEndExclusive);
         if (!interval || start == null || endExclusive == null || endExclusive <= start) return false;
         return interval.end >= start && interval.start < endExclusive;
+    }
+
+    function taskPeriodHasElapsed(task, today) {
+        var interval = taskInterval(task);
+        var todayMillis = toMillis(today);
+        if (!interval || todayMillis == null) return false;
+        var todayStart = new Date(todayMillis);
+        todayStart.setHours(0, 0, 0, 0);
+        return interval.end < todayStart.getTime();
     }
 
     function projectKeyForTask(task, projectById) {
@@ -130,8 +141,9 @@
 
             // Une expansion explicite doit toujours produire un résultat visible.
             // Ajouter les enfants qui passent les filtres métier même lorsque leurs
-            // dates sont hors de la fenêtre courante ; ils seront rendus « dimmed »
-            // et leur barre restera naturellement hors champ sur la timeline.
+            // dates sont hors de la fenêtre courante. Leur barre restera
+            // naturellement hors champ sur la timeline, sans être grisée si la
+            // tâche est future.
             var addedExpandedChild = true;
             while (addedExpandedChild) {
                 addedExpandedChild = false;
@@ -194,7 +206,7 @@
                     task: task,
                     projectKey: projectKey,
                     depth: depth,
-                    dimmed: !directIds.has(task.id)
+                    dimmed: taskPeriodHasElapsed(task, options.today || new Date())
                 });
                 visibleTaskIds.add(task.id);
                 if (!expandedTaskIds.has(task.id)) return;
@@ -220,6 +232,7 @@
         toMillis: toMillis,
         taskInterval: taskInterval,
         taskOverlapsRange: taskOverlapsRange,
+        taskPeriodHasElapsed: taskPeriodHasElapsed,
         buildDefaultCollapsedProjectIds: buildDefaultCollapsedProjectIds,
         buildVisibleRows: buildVisibleRows
     };
