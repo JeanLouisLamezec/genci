@@ -3,7 +3,7 @@
  * check-taskflow-build.js — Vérifie que les widgets contiennent le bon code
  * ----------------------------------------------------------------------------
  * Ce script :
- * 1. Concatène les fichiers sources (taskflow-core.js + schema + bootstrap + migrations)
+ * 1. Concatène exactement les mêmes fichiers que build-taskflow.js
  * 2. Extrait le code injecté de chaque widget HTML
  * 3. Compare les hash SHA-256
  * 4. Échoue si un widget a une version obsolète
@@ -21,6 +21,13 @@ const SCHEMA_DIR = path.join(CORE_DIR, 'schema');
 
 // Fichiers sources dans l'ordre d'injection
 const SOURCE_FILES = [
+    path.join(CORE_DIR, 'ui', 'taskflow-notifications.js'),
+    path.join(CORE_DIR, 'identity', 'taskflow-identity.js'),
+    path.join(CORE_DIR, 'identity', 'taskflow-identity-runtime.js'),
+    path.join(CORE_DIR, 'identity', 'taskflow-identity-claim-service.js'),
+    path.join(CORE_DIR, 'identity', 'taskflow-identity-gate.js'),
+    path.join(CORE_DIR, 'permissions', 'taskflow-permissions.js'),
+    path.join(CORE_DIR, 'filters', 'user-filter-store.js'),
     path.join(CORE_DIR, 'taskflow-core.js'),
     path.join(SCHEMA_DIR, 'taskflow-schema.js'),
     path.join(SCHEMA_DIR, 'taskflow-timesheet-backfill.js'),
@@ -35,8 +42,7 @@ const WIDGETS = [
     'plan.html',
     'cra.html',
     'calendar.html',
-    'dashboard.html',
-    'orgchart.html'
+    'dashboard.html'
 ];
 
 // Marqueurs

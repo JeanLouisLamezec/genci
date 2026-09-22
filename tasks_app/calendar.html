@@ -2210,6 +2210,24 @@
         });
     }
 
+    function canDeleteProject(snapshot, current) {
+        if (!actorIsAdmin(snapshot)) {
+            return deny('PROJECT_DELETE_FORBIDDEN', 'Seul un administrateur peut supprimer un projet.');
+        }
+        var projectId = normalizeId(current && current.id);
+        var linkedTasks = (snapshot.tables.Tasks || []).filter(function (task) {
+            return normalizeId(task && task.projet) === projectId;
+        });
+        if (linkedTasks.length) {
+            return deny(
+                'PROJECT_DELETE_HAS_TASKS',
+                'Ce projet contient encore ' + linkedTasks.length + ' tâche(s). Déplacez-les ou supprimez-les avant de supprimer le projet.',
+                { resourceLabel: recordLabel('Projects', current), taskCount: linkedTasks.length }
+            );
+        }
+        return allow('ADMIN');
+    }
+
     function canCreateAction(snapshot, proposed) {
         if (actorIsAdmin(snapshot)) return allow('ADMIN');
         var task = taskForAction(snapshot, proposed);
@@ -2497,9 +2515,7 @@
         if (table === 'Projects') {
             if (kind === 'create') return canCreateProject(snapshot, proposed);
             if (kind === 'update') return canUpdateProject(snapshot, current, proposed);
-            return actorIsAdmin(snapshot)
-                ? allow('ADMIN')
-                : deny('PROJECT_DELETE_FORBIDDEN', 'Seul un administrateur peut supprimer un projet.');
+            return canDeleteProject(snapshot, current);
         }
 
         if (table === 'Tasks') {

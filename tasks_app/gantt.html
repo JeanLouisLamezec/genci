@@ -2148,6 +2148,24 @@
         });
     }
 
+    function canDeleteProject(snapshot, current) {
+        if (!actorIsAdmin(snapshot)) {
+            return deny('PROJECT_DELETE_FORBIDDEN', 'Seul un administrateur peut supprimer un projet.');
+        }
+        var projectId = normalizeId(current && current.id);
+        var linkedTasks = (snapshot.tables.Tasks || []).filter(function (task) {
+            return normalizeId(task && task.projet) === projectId;
+        });
+        if (linkedTasks.length) {
+            return deny(
+                'PROJECT_DELETE_HAS_TASKS',
+                'Ce projet contient encore ' + linkedTasks.length + ' tâche(s). Déplacez-les ou supprimez-les avant de supprimer le projet.',
+                { resourceLabel: recordLabel('Projects', current), taskCount: linkedTasks.length }
+            );
+        }
+        return allow('ADMIN');
+    }
+
     function canCreateAction(snapshot, proposed) {
         if (actorIsAdmin(snapshot)) return allow('ADMIN');
         var task = taskForAction(snapshot, proposed);
@@ -2435,9 +2453,7 @@
         if (table === 'Projects') {
             if (kind === 'create') return canCreateProject(snapshot, proposed);
             if (kind === 'update') return canUpdateProject(snapshot, current, proposed);
-            return actorIsAdmin(snapshot)
-                ? allow('ADMIN')
-                : deny('PROJECT_DELETE_FORBIDDEN', 'Seul un administrateur peut supprimer un projet.');
+            return canDeleteProject(snapshot, current);
         }
 
         if (table === 'Tasks') {
@@ -8025,7 +8041,7 @@ if (typeof globalThis !== 'undefined') {
         let filters = { assignee: [], team: [], project: [], programme: [], task: [] };  // Filtres unifiés avec Kanban/Plan
         let dragState = { active: false, type: null, taskId: null, startX: 0, originalLeft: 0, originalWidth: 0, originalStart: null, originalEnd: null };
         let dragCommitInProgress = false;
-        let panelState = { open: false, isNew: false, taskId: null, taskIndex: -1, taskList: [], editData: null, chargeUnits: {} };
+        let panelState = { open: false, kind: 'task', isNew: false, taskId: null, projectId: null, taskIndex: -1, taskList: [], editData: null, chargeUnits: {} };
         let assignmentIntegration = null;  // Global pour les fonctions de sauvegarde
         let permissionRuntime = null;       // Identité courante, notamment pour l'override admin de suppression
         let userFilterStore = null;
@@ -8328,9 +8344,6 @@ if (typeof globalThis !== 'undefined') {
         }
         function toggleProject(projectKey) {
             const key = String(projectKey);
-            const selectedProject = projects.find(project => GanttTaskPanelRules.sameProject(project.id, key));
-            selectedProjectId = selectedProject ? selectedProject.id : null;
-            selectedTaskId = null;
             if (collapsedProjects.has(key)) collapsedProjects.delete(key); else collapsedProjects.add(key);
             render();
         }
@@ -8910,9 +8923,10 @@ if (typeof globalThis !== 'undefined') {
             currentVisible.forEach((row) => {
                 if (row.kind === 'project') {
                     const key = escapeHtml(String(row.key));
-                    const chevron = '<span class="tree-chevron' + (!row.collapsed ? ' expanded' : '') + '">▶</span>';
+                    const chevron = '<span class="tree-chevron' + (!row.collapsed ? ' expanded' : '') + '" onclick="event.stopPropagation();toggleProject(this.closest(\'.project-row\').dataset.projectKey)" title="' + (row.collapsed ? 'Déplier le projet' : 'Replier le projet') + '">▶</span>';
                     const selectedClass = selectedProjectId != null && GanttTaskPanelRules.sameProject(selectedProjectId, row.key) ? ' selected' : '';
-                    html += '<div class="project-row' + selectedClass + '" data-kind="project" data-project-key="' + key + '" onclick="toggleProject(this.dataset.projectKey)">' +
+                    const project = projects.find(p => GanttTaskPanelRules.sameProject(p.id, row.key));
+                    html += '<div class="project-row' + selectedClass + '" data-kind="project" data-project-key="' + key + '" onclick="' + (project ? 'openProjectPanel(' + project.id + ')' : '') + '">' +
                         chevron +
                         '<span class="project-color" style="background:' + escapeHtml(row.color) + '"></span>' +
                         '<span class="project-name">' + escapeHtml(row.label) + '</span>' +
@@ -8943,7 +8957,7 @@ if (typeof globalThis !== 'undefined') {
                 const indent = depth * 18;
                 const classes = ['task-row', selected ? 'selected' : '', dimmed ? 'dimmed' : '', isParent ? 'parent' : ''].filter(Boolean).join(' ');
 
-                html += '<div class="' + classes + '" data-kind="task" data-project-key="' + escapeHtml(String(row.projectKey)) + '" data-id="' + t.id + '" onclick="openTaskPanel(' + t.id + ')" style="padding-left:' + (12 + indent) + 'px">' +
+                html += '<div class="' + classes + '" data-kind="task" data-project-key="' + escapeHtml(String(row.projectKey)) + '" data-id="' + t.id + '" onclick="openTaskPanel(' + t.id + ')"' + (dimmed ? ' title="Hors de la période affichée — visible car sa branche est dépliée"' : '') + ' style="padding-left:' + (12 + indent) + 'px">' +
                     '<span class="drag-handle">☰</span>' +
                     chevron +
                     '<div class="task-priority-bar p' + p + '"></div>' +
@@ -9096,7 +9110,7 @@ if (typeof globalThis !== 'undefined') {
                     span.title = row.label + ' · ' + formatDateShort(projectStart) + ' → ' + formatDateShort(projectEnd);
                     span.setAttribute('aria-label', span.title);
                     span.innerHTML = '<span class="gantt-project-span-label">' + escapeHtml(row.label) + '</span>';
-                    span.onclick = () => toggleProject(row.key);
+                    span.onclick = () => { if (project) openProjectPanel(project.id); };
                     grid.appendChild(span);
                     return;
                 }
@@ -9129,7 +9143,7 @@ if (typeof globalThis !== 'undefined') {
                     const jColor = getTaskColor(t);
                     m.innerHTML = '<div class="milestone-diamond" style="background:' + jColor + '"></div><span class="milestone-label">' + escapeHtml(t.titre) + '</span>';
                     m.onclick = () => openTaskPanel(t.id);
-                    setupTooltip(m, t);
+                    setupTooltip(m, t, dimmed);
                     grid.appendChild(m);
                 } else {
                     const bar = document.createElement('div');
@@ -9151,7 +9165,7 @@ if (typeof globalThis !== 'undefined') {
                         '<span class="gantt-bar-external-label">' + escapeHtml(t.titre) + '</span>';
                     bar.onclick = (e) => { if (!e.target.classList.contains('resize-handle')) openTaskPanel(t.id); };
                     bar.onmousedown = (e) => { if (!e.target.classList.contains('resize-handle')) startDrag(e, bar, 'move'); };
-                    setupTooltip(bar, t);
+                    setupTooltip(bar, t, dimmed);
                     grid.appendChild(bar);
                 }
             });
@@ -9206,10 +9220,13 @@ if (typeof globalThis !== 'undefined') {
             document.getElementById('timelineGrid').appendChild(svg);
         }
 
-        function setupTooltip(el, task) {
+        function setupTooltip(el, task, dimmed) {
             const tooltip = document.getElementById('tooltip');
             el.addEventListener('mouseenter', () => {
                 let html = '<div class="tooltip-title">' + escapeHtml(task.titre) + '</div>';
+                if (dimmed) {
+                    html += '<div class="tooltip-row"><span>Affichage</span><span>Hors période · contexte déplié</span></div>';
+                }
                 TOOLTIP_FIELDS.forEach(field => {
                     const value = field.format(task);
                     if (value) html += '<div class="tooltip-row"><span>' + field.label + '</span><span>' + escapeHtml(String(value)) + '</span></div>';
@@ -9263,7 +9280,7 @@ if (typeof globalThis !== 'undefined') {
             document.getElementById('panel').classList.remove('open');
             document.getElementById('ganttWrapper').classList.remove('panel-open');
             document.getElementById('panelOverlay').classList.remove('visible');
-            panelState = { open: false, isNew: false, taskId: null, taskIndex: -1, taskList: panelState.taskList, editData: null, chargeUnits: {} };
+            panelState = { open: false, kind: 'task', isNew: false, taskId: null, projectId: null, taskIndex: -1, taskList: panelState.taskList, editData: null, chargeUnits: {} };
             render();
         }
         function confirmClosePanel() {
@@ -9283,6 +9300,8 @@ if (typeof globalThis !== 'undefined') {
             const initialData = cloneTaskData(task);
             
             // Initialiser complètement panelState AVANT le fetch asynchrone
+            panelState.kind = 'task';
+            panelState.projectId = null;
             panelState.isNew = false;
             panelState.taskId = taskId;
             panelState.taskIndex = idx >= 0 ? idx : 0;
@@ -9338,6 +9357,107 @@ if (typeof globalThis !== 'undefined') {
                         console.warn('[Gantt] Erreur chargement modes TaskAssignments:', e);
                     }
                 })();
+            }
+        }
+
+        function openProjectPanel(projectId) {
+            const project = projects.find(function(candidate) {
+                return GanttTaskPanelRules.sameProject(candidate.id, projectId);
+            });
+            if (!project) return;
+            selectedTaskId = null;
+            selectedProjectId = project.id;
+            panelState.kind = 'project';
+            panelState.isNew = false;
+            panelState.taskId = null;
+            panelState.projectId = project.id;
+            panelState.editData = null;
+            renderProjectPanel();
+            openPanel();
+            render();
+        }
+
+        function renderProjectPanel() {
+            const project = projects.find(function(candidate) {
+                return GanttTaskPanelRules.sameProject(candidate.id, panelState.projectId);
+            });
+            if (!project) {
+                closePanel();
+                return;
+            }
+            const header = document.getElementById('panelHeader');
+            const content = document.getElementById('panelContent');
+            const footer = document.getElementById('panelFooter');
+            const linkedTasks = tasks.filter(function(task) {
+                return GanttTaskPanelRules.sameProject(task.projet, project.id);
+            });
+            const programme = programmes.find(function(candidate) {
+                return String(candidate.id) === String(project.programme);
+            });
+            const actor = permissionRuntime && permissionRuntime.getActor ? permissionRuntime.getActor() : null;
+            const canDelete = Boolean(actor && actor.isAdmin);
+            const deleteHint = linkedTasks.length
+                ? 'Ce projet contient encore ' + linkedTasks.length + ' tâche(s). Déplacez-les ou supprimez-les d’abord.'
+                : (canDelete ? 'La suppression est définitive.' : 'Seul un administrateur peut supprimer un projet.');
+
+            header.innerHTML = '<div class="panel-nav"><span class="panel-title">Projet</span></div>' +
+                '<button class="panel-close" onclick="closePanel()">×</button>';
+            content.innerHTML =
+                '<div class="panel-accent-bar" style="background:' + escapeHtml(project.couleur || '#64748b') + '"></div>' +
+                '<div class="panel-type-row"><span class="type-pill selected">Projet</span></div>' +
+                '<div class="panel-title-edit" style="cursor:default">' + escapeHtml(project.nom || 'Sans nom') + '</div>' +
+                '<div class="props-list">' +
+                    '<div class="prop-row"><span class="prop-label">Période</span><div class="prop-value">' + formatDate(gristToDate(project.dateDebut)) + ' → ' + formatDate(gristToDate(project.dateFin)) + '</div></div>' +
+                    '<div class="prop-row"><span class="prop-label">Responsable</span><div class="prop-value">' + escapeHtml(getTeamMemberName(project.responsable) || 'Non renseigné') + '</div></div>' +
+                    '<div class="prop-row"><span class="prop-label">Programme</span><div class="prop-value">' + escapeHtml((programme && programme.nom) || 'Non renseigné') + '</div></div>' +
+                    '<div class="prop-row"><span class="prop-label">État</span><div class="prop-value">' + (project.actif === false ? 'Inactif' : 'Actif') + '</div></div>' +
+                    '<div class="prop-row"><span class="prop-label">Contenu</span><div class="prop-value"><strong>' + linkedTasks.length + '</strong> tâche(s)</div></div>' +
+                '</div>' +
+                '<div class="panel-section"><div class="panel-section-header"><span class="panel-section-title">Suppression</span></div>' +
+                    '<div style="font-size:0.8rem;color:var(--text-muted);line-height:1.45">' + escapeHtml(deleteHint) + '</div>' +
+                '</div>';
+            footer.innerHTML = canDelete
+                ? '<button class="panel-btn danger" onclick="showDeleteConfirm()" ' + (linkedTasks.length ? 'disabled title="Le projet doit être vide"' : '') + '>Supprimer le projet</button>' +
+                  (!linkedTasks.length ? '<div class="delete-confirm" id="deleteConfirm"><div class="delete-confirm-text">Supprimer définitivement ce projet vide ?</div><div class="delete-confirm-actions"><button class="delete-confirm-btn cancel" onclick="hideDeleteConfirm()">Annuler</button><button class="delete-confirm-btn confirm" onclick="confirmDeleteProject()">Supprimer</button></div></div>' : '')
+                : '';
+        }
+
+        async function confirmDeleteProject() {
+            if (panelState.kind !== 'project' || !panelState.projectId || !gristReady) return;
+            const projectId = panelState.projectId;
+            const linkedTasks = tasks.filter(function(task) {
+                return GanttTaskPanelRules.sameProject(task.projet, projectId);
+            });
+            if (linkedTasks.length) {
+                showToast('Suppression impossible : ce projet contient encore ' + linkedTasks.length + ' tâche(s).', 'error');
+                hideDeleteConfirm();
+                return;
+            }
+            try {
+                if (!permissionRuntime || typeof permissionRuntime.refresh !== 'function' || typeof permissionRuntime.authorize !== 'function') {
+                    showToast('Suppression impossible : service de permissions indisponible.', 'error');
+                    return;
+                }
+                await permissionRuntime.refresh({ force: true });
+                const decision = await permissionRuntime.authorize([['RemoveRecord', 'Projects', projectId]]);
+                if (!decision.allowed) {
+                    showToast(decision.message || 'Suppression du projet refusée.', 'error');
+                    return;
+                }
+                await grist.docApi.applyUserActions([['RemoveRecord', 'Projects', projectId]]);
+                selectedProjectId = null;
+                showToast('Projet supprimé', 'success');
+                closePanel();
+                await loadAllData();
+            } catch (error) {
+                console.error('[Gantt] Suppression projet impossible', error);
+                showToast('Le projet n’a pas été supprimé : ' + (error && error.message ? error.message : 'erreur inconnue'), 'error');
+                await loadAllData();
+                if (projects.some(function(project) { return GanttTaskPanelRules.sameProject(project.id, projectId); })) {
+                    panelState.kind = 'project';
+                    panelState.projectId = projectId;
+                    renderProjectPanel();
+                }
             }
         }
 
@@ -9405,7 +9525,7 @@ if (typeof globalThis !== 'undefined') {
             let defaultEnd = addDays(defaultStart, 7);
             if (scopeEnd && defaultEnd > scopeEnd) defaultEnd = scopeEnd;
             panelState = {
-                open: true, isNew: true, taskId: null, taskIndex: -1, taskList: panelState.taskList,
+                open: true, kind: 'task', isNew: true, taskId: null, projectId: null, taskIndex: -1, taskList: panelState.taskList,
                 editData: {
                     titre: '', description: '', type: 'tache', priorite: '3', statut: 'todo', progression: 0,
                     dateDebut: dateToGrist(defaultStart), dateEcheance: dateToGrist(defaultEnd),
@@ -10062,10 +10182,36 @@ if (typeof globalThis !== 'undefined') {
         }
 
         function restoreRejectedTaskScope(options) {
-            const data = panelState.editData;
-            const original = panelState.originalTask;
-            if (!data || !original || panelState.isNew) return;
             options = options || {};
+            const targetTaskId = options.taskId != null ? options.taskId : panelState.taskId;
+            const isCurrentTaskPanel = panelState.kind === 'task' && !panelState.isNew && panelState.taskId === targetTaskId;
+            const data = isCurrentTaskPanel ? panelState.editData : null;
+            const original = options.originalTask || (isCurrentTaskPanel ? panelState.originalTask : null);
+            if (!original) return;
+            if (options.assignments) {
+                const restoredAssignees = [...(original.assignees || [])];
+                const restoredCharges = (original.charges || []).map(function(charge) {
+                    return { ...charge };
+                });
+                const localTask = tasks.find(function(task) { return task.id === targetTaskId; });
+                if (localTask) {
+                    localTask.assignees = ['L', ...restoredAssignees];
+                    localTask.charges = TF.chargesToJson(restoredCharges);
+                }
+                if (data) {
+                    data.assignees = restoredAssignees;
+                    data.charges = restoredCharges;
+                    panelState.assignmentModes = { ...(options.assignmentModes || panelState.originalAssignmentModes || {}) };
+                    panelState.chargeUnits = {};
+                    data.assignees.forEach(function(memberId) {
+                        panelState.chargeUnits[memberId] = 'j';
+                    });
+                    renderPanel();
+                }
+                render();
+                return;
+            }
+            if (!data) return;
             if (options.temporal) {
                 data.dateDebut = original.dateDebut;
                 data.dateEcheance = original.dateEcheance;
@@ -10509,6 +10655,7 @@ if (typeof globalThis !== 'undefined') {
             if (!currentModesResult.ok) {
                 console.error('[Gantt] Modes invalides:', currentModesResult.errors);
                 showToast('Mode de répartition invalide (utilisez "Régulier" ou "Ponctuel")', 'error');
+                restoreRejectedTaskScope({ assignments: true });
                 return;
             }
 
@@ -10580,7 +10727,17 @@ if (typeof globalThis !== 'undefined') {
                         } else {
                             showToast('Modification refusée : ' + syncErrorMessage, 'error');
                         }
-                        
+
+                        // L'interface a déjà appliqué le retrait localement pour
+                        // rester réactive. Si le précontrôle refuse l'opération
+                        // (notamment feuille validée), restaurer immédiatement la
+                        // tâche et ses affectations au lieu d'attendre un reload.
+                        restoreRejectedTaskScope({
+                            assignments: true,
+                            taskId: taskId,
+                            originalTask: originalData,
+                            assignmentModes: originalAssignmentModes
+                        });
                         return; // Zéro écriture
                     }
                 }
@@ -11683,7 +11840,7 @@ if (typeof globalThis !== 'undefined') {
 
         document.addEventListener('keydown', (e) => {
             if (e.key === 'Escape' && panelState.open) confirmClosePanel();
-            if (panelState.open && !panelState.isNew && !e.target.matches('input, textarea, select')) {
+            if (panelState.open && panelState.kind === 'task' && !panelState.isNew && !e.target.matches('input, textarea, select')) {
                 if (e.key === 'ArrowLeft') navigatePanelTask(-1);
                 if (e.key === 'ArrowRight') navigatePanelTask(1);
             }

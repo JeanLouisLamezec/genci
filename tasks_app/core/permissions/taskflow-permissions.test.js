@@ -75,11 +75,25 @@ describe('TaskFlow permissions - identité', () => {
 });
 
 describe('TaskFlow permissions - projets et tâches', () => {
-  test('admin peut tout modifier et supprimer', () => {
+  test('admin peut modifier mais ne supprime pas un projet qui contient des tâches', () => {
     const snapshot = fixture(1);
     expect(authorize(snapshot, ['UpdateRecord', 'Tasks', 200, { titre: 'X' }]).allowed).toBe(true);
-    expect(authorize(snapshot, ['RemoveRecord', 'Projects', 20]).allowed).toBe(true);
+    expect(authorize(snapshot, ['RemoveRecord', 'Projects', 20])).toMatchObject({
+      allowed: false,
+      code: 'PROJECT_DELETE_HAS_TASKS'
+    });
     expect(authorize(snapshot, ['UpdateRecord', 'Team', 6, { nom: 'X' }]).allowed).toBe(true);
+  });
+
+  test('admin peut supprimer un projet vide', () => {
+    const snapshot = fixture(1, {
+      projects: [{ id: 30, nom: 'Projet vide', responsable: 5 }],
+      tasks: []
+    });
+    expect(authorize(snapshot, ['RemoveRecord', 'Projects', 30])).toMatchObject({
+      allowed: true,
+      code: 'BATCH_ALLOWED'
+    });
   });
 
   test('chef de projet agit uniquement dans son projet', () => {
