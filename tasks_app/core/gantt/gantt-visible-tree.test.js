@@ -32,7 +32,9 @@ describe('GanttVisibleTree - fenêtre temporelle', () => {
       { id: 1, projet: 1, dateDebut: day('2024-01-01'), dateEcheance: day('2024-01-31') },
       { id: 2, projet: 1, dateDebut: day('2027-01-01'), dateEcheance: day('2027-01-31') }
     ];
-    expect(build({ tasks }).rows).toEqual([]);
+    const result = build({ tasks });
+    expect(result.rows.filter(row => row.kind === 'task')).toEqual([]);
+    expect(result.rows.filter(row => row.kind === 'project')).toHaveLength(1);
   });
 
   test('garde une tâche qui chevauche le début ou la fin de la période', () => {
@@ -118,20 +120,31 @@ describe('GanttVisibleTree - Projet > Tâche > Sous-tâche', () => {
     expect(result.rows.filter(row => row.kind === 'task').map(row => row.task.id)).toEqual([24]);
   });
 
-  test('masque un projet sans tâche dans la période', () => {
+  test('conserve un projet même lorsqu’il n’a aucune tâche dans la période', () => {
     const tasks = [
       { id: 30, projet: 1, dateDebut: day('2024-01-01'), dateEcheance: day('2024-01-02') },
       { id: 31, projet: 2, dateDebut: day('2026-08-01'), dateEcheance: day('2026-08-02') }
     ];
     const result = build({ tasks, projects: [{ id: 1, nom: 'Ancien' }, { id: 2, nom: 'Courant' }] });
-    expect(result.rows.filter(row => row.kind === 'project').map(row => row.project.id)).toEqual([2]);
+    expect(result.rows.filter(row => row.kind === 'project').map(row => row.project.id)).toEqual([1, 2]);
+    expect(result.rows.find(row => row.kind === 'project' && row.project.id === 1)).toMatchObject({ taskCount: 1 });
+  });
+
+  test('affiche un projet réellement vide avec un compteur à zéro', () => {
+    const result = build({ tasks: [], projects: [{ id: 1, nom: 'Projet vide' }] });
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0]).toMatchObject({
+      kind: 'project',
+      label: 'Projet vide',
+      taskCount: 0
+    });
   });
 
   test('crée un groupe Sans projet et sait le replier', () => {
     const tasks = [{ id: 40, dateDebut: day('2026-08-01'), dateEcheance: day('2026-08-02') }];
     const result = build({ tasks, collapsedProjectIds: [WITHOUT_PROJECT] });
-    expect(result.rows).toHaveLength(1);
-    expect(result.rows[0]).toMatchObject({ kind: 'project', key: WITHOUT_PROJECT, label: 'Sans projet', collapsed: true });
+    expect(result.rows).toHaveLength(2);
+    expect(result.rows.find(row => row.key === WITHOUT_PROJECT)).toMatchObject({ kind: 'project', key: WITHOUT_PROJECT, label: 'Sans projet', collapsed: true });
     expect(result.taskCount).toBe(1);
   });
 

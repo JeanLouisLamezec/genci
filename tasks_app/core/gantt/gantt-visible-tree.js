@@ -117,9 +117,12 @@
             directByProject.get(key).push(task);
         });
 
+        // Les projets restent toujours accessibles, même lorsqu'ils n'ont
+        // aucune tâche ou qu'aucune de leurs tâches ne correspond à la période
+        // et aux filtres courants. Cela permet notamment d'ouvrir leur fiche et
+        // de supprimer proprement un projet vide.
         var orderedProjectKeys = projects
-            .map(function (project) { return String(project.id); })
-            .filter(function (key) { return directByProject.has(key); });
+            .map(function (project) { return String(project.id); });
         if (directByProject.has(WITHOUT_PROJECT)) orderedProjectKeys.push(WITHOUT_PROJECT);
 
         var rows = [];
@@ -167,6 +170,9 @@
             });
 
             var project = projectKey === WITHOUT_PROJECT ? null : projectById.get(projectKey);
+            var projectTaskCount = tasks.filter(function (task) {
+                return sameProject(task, projectKey, projectById);
+            }).length;
             rows.push({
                 kind: 'project',
                 key: projectKey,
@@ -174,7 +180,7 @@
                 label: project ? (project.nom || 'Projet sans nom') : 'Sans projet',
                 color: project ? (project.couleur || '#64748b') : '#94a3b8',
                 depth: 0,
-                taskCount: directTasks.length,
+                taskCount: projectTaskCount,
                 start: intervalStart,
                 end: intervalEnd,
                 collapsed: collapsedProjectIds.has(projectKey)

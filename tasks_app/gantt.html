@@ -9,7 +9,7 @@
     <script src="core/time/time-view-selector.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
     <script src="core/filters/filter-manager.js"></script>
-    <script src="core/gantt/gantt-visible-tree.js?v=20260922-past-dimming"></script>
+    <script src="core/gantt/gantt-visible-tree.js?v=20260922-past-dimming-projects"></script>
     <script src="core/gantt/gantt-task-date-constraints.js"></script>
     <script src="core/gantt/gantt-date-change-transaction.js?v=20260901"></script>
     <script src="core/gantt/gantt-task-panel-rules.js?v=20260921-project-context"></script>
@@ -9400,6 +9400,12 @@ if (typeof globalThis !== 'undefined') {
             const deleteHint = linkedTasks.length
                 ? 'Ce projet contient encore ' + linkedTasks.length + ' tâche(s). Déplacez-les ou supprimez-les d’abord.'
                 : (canDelete ? 'La suppression est définitive.' : 'Seul un administrateur peut supprimer un projet.');
+            const linkedTasksHtml = linkedTasks.length
+                ? '<div class="panel-section"><div class="panel-section-header"><span class="panel-section-title">Tâches du projet</span><span class="panel-section-badge">' + linkedTasks.length + '</span></div>' +
+                  '<div class="prereq-list">' + linkedTasks.map(function(task) {
+                      return '<div class="prereq-item" onclick="openTaskPanel(' + task.id + ')" title="Ouvrir cette tâche"><span class="task-priority-bar p' + getTaskPriority(task) + '" style="width:3px;height:16px;border-radius:2px;flex-shrink:0"></span><span class="prereq-item-title">' + escapeHtml(task.titre || 'Sans titre') + '</span><span class="prereq-badge">' + formatDateShort(gristToDate(task.dateEcheance)) + '</span></div>';
+                  }).join('') + '</div></div>'
+                : '<div class="panel-section"><div class="panel-section-header"><span class="panel-section-title">Tâches du projet</span></div><div class="prereq-empty">Ce projet ne contient aucune tâche.</div></div>';
 
             header.innerHTML = '<div class="panel-nav"><span class="panel-title">Projet</span></div>' +
                 '<button class="panel-close" onclick="closePanel()">×</button>';
@@ -9414,6 +9420,7 @@ if (typeof globalThis !== 'undefined') {
                     '<div class="prop-row"><span class="prop-label">État</span><div class="prop-value">' + (project.actif === false ? 'Inactif' : 'Actif') + '</div></div>' +
                     '<div class="prop-row"><span class="prop-label">Contenu</span><div class="prop-value"><strong>' + linkedTasks.length + '</strong> tâche(s)</div></div>' +
                 '</div>' +
+                linkedTasksHtml +
                 '<div class="panel-section"><div class="panel-section-header"><span class="panel-section-title">Suppression</span></div>' +
                     '<div style="font-size:0.8rem;color:var(--text-muted);line-height:1.45">' + escapeHtml(deleteHint) + '</div>' +
                 '</div>';
