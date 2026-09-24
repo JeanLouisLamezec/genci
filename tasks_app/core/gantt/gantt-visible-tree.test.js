@@ -33,8 +33,7 @@ describe('GanttVisibleTree - fenêtre temporelle', () => {
       { id: 2, projet: 1, dateDebut: day('2027-01-01'), dateEcheance: day('2027-01-31') }
     ];
     const result = build({ tasks });
-    expect(result.rows.filter(row => row.kind === 'task')).toEqual([]);
-    expect(result.rows.filter(row => row.kind === 'project')).toHaveLength(1);
+    expect(result.rows).toEqual([]);
   });
 
   test('garde une tâche qui chevauche le début ou la fin de la période', () => {
@@ -120,14 +119,13 @@ describe('GanttVisibleTree - Projet > Tâche > Sous-tâche', () => {
     expect(result.rows.filter(row => row.kind === 'task').map(row => row.task.id)).toEqual([24]);
   });
 
-  test('conserve un projet même lorsqu’il n’a aucune tâche dans la période', () => {
+  test('masque un projet non vide lorsqu’aucune de ses tâches n’est dans la période', () => {
     const tasks = [
       { id: 30, projet: 1, dateDebut: day('2024-01-01'), dateEcheance: day('2024-01-02') },
       { id: 31, projet: 2, dateDebut: day('2026-08-01'), dateEcheance: day('2026-08-02') }
     ];
     const result = build({ tasks, projects: [{ id: 1, nom: 'Ancien' }, { id: 2, nom: 'Courant' }] });
-    expect(result.rows.filter(row => row.kind === 'project').map(row => row.project.id)).toEqual([1, 2]);
-    expect(result.rows.find(row => row.kind === 'project' && row.project.id === 1)).toMatchObject({ taskCount: 1 });
+    expect(result.rows.filter(row => row.kind === 'project').map(row => row.project.id)).toEqual([2]);
   });
 
   test('affiche un projet réellement vide avec un compteur à zéro', () => {
@@ -155,5 +153,23 @@ describe('GanttVisibleTree - Projet > Tâche > Sous-tâche', () => {
     ];
     const result = build({ tasks, filteredTasks: [tasks[1]] });
     expect(result.rows.filter(row => row.kind === 'task').map(row => row.task.id)).toEqual([51]);
+  });
+
+  test('masque les projets non vides sans tâche correspondant aux filtres', () => {
+    const tasks = [
+      { id: 70, projet: 1, dateDebut: day('2026-08-01'), dateEcheance: day('2026-08-02') },
+      { id: 71, projet: 2, dateDebut: day('2026-08-03'), dateEcheance: day('2026-08-04') }
+    ];
+    const result = build({
+      tasks,
+      filteredTasks: [tasks[0]],
+      projects: [
+        { id: 1, nom: 'Projet correspondant' },
+        { id: 2, nom: 'Projet filtré' },
+        { id: 3, nom: 'Projet réellement vide' }
+      ]
+    });
+
+    expect(result.rows.filter(row => row.kind === 'project').map(row => row.project.id)).toEqual([1, 3]);
   });
 });

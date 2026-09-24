@@ -108,21 +108,26 @@
         var filteredIds = new Set(filteredTasks.map(function (task) { return task.id; }));
         var directIds = new Set();
         var directByProject = new Map();
+        var taskCountByProject = new Map();
 
         tasks.forEach(function (task) {
+            var key = projectKeyForTask(task, projectById);
+            taskCountByProject.set(key, (taskCountByProject.get(key) || 0) + 1);
             if (!filteredIds.has(task.id) || !taskOverlapsRange(task, options.rangeStart, options.rangeEndExclusive)) return;
             directIds.add(task.id);
-            var key = projectKeyForTask(task, projectById);
             if (!directByProject.has(key)) directByProject.set(key, []);
             directByProject.get(key).push(task);
         });
 
-        // Les projets restent toujours accessibles, même lorsqu'ils n'ont
-        // aucune tâche ou qu'aucune de leurs tâches ne correspond à la période
-        // et aux filtres courants. Cela permet notamment d'ouvrir leur fiche et
-        // de supprimer proprement un projet vide.
+        // Un projet réellement vide reste accessible afin de pouvoir ouvrir sa
+        // fiche et le supprimer. En revanche, dès qu'un projet possède des
+        // tâches, il suit les filtres métier et la fenêtre temporelle comme
+        // auparavant : au moins une tâche doit correspondre.
         var orderedProjectKeys = projects
-            .map(function (project) { return String(project.id); });
+            .map(function (project) { return String(project.id); })
+            .filter(function (projectKey) {
+                return (taskCountByProject.get(projectKey) || 0) === 0 || directByProject.has(projectKey);
+            });
         if (directByProject.has(WITHOUT_PROJECT)) orderedProjectKeys.push(WITHOUT_PROJECT);
 
         var rows = [];
@@ -170,9 +175,7 @@
             });
 
             var project = projectKey === WITHOUT_PROJECT ? null : projectById.get(projectKey);
-            var projectTaskCount = tasks.filter(function (task) {
-                return sameProject(task, projectKey, projectById);
-            }).length;
+            var projectTaskCount = taskCountByProject.get(projectKey) || 0;
             rows.push({
                 kind: 'project',
                 key: projectKey,
