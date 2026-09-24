@@ -102,6 +102,10 @@
         var sortTasks = typeof options.sortTasks === 'function'
             ? options.sortTasks
             : function (items) { return items.slice(); };
+        var includeEmptyProjects = options.includeEmptyProjects !== false;
+        var selectedProjectIds = new Set((options.selectedProjectIds || []).map(function (id) {
+            return String(id);
+        }));
 
         var taskById = new Map(tasks.map(function (task) { return [task.id, task]; }));
         var projectById = new Map(projects.map(function (project) { return [String(project.id), project]; }));
@@ -126,7 +130,9 @@
         var orderedProjectKeys = projects
             .map(function (project) { return String(project.id); })
             .filter(function (projectKey) {
-                return (taskCountByProject.get(projectKey) || 0) === 0 || directByProject.has(projectKey);
+                return (includeEmptyProjects && (taskCountByProject.get(projectKey) || 0) === 0)
+                    || selectedProjectIds.has(projectKey)
+                    || directByProject.has(projectKey);
             });
         if (directByProject.has(WITHOUT_PROJECT)) orderedProjectKeys.push(WITHOUT_PROJECT);
 

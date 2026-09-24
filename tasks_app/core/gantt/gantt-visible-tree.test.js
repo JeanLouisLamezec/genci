@@ -18,6 +18,8 @@ function build(options = {}) {
     tasks,
     filteredTasks: options.filteredTasks || tasks,
     projects: options.projects || [{ id: 1, nom: 'Alpha' }],
+    includeEmptyProjects: options.includeEmptyProjects,
+    selectedProjectIds: options.selectedProjectIds,
     rangeStart,
     rangeEndExclusive,
     today,
@@ -155,7 +157,7 @@ describe('GanttVisibleTree - Projet > Tâche > Sous-tâche', () => {
     expect(result.rows.filter(row => row.kind === 'task').map(row => row.task.id)).toEqual([51]);
   });
 
-  test('masque les projets non vides sans tâche correspondant aux filtres', () => {
+  test('masque tout projet sans tâche correspondant aux filtres actifs', () => {
     const tasks = [
       { id: 70, projet: 1, dateDebut: day('2026-08-01'), dateEcheance: day('2026-08-02') },
       { id: 71, projet: 2, dateDebut: day('2026-08-03'), dateEcheance: day('2026-08-04') }
@@ -163,6 +165,7 @@ describe('GanttVisibleTree - Projet > Tâche > Sous-tâche', () => {
     const result = build({
       tasks,
       filteredTasks: [tasks[0]],
+      includeEmptyProjects: false,
       projects: [
         { id: 1, nom: 'Projet correspondant' },
         { id: 2, nom: 'Projet filtré' },
@@ -170,6 +173,26 @@ describe('GanttVisibleTree - Projet > Tâche > Sous-tâche', () => {
       ]
     });
 
+    expect(result.rows.filter(row => row.kind === 'project').map(row => row.project.id)).toEqual([1]);
+  });
+
+  test('conserve uniquement les projets explicitement sélectionnés par un filtre projet', () => {
+    const tasks = [
+      { id: 80, projet: 1, dateDebut: day('2024-08-01'), dateEcheance: day('2024-08-02') }
+    ];
+    const result = build({
+      tasks,
+      filteredTasks: tasks,
+      includeEmptyProjects: false,
+      selectedProjectIds: ['1', '3'],
+      projects: [
+        { id: 1, nom: 'Projet sélectionné hors période' },
+        { id: 2, nom: 'Projet vide non sélectionné' },
+        { id: 3, nom: 'Projet vide sélectionné' }
+      ]
+    });
+
     expect(result.rows.filter(row => row.kind === 'project').map(row => row.project.id)).toEqual([1, 3]);
+    expect(result.rows.filter(row => row.kind === 'task')).toEqual([]);
   });
 });
