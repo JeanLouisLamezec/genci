@@ -7,6 +7,7 @@
     <script src="https://docs.getgrist.com/grist-plugin-api.js"></script>
     <script src="core/time/time-periods.js"></script>
     <script src="core/time/time-view-selector.js"></script>
+    <script src="core/gantt/gantt-calendar-scale.js?v=20260924-full-calendar-year"></script>
     <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
     <script src="core/filters/filter-manager.js"></script>
     <script src="core/gantt/gantt-visible-tree.js?v=20260924-programme-project-spans"></script>
@@ -8462,14 +8463,14 @@ if (typeof globalThis !== 'undefined') {
             const cfg = VIEW_CONFIG[currentView]; 
             if (cfg.unit === 'day') return cfg.days; 
             if (cfg.unit === 'week') return cfg.weeks * 7; 
-            if (cfg.unit === 'month') return cfg.months * 30; // Approximation pour vue année
+            if (cfg.unit === 'month') return GanttCalendarScale.daysForCalendarMonths(getViewStartDate(), cfg.months);
             return cfg.days; 
         }
         function getPixelsPerDay() { 
             const cfg = VIEW_CONFIG[currentView]; 
             if (cfg.unit === 'day') return cfg.cellWidth; 
             if (cfg.unit === 'week') return cfg.cellWidth / 7; 
-            if (cfg.unit === 'month') return cfg.cellWidth / 30; // Approximation pour vue année
+            if (cfg.unit === 'month') return (cfg.cellWidth * cfg.months) / getTotalDays();
             return cfg.cellWidth; 
         }
 
@@ -8812,7 +8813,7 @@ if (typeof globalThis !== 'undefined') {
             let numCells;
             if (eCfg.unit === 'month') {
                 const eEnd2 = addDays(eStart, effectiveDays);
-                numCells = Math.max(1, (eEnd2.getFullYear() - eStart.getFullYear()) * 12 + (eEnd2.getMonth() - eStart.getMonth()));
+                numCells = GanttCalendarScale.countMonthCells(eStart, eEnd2);
             } else if (eCfg.unit === 'week') {
                 numCells = Math.ceil(effectiveDays / 7);
             } else {
@@ -9033,7 +9034,7 @@ if (typeof globalThis !== 'undefined') {
             let numCells, totalWidth;
             if (cfg.unit === 'month') {
                 const effEnd = addDays(start, totalDays);
-                numCells = Math.max(1, (effEnd.getFullYear() - start.getFullYear()) * 12 + (effEnd.getMonth() - start.getMonth()));
+                numCells = GanttCalendarScale.countMonthCells(start, effEnd);
                 totalWidth = numCells * effectiveCellWidth;
             } else if (cfg.unit === 'week') {
                 numCells = Math.ceil(totalDays / 7);
