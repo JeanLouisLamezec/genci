@@ -1688,8 +1688,10 @@ tfoot td.left { text-align: left; color: var(--text-muted); font-weight: 600; }
     }
 
     function canDeleteProject(snapshot, current) {
-        if (!actorIsAdmin(snapshot)) {
-            return deny('PROJECT_DELETE_FORBIDDEN', 'Seul un administrateur peut supprimer un projet.');
+        var isAdmin = actorIsAdmin(snapshot);
+        var isOwner = isProjectOwner(snapshot, current);
+        if (!isAdmin && !isOwner) {
+            return deny('PROJECT_DELETE_FORBIDDEN', 'Seuls le responsable du projet ou un administrateur peuvent supprimer ce projet.');
         }
         var projectId = normalizeId(current && current.id);
         var linkedTasks = (snapshot.tables.Tasks || []).filter(function (task) {
@@ -1702,7 +1704,7 @@ tfoot td.left { text-align: left; color: var(--text-muted); font-weight: 600; }
                 { resourceLabel: recordLabel('Projects', current), taskCount: linkedTasks.length }
             );
         }
-        return allow('ADMIN');
+        return allow(isAdmin ? 'ADMIN' : 'PROJECT_OWNER');
     }
 
     function canCreateAction(snapshot, proposed) {

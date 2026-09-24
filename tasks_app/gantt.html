@@ -2149,8 +2149,10 @@
     }
 
     function canDeleteProject(snapshot, current) {
-        if (!actorIsAdmin(snapshot)) {
-            return deny('PROJECT_DELETE_FORBIDDEN', 'Seul un administrateur peut supprimer un projet.');
+        var isAdmin = actorIsAdmin(snapshot);
+        var isOwner = isProjectOwner(snapshot, current);
+        if (!isAdmin && !isOwner) {
+            return deny('PROJECT_DELETE_FORBIDDEN', 'Seuls le responsable du projet ou un administrateur peuvent supprimer ce projet.');
         }
         var projectId = normalizeId(current && current.id);
         var linkedTasks = (snapshot.tables.Tasks || []).filter(function (task) {
@@ -2163,7 +2165,7 @@
                 { resourceLabel: recordLabel('Projects', current), taskCount: linkedTasks.length }
             );
         }
-        return allow('ADMIN');
+        return allow(isAdmin ? 'ADMIN' : 'PROJECT_OWNER');
     }
 
     function canCreateAction(snapshot, proposed) {
@@ -9400,10 +9402,20 @@ if (typeof globalThis !== 'undefined') {
                 return String(candidate.id) === String(project.programme);
             });
             const actor = permissionRuntime && permissionRuntime.getActor ? permissionRuntime.getActor() : null;
-            const canDelete = Boolean(actor && actor.isAdmin);
+            const permissionSnapshot = permissionRuntime && permissionRuntime.getSnapshot
+                ? permissionRuntime.getSnapshot()
+                : null;
+            const canDelete = Boolean(
+                actor && (
+                    actor.isAdmin ||
+                    (window.TaskFlowPermissions &&
+                        typeof window.TaskFlowPermissions.isProjectOwner === 'function' &&
+                        window.TaskFlowPermissions.isProjectOwner(permissionSnapshot, project))
+                )
+            );
             const deleteHint = linkedTasks.length
                 ? 'Ce projet contient encore ' + linkedTasks.length + ' tâche(s). Déplacez-les ou supprimez-les d’abord.'
-                : (canDelete ? 'La suppression est définitive.' : 'Seul un administrateur peut supprimer un projet.');
+                : (canDelete ? 'La suppression est définitive.' : 'Seuls le responsable du projet ou un administrateur peuvent supprimer ce projet.');
             const linkedTasksHtml = linkedTasks.length
                 ? '<div class="panel-section"><div class="panel-section-header"><span class="panel-section-title">Tâches du projet</span><span class="panel-section-badge">' + linkedTasks.length + '</span></div>' +
                   '<div class="prereq-list">' + linkedTasks.map(function(task) {

@@ -96,6 +96,26 @@ describe('TaskFlow permissions - projets et tâches', () => {
     });
   });
 
+  test('le responsable peut supprimer son projet vide, mais pas un projet étranger', () => {
+    const ownerSnapshot = fixture(3, { tasks: [] });
+    expect(authorize(ownerSnapshot, ['RemoveRecord', 'Projects', 10])).toMatchObject({
+      allowed: true,
+      code: 'BATCH_ALLOWED'
+    });
+    expect(authorize(ownerSnapshot, ['RemoveRecord', 'Projects', 20])).toMatchObject({
+      allowed: false,
+      code: 'PROJECT_DELETE_FORBIDDEN'
+    });
+  });
+
+  test('le manager direct ne remplace pas le responsable pour supprimer un projet', () => {
+    const managerSnapshot = fixture(2, { tasks: [] });
+    expect(authorize(managerSnapshot, ['RemoveRecord', 'Projects', 10])).toMatchObject({
+      allowed: false,
+      code: 'PROJECT_DELETE_FORBIDDEN'
+    });
+  });
+
   test('chef de projet agit uniquement dans son projet', () => {
     const snapshot = fixture(3);
     expect(authorize(snapshot, ['AddRecord', 'Tasks', null, { titre: 'X', projet: 10 }]).allowed).toBe(true);
