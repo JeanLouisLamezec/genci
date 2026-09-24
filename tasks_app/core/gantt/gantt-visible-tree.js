@@ -106,6 +106,9 @@
         var selectedProjectIds = new Set((options.selectedProjectIds || []).map(function (id) {
             return String(id);
         }));
+        var selectedProgrammeIds = new Set((options.selectedProgrammeIds || []).map(function (id) {
+            return String(id);
+        }));
 
         var taskById = new Map(tasks.map(function (task) { return [task.id, task]; }));
         var projectById = new Map(projects.map(function (project) { return [String(project.id), project]; }));
@@ -123,15 +126,27 @@
             directByProject.get(key).push(task);
         });
 
-        // Un projet réellement vide reste accessible afin de pouvoir ouvrir sa
-        // fiche et le supprimer. En revanche, dès qu'un projet possède des
-        // tâches, il suit les filtres métier et la fenêtre temporelle comme
-        // auparavant : au moins une tâche doit correspondre.
+        function matchesSelectedProjectScope(projectKey) {
+            if (!selectedProjectIds.size && !selectedProgrammeIds.size) return false;
+            if (selectedProjectIds.size && !selectedProjectIds.has(projectKey)) return false;
+            var project = projectById.get(projectKey);
+            if (!project) return false;
+            if (selectedProgrammeIds.size) {
+                var programmeId = project.programme != null ? project.programme : project.portefeuille;
+                if (!selectedProgrammeIds.has(String(programmeId))) return false;
+            }
+            return true;
+        }
+
+        // Un projet réellement vide reste accessible sans filtre. Un filtre
+        // direct Projet/Programme peut aussi sélectionner une ligne projet sans
+        // passer par une tâche. Les filtres métier portant sur les tâches restent
+        // représentés par directByProject.
         var orderedProjectKeys = projects
             .map(function (project) { return String(project.id); })
             .filter(function (projectKey) {
                 return (includeEmptyProjects && (taskCountByProject.get(projectKey) || 0) === 0)
-                    || selectedProjectIds.has(projectKey)
+                    || matchesSelectedProjectScope(projectKey)
                     || directByProject.has(projectKey);
             });
         if (directByProject.has(WITHOUT_PROJECT)) orderedProjectKeys.push(WITHOUT_PROJECT);
@@ -181,6 +196,14 @@
             });
 
             var project = projectKey === WITHOUT_PROJECT ? null : projectById.get(projectKey);
+            var ownProjectInterval = project ? taskInterval({
+                dateDebut: project.dateDebut,
+                dateEcheance: project.dateFin
+            }) : null;
+            if (ownProjectInterval) {
+                intervalStart = ownProjectInterval.start;
+                intervalEnd = ownProjectInterval.end;
+            }
             var projectTaskCount = taskCountByProject.get(projectKey) || 0;
             rows.push({
                 kind: 'project',

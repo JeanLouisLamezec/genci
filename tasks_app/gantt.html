@@ -9,7 +9,7 @@
     <script src="core/time/time-view-selector.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
     <script src="core/filters/filter-manager.js"></script>
-    <script src="core/gantt/gantt-visible-tree.js?v=20260924-selected-project-filters"></script>
+    <script src="core/gantt/gantt-visible-tree.js?v=20260924-programme-project-spans"></script>
     <script src="core/gantt/gantt-task-date-constraints.js"></script>
     <script src="core/gantt/gantt-date-change-transaction.js?v=20260901"></script>
     <script src="core/gantt/gantt-task-panel-rules.js?v=20260921-project-context"></script>
@@ -8364,12 +8364,13 @@ if (typeof globalThis !== 'undefined') {
         function buildVisibleTasks() {
             const rangeStart = getViewStartDate();
             const rangeEndExclusive = addDays(rangeStart, getTotalDays());
-            const hasNonProjectFilters = ['assignee', 'team', 'programme', 'task']
+            const hasTaskLevelFilters = ['assignee', 'team', 'task']
                 .some(type => Array.isArray(filters[type]) && filters[type].length > 0);
             currentVisibleModel = GanttVisibleTree.buildVisibleRows({
                 tasks, projects, filteredTasks: getFilteredTasks(),
                 includeEmptyProjects: !(filterManager && filterManager.hasActiveFilters()),
-                selectedProjectIds: hasNonProjectFilters ? [] : filters.project,
+                selectedProjectIds: hasTaskLevelFilters ? [] : filters.project,
+                selectedProgrammeIds: hasTaskLevelFilters ? [] : filters.programme,
                 rangeStart, rangeEndExclusive,
                 today: new Date(),
                 expandedTaskIds: expandedTasks,
@@ -9094,8 +9095,8 @@ if (typeof globalThis !== 'undefined') {
             currentVisible.forEach((row, idx) => {
                 if (row.kind === 'project') {
                     const project = row.project;
-                    let projectStart = gristToDate(project?.dateDebut);
-                    let projectEnd = gristToDate(project?.dateFin);
+                    let projectStart = Number.isFinite(row.start) ? new Date(row.start) : null;
+                    let projectEnd = Number.isFinite(row.end) ? new Date(row.end) : null;
                     if (!projectStart || !projectEnd) return;
                     if (projectStart > projectEnd) [projectStart, projectEnd] = [projectEnd, projectStart];
 

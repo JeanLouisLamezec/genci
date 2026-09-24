@@ -20,6 +20,7 @@ function build(options = {}) {
     projects: options.projects || [{ id: 1, nom: 'Alpha' }],
     includeEmptyProjects: options.includeEmptyProjects,
     selectedProjectIds: options.selectedProjectIds,
+    selectedProgrammeIds: options.selectedProgrammeIds,
     rangeStart,
     rangeEndExclusive,
     today,
@@ -194,5 +195,39 @@ describe('GanttVisibleTree - Projet > Tâche > Sous-tâche', () => {
 
     expect(result.rows.filter(row => row.kind === 'project').map(row => row.project.id)).toEqual([1, 3]);
     expect(result.rows.filter(row => row.kind === 'task')).toEqual([]);
+  });
+
+  test('conserve les projets vides du programme explicitement sélectionné', () => {
+    const result = build({
+      tasks: [],
+      filteredTasks: [],
+      includeEmptyProjects: false,
+      selectedProgrammeIds: ['10'],
+      projects: [
+        { id: 1, nom: 'Projet Pipo A', programme: 10 },
+        { id: 2, nom: 'Autre programme', programme: 20 },
+        { id: 3, nom: 'Projet Pipo B', programme: 10 }
+      ]
+    });
+
+    expect(result.rows.map(row => row.project.id)).toEqual([1, 3]);
+  });
+
+  test('utilise les dates propres du projet pour sa barre même sans tâche', () => {
+    const result = build({
+      tasks: [],
+      projects: [{
+        id: 1,
+        nom: 'Projet vide daté',
+        dateDebut: day('2026-08-05'),
+        dateFin: day('2026-08-25')
+      }]
+    });
+
+    expect(result.rows[0]).toMatchObject({
+      kind: 'project',
+      start: Date.parse('2026-08-05T00:00:00Z'),
+      end: Date.parse('2026-08-25T00:00:00Z')
+    });
   });
 });
