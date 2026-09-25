@@ -21,6 +21,7 @@ function build(options = {}) {
     includeEmptyProjects: options.includeEmptyProjects,
     selectedProjectIds: options.selectedProjectIds,
     selectedProgrammeIds: options.selectedProgrammeIds,
+    selectedResponsibleIds: options.selectedResponsibleIds,
     rangeStart,
     rangeEndExclusive,
     today,
@@ -211,6 +212,39 @@ describe('GanttVisibleTree - Projet > Tâche > Sous-tâche', () => {
     });
 
     expect(result.rows.map(row => row.project.id)).toEqual([1, 3]);
+  });
+
+  test('conserve tous les projets du responsable explicitement sélectionné', () => {
+    const result = build({
+      tasks: [],
+      filteredTasks: [],
+      includeEmptyProjects: false,
+      selectedResponsibleIds: ['7'],
+      projects: [
+        { id: 1, nom: 'Projet de Jean-Philippe A', responsable: 7 },
+        { id: 2, nom: 'Projet d’une autre personne', responsable: 8 },
+        { id: 3, nom: 'Projet de Jean-Philippe B', responsable: 7 }
+      ]
+    });
+
+    expect(result.rows.map(row => row.project.id)).toEqual([1, 3]);
+  });
+
+  test('combine les sélections responsable et programme', () => {
+    const result = build({
+      tasks: [],
+      filteredTasks: [],
+      includeEmptyProjects: false,
+      selectedResponsibleIds: ['7'],
+      selectedProgrammeIds: ['10'],
+      projects: [
+        { id: 1, nom: 'Correspond aux deux filtres', responsable: 7, programme: 10 },
+        { id: 2, nom: 'Bon responsable, autre programme', responsable: 7, programme: 20 },
+        { id: 3, nom: 'Bon programme, autre responsable', responsable: 8, programme: 10 }
+      ]
+    });
+
+    expect(result.rows.map(row => row.project.id)).toEqual([1]);
   });
 
   test('utilise les dates propres du projet pour sa barre même sans tâche', () => {

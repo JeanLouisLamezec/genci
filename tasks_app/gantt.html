@@ -9,8 +9,8 @@
     <script src="core/time/time-view-selector.js"></script>
     <script src="core/gantt/gantt-calendar-scale.js?v=20260925-month-boundaries"></script>
     <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
-    <script src="core/filters/filter-manager.js"></script>
-    <script src="core/gantt/gantt-visible-tree.js?v=20260924-programme-project-spans"></script>
+    <script src="core/filters/filter-manager.js?v=20260925-responsible-person-filter"></script>
+    <script src="core/gantt/gantt-visible-tree.js?v=20260925-responsible-person-filter"></script>
     <script src="core/gantt/gantt-task-date-constraints.js"></script>
     <script src="core/gantt/gantt-date-change-transaction.js?v=20260901"></script>
     <script src="core/gantt/gantt-task-panel-rules.js?v=20260921-project-context"></script>
@@ -8365,13 +8365,14 @@ if (typeof globalThis !== 'undefined') {
         function buildVisibleTasks() {
             const rangeStart = getViewStartDate();
             const rangeEndExclusive = addDays(rangeStart, getTotalDays());
-            const hasTaskLevelFilters = ['assignee', 'team', 'task']
+            const hasTaskOnlyFilters = ['team', 'task']
                 .some(type => Array.isArray(filters[type]) && filters[type].length > 0);
             currentVisibleModel = GanttVisibleTree.buildVisibleRows({
                 tasks, projects, filteredTasks: getFilteredTasks(),
                 includeEmptyProjects: !(filterManager && filterManager.hasActiveFilters()),
-                selectedProjectIds: hasTaskLevelFilters ? [] : filters.project,
-                selectedProgrammeIds: hasTaskLevelFilters ? [] : filters.programme,
+                selectedProjectIds: hasTaskOnlyFilters ? [] : filters.project,
+                selectedProgrammeIds: hasTaskOnlyFilters ? [] : filters.programme,
+                selectedResponsibleIds: hasTaskOnlyFilters ? [] : filters.assignee,
                 rangeStart, rangeEndExclusive,
                 today: new Date(),
                 expandedTaskIds: expandedTasks,
@@ -8674,8 +8675,28 @@ if (typeof globalThis !== 'undefined') {
             if (userFilterStore) userFilterStore.scheduleSave(filters);
         }
         
-        function getFilteredTasks() { 
-          return filterManager ? filterManager.filterTasks(tasks) : tasks; 
+        function getFilteredTasks() {
+          if (!filterManager) return tasks;
+
+          const standardMatches = filterManager.filterTasks(tasks);
+          const selectedPeople = Array.isArray(filters.assignee)
+            ? filters.assignee.map(String)
+            : [];
+          if (!selectedPeople.length) return standardMatches;
+
+          const responsibleProjectIds = new Set(projects
+            .filter(project => selectedPeople.includes(String(project.responsable)))
+            .map(project => String(project.id)));
+          if (!responsibleProjectIds.size) return standardMatches;
+
+          // Dans le Gantt, « Personnes » signifie : personne affectée à la tâche
+          // OU responsable de son projet. Les autres dimensions de filtre restent
+          // appliquées dans les deux branches de cette union.
+          const standardTaskIds = new Set(standardMatches.map(task => task.id));
+          return filterManager
+            .filterTasks(tasks, { ignoreFilters: ['assignee'] })
+            .filter(task => standardTaskIds.has(task.id)
+              || responsibleProjectIds.has(String(task.projet)));
         }
 
         // ═══════════════════════════════════════════════════════════════════════

@@ -188,6 +188,20 @@ describe('FilterManager - Filtre Programme', () => {
     expect(filtered[0].id).toBe(1);
   });
 
+  test('peut ignorer uniquement le filtre assignee pour une logique propre au widget', () => {
+    const fm = createFilterManager({
+      initialFilters: {
+        assignee: ['1'],
+        programme: ['1']
+      }
+    });
+
+    const filtered = fm.filterTasks(mockData.tasks, { ignoreFilters: ['assignee'] });
+
+    // Le filtre programme reste actif, seul le filtre personne est ignoré.
+    expect(filtered.map(t => t.id)).toEqual([1, 3]);
+  });
+
   test('doit combiner filtre programme + team', () => {
     const fm = createFilterManager({
       initialFilters: { 

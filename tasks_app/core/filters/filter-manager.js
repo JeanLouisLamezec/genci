@@ -374,13 +374,16 @@ class FilterManager {
   /**
    * Filtre les tâches selon les critères actuels, puis applique le post-filter widget si défini
    * @param {Array} tasks - Liste de tâches à filtrer
+   * @param {Object} [options] - Options de filtrage propres au widget
+   * @param {Array<string>} [options.ignoreFilters] - Dimensions à ignorer
    * @returns {Array} Tâches filtrées (ou Actions si widget=kanban)
    */
-  filterTasks(tasks) {
+  filterTasks(tasks, options = {}) {
     let result = [...tasks];
+    const ignoredFilters = new Set(options.ignoreFilters || []);
  
     // Filtre par assignee (via charges ou assignees directement)
-    if (this.filters.assignee && this.filters.assignee.length > 0) {
+    if (!ignoredFilters.has('assignee') && this.filters.assignee && this.filters.assignee.length > 0) {
       result = result.filter(t => {
         const charges = this.effCharges(t);
         // Vérifier dans les charges d'abord

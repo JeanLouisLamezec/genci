@@ -109,6 +109,9 @@
         var selectedProgrammeIds = new Set((options.selectedProgrammeIds || []).map(function (id) {
             return String(id);
         }));
+        var selectedResponsibleIds = new Set((options.selectedResponsibleIds || []).map(function (id) {
+            return String(id);
+        }));
 
         var taskById = new Map(tasks.map(function (task) { return [task.id, task]; }));
         var projectById = new Map(projects.map(function (project) { return [String(project.id), project]; }));
@@ -127,7 +130,7 @@
         });
 
         function matchesSelectedProjectScope(projectKey) {
-            if (!selectedProjectIds.size && !selectedProgrammeIds.size) return false;
+            if (!selectedProjectIds.size && !selectedProgrammeIds.size && !selectedResponsibleIds.size) return false;
             if (selectedProjectIds.size && !selectedProjectIds.has(projectKey)) return false;
             var project = projectById.get(projectKey);
             if (!project) return false;
@@ -135,13 +138,15 @@
                 var programmeId = project.programme != null ? project.programme : project.portefeuille;
                 if (!selectedProgrammeIds.has(String(programmeId))) return false;
             }
+            if (selectedResponsibleIds.size
+                && !selectedResponsibleIds.has(String(project.responsable))) return false;
             return true;
         }
 
         // Un projet réellement vide reste accessible sans filtre. Un filtre
-        // direct Projet/Programme peut aussi sélectionner une ligne projet sans
-        // passer par une tâche. Les filtres métier portant sur les tâches restent
-        // représentés par directByProject.
+        // direct Projet/Programme/Responsable peut aussi sélectionner une ligne
+        // projet sans passer par une tâche. Les filtres métier portant uniquement
+        // sur les tâches restent représentés par directByProject.
         var orderedProjectKeys = projects
             .map(function (project) { return String(project.id); })
             .filter(function (projectKey) {
