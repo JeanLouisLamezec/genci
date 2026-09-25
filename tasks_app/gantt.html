@@ -7,7 +7,7 @@
     <script src="https://docs.getgrist.com/grist-plugin-api.js"></script>
     <script src="core/time/time-periods.js"></script>
     <script src="core/time/time-view-selector.js"></script>
-    <script src="core/gantt/gantt-calendar-scale.js?v=20260924-full-calendar-year"></script>
+    <script src="core/gantt/gantt-calendar-scale.js?v=20260925-month-boundaries"></script>
     <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
     <script src="core/filters/filter-manager.js"></script>
     <script src="core/gantt/gantt-visible-tree.js?v=20260924-programme-project-spans"></script>
@@ -8802,7 +8802,10 @@ if (typeof globalThis !== 'undefined') {
 
             // Aligner le début sur la frontière de la grille
             if (cfg.unit === 'week') eStart = getStartOfWeek(eStart);
-            else if (cfg.unit === 'month') eStart = getStartOfMonth(eStart);
+            else if (cfg.unit === 'month') {
+                eStart = getStartOfMonth(eStart);
+                eEnd = GanttCalendarScale.ceilMonthBoundary(eEnd);
+            }
             else eStart = new Date(eStart.getFullYear(), eStart.getMonth(), eStart.getDate());
 
             effectiveStart = eStart;

@@ -20,4 +20,9 @@ describe('GanttCalendarScale', () => {
       new Date(2027, 0, 14)
     )).toBe(13);
   });
+
+  test('aligne une fin partielle sur le mois suivant sans dépasser une frontière existante', () => {
+    expect(scale.ceilMonthBoundary(new Date(2027, 0, 15))).toEqual(new Date(2027, 1, 1));
+    expect(scale.ceilMonthBoundary(new Date(2027, 0, 1, 2))).toEqual(new Date(2027, 0, 1));
+  });
 });

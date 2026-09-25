@@ -34,9 +34,21 @@
         return Math.max(1, count);
     }
 
+    function ceilMonthBoundary(value) {
+        var date = validDate(value);
+        if (!date) return null;
+        // Les dates Grist sont des dates civiles : une valeur située le premier
+        // jour du mois est déjà une frontière, quelle que soit son heure locale.
+        if (date.getDate() === 1) {
+            return new Date(date.getFullYear(), date.getMonth(), 1);
+        }
+        return new Date(date.getFullYear(), date.getMonth() + 1, 1);
+    }
+
     var api = {
         daysForCalendarMonths: daysForCalendarMonths,
-        countMonthCells: countMonthCells
+        countMonthCells: countMonthCells,
+        ceilMonthBoundary: ceilMonthBoundary
     };
 
     global.GanttCalendarScale = api;
