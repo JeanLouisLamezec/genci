@@ -929,6 +929,104 @@
 
 
 /* ============================================================================
+ * taskflow-dom-security.js — Primitives de rendu DOM partagees
+ * ----------------------------------------------------------------------------
+ * Ces fonctions ne remplacent pas les API DOM. Elles servent aux quelques
+ * rendus historiques encore construits sous forme de chaines HTML.
+ * ========================================================================== */
+(function (root, factory) {
+    var api = factory();
+    if (typeof module !== 'undefined' && module.exports) module.exports = api;
+    if (root) root.TaskFlowDomSecurity = api;
+})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+    'use strict';
+
+    /**
+     * Encode une valeur non fiable pour un noeud texte ou un attribut HTML
+     * delimite par des guillemets. Cette fonction ne doit jamais etre utilisee
+     * pour construire du JavaScript inline, une URL ou une regle CSS.
+     */
+    function escapeHtml(value) {
+        return String(value == null ? '' : value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    /**
+     * Les couleurs TaskFlow sont saisies avec <input type="color"> et sont
+     * stockees sous forme hexadecimale. Refuser toute autre syntaxe empeche une
+     * valeur Grist alteree de sortir d'un attribut style/value.
+     */
+    function sanitizeCssColor(value, fallback) {
+        var safeFallback = /^#[0-9a-fA-F]{6}$/.test(String(fallback || ''))
+            ? String(fallback)
+            : '#94a3b8';
+        var candidate = String(value == null ? '' : value).trim();
+        return /^#[0-9a-fA-F]{6}$/.test(candidate) ? candidate : safeFallback;
+    }
+
+    /**
+     * Valide un unique nom de classe avant son insertion dans un attribut
+     * class. Les espaces et caracteres de syntaxe HTML sont volontairement
+     * refuses : un statut persistant ne peut ainsi ni ajouter une classe ni
+     * sortir de l'attribut.
+     */
+    function sanitizeCssClassToken(value, fallback) {
+        var tokenPattern = /^[a-zA-Z0-9_-]+$/;
+        var safeFallback = tokenPattern.test(String(fallback || '')) ? String(fallback) : '';
+        var candidate = String(value == null ? '' : value);
+        return tokenPattern.test(candidate) ? candidate : safeFallback;
+    }
+
+    /**
+     * Convertit une valeur persistante en pourcentage fini et borne. Le retour
+     * est un nombre, directement utilisable dans une largeur CSS ou un input.
+     */
+    function sanitizePercentage(value, fallback) {
+        var fallbackNumber = Number(fallback);
+        if (!Number.isFinite(fallbackNumber)) fallbackNumber = 0;
+        var candidate = Number(value);
+        var result = Number.isFinite(candidate) ? candidate : fallbackNumber;
+        return Math.min(100, Math.max(0, result));
+    }
+
+    /**
+     * Restreint une preference persistante a une liste de valeurs connues.
+     * Les preferences locales restent une entree non fiable : une extension,
+     * un ancien build ou un script tiers peut avoir modifie localStorage.
+     */
+    function sanitizeEnumValue(value, allowedValues, fallback) {
+        var allowed = Array.isArray(allowedValues) ? allowedValues.map(String) : [];
+        var safeFallback = allowed.includes(String(fallback)) ? String(fallback) : (allowed[0] || '');
+        var candidate = String(value == null ? '' : value);
+        return allowed.includes(candidate) ? candidate : safeFallback;
+    }
+
+    /**
+     * Normalise une reference Grist avant son transport dans un attribut
+     * data-*. Une reference est un entier strictement positif ; toute autre
+     * valeur est refusee plutot que concatenee dans du HTML ou du JavaScript.
+     */
+    function sanitizeRecordId(value) {
+        var candidate = Number(value);
+        return Number.isSafeInteger(candidate) && candidate > 0 ? String(candidate) : '';
+    }
+
+    return {
+        escapeHtml: escapeHtml,
+        sanitizeCssColor: sanitizeCssColor,
+        sanitizeCssClassToken: sanitizeCssClassToken,
+        sanitizePercentage: sanitizePercentage,
+        sanitizeEnumValue: sanitizeEnumValue,
+        sanitizeRecordId: sanitizeRecordId
+    };
+});
+
+
+/* ============================================================================
  * taskflow-identity.js — Domaine d'identité commun TaskFlow
  * ----------------------------------------------------------------------------
  * Module pur : aucune dépendance au DOM, à Grist ou aux widgets.
@@ -8031,7 +8129,8 @@ if (typeof globalThis !== 'undefined') {
         let selectedTaskId = null;
         let selectedProjectId = null;
         let sortMode = localStorage.getItem('taskflow_gantt_sort') || 'priority';
-        let colorMode = localStorage.getItem('taskflow_gantt_colormode') || 'priority';
+        const COLOR_MODES = ['priority', 'project', 'assignee', 'status'];
+        let colorMode = TaskFlowDomSecurity.sanitizeEnumValue(localStorage.getItem('taskflow_gantt_colormode'), COLOR_MODES, 'priority');
         // WBS-02: état expand/collapse par tâche parente
         let expandedTasks = new Set();
         try { expandedTasks = new Set(JSON.parse(localStorage.getItem('taskflow_gantt_expanded') || '[]').map(Number).filter(n => !isNaN(n))); } catch (e) {}
@@ -8059,7 +8158,11 @@ if (typeof globalThis !== 'undefined') {
         // ═══════════════════════════════════════════════════════════════════════
         // UTILITIES
         // ═══════════════════════════════════════════════════════════════════════
-        const escapeHtml = (t) => { if (!t) return ''; const d = document.createElement('div'); d.textContent = t; return d.innerHTML; };
+        const escapeHtml = (value) => TaskFlowDomSecurity.escapeHtml(value);
+        const safeColor = (value, fallback = '#94a3b8') => TaskFlowDomSecurity.sanitizeCssColor(value, fallback);
+        const safeClassToken = (value, fallback = '') => TaskFlowDomSecurity.sanitizeCssClassToken(value, fallback);
+        const safePercentage = (value, fallback = 0) => TaskFlowDomSecurity.sanitizePercentage(value, fallback);
+        const safeRecordId = (value) => TaskFlowDomSecurity.sanitizeRecordId(value);
         const gristToDate = (ts) => { if (ts == null || ts === '') return null; const n = Number(ts); return isNaN(n) ? null : new Date(n * 1000); };
         const dateToGrist = (d) => d ? Math.floor(d.getTime() / 1000) : null;
         const formatDate = (d) => d ? new Intl.DateTimeFormat('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' }).format(d) : '-';
@@ -8207,9 +8310,9 @@ if (typeof globalThis !== 'undefined') {
 
         // Project/Team helpers
         const getProjectName = (id) => { const p = projects.find(x => x.id === id); return p?.nom || ''; };
-        const getProjectColor = (id) => { const p = projects.find(x => x.id === id); return p?.couleur || '#64748b'; };
+        const getProjectColor = (id) => { const p = projects.find(x => x.id === id); return safeColor(p?.couleur, '#64748b'); };
         const getTeamMemberName = (id) => { const m = team.find(x => x.id === id); return m?.nom || ''; };
-        const getTeamMemberColor = (id) => { const m = team.find(x => x.id === id); return m?.couleur || '#3e5de7'; };
+        const getTeamMemberColor = (id) => { const m = team.find(x => x.id === id); return safeColor(m?.couleur, '#3e5de7'); };
         const getInitials = (n) => n ? n.split(' ').map(x => x[0]).join('').toUpperCase().slice(0, 2) : '?';
         const validateTaskDateConstraints = (task, taskSet = tasks, options = {}) => GanttTaskDateConstraints.validateTaskMutation(task, {
             tasks: taskSet,
@@ -8236,11 +8339,11 @@ if (typeof globalThis !== 'undefined') {
 
         // Couleur d'une tâche selon le mode courant, avec override individuel (task.couleur)
         function getTaskColor(t) {
-            if (t?.couleur && /^#[0-9a-f]{3,8}$/i.test(t.couleur)) return t.couleur;
+            if (t?.couleur) return safeColor(t.couleur);
             switch (colorMode) {
                 case 'project': return t?.projet ? getProjectColor(t.projet) : '#94a3b8';
                 case 'assignee': { const a = getAssigneesArray(t); return a.length ? getTeamMemberColor(a[0]) : '#94a3b8'; }
-                case 'status': return TF.getStatus(statusCfg, t?.statut || statusCfg.firstValue).fillColor;
+                case 'status': return safeColor(TF.getStatus(statusCfg, t?.statut || statusCfg.firstValue).fillColor);
                 case 'priority':
                 default: return PRIORITY_COLORS[getTaskPriority(t)];
             }
@@ -8621,8 +8724,8 @@ if (typeof globalThis !== 'undefined') {
             sortTasks(); render();
         }
         function changeColorMode(mode) {
-            colorMode = mode;
-            localStorage.setItem('taskflow_gantt_colormode', mode);
+            colorMode = TaskFlowDomSecurity.sanitizeEnumValue(mode, COLOR_MODES, 'priority');
+            localStorage.setItem('taskflow_gantt_colormode', colorMode);
             render();
         }
         // Édite la couleur d'un projet (lue par tous les widgets TaskFlow via getProjectColor)
@@ -8779,7 +8882,7 @@ if (typeof globalThis !== 'undefined') {
         function renderLegend() {
             const el = document.getElementById('ganttLegend');
             if (!el) return;
-            const item = (color, label) => '<div class="legend-item"><div class="legend-color" style="background:' + color + '"></div>' + label + '</div>';
+            const item = (color, label) => '<div class="legend-item"><div class="legend-color" style="background:' + safeColor(color) + '"></div>' + escapeHtml(label) + '</div>';
             let html = '';
             if (colorMode === 'priority') {
                 html = item(PRIORITY_COLORS[1], 'Critique') + item(PRIORITY_COLORS[2], 'Haute') + item(PRIORITY_COLORS[3], 'Moyenne') + item(PRIORITY_COLORS[4], 'Basse');
@@ -8787,10 +8890,10 @@ if (typeof globalThis !== 'undefined') {
                 html = statusCfg.list.map(s => item(s.fillColor, s.label)).join('');
             } else if (colorMode === 'project') {
                 const visible = projects.filter(p => p.actif !== false).slice(0, 8);
-                html = visible.map(p => item(p.couleur || '#64748b', escapeHtml(p.nom))).join('');
+                html = visible.map(p => item(p.couleur, p.nom)).join('');
             } else if (colorMode === 'assignee') {
                 const visible = team.filter(m => m.actif !== false).slice(0, 8);
-                html = visible.map(m => item(getTeamMemberColor(m.id), escapeHtml(m.nom))).join('');
+                html = visible.map(m => item(getTeamMemberColor(m.id), m.nom)).join('');
             }
             html += '<div class="legend-separator"></div><div class="legend-item"><div class="legend-milestone"></div>Jalon</div>';
             el.innerHTML = html;
@@ -8956,12 +9059,12 @@ if (typeof globalThis !== 'undefined') {
             currentVisible.forEach((row) => {
                 if (row.kind === 'project') {
                     const key = escapeHtml(String(row.key));
-                    const chevron = '<span class="tree-chevron' + (!row.collapsed ? ' expanded' : '') + '" onclick="event.stopPropagation();toggleProject(this.closest(\'.project-row\').dataset.projectKey)" title="' + (row.collapsed ? 'Déplier le projet' : 'Replier le projet') + '">▶</span>';
+                    const chevron = '<span class="tree-chevron' + (!row.collapsed ? ' expanded' : '') + '" data-list-action="toggle-project" title="' + (row.collapsed ? 'Déplier le projet' : 'Replier le projet') + '">▶</span>';
                     const selectedClass = selectedProjectId != null && GanttTaskPanelRules.sameProject(selectedProjectId, row.key) ? ' selected' : '';
                     const project = projects.find(p => GanttTaskPanelRules.sameProject(p.id, row.key));
-                    html += '<div class="project-row' + selectedClass + '" data-kind="project" data-project-key="' + key + '" onclick="' + (project ? 'openProjectPanel(' + project.id + ')' : '') + '">' +
+                    html += '<div class="project-row' + selectedClass + '" data-kind="project" data-project-key="' + key + '"' + (project ? ' data-list-action="open-project" data-project-id="' + safeRecordId(project.id) + '"' : '') + '>' +
                         chevron +
-                        '<span class="project-color" style="background:' + escapeHtml(row.color) + '"></span>' +
+                        '<span class="project-color" style="background:' + safeColor(row.color, '#64748b') + '"></span>' +
                         '<span class="project-name">' + escapeHtml(row.label) + '</span>' +
                         '<span class="project-count">' + row.taskCount + ' tâche' + (row.taskCount > 1 ? 's' : '') + '</span>' +
                     '</div>';
@@ -8974,10 +9077,10 @@ if (typeof globalThis !== 'undefined') {
                 let start = gristToDate(t.dateDebut), end = gristToDate(t.dateEcheance);
                 if (isParent && !start && !end) { const agg = aggregateDates(t); start = gristToDate(agg.start); end = gristToDate(agg.end); }
                 const jalon = isJalon(t);
-                const progress = isParent ? aggregateProgress(t) : (t.progression || 0);
+                const progress = safePercentage(isParent ? aggregateProgress(t) : t.progression);
                 const selected = t.id === selectedTaskId;
                 const assignees = getAssigneesArray(t);
-                const avatarsHtml = assignees.length ? '<div class="task-avatars">' + assignees.slice(0, 2).map(id => '<div class="task-avatar" style="background:' + getTeamMemberColor(id) + '">' + getInitials(getTeamMemberName(id)) + '</div>').join('') + (assignees.length > 2 ? '<div class="task-avatar more">+' + (assignees.length - 2) + '</div>' : '') + '</div>' : '';
+                const avatarsHtml = assignees.length ? '<div class="task-avatars">' + assignees.slice(0, 2).map(id => '<div class="task-avatar" style="background:' + getTeamMemberColor(id) + '">' + escapeHtml(getInitials(getTeamMemberName(id))) + '</div>').join('') + (assignees.length > 2 ? '<div class="task-avatar more">+' + (assignees.length - 2) + '</div>' : '') + '</div>' : '';
                 const subs = getSubtasks(t);
                 const subsDone = subs.filter(s => s.done).length;
                 const subBadge = subs.length ? '<span class="task-subtask-badge' + (subsDone === subs.length ? ' complete' : '') + '" title="Sous-tâches">◎ ' + subsDone + '/' + subs.length + '</span>' : '';
@@ -8985,12 +9088,12 @@ if (typeof globalThis !== 'undefined') {
                 const childBadge = nChildren ? '<span class="task-subtask-badge" title="Sous-tâches structurelles">↳ ' + nChildren + '</span>' : '';
 
                 const chevron = isParent
-                    ? '<span class="tree-chevron' + (expandedTasks.has(t.id) ? ' expanded' : '') + '" onclick="event.stopPropagation();toggleExpand(' + t.id + ')" title="' + (expandedTasks.has(t.id) ? 'Replier' : 'Déplier') + '">▶</span>'
+                    ? '<span class="tree-chevron' + (expandedTasks.has(t.id) ? ' expanded' : '') + '" data-list-action="toggle-task" data-task-id="' + safeRecordId(t.id) + '" title="' + (expandedTasks.has(t.id) ? 'Replier' : 'Déplier') + '">▶</span>'
                     : '<span class="tree-chevron-placeholder"></span>';
                 const indent = depth * 18;
                 const classes = ['task-row', selected ? 'selected' : '', dimmed ? 'dimmed' : '', isParent ? 'parent' : ''].filter(Boolean).join(' ');
 
-                html += '<div class="' + classes + '" data-kind="task" data-project-key="' + escapeHtml(String(row.projectKey)) + '" data-id="' + t.id + '" onclick="openTaskPanel(' + t.id + ')"' + (dimmed ? ' title="Cette tâche est grisée car sa date de fin est passée."' : '') + ' style="padding-left:' + (12 + indent) + 'px">' +
+                html += '<div class="' + classes + '" data-kind="task" data-project-key="' + escapeHtml(String(row.projectKey)) + '" data-id="' + safeRecordId(t.id) + '" data-list-action="open-task" data-task-id="' + safeRecordId(t.id) + '"' + (dimmed ? ' title="Cette tâche est grisée car sa date de fin est passée."' : '') + ' style="padding-left:' + (12 + indent) + 'px">' +
                     '<span class="drag-handle">☰</span>' +
                     chevron +
                     '<div class="task-priority-bar p' + p + '"></div>' +
@@ -9006,7 +9109,9 @@ if (typeof globalThis !== 'undefined') {
                     '</div>' +
                 '</div>';
             });
-            document.getElementById('taskList').innerHTML = html;
+            const taskList = document.getElementById('taskList');
+            taskList.innerHTML = html;
+            bindGanttTaskListActions(taskList);
 
             // Sortable en mode manuel : autorisé uniquement au sein d'une fratrie (limite via check dans onEnd)
             if (sortMode === 'manual') {
@@ -9041,6 +9146,33 @@ if (typeof globalThis !== 'undefined') {
                     }
                 });
             }
+        }
+
+        function bindGanttTaskListActions(container) {
+            if (!container) return;
+            if (container.__taskFlowListActionHandler) {
+                container.removeEventListener('click', container.__taskFlowListActionHandler);
+            }
+            const handler = function(event) {
+                const origin = event.target instanceof Element ? event.target : event.target?.parentElement;
+                const control = origin?.closest('[data-list-action]');
+                if (!control || !container.contains(control)) return;
+                const action = control.dataset.listAction;
+                const taskIdValue = safeRecordId(control.dataset.taskId);
+                const projectIdValue = safeRecordId(control.dataset.projectId);
+                const taskId = taskIdValue ? Number(taskIdValue) : null;
+                const projectId = projectIdValue ? Number(projectIdValue) : null;
+                event.stopPropagation();
+
+                if (action === 'toggle-project') {
+                    const projectRow = control.closest('.project-row[data-project-key]');
+                    if (projectRow) toggleProject(projectRow.dataset.projectKey);
+                } else if (action === 'open-project' && projectId) openProjectPanel(projectId);
+                else if (action === 'toggle-task' && taskId) toggleExpand(taskId);
+                else if (action === 'open-task' && taskId) openTaskPanel(taskId);
+            };
+            container.addEventListener('click', handler);
+            container.__taskFlowListActionHandler = handler;
         }
 
         function renderTimeline() {
@@ -9136,7 +9268,7 @@ if (typeof globalThis !== 'undefined') {
                     span.className = 'gantt-project-span' +
                         (selectedProjectId != null && GanttTaskPanelRules.sameProject(selectedProjectId, row.key) ? ' selected' : '') +
                         (rawLeft < 0 ? ' clipped-left' : '') + (rawRight > totalWidth ? ' clipped-right' : '');
-                    span.style.setProperty('--project-color', row.color || '#64748b');
+                    span.style.setProperty('--project-color', safeColor(row.color, '#64748b'));
                     span.style.left = visibleLeft + 'px';
                     span.style.top = (idx * 44 + 14) + 'px';
                     span.style.width = Math.max(visibleRight - visibleLeft, 3) + 'px';
@@ -9183,7 +9315,7 @@ if (typeof globalThis !== 'undefined') {
                     const barLeft = Math.max(0, left);
                     const barWidth = Math.max(width - (barLeft - left), 12);
                     const isNarrow = barWidth < 60;
-                    const progVal = isParent ? aggregateProgress(t) : (t.progression || 0);
+                    const progVal = safePercentage(isParent ? aggregateProgress(t) : t.progression);
                     bar.className = 'gantt-bar p' + p + (selected ? ' selected' : '') + (isNarrow ? ' narrow-bar' : '') + (isParent ? ' parent' : '') + (dimmed ? ' dimmed' : '');
                     bar.dataset.id = t.id;
                     bar.style.left = barLeft + 'px';
@@ -9445,14 +9577,14 @@ if (typeof globalThis !== 'undefined') {
             const linkedTasksHtml = linkedTasks.length
                 ? '<div class="panel-section"><div class="panel-section-header"><span class="panel-section-title">Tâches du projet</span><span class="panel-section-badge">' + linkedTasks.length + '</span></div>' +
                   '<div class="prereq-list">' + linkedTasks.map(function(task) {
-                      return '<div class="prereq-item" onclick="openTaskPanel(' + task.id + ')" title="Ouvrir cette tâche"><span class="task-priority-bar p' + getTaskPriority(task) + '" style="width:3px;height:16px;border-radius:2px;flex-shrink:0"></span><span class="prereq-item-title">' + escapeHtml(task.titre || 'Sans titre') + '</span><span class="prereq-badge">' + formatDateShort(gristToDate(task.dateEcheance)) + '</span></div>';
+                      return '<div class="prereq-item" data-panel-action="open-task" data-task-id="' + safeRecordId(task.id) + '" title="Ouvrir cette tâche"><span class="task-priority-bar p' + getTaskPriority(task) + '" style="width:3px;height:16px;border-radius:2px;flex-shrink:0"></span><span class="prereq-item-title">' + escapeHtml(task.titre || 'Sans titre') + '</span><span class="prereq-badge">' + formatDateShort(gristToDate(task.dateEcheance)) + '</span></div>';
                   }).join('') + '</div></div>'
                 : '<div class="panel-section"><div class="panel-section-header"><span class="panel-section-title">Tâches du projet</span></div><div class="prereq-empty">Ce projet ne contient aucune tâche.</div></div>';
 
             header.innerHTML = '<div class="panel-nav"><span class="panel-title">Projet</span></div>' +
                 '<button class="panel-close" onclick="closePanel()">×</button>';
             content.innerHTML =
-                '<div class="panel-accent-bar" style="background:' + escapeHtml(project.couleur || '#64748b') + '"></div>' +
+                '<div class="panel-accent-bar" style="background:' + safeColor(project.couleur, '#64748b') + '"></div>' +
                 '<div class="panel-type-row"><span class="type-pill selected">Projet</span></div>' +
                 '<div class="panel-title-edit" style="cursor:default">' + escapeHtml(project.nom || 'Sans nom') + '</div>' +
                 '<div class="props-list">' +
@@ -9466,6 +9598,7 @@ if (typeof globalThis !== 'undefined') {
                 '<div class="panel-section"><div class="panel-section-header"><span class="panel-section-title">Suppression</span></div>' +
                     '<div style="font-size:0.8rem;color:var(--text-muted);line-height:1.45">' + escapeHtml(deleteHint) + '</div>' +
                 '</div>';
+            bindTaskPanelActions(content);
             footer.innerHTML = canDelete
                 ? '<button class="panel-btn danger" onclick="showDeleteConfirm()" ' + (linkedTasks.length ? 'disabled title="Le projet doit être vide"' : '') + '>Supprimer le projet</button>' +
                   (!linkedTasks.length ? '<div class="delete-confirm" id="deleteConfirm"><div class="delete-confirm-text">Supprimer définitivement ce projet vide ?</div><div class="delete-confirm-actions"><button class="delete-confirm-btn cancel" onclick="hideDeleteConfirm()">Annuler</button><button class="delete-confirm-btn confirm" onclick="confirmDeleteProject()">Supprimer</button></div></div>' : '')
@@ -9915,6 +10048,7 @@ if (typeof globalThis !== 'undefined') {
             const footer = document.getElementById('panelFooter');
             const data = panelState.editData;
             if (!data) { closePanel(); return; }
+            const progressValue = safePercentage(data.progression);
 
             const canNavigate = panelState.taskList.length > 1 && !panelState.isNew;
             const navLabel = !panelState.isNew && panelState.taskList.length > 1 ? (panelState.taskIndex + 1) + '/' + panelState.taskList.length : '';
@@ -9928,7 +10062,7 @@ if (typeof globalThis !== 'undefined') {
             const e = gristToDate(data.dateEcheance);
             const priorityColor = PRIORITY_COLORS[getTaskPriority(data)] || '#94a3b8';
             const currentProject = projects.find(p => GanttTaskPanelRules.sameProject(p.id, data.projet));
-            const projectColor = currentProject?.couleur || '#94a3b8';
+            const projectColor = safeColor(currentProject?.couleur);
             const selectableProjects = panelState.isNew ? getCreatableProjects() : projects.filter(p => p.actif !== false);
             const projectOptions = selectableProjects.map(p =>
                 '<option value="' + p.id + '" ' + (GanttTaskPanelRules.sameProject(data.projet, p.id) ? 'selected' : '') + '>' + escapeHtml(p.nom) + '</option>'
@@ -9940,16 +10074,17 @@ if (typeof globalThis !== 'undefined') {
             const titlePlaceholder = data.type === 'jalon' ? 'Nom du jalon...' : data.type === 'reunion' ? 'Sujet de la réunion...' : 'Titre de la tâche...';
 
             const assigneesChips = data.assignees.map(id =>
-                '<span class="multi-select-chip">' + escapeHtml(getTeamMemberName(id)) + '<span class="remove" onclick="event.stopPropagation();removeAssignee(' + id + ')">×</span></span>'
+                '<span class="multi-select-chip">' + escapeHtml(getTeamMemberName(id)) + '<span class="remove" data-panel-action="remove-assignee" data-member-id="' + safeRecordId(id) + '">×</span></span>'
             ).join('');
             const assigneesOptions = team.filter(m => m.actif !== false).map(m => {
-                const swatches = COLOR_PRESETS.map(c => '<span class="color-swatch" style="background:' + c + '" onclick="event.stopPropagation();setMemberColor(' + m.id + ',\'' + c + '\')"></span>').join('');
-                return '<div class="multi-select-option ' + (data.assignees.includes(m.id) ? 'selected' : '') + '" onclick="toggleAssignee(' + m.id + ')">' +
+                const memberId = safeRecordId(m.id);
+                const swatches = COLOR_PRESETS.map(c => '<span class="color-swatch" style="background:' + c + '" data-panel-action="set-member-color" data-member-id="' + memberId + '" data-color="' + c + '"></span>').join('');
+                return '<div class="multi-select-option ' + (data.assignees.includes(m.id) ? 'selected' : '') + '" data-panel-action="toggle-assignee" data-member-id="' + memberId + '">' +
                     '<div class="member-color-wrap">' +
-                        '<span class="member-color-dot" style="background:' + getTeamMemberColor(m.id) + '" title="Changer la couleur du membre" onclick="event.stopPropagation();this.nextElementSibling.classList.toggle(\'open\')"></span>' +
+                        '<span class="member-color-dot" style="background:' + getTeamMemberColor(m.id) + '" title="Changer la couleur du membre" data-panel-action="toggle-member-color"></span>' +
                         '<div class="member-color-picker">' + swatches + '</div>' +
                     '</div>' +
-                    '<input type="checkbox" ' + (data.assignees.includes(m.id) ? 'checked' : '') + ' onclick="event.stopPropagation();toggleAssignee(' + m.id + ')">' +
+                    '<input type="checkbox" ' + (data.assignees.includes(m.id) ? 'checked' : '') + '>' +
                     escapeHtml(m.nom) +
                 '</div>';
             }).join('');
@@ -9968,25 +10103,25 @@ if (typeof globalThis !== 'undefined') {
             const chargeConsolHtml = (chargeConsol && Object.keys(chargeConsol).length) ? ('<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border)"><div class="prop-label" style="margin-bottom:6px">Consolidé (avec sous-tâches)</div>' + Object.keys(chargeConsol).map(function(tid){ return '<div class="charge-row"><span class="an">' + escapeHtml(getTeamMemberName(Number(tid))) + '</span><span style="font-weight:600;font-size:0.82rem">' + chargeConsol[tid] + ' h</span></div>'; }).join('') + '<div style="margin-top:6px;font-size:0.78rem;color:var(--text-muted)">Total consolidé : <strong>' + Object.values(chargeConsol).reduce(function(s,h){ return s + h; }, 0) + '</strong> h</div></div>') : '';
             const depsChips = data.dependDe.map(id => {
                 const d = tasks.find(t => t.id === id);
-                return d ? '<span class="multi-select-chip">' + escapeHtml(d.titre) + '<span class="remove" onclick="event.stopPropagation();removeDependency(' + id + ')">×</span></span>' : '';
+                return d ? '<span class="multi-select-chip">' + escapeHtml(d.titre) + '<span class="remove" data-panel-action="remove-dependency" data-task-id="' + safeRecordId(id) + '">×</span></span>' : '';
             }).join('');
             const dependencyCandidates = panelState.isNew ? tasks : getAvailableDependencies(panelState.taskId);
             const availableDeps = GanttTaskPanelRules.filterDependencyTasks(dependencyCandidates, data.projet, data.type);
             const depsOptions = availableDeps.map(t =>
-                '<div class="multi-select-option ' + (data.dependDe.includes(t.id) ? 'selected' : '') + '" onclick="toggleDependency(' + t.id + ')"><input type="checkbox" ' + (data.dependDe.includes(t.id) ? 'checked' : '') + ' onclick="event.stopPropagation();toggleDependency(' + t.id + ')">' + escapeHtml(t.titre) + '</div>'
+                '<div class="multi-select-option ' + (data.dependDe.includes(t.id) ? 'selected' : '') + '" data-panel-action="toggle-dependency" data-task-id="' + safeRecordId(t.id) + '"><input type="checkbox" ' + (data.dependDe.includes(t.id) ? 'checked' : '') + '>' + escapeHtml(t.titre) + '</div>'
             ).join('');
             let blockedHtml = '';
             if (!panelState.isNew) {
                 const blocked = getBlockedTasks(panelState.taskId);
                 if (blocked.length) {
                     blockedHtml = '<div class="deps-display"><div class="deps-group"><div class="deps-group-label">→ Bloque :</div><div class="deps-list">' +
-                        blocked.map(t => '<div class="dep-item" onclick="openTaskPanel(' + t.id + ')">→ ' + escapeHtml(t.titre) + '</div>').join('') +
+                        blocked.map(t => '<div class="dep-item" data-panel-action="open-task" data-task-id="' + safeRecordId(t.id) + '">→ ' + escapeHtml(t.titre) + '</div>').join('') +
                     '</div></div></div>';
                 }
             }
 
-            const tagsChips = data.tags.map(tag =>
-                '<span class="tag-chip">#' + escapeHtml(tag) + '<span class="remove" onclick="removeTag(\'' + escapeHtml(tag) + '\')">×</span></span>'
+            const tagsChips = data.tags.map((tag, index) =>
+                '<span class="tag-chip">#' + escapeHtml(tag) + '<span class="remove" onclick="removeTagAt(' + index + ')">×</span></span>'
             ).join('');
             const estim = data.estimationH || 0;
             const passe = data.tempsPasse || 0;
@@ -9999,7 +10134,7 @@ if (typeof globalThis !== 'undefined') {
                 const t = tasks.find(x => x.id === id);
                 if (!t) return '';
                 const st = t.statut || 'todo';
-                return '<div class="prereq-item ' + (TF.isTerminal(statusCfg, st) ? 'done' : '') + '" onclick="openTaskPanel(' + id + ')"><span class="prereq-item-icon">' + (TF.isTerminal(statusCfg, st) ? '✓' : '○') + '</span><span class="prereq-item-title">' + escapeHtml(t.titre) + '</span><span class="prereq-badge" style="background:' + TF.getStatus(statusCfg, st).fillColor + ';color:' + TF.getStatus(statusCfg, st).textColor + '">' + escapeHtml(TF.getStatus(statusCfg, st).label) + '</span></div>';
+                return '<div class="prereq-item ' + (TF.isTerminal(statusCfg, st) ? 'done' : '') + '" data-panel-action="open-task" data-task-id="' + safeRecordId(id) + '"><span class="prereq-item-icon">' + (TF.isTerminal(statusCfg, st) ? '✓' : '○') + '</span><span class="prereq-item-title">' + escapeHtml(t.titre) + '</span><span class="prereq-badge" style="background:' + safeColor(TF.getStatus(statusCfg, st).fillColor) + ';color:' + safeColor(TF.getStatus(statusCfg, st).textColor, '#ffffff') + '">' + escapeHtml(TF.getStatus(statusCfg, st).label) + '</span></div>';
             }).join('');
 
             content.innerHTML =
@@ -10013,7 +10148,7 @@ if (typeof globalThis !== 'undefined') {
 
                 '<div class="props-list">' +
                     '<div class="prop-row pr-status" data-panel-field="status"><span class="prop-label">Statut</span><div class="prop-value"><div class="status-selector">' +
-                        (data.type !== 'jalon' ? statusCfg.list : statusCfg.list.filter(s => s.value === statusCfg.firstValue || s.value === statusCfg.terminalValue)).map(s => '<div class="status-pill ' + (data.statut === s.value ? 'selected' : '') + '" data-status="' + escapeHtml(s.value) + '" onclick="updateField(\'statut\', this.dataset.status)"><span class="panel-pill-dot" style="background:' + s.fillColor + '"></span>' + escapeHtml(s.label) + '</div>').join('') +
+                        (data.type !== 'jalon' ? statusCfg.list : statusCfg.list.filter(s => s.value === statusCfg.firstValue || s.value === statusCfg.terminalValue)).map(s => '<div class="status-pill ' + (data.statut === s.value ? 'selected' : '') + '" data-status="' + escapeHtml(s.value) + '" onclick="updateField(\'statut\', this.dataset.status)"><span class="panel-pill-dot" style="background:' + safeColor(s.fillColor) + '"></span>' + escapeHtml(s.label) + '</div>').join('') +
                     '</div></div></div>' +
                     (data.type !== 'reunion' ?
                         '<div class="prop-row" data-panel-field="priority"><span class="prop-label">Priorité</span><div class="prop-value"><div class="priority-selector">' +
@@ -10029,8 +10164,8 @@ if (typeof globalThis !== 'undefined') {
                     '</div></div>' +
                     '<div class="prop-row" data-panel-field="project"><span class="prop-label">Projet</span><div class="prop-value"><div class="project-select-wrap">' +
                         (currentProject
-                            ? '<span class="project-color-dot" style="background:' + projectColor + '" title="Changer la couleur du projet" onclick="event.stopPropagation();this.nextElementSibling.classList.toggle(\'open\')"></span>' +
-                              '<div class="color-picker-pop">' + COLOR_PRESETS.map(c => '<span class="color-swatch" style="background:' + c + '" onclick="event.stopPropagation();setProjectColor(' + currentProject.id + ',\'' + c + '\')"></span>').join('') + '</div>'
+                            ? '<span class="project-color-dot" style="background:' + projectColor + '" title="Changer la couleur du projet" data-panel-action="toggle-project-color"></span>' +
+                              '<div class="color-picker-pop">' + COLOR_PRESETS.map(c => '<span class="color-swatch" style="background:' + c + '" data-panel-action="set-project-color" data-project-id="' + safeRecordId(currentProject.id) + '" data-color="' + c + '"></span>').join('') + '</div>'
                             : '<span class="project-color-dot" style="background:' + projectColor + '"></span>') +
                         '<select class="form-select" onchange="updateField(\'projet\', parseInt(this.value) || null)">' +
                             (panelState.isNew ? '' : '<option value="">Aucun projet</option>') + projectOptions +
@@ -10048,13 +10183,13 @@ if (typeof globalThis !== 'undefined') {
                         (data.type === 'jalon' ? '<div style="margin-top:5px;font-size:0.72rem;color:var(--text-muted)">Le jalon sera affiché sous cette tâche.</div>' : '') +
                     '</div></div>' +
                     '<div class="prop-row" data-panel-field="color"><span class="prop-label">Couleur</span><div class="prop-value"><div style="display:flex;gap:8px;align-items:center">' +
-                        '<input type="color" value="' + (data.couleur || getTaskColor(data)) + '" onchange="updateField(\'couleur\', this.value)" style="width:36px;height:28px;border:1px solid var(--border);border-radius:6px;cursor:pointer;padding:2px">' +
+                        '<input type="color" value="' + safeColor(data.couleur, getTaskColor(data)) + '" onchange="updateField(\'couleur\', this.value)" style="width:36px;height:28px;border:1px solid var(--border);border-radius:6px;cursor:pointer;padding:2px">' +
                         (data.couleur
                             ? '<button class="btn" style="padding:4px 10px;font-size:0.72rem" onclick="updateField(\'couleur\', null)">Réinitialiser</button>'
                             : '<span style="font-size:0.72rem;color:var(--text-muted)">Héritée du mode « ' + colorMode + ' »</span>') +
                     '</div></div></div>' +
                     '<div class="prop-row" data-panel-field="assignees"><span class="prop-label">' + assignLabel + '</span><div class="prop-value">' +
-                        (data.assignees.length ? '<div class="asg-list">' + data.assignees.map(function(id){ var nm=getTeamMemberName(id)||'?'; var initials=nm.split(' ').filter(Boolean).map(function(w){return w[0];}).slice(0,2).join('').toUpperCase(); var mem=team.find(function(x){return x.id===id;}); return '<div class="asg"><span class="asg-ava" style="background:'+getTeamMemberColor(id)+'">'+escapeHtml(initials)+'</span><span class="an">'+escapeHtml(nm)+'</span>'+(mem&&mem.role?'<span class="ar">'+escapeHtml(mem.role)+'</span>':'')+'<button class="asg-x" title="Retirer" onclick="removeAssignee('+id+')">×</button></div>'; }).join('') + '</div>' : '') +
+                        (data.assignees.length ? '<div class="asg-list">' + data.assignees.map(function(id){ var nm=getTeamMemberName(id)||'?'; var initials=nm.split(' ').filter(Boolean).map(function(w){return w[0];}).slice(0,2).join('').toUpperCase(); var mem=team.find(function(x){return x.id===id;}); return '<div class="asg"><span class="asg-ava" style="background:'+getTeamMemberColor(id)+'">'+escapeHtml(initials)+'</span><span class="an">'+escapeHtml(nm)+'</span>'+(mem&&mem.role?'<span class="ar">'+escapeHtml(mem.role)+'</span>':'')+'<button class="asg-x" title="Retirer" data-panel-action="remove-assignee" data-member-id="'+safeRecordId(id)+'">×</button></div>'; }).join('') + '</div>' : '') +
                         '<div class="multi-select" id="assigneesSelect"><button class="addbtn" onclick="toggleMultiSelect(\'assigneesSelect\')"><span style="font-size:1rem;line-height:1">+</span> ' + (data.type === 'reunion' ? 'Ajouter un participant' : 'Assigner un membre') + '</button><div class="multi-select-dropdown">' + (assigneesOptions || '<div class="multi-select-empty">Aucun membre</div>') + '</div></div>' +
                     '</div></div>' +
                     (data.type === 'tache' ?
@@ -10068,13 +10203,13 @@ if (typeof globalThis !== 'undefined') {
                                 var mode = panelState.assignmentModes && panelState.assignmentModes[id] ? panelState.assignmentModes[id] : 'uniforme';
                                 var unit = chargeUnitOf(id);
                                 var displayValue = chargeDisplayOf(id);
-                                return '<div class="charge-row" style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><span class="an" style="flex:0 0 120px">'+escapeHtml(getTeamMemberName(id))+'</span><input type="number" min="0" step="0.5" value="'+(displayValue || '')+'" placeholder="0" onchange="updateCharge('+id+', this.value)" style="width:70px"><select aria-label="Unité de charge pour '+escapeHtml(getTeamMemberName(id))+'" title="1 jour = 7 heures" onchange="updateChargeUnit('+id+', this.value)" style="flex:0 0 52px;font-size:0.78rem"><option value="j" '+(unit==='j'?'selected':'')+'>j</option><option value="h" '+(unit==='h'?'selected':'')+'>h</option></select><select onchange="updateAssignmentMode('+id+', this.value)" style="flex:0 0 140px;font-size:0.78rem"><option value="uniforme" '+(mode==='uniforme'?'selected':'')+'>Régulier</option><option value="ponctuel" '+(mode==='ponctuel'?'selected':'')+'>Ponctuel</option></select></div>';
+                                return '<div class="charge-row" style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><span class="an" style="flex:0 0 120px">'+escapeHtml(getTeamMemberName(id))+'</span><input type="number" min="0" step="0.5" value="'+(displayValue || '')+'" placeholder="0" data-panel-change="update-charge" data-member-id="'+safeRecordId(id)+'" style="width:70px"><select aria-label="Unité de charge pour '+escapeHtml(getTeamMemberName(id))+'" title="1 jour = 7 heures" data-panel-change="update-charge-unit" data-member-id="'+safeRecordId(id)+'" style="flex:0 0 52px;font-size:0.78rem"><option value="j" '+(unit==='j'?'selected':'')+'>j</option><option value="h" '+(unit==='h'?'selected':'')+'>h</option></select><select data-panel-change="update-assignment-mode" data-member-id="'+safeRecordId(id)+'" style="flex:0 0 140px;font-size:0.78rem"><option value="uniforme" '+(mode==='uniforme'?'selected':'')+'>Régulier</option><option value="ponctuel" '+(mode==='ponctuel'?'selected':'')+'>Ponctuel</option></select></div>';
                             }).join('') + chargeValidationHtml + '<div style="margin-top:6px;font-size:0.78rem;color:var(--text-muted)">Total : <strong>' + chargeTotalH + '</strong> h (' + GanttTaskPanelRules.hoursToDisplayValue(chargeTotalH, 'j') + ' j)</div></div>' : '') + chargeConsolHtml +
                         '</div></div>' : '') +
                     (data.type === 'tache' ?
                         '<div class="prop-row pr-prog" data-panel-field="progress"><span class="prop-label">Progression</span><div class="prop-value">' +
-                            '<div class="progress-inline-wrap"><div class="progress-bar-mini"><div class="progress-bar-mini-fill" id="progressBarFill" style="width:' + data.progression + '%"></div></div><span class="progress-pct-label" id="progressValue">' + data.progression + '%</span></div>' +
-                            '<input type="range" class="progress-slider" min="0" max="100" value="' + data.progression + '" oninput="document.getElementById(\'progressValue\').textContent=this.value+\'%\';document.getElementById(\'progressBarFill\').style.width=this.value+\'%\'" onchange="updateField(\'progression\', parseInt(this.value))">' +
+                            '<div class="progress-inline-wrap"><div class="progress-bar-mini"><div class="progress-bar-mini-fill" id="progressBarFill" style="width:' + progressValue + '%"></div></div><span class="progress-pct-label" id="progressValue">' + progressValue + '%</span></div>' +
+                            '<input type="range" class="progress-slider" min="0" max="100" value="' + progressValue + '" oninput="document.getElementById(\'progressValue\').textContent=this.value+\'%\';document.getElementById(\'progressBarFill\').style.width=this.value+\'%\'" onchange="updateField(\'progression\', parseInt(this.value))">' +
                             '<div class="progress-presets">' +
                                 '<div class="progress-preset ' + (data.progression === 0 ? 'active' : '') + '" onclick="setProgressPreset(0)">0%</div>' +
                                 '<div class="progress-preset ' + (data.progression === 25 ? 'active' : '') + '" onclick="setProgressPreset(25)">25%</div>' +
@@ -10092,17 +10227,17 @@ if (typeof globalThis !== 'undefined') {
                 (!panelState.isNew ? (function() {
                     const kids = getChildren(panelState.taskId);
                     const _par = data.parentTask ? tasks.find(x => x.id === data.parentTask) : null;
-                    const parentLink = _par ? '<div class="prereq-item" onclick="openTaskPanel(' + _par.id + ')" title="Ouvrir la tâche parent"><span style="flex-shrink:0;font-weight:700;color:var(--primary)">↑</span><span class="prereq-item-title">Parent : ' + escapeHtml(_par.titre) + '</span></div>' : '';
+                    const parentLink = _par ? '<div class="prereq-item" data-panel-action="open-task" data-task-id="' + safeRecordId(_par.id) + '" title="Ouvrir la tâche parent"><span style="flex-shrink:0;font-weight:700;color:var(--primary)">↑</span><span class="prereq-item-title">Parent : ' + escapeHtml(_par.titre) + '</span></div>' : '';
                     const kidsList = kids.map(k => {
                         const kp = getTaskPriority(k);
-                        const kprog = hasChildren(k) ? aggregateProgress(k) : (k.progression || 0);
-                        return '<div class="prereq-item" onclick="openTaskPanel(' + k.id + ')">' +
+                        const kprog = safePercentage(hasChildren(k) ? aggregateProgress(k) : k.progression);
+                        return '<div class="prereq-item" data-panel-action="open-task" data-task-id="' + safeRecordId(k.id) + '">' +
                             '<span class="task-priority-bar p' + kp + '" style="width:3px;height:16px;border-radius:2px;flex-shrink:0"></span>' +
                             '<span class="prereq-item-title">' + escapeHtml(k.titre) + '</span>' +
-                            '<span class="prereq-badge ' + (k.statut || 'todo') + '">' + kprog + '%</span>' +
+                            '<span class="prereq-badge ' + safeClassToken(k.statut, 'todo') + '">' + kprog + '%</span>' +
                         '</div>';
                     }).join('');
-                    const addBtn = data.type === 'jalon' ? '' : '<button class="panel-btn" style="width:auto;padding:6px 12px;font-size:0.78rem;margin-top:6px;margin-right:6px" onclick="openCreateTaskWithParent(' + panelState.taskId + ')">+ Sous-tâche</button>';
+                    const addBtn = data.type === 'jalon' ? '' : '<button class="panel-btn" style="width:auto;padding:6px 12px;font-size:0.78rem;margin-top:6px;margin-right:6px" data-panel-action="create-subtask" data-task-id="' + safeRecordId(panelState.taskId) + '">+ Sous-tâche</button>';
                     const adjustBtn = data.type !== 'jalon' && kids.length ? '<button class="btn" style="padding:6px 12px;font-size:0.78rem;margin-top:6px" onclick="adjustParentDatesToChildren()" title="Aligner les dates du parent sur min/max des descendants">↔ Ajuster dates</button>' : '';
                     const legacyWarning = data.type === 'jalon' && kids.length
                         ? '<div class="panel-validation-error">Données incohérentes : un jalon ne peut pas contenir de tâche. Ouvrez les enfants ci-dessous et détachez-les.</div>'
@@ -10119,7 +10254,7 @@ if (typeof globalThis !== 'undefined') {
                     '<div class="panel-section" data-panel-section="checklist-or-prerequisites"><div class="panel-section-header"><span class="panel-section-title">Prérequis</span>' + (data.dependDe.length ? '<span class="panel-section-badge">' + doneCount + '/' + data.dependDe.length + '</span>' : '') + '</div>' +
                     '<div class="prereq-list">' + (prereqHtml || '<div class="prereq-empty">Aucune dépendance — sélectionnez les tâches amont dans « Détails ».</div>') + '</div></div>' :
                     '<div class="panel-section" data-panel-section="checklist-or-prerequisites"><div class="panel-section-header"><span class="panel-section-title">' + (data.type === 'reunion' ? 'Points à traiter' : 'Checklist') + '</span>' + (subtasksTotal > 0 ? '<span class="panel-section-badge">' + subtasksDone + '/' + subtasksTotal + '</span>' : '') + '</div>' +
-                    '<div class="subtask-list">' + (data.subtasks || []).map(function(st) { return '<div class="subtask-item ' + (st.done ? 'done' : '') + '"><input type="checkbox" class="subtask-checkbox" ' + (st.done ? 'checked' : '') + ' onchange="toggleSubtask(' + st.id + ')"><input class="subtask-text" value="' + escapeHtml(st.text) + '" onchange="editSubtask(' + st.id + ', this.value)" onkeydown="if(event.key===\'Enter\')this.blur()"><button class="subtask-remove" onclick="removeSubtask(' + st.id + ')">×</button></div>'; }).join('') + '</div>' +
+                    '<div class="subtask-list">' + (data.subtasks || []).map(function(st, index) { return '<div class="subtask-item ' + (st.done ? 'done' : '') + '" data-subtask-index="' + index + '"><input type="checkbox" class="subtask-checkbox" ' + (st.done ? 'checked' : '') + '><input class="subtask-text" value="' + escapeHtml(st.text) + '"><button class="subtask-remove" type="button">×</button></div>'; }).join('') + '</div>' +
                     '<div class="subtask-add"><input type="text" id="newSubtaskInput" placeholder="Ajouter..." onkeydown="handleSubtaskKeydown(event)"><button onclick="addSubtask()">+</button></div></div>') +
 
                 (data.type !== 'reunion' ?
@@ -10131,6 +10266,8 @@ if (typeof globalThis !== 'undefined') {
                 (!panelState.isNew ?
                     '<div class="panel-footer-left"><button class="panel-btn danger" onclick="showDeleteConfirm()" style="width:auto;padding:10px 14px">Suppr.</button></div><div class="delete-confirm" id="deleteConfirm"><div class="delete-confirm-text">Supprimer ?</div><div class="delete-confirm-actions"><button class="delete-confirm-btn cancel" onclick="hideDeleteConfirm()">Annuler</button><button class="delete-confirm-btn confirm" onclick="confirmDelete()">Supprimer</button></div></div>' : '');
 
+            bindTaskPanelActions(content);
+            bindSubtaskControls(content);
             applyTaskPanelLayout(content);
 
             if (panelState.isNew) {
@@ -10419,6 +10556,77 @@ if (typeof globalThis !== 'undefined') {
         function subtasksToJson(subtasks) {
             return JSON.stringify(subtasks || []);
         }
+        function bindSubtaskControls(container) {
+            if (!container) return;
+            container.querySelectorAll('.subtask-item[data-subtask-index]').forEach(function(item) {
+                const index = Number(item.dataset.subtaskIndex);
+                const subtask = panelState.editData?.subtasks?.[index];
+                if (!subtask) return;
+                const checkbox = item.querySelector('.subtask-checkbox');
+                const textInput = item.querySelector('.subtask-text');
+                const removeButton = item.querySelector('.subtask-remove');
+                if (checkbox) checkbox.addEventListener('change', function() { toggleSubtask(subtask.id); });
+                if (textInput) {
+                    textInput.addEventListener('change', function() { editSubtask(subtask.id, textInput.value); });
+                    textInput.addEventListener('keydown', function(event) { if (event.key === 'Enter') textInput.blur(); });
+                }
+                if (removeButton) removeButton.addEventListener('click', function() { removeSubtask(subtask.id); });
+            });
+        }
+        function bindTaskPanelActions(container) {
+            if (!container) return;
+            if (container.__taskFlowPanelActionHandler) {
+                container.removeEventListener('click', container.__taskFlowPanelActionHandler);
+            }
+            if (container.__taskFlowPanelChangeHandler) {
+                container.removeEventListener('change', container.__taskFlowPanelChangeHandler);
+            }
+            const handler = function(event) {
+                const origin = event.target instanceof Element ? event.target : event.target?.parentElement;
+                const control = origin?.closest('[data-panel-action]');
+                if (!control || !container.contains(control)) return;
+                const action = control.dataset.panelAction;
+                event.stopPropagation();
+
+                if (action === 'toggle-member-color') {
+                    control.nextElementSibling?.classList.toggle('open');
+                    return;
+                }
+
+                const memberIdValue = safeRecordId(control.dataset.memberId);
+                const taskIdValue = safeRecordId(control.dataset.taskId);
+                const projectIdValue = safeRecordId(control.dataset.projectId);
+                const memberId = memberIdValue ? Number(memberIdValue) : null;
+                const taskId = taskIdValue ? Number(taskIdValue) : null;
+                const projectId = projectIdValue ? Number(projectIdValue) : null;
+
+                if (action === 'remove-assignee' && memberId) removeAssignee(memberId);
+                else if (action === 'toggle-assignee' && memberId) toggleAssignee(memberId);
+                else if (action === 'set-member-color' && memberId) setMemberColor(memberId, safeColor(control.dataset.color));
+                else if (action === 'remove-dependency' && taskId) removeDependency(taskId);
+                else if (action === 'toggle-dependency' && taskId) toggleDependency(taskId);
+                else if (action === 'open-task' && taskId) openTaskPanel(taskId);
+                else if (action === 'create-subtask' && taskId) openCreateTaskWithParent(taskId);
+                else if (action === 'toggle-project-color') control.nextElementSibling?.classList.toggle('open');
+                else if (action === 'set-project-color' && projectId) setProjectColor(projectId, safeColor(control.dataset.color));
+            };
+            const changeHandler = function(event) {
+                const origin = event.target instanceof Element ? event.target : event.target?.parentElement;
+                const control = origin?.closest('[data-panel-change]');
+                if (!control || !container.contains(control)) return;
+                const memberIdValue = safeRecordId(control.dataset.memberId);
+                const memberId = memberIdValue ? Number(memberIdValue) : null;
+                if (!memberId) return;
+                event.stopPropagation();
+                if (control.dataset.panelChange === 'update-charge') updateCharge(memberId, control.value);
+                else if (control.dataset.panelChange === 'update-charge-unit') updateChargeUnit(memberId, control.value);
+                else if (control.dataset.panelChange === 'update-assignment-mode') updateAssignmentMode(memberId, control.value);
+            };
+            container.addEventListener('click', handler);
+            container.addEventListener('change', changeHandler);
+            container.__taskFlowPanelActionHandler = handler;
+            container.__taskFlowPanelChangeHandler = changeHandler;
+        }
         function addSubtask() {
             const input = document.getElementById('newSubtaskInput');
             const text = input?.value?.trim();
@@ -10574,11 +10782,11 @@ if (typeof globalThis !== 'undefined') {
             }
         }
 
-        function removeTag(tag) {
+        function removeTagAt(index) {
             const data = panelState.editData;
-            const idx = data.tags.indexOf(tag);
-            if (idx !== -1) {
-                data.tags.splice(idx, 1);
+            const safeIndex = Number(index);
+            if (Number.isInteger(safeIndex) && safeIndex >= 0 && safeIndex < data.tags.length) {
+                data.tags.splice(safeIndex, 1);
                 syncLocalTask();  // FIX
                 if (!panelState.isNew && gristReady) saveTaskToGrist();
                 renderPanel();

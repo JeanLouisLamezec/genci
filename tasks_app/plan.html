@@ -576,6 +576,104 @@ window.addEventListener('unhandledrejection', function(e) {
 
 
 /* ============================================================================
+ * taskflow-dom-security.js — Primitives de rendu DOM partagees
+ * ----------------------------------------------------------------------------
+ * Ces fonctions ne remplacent pas les API DOM. Elles servent aux quelques
+ * rendus historiques encore construits sous forme de chaines HTML.
+ * ========================================================================== */
+(function (root, factory) {
+    var api = factory();
+    if (typeof module !== 'undefined' && module.exports) module.exports = api;
+    if (root) root.TaskFlowDomSecurity = api;
+})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+    'use strict';
+
+    /**
+     * Encode une valeur non fiable pour un noeud texte ou un attribut HTML
+     * delimite par des guillemets. Cette fonction ne doit jamais etre utilisee
+     * pour construire du JavaScript inline, une URL ou une regle CSS.
+     */
+    function escapeHtml(value) {
+        return String(value == null ? '' : value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    /**
+     * Les couleurs TaskFlow sont saisies avec <input type="color"> et sont
+     * stockees sous forme hexadecimale. Refuser toute autre syntaxe empeche une
+     * valeur Grist alteree de sortir d'un attribut style/value.
+     */
+    function sanitizeCssColor(value, fallback) {
+        var safeFallback = /^#[0-9a-fA-F]{6}$/.test(String(fallback || ''))
+            ? String(fallback)
+            : '#94a3b8';
+        var candidate = String(value == null ? '' : value).trim();
+        return /^#[0-9a-fA-F]{6}$/.test(candidate) ? candidate : safeFallback;
+    }
+
+    /**
+     * Valide un unique nom de classe avant son insertion dans un attribut
+     * class. Les espaces et caracteres de syntaxe HTML sont volontairement
+     * refuses : un statut persistant ne peut ainsi ni ajouter une classe ni
+     * sortir de l'attribut.
+     */
+    function sanitizeCssClassToken(value, fallback) {
+        var tokenPattern = /^[a-zA-Z0-9_-]+$/;
+        var safeFallback = tokenPattern.test(String(fallback || '')) ? String(fallback) : '';
+        var candidate = String(value == null ? '' : value);
+        return tokenPattern.test(candidate) ? candidate : safeFallback;
+    }
+
+    /**
+     * Convertit une valeur persistante en pourcentage fini et borne. Le retour
+     * est un nombre, directement utilisable dans une largeur CSS ou un input.
+     */
+    function sanitizePercentage(value, fallback) {
+        var fallbackNumber = Number(fallback);
+        if (!Number.isFinite(fallbackNumber)) fallbackNumber = 0;
+        var candidate = Number(value);
+        var result = Number.isFinite(candidate) ? candidate : fallbackNumber;
+        return Math.min(100, Math.max(0, result));
+    }
+
+    /**
+     * Restreint une preference persistante a une liste de valeurs connues.
+     * Les preferences locales restent une entree non fiable : une extension,
+     * un ancien build ou un script tiers peut avoir modifie localStorage.
+     */
+    function sanitizeEnumValue(value, allowedValues, fallback) {
+        var allowed = Array.isArray(allowedValues) ? allowedValues.map(String) : [];
+        var safeFallback = allowed.includes(String(fallback)) ? String(fallback) : (allowed[0] || '');
+        var candidate = String(value == null ? '' : value);
+        return allowed.includes(candidate) ? candidate : safeFallback;
+    }
+
+    /**
+     * Normalise une reference Grist avant son transport dans un attribut
+     * data-*. Une reference est un entier strictement positif ; toute autre
+     * valeur est refusee plutot que concatenee dans du HTML ou du JavaScript.
+     */
+    function sanitizeRecordId(value) {
+        var candidate = Number(value);
+        return Number.isSafeInteger(candidate) && candidate > 0 ? String(candidate) : '';
+    }
+
+    return {
+        escapeHtml: escapeHtml,
+        sanitizeCssColor: sanitizeCssColor,
+        sanitizeCssClassToken: sanitizeCssClassToken,
+        sanitizePercentage: sanitizePercentage,
+        sanitizeEnumValue: sanitizeEnumValue,
+        sanitizeRecordId: sanitizeRecordId
+    };
+});
+
+
+/* ============================================================================
  * taskflow-identity.js — Domaine d'identité commun TaskFlow
  * ----------------------------------------------------------------------------
  * Module pur : aucune dépendance au DOM, à Grist ou aux widgets.
@@ -7699,7 +7797,9 @@ function initPlanningService() {
 }
 
 // Utils
-const esc = (s) => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const esc = (s) => TaskFlowDomSecurity.escapeHtml(s);
+const safeColor = (value, fallback) => TaskFlowDomSecurity.sanitizeCssColor(value, fallback);
+const safeRecordId = (value) => TaskFlowDomSecurity.sanitizeRecordId(value);
 const getRefList = (v) => Array.isArray(v) && v[0] === 'L' ? v.slice(1).map(Number) : [];
 const teamById = (id) => S.team.find(m => m.id === id);
 const projById = (id) => S.projects.find(p => p.id === id);
@@ -7922,11 +8022,11 @@ function buildRows() {
         key: 'h:' + taskKey,
         isHeader: true,
         label: t.titre || ('Tâche ' + taskKey),
-        color: t.couleur || (project && project.couleur) || '#64748b',
+        color: safeColor(t.couleur || (project && project.couleur), '#64748b'),
         members: mems,
         gkeys: mems.map(m => taskKey + '|' + m.id)
       });
-      for (const m of mems) out.push({ key: taskKey + '|' + m.id, isSub: true, teamId: m.id, label: m.nom, color: m.couleur || '#6366f1', cap: capOf(m), members: [m] });
+      for (const m of mems) out.push({ key: taskKey + '|' + m.id, isSub: true, teamId: m.id, label: m.nom, color: safeColor(m.couleur, '#6366f1'), cap: capOf(m), members: [m] });
     }
     return out;
   }
@@ -7934,14 +8034,14 @@ function buildRows() {
     const ps = {};
     for (const t of planTasks()) {
       const pk = t.projet ? String(t.projet) : '0';
-      if (!ps[pk]) { const p = projById(t.projet); ps[pk] = { label: p ? p.nom : 'Sans projet', color: p ? p.couleur : '#64748b', mem: new Map() }; }
+      if (!ps[pk]) { const p = projById(t.projet); ps[pk] = { label: p ? p.nom : 'Sans projet', color: safeColor(p && p.couleur, '#64748b'), mem: new Map() }; }
       for (const c of scopedCharges(t)) { const m = teamById(c.teamId); if (m) ps[pk].mem.set(m.id, m); }
     }
     const out = [];
     for (const pk of Object.keys(ps)) {
       const g = ps[pk]; const mems = [...g.mem.values()];
       out.push({ key: 'h:' + pk, isHeader: true, label: g.label, color: g.color, members: mems, gkeys: mems.map(m => pk + '|' + m.id) });
-      for (const m of mems) out.push({ key: pk + '|' + m.id, isSub: true, teamId: m.id, label: m.nom, color: m.couleur || '#6366f1', cap: capOf(m), members: [m] });
+      for (const m of mems) out.push({ key: pk + '|' + m.id, isSub: true, teamId: m.id, label: m.nom, color: safeColor(m.couleur, '#6366f1'), cap: capOf(m), members: [m] });
     }
     return out;
   }
@@ -7952,14 +8052,14 @@ function buildRows() {
       // Si un filtre programme est actif, ne garder que les programmes filtrés
       const progFilter = S.filters?.programme || [];
       if (progFilter.length > 0 && !progFilter.includes(String(pk))) continue;
-      if (!ps[pk]) { const pf = progById(Number(pk)); ps[pk] = { label: pf ? pf.nom : 'Sans programme', color: (pf && pf.couleur) ? pf.couleur : '#64748b', mem: new Map() }; }
+      if (!ps[pk]) { const pf = progById(Number(pk)); ps[pk] = { label: pf ? pf.nom : 'Sans programme', color: safeColor(pf && pf.couleur, '#64748b'), mem: new Map() }; }
       for (const c of scopedCharges(t)) { const m = teamById(c.teamId); if (m) ps[pk].mem.set(m.id, m); }
     }
     const out = [];
     for (const pk of Object.keys(ps)) {
       const g = ps[pk]; const mems = [...g.mem.values()];
       out.push({ key: 'h:' + pk, isHeader: true, label: g.label, color: g.color, members: mems, gkeys: mems.map(m => pk + '|' + m.id) });
-      for (const m of mems) out.push({ key: pk + '|' + m.id, isSub: true, teamId: m.id, label: m.nom, color: m.couleur || '#6366f1', cap: capOf(m), members: [m] });
+      for (const m of mems) out.push({ key: pk + '|' + m.id, isSub: true, teamId: m.id, label: m.nom, color: safeColor(m.couleur, '#6366f1'), cap: capOf(m), members: [m] });
     }
     return out;
   }
@@ -7980,7 +8080,7 @@ function buildRows() {
     for (const r of Object.keys(rs)) {
       const g = rs[r]; const mems = [...g.members.values()];
       out.push({ key: 'h:' + r, isHeader: true, label: g.label, color: g.color, members: mems, gkeys: mems.map(m => r + '|' + m.id) });
-      for (const m of mems) out.push({ key: r + '|' + m.id, isSub: true, teamId: m.id, label: m.nom, color: m.couleur || '#6366f1', cap: capOf(m), members: [m] });
+      for (const m of mems) out.push({ key: r + '|' + m.id, isSub: true, teamId: m.id, label: m.nom, color: safeColor(m.couleur, '#6366f1'), cap: capOf(m), members: [m] });
     }
     return out;
   }
@@ -8005,7 +8105,7 @@ function buildRows() {
     filteredPersons = filteredPersons.filter(m => m.entite && S.filters.team.includes(String(m.entite)));
   }
   
-  return filteredPersons.map(m => ({ key: String(m.id), label: m.nom, color: m.couleur || '#6366f1', cap: capOf(m), members: [m] }));
+  return filteredPersons.map(m => ({ key: String(m.id), label: m.nom, color: safeColor(m.couleur, '#6366f1'), cap: capOf(m), members: [m] }));
 }
 
 // Disponibilités : table datée Disponibilites [{membre, type, dateDebut, dateFin (Unix s), dispo 0..1}] -> capacité réduite par période.
@@ -8289,7 +8389,7 @@ function renderTimeline() {
       const l = Math.max(0, Math.min(1, (ts - winStart) / span)) * 100;
       const rr = Math.max(0, Math.min(1, (te - winStart) / span)) * 100;
       const w = Math.max(rr - l, 1.4);
-      const col = (statusCfg.byValue[t.statut] || {}).fillColor || '#64748b';
+      const col = safeColor((statusCfg.byValue[t.statut] || {}).fillColor, '#64748b');
       const hrs = (effCharges(t).find(c => String(c.teamId) === String(pid)) || {}).heures || 0;
       const hot = isF && fIdx >= 0 && ts < bandE && te > bandS; // tâche dans la période focalisée
       const tp = TaskFlowTimePeriods.key(new Date(Math.max(ts, winStart)), S.granularity); // période à ouvrir si "Ajuster"
@@ -8370,13 +8470,14 @@ function taskCardHtml(t) {
   const prog = Math.max(0, Math.min(100, Number(t.progression) || 0));
   const dd = t.dateDebut ? fmtTLDate(t.dateDebut) : '—', de = t.dateEcheance ? fmtTLDate(t.dateEcheance) : '—';
   const totH = TF.parseCharges(t.charges).reduce((s, c) => s + c.heures, 0) || Number(t.estimationH) || 0;
+  const statusColor = safeColor(st.fillColor, '#64748b');
   const ini = (n) => (n || '?').split(' ').filter(Boolean).map(w => w[0]).slice(0, 2).join('').toUpperCase();
   return '<div class="tpc-badges"><span class="tpc-prio" style="background:' + pr[1] + '22;color:' + pr[1] + '">' + pr[0] + '</span>' +
-    (st.label ? '<span class="tpc-status" style="background:' + (st.fillColor || '#64748b') + '22;color:' + (st.fillColor || '#94a3b8') + '">' + esc(st.label) + '</span>' : '') +
+    (st.label ? '<span class="tpc-status" style="background:' + statusColor + '22;color:' + statusColor + '">' + esc(st.label) + '</span>' : '') +
     (t.type === 'jalon' ? '<span class="tpc-mil">◆ Jalon</span>' : '') + '</div>' +
     '<div class="tpc-title">' + esc(t.titre) + '</div>' +
-    '<div class="tpc-meta">' + (p ? '<span class="tpc-proj"><i style="background:' + p.couleur + '"></i>' + esc(p.nom) + '</span>' : '') + '<span class="tpc-dates">📅 ' + dd + ' → ' + de + '</span></div>' +
-    '<div class="tpc-row"><div class="tpc-ava">' + asg.map(m => '<span class="tpc-av" style="background:' + (m.couleur || '#6366f1') + '" title="' + esc(m.nom) + '">' + esc(ini(m.nom)) + '</span>').join('') + '</div><div class="tpc-prog"><div class="tpc-track"><div style="width:' + prog + '%"></div></div><span>' + prog + '%</span></div></div>' +
+    '<div class="tpc-meta">' + (p ? '<span class="tpc-proj"><i style="background:' + safeColor(p.couleur, '#64748b') + '"></i>' + esc(p.nom) + '</span>' : '') + '<span class="tpc-dates">📅 ' + dd + ' → ' + de + '</span></div>' +
+    '<div class="tpc-row"><div class="tpc-ava">' + asg.map(m => '<span class="tpc-av" style="background:' + safeColor(m.couleur, '#6366f1') + '" title="' + esc(m.nom) + '">' + esc(ini(m.nom)) + '</span>').join('') + '</div><div class="tpc-prog"><div class="tpc-track"><div style="width:' + prog + '%"></div></div><span>' + prog + '%</span></div></div>' +
     (totH ? '<div class="tpc-hours">' + r1(totH) + ' h alloué' + (asg.length > 1 ? 'es' : '') + '</div>' : '') +
     (t.dateCloture ? '<div class="tpc-cloture" style="color:' + (delaiDays(t) > 0 ? '#ff9094' : '#54d2a4') + '">✓ Clôturée le ' + fmtTLDate(t.dateCloture) + (t.dateEcheance ? ' · ' + delaiTxt(t) : '') + '</div>' : '');
 }
@@ -8571,6 +8672,77 @@ function memberAvail(period) {
   }
   return out;
 }
+function bindPlanEditorActions(container) {
+  if (!container) return;
+  if (container.__taskFlowPlanChangeHandler) {
+    container.removeEventListener('change', container.__taskFlowPlanChangeHandler);
+  }
+  if (container.__taskFlowPlanClickHandler) {
+    container.removeEventListener('click', container.__taskFlowPlanClickHandler);
+  }
+
+  const changeHandler = (event) => {
+    const origin = event.target && typeof event.target.closest === 'function' ? event.target : null;
+    const control = origin && origin.closest('[data-plan-change]');
+    if (!control || !container.contains(control)) return;
+    const action = control.dataset.planChange;
+    const taskIdValue = safeRecordId(control.dataset.taskId);
+    const memberIdValue = safeRecordId(control.dataset.memberId);
+    const taskId = taskIdValue ? Number(taskIdValue) : null;
+    const memberId = memberIdValue ? Number(memberIdValue) : null;
+
+    if (action === 'set-charge' && taskId && memberId) {
+      let hours = Number(control.value) || 0;
+      if (control.dataset.allocationUnit === 'pct') {
+        const capacityHours = Number(control.dataset.capacityHours);
+        const taskWeeks = Number(control.dataset.taskWeeks);
+        if (!Number.isFinite(capacityHours) || capacityHours < 0 || !Number.isFinite(taskWeeks) || taskWeeks <= 0) return;
+        hours = hours / 100 * capacityHours * taskWeeks;
+      }
+      setCharge(taskId, memberId, hours);
+      return;
+    }
+    if (action === 'reassign-charge' && taskId && memberId) {
+      const targetMemberIdValue = safeRecordId(control.value);
+      if (targetMemberIdValue) reassignCharge(taskId, memberId, Number(targetMemberIdValue));
+      return;
+    }
+    if (action === 'set-start-date' && taskId) {
+      setDates(taskId, control.value, null);
+      return;
+    }
+    if (action === 'set-end-date' && taskId) {
+      setDates(taskId, null, control.value);
+      return;
+    }
+    if (action === 'set-capacity' && memberId) {
+      setCapacity(memberId, Number(control.value) || 0);
+    }
+  };
+
+  const clickHandler = (event) => {
+    const origin = event.target && typeof event.target.closest === 'function' ? event.target : null;
+    const control = origin && origin.closest('[data-plan-action]');
+    if (!control || !container.contains(control)) return;
+    const action = control.dataset.planAction;
+    const memberIdValue = safeRecordId(control.dataset.memberId);
+    const memberId = memberIdValue ? Number(memberIdValue) : null;
+    if (action === 'add-indispo' && memberId) {
+      addIndispo(memberId);
+      return;
+    }
+    if (action === 'remove-indispo' && memberId) {
+      const rowIdValue = safeRecordId(control.dataset.rowId);
+      if (rowIdValue) removeIndispo(memberId, Number(rowIdValue));
+    }
+  };
+
+  container.addEventListener('change', changeHandler);
+  container.addEventListener('click', clickHandler);
+  container.__taskFlowPlanChangeHandler = changeHandler;
+  container.__taskFlowPlanClickHandler = clickHandler;
+}
+
 function openCell(key, period) {
   invalidateCurrentPreviewRequest();
   activePanelMode = PanelMode.CELL;
@@ -8608,19 +8780,25 @@ function openCell(key, period) {
   }
   const sorted = items.slice().sort((a, b) => b.slice - a.slice); // la plus grosse contribution en premier
   const unitToggle = editable ? '<div class="unitbar">Allouer en <button class="' + (S.allocUnit === 'h' ? 'on' : '') + '" onclick="setAllocUnit(\'h\')">heures</button><button class="' + (S.allocUnit === 'pct' ? 'on' : '') + '" onclick="setAllocUnit(\'pct\')">% capacité</button></div>' : '';
-  document.getElementById('pBody').innerHTML = banner + hint + unitToggle + (sorted.length ? sorted.map(i => {
+  const panelBody = document.getElementById('pBody');
+  panelBody.innerHTML = banner + hint + unitToggle + (sorted.length ? sorted.map(i => {
     const p = projById(i.task.projet);
     const sliceTxt = (p ? esc(p.nom) : 'Sans projet') + ' · ' + hoursText(i.slice) + ' h cette ' + per;
     const usePct = editable && S.allocUnit === 'pct' && capWk > 0;
     const wks = taskWeeks(i.task);
     const val = usePct ? Math.round(i.total / (capWk * wks) * 100) : displayHours(i.total);
-    const conv = usePct ? '((parseFloat(this.value)||0)/100*' + capWk + '*' + wks.toFixed(3) + ')' : '(parseFloat(this.value)||0)';
+    const taskId = safeRecordId(i.task.id);
+    const memberId = safeRecordId(tid);
+    const allocationData = usePct
+      ? ' data-allocation-unit="pct" data-capacity-hours="' + esc(String(Number.isFinite(Number(capWk)) ? Number(capWk) : 0)) + '" data-task-weeks="' + esc(String(Number.isFinite(Number(wks)) ? Number(wks.toFixed(3)) : 0)) + '"'
+      : ' data-allocation-unit="h"';
     const right = editable
-      ? '<div class="tkedit"><input type="number" name="alloc" min="0" step="' + (usePct ? 5 : 0.5) + '" value="' + val + '" title="Allocation ' + (usePct ? '(% de la capacité sur la durée)' : '(heures)') + '" onchange="setCharge(' + i.task.id + ',' + tid + ',' + conv + ')"><span class="u">' + (usePct ? '%' : 'h') + '</span><select name="reassign" title="Réaffecter à un membre (sa marge est indiquée)" onchange="if(this.value)reassignCharge(' + i.task.id + ',' + tid + ',parseInt(this.value))"><option value="">⇄</option>' + others.map(m => { const fr = av[m.id] ? av[m.id].free : null; return '<option value="' + m.id + '">→ ' + esc(m.nom) + (fr != null ? ' (' + fr + ' h libres)' : '') + '</option>'; }).join('') + '</select></div>'
+      ? '<div class="tkedit"><input type="number" name="alloc" min="0" step="' + (usePct ? 5 : 0.5) + '" value="' + val + '" title="Allocation ' + (usePct ? '(% de la capacité sur la durée)' : '(heures)') + '" data-plan-change="set-charge" data-task-id="' + taskId + '" data-member-id="' + memberId + '"' + allocationData + '><span class="u">' + (usePct ? '%' : 'h') + '</span><select name="reassign" title="Réaffecter à un membre (sa marge est indiquée)" data-plan-change="reassign-charge" data-task-id="' + taskId + '" data-member-id="' + memberId + '"><option value="">⇄</option>' + others.map(m => { const fr = av[m.id] ? av[m.id].free : null; return '<option value="' + safeRecordId(m.id) + '">→ ' + esc(m.nom) + (fr != null ? ' (' + fr + ' h libres)' : '') + '</option>'; }).join('') + '</select></div>'
       : '<div class="th">' + hoursText(i.total) + ' h</div>';
-    const dates = editable ? '<div class="tkdates"><span class="dl">📅 Dates</span><input type="date" name="dateDebut" value="' + gToInput(i.task.dateDebut) + '" title="Début" onchange="setDates(' + i.task.id + ',this.value,null)"><span>→</span><input type="date" name="dateEcheance" value="' + gToInput(i.task.dateEcheance) + '" title="Échéance" onchange="setDates(' + i.task.id + ',null,this.value)"></div>' : '';
-    return '<div class="tk"><div class="tkmain"><span class="pdot" style="background:' + (p ? p.couleur : '#64748b') + '"></span><div class="tinfo"><div class="tt">' + esc(i.task.titre) + '</div><div class="tm">' + sliceTxt + '</div></div>' + right + '</div>' + dates + '</div>';
+    const dates = editable ? '<div class="tkdates"><span class="dl">📅 Dates</span><input type="date" name="dateDebut" value="' + gToInput(i.task.dateDebut) + '" title="Début" data-plan-change="set-start-date" data-task-id="' + taskId + '"><span>→</span><input type="date" name="dateEcheance" value="' + gToInput(i.task.dateEcheance) + '" title="Échéance" data-plan-change="set-end-date" data-task-id="' + taskId + '"></div>' : '';
+    return '<div class="tk"><div class="tkmain"><span class="pdot" style="background:' + safeColor(p && p.couleur, '#64748b') + '"></span><div class="tinfo"><div class="tt">' + esc(i.task.titre) + '</div><div class="tm">' + sliceTxt + '</div></div>' + right + '</div>' + dates + '</div>';
   }).join('') : '<div style="color:var(--text-muted);font-size:.82rem">Aucune tâche ' + (S.mode === 'realise' ? 'réalisée' : 'planifiée') + ' sur cette période.</div>');
+  bindPlanEditorActions(panelBody);
   document.getElementById('overlay').classList.add('show');
   document.getElementById('panel').classList.add('show'); document.body.classList.add('panel-open');
   // lien heatmap → cellule surlignée + timeline focalisée
@@ -8743,11 +8921,14 @@ function openResource(key) {
   const rows = (S.dispos || []).filter(r => Number(r.membre) === m.id).slice().sort((a, b) => (a.dateDebut || 0) - (b.dateDebut || 0));
   document.getElementById('pTitle').textContent = m.nom;
   document.getElementById('pSub').textContent = 'Capacité & disponibilités';
-  let html = '<div class="rl">Capacité hebdomadaire</div><div class="capedit"><input type="number" min="0" step="1" value="' + capOf(m) + '" onchange="setCapacity(' + m.id + ',parseFloat(this.value)||0)"><span class="u">h / semaine</span></div>';
+  const memberId = safeRecordId(m.id);
+  let html = '<div class="rl">Capacité hebdomadaire</div><div class="capedit"><input type="number" min="0" step="1" value="' + capOf(m) + '" data-plan-change="set-capacity" data-member-id="' + memberId + '"><span class="u">h / semaine</span></div>';
   html += '<div class="rl" style="margin-top:16px">Indisponibilités (congés, fériés, temps partiel)</div>';
-  html += rows.length ? rows.map(r => { const dv = (r.dispo == null || r.dispo === '') ? 0 : Number(r.dispo); const tag = dv > 0 ? ' (' + Math.round(dv * 100) + '% dispo)' : ''; return '<div class="indispo"><span class="il">' + esc(r.type || 'Indispo') + tag + '</span><span class="id">' + esc(secToISO(r.dateDebut)) + ' → ' + esc(secToISO(r.dateFin)) + '</span><button class="ix" title="Retirer" onclick="removeIndispo(' + m.id + ',' + r.id + ')">×</button></div>'; }).join('') : '<div style="color:var(--text-muted);font-size:.8rem;margin:6px 0">Aucune indisponibilité.</div>';
-  html += '<div class="indispo-add"><input type="text" id="indLabel" placeholder="Libellé (ex. Congés)"><div class="dd"><input type="date" id="indStart"><span>→</span><input type="date" id="indEnd"></div><div class="dd"><input type="number" id="indDispo" min="0" max="100" step="10" value="0" title="Disponibilité pendant la période (0 = absent, 50 = mi-temps)"><span class="u">% dispo</span></div><button class="btn" onclick="addIndispo(' + m.id + ')">+ Ajouter</button></div>';
-  document.getElementById('pBody').innerHTML = html;
+  html += rows.length ? rows.map(r => { const dv = (r.dispo == null || r.dispo === '') ? 0 : Number(r.dispo); const tag = dv > 0 ? ' (' + Math.round(dv * 100) + '% dispo)' : ''; return '<div class="indispo"><span class="il">' + esc(r.type || 'Indispo') + tag + '</span><span class="id">' + esc(secToISO(r.dateDebut)) + ' → ' + esc(secToISO(r.dateFin)) + '</span><button class="ix" title="Retirer" data-plan-action="remove-indispo" data-member-id="' + memberId + '" data-row-id="' + safeRecordId(r.id) + '">×</button></div>'; }).join('') : '<div style="color:var(--text-muted);font-size:.8rem;margin:6px 0">Aucune indisponibilité.</div>';
+  html += '<div class="indispo-add"><input type="text" id="indLabel" placeholder="Libellé (ex. Congés)"><div class="dd"><input type="date" id="indStart"><span>→</span><input type="date" id="indEnd"></div><div class="dd"><input type="number" id="indDispo" min="0" max="100" step="10" value="0" title="Disponibilité pendant la période (0 = absent, 50 = mi-temps)"><span class="u">% dispo</span></div><button class="btn" data-plan-action="add-indispo" data-member-id="' + memberId + '">+ Ajouter</button></div>';
+  const panelBody = document.getElementById('pBody');
+  panelBody.innerHTML = html;
+  bindPlanEditorActions(panelBody);
   document.getElementById('overlay').classList.add('show');
   document.getElementById('panel').classList.add('show'); document.body.classList.add('panel-open');
 }
@@ -8932,7 +9113,7 @@ function markPreviewObsolete() {
  * Échappe une chaîne pour injection HTML sécurisée
  */
 function escapeHtml(s) {
-  return String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  return esc(s);
 }
 
 /**

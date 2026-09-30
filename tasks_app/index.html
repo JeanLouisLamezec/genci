@@ -105,6 +105,7 @@ body { display: flex; flex-direction: column; background: var(--bg); }
 
 <iframe id="frame" allow="clipboard-read; clipboard-write"></iframe>
 
+<script src="core/security/taskflow-message-bridge.js"></script>
 <script>
 // ── Config (auto local / prod) ─────────────────────────────────────
 const LOCAL = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
@@ -135,17 +136,28 @@ const skeleton = document.getElementById('skeleton');
 const skLabel  = document.getElementById('skLabel');
 let current = null;
 
-// ── Relais Grist transparent (enregistré AVANT grist-plugin-api) ──
-//   enfant -> Grist : on relaie PUIS stopImmediatePropagation, pour que l'API Grist du launcher
-//   (chargée juste après) n'intercepte pas l'appel enfant et n'injecte pas d'erreur (cassait le Plan).
-window.addEventListener('message', function (event) {
-  if (event.source === frame.contentWindow) {
-    window.parent.postMessage(event.data, '*');   // enfant -> Grist
-    event.stopImmediatePropagation();
-  } else if (event.source !== window.self) {
-    try { frame.contentWindow && frame.contentWindow.postMessage(event.data, '*'); } catch (_) {} // Grist -> enfant
+// ── Relais Grist strict ────────────────────────────────────────────
+// Seules les enveloppes grain-rpc valides circulent entre le parent Grist et
+// l'iframe active. Les deux fenetres et leurs origines sont verifiees avant
+// chaque transfert ; aucune origine generique "*" n'est utilisee.
+const parentOrigin = window.TaskFlowMessageBridge.resolveParentOrigin({
+  window: window,
+  document: document,
+  location: window.location
+});
+const messageBridge = window.TaskFlowMessageBridge.createMessageBridge({
+  window: window,
+  parentWindow: window.parent,
+  parentOrigin: parentOrigin,
+  getChildWindow: function () { return frame.contentWindow; },
+  onBlocked: function (details) {
+    console.warn('[TaskFlow shell] Message inter-fenetres bloque (' + details.direction + '/' + details.reason + ').');
   }
 });
+messageBridge.start();
+if (window.parent !== window && !parentOrigin) {
+  console.error('[TaskFlow shell] Origine du parent Grist introuvable : relais desactive par securite.');
+}
 
 // ── Barre d'onglets ──
 navbar.innerHTML = TABS.map(function (t) {
@@ -167,7 +179,12 @@ function go(id) {
     skeleton.classList.remove('visible');
     frame.classList.add('visible');
   };
-  frame.src = urlFor(id);
+  const targetUrl = urlFor(id);
+  if (!messageBridge.setChildUrl(targetUrl)) {
+    console.error('[TaskFlow shell] Origine du widget invalide : navigation annulee.');
+    return;
+  }
+  frame.src = targetUrl;
 }
 
 // ── Init ── RELAIS PUR : pas d'API Grist dans le launcher (sinon elle intercepte et casse

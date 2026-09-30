@@ -990,6 +990,104 @@
 
 
 /* ============================================================================
+ * taskflow-dom-security.js — Primitives de rendu DOM partagees
+ * ----------------------------------------------------------------------------
+ * Ces fonctions ne remplacent pas les API DOM. Elles servent aux quelques
+ * rendus historiques encore construits sous forme de chaines HTML.
+ * ========================================================================== */
+(function (root, factory) {
+    var api = factory();
+    if (typeof module !== 'undefined' && module.exports) module.exports = api;
+    if (root) root.TaskFlowDomSecurity = api;
+})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+    'use strict';
+
+    /**
+     * Encode une valeur non fiable pour un noeud texte ou un attribut HTML
+     * delimite par des guillemets. Cette fonction ne doit jamais etre utilisee
+     * pour construire du JavaScript inline, une URL ou une regle CSS.
+     */
+    function escapeHtml(value) {
+        return String(value == null ? '' : value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    /**
+     * Les couleurs TaskFlow sont saisies avec <input type="color"> et sont
+     * stockees sous forme hexadecimale. Refuser toute autre syntaxe empeche une
+     * valeur Grist alteree de sortir d'un attribut style/value.
+     */
+    function sanitizeCssColor(value, fallback) {
+        var safeFallback = /^#[0-9a-fA-F]{6}$/.test(String(fallback || ''))
+            ? String(fallback)
+            : '#94a3b8';
+        var candidate = String(value == null ? '' : value).trim();
+        return /^#[0-9a-fA-F]{6}$/.test(candidate) ? candidate : safeFallback;
+    }
+
+    /**
+     * Valide un unique nom de classe avant son insertion dans un attribut
+     * class. Les espaces et caracteres de syntaxe HTML sont volontairement
+     * refuses : un statut persistant ne peut ainsi ni ajouter une classe ni
+     * sortir de l'attribut.
+     */
+    function sanitizeCssClassToken(value, fallback) {
+        var tokenPattern = /^[a-zA-Z0-9_-]+$/;
+        var safeFallback = tokenPattern.test(String(fallback || '')) ? String(fallback) : '';
+        var candidate = String(value == null ? '' : value);
+        return tokenPattern.test(candidate) ? candidate : safeFallback;
+    }
+
+    /**
+     * Convertit une valeur persistante en pourcentage fini et borne. Le retour
+     * est un nombre, directement utilisable dans une largeur CSS ou un input.
+     */
+    function sanitizePercentage(value, fallback) {
+        var fallbackNumber = Number(fallback);
+        if (!Number.isFinite(fallbackNumber)) fallbackNumber = 0;
+        var candidate = Number(value);
+        var result = Number.isFinite(candidate) ? candidate : fallbackNumber;
+        return Math.min(100, Math.max(0, result));
+    }
+
+    /**
+     * Restreint une preference persistante a une liste de valeurs connues.
+     * Les preferences locales restent une entree non fiable : une extension,
+     * un ancien build ou un script tiers peut avoir modifie localStorage.
+     */
+    function sanitizeEnumValue(value, allowedValues, fallback) {
+        var allowed = Array.isArray(allowedValues) ? allowedValues.map(String) : [];
+        var safeFallback = allowed.includes(String(fallback)) ? String(fallback) : (allowed[0] || '');
+        var candidate = String(value == null ? '' : value);
+        return allowed.includes(candidate) ? candidate : safeFallback;
+    }
+
+    /**
+     * Normalise une reference Grist avant son transport dans un attribut
+     * data-*. Une reference est un entier strictement positif ; toute autre
+     * valeur est refusee plutot que concatenee dans du HTML ou du JavaScript.
+     */
+    function sanitizeRecordId(value) {
+        var candidate = Number(value);
+        return Number.isSafeInteger(candidate) && candidate > 0 ? String(candidate) : '';
+    }
+
+    return {
+        escapeHtml: escapeHtml,
+        sanitizeCssColor: sanitizeCssColor,
+        sanitizeCssClassToken: sanitizeCssClassToken,
+        sanitizePercentage: sanitizePercentage,
+        sanitizeEnumValue: sanitizeEnumValue,
+        sanitizeRecordId: sanitizeRecordId
+    };
+});
+
+
+/* ============================================================================
  * taskflow-identity.js — Domaine d'identité commun TaskFlow
  * ----------------------------------------------------------------------------
  * Module pur : aucune dépendance au DOM, à Grist ou aux widgets.
@@ -8098,7 +8196,8 @@ if (typeof globalThis !== 'undefined') {
         let panelState = { open: false, mode: null, periodType: null, periodDate: null, periodTasks: [], taskId: null, taskIndex: -1, isNew: false, editData: null };
         let overlayPointerStart = { x: 0, y: 0 };
         let filters = { project: [], priority: [], assignee: [] };  // GEN-02: Ajout assignee pour compatibilité inter-widgets
-        let colorMode = localStorage.getItem('taskflow_calendar_colormode') || 'priority';
+        const COLOR_MODES = ['priority', 'project', 'assignee', 'status'];
+        let colorMode = TaskFlowDomSecurity.sanitizeEnumValue(localStorage.getItem('taskflow_calendar_colormode'), COLOR_MODES, 'priority');
         let showSubtasks = localStorage.getItem('taskflow_calendar_showsubs') === '1';  // WBS-03
         // #9 niveau de travail (par widget, opt-in, defaut 'all') : 'actions' = feuilles, 'parents' = noeuds de synthese.
         let workLevel = localStorage.getItem('taskflow_calendar_worklevel') || 'all';
@@ -8153,7 +8252,11 @@ if (typeof globalThis !== 'undefined') {
             }
         }
         const showSaveIndicator = () => { const el = document.getElementById('saveIndicator'); el.classList.add('visible'); clearTimeout(saveTimeout); saveTimeout = setTimeout(() => el.classList.remove('visible'), 1500); };
-        const escapeHtml = (t) => { if (!t) return ''; const d = document.createElement('div'); d.textContent = t; return d.innerHTML; };
+        const escapeHtml = (value) => TaskFlowDomSecurity.escapeHtml(value);
+        const safeColor = (value, fallback = '#94a3b8') => TaskFlowDomSecurity.sanitizeCssColor(value, fallback);
+        const safeClassToken = (value, fallback = '') => TaskFlowDomSecurity.sanitizeCssClassToken(value, fallback);
+        const safePercentage = (value, fallback = 0) => TaskFlowDomSecurity.sanitizePercentage(value, fallback);
+        const safeRecordId = (value) => TaskFlowDomSecurity.sanitizeRecordId(value);
 
         const gristToDate = (ts) => ts ? new Date(ts * 1000) : null;
         const dateToGrist = (d) => d ? Math.floor(d.getTime() / 1000) : null;
@@ -8180,9 +8283,9 @@ if (typeof globalThis !== 'undefined') {
 
         // Project/Team helpers
         const getProjectName = (id) => { const p = projects.find(x => x.id === id); return p?.nom || ''; };
-        const getProjectColor = (id) => { const p = projects.find(x => x.id === id); return p?.couleur || '#64748b'; };
+        const getProjectColor = (id) => { const p = projects.find(x => x.id === id); return safeColor(p?.couleur, '#64748b'); };
         const getTeamMemberName = (id) => { const m = team.find(x => x.id === id); return m?.nom || ''; };
-        const getTeamMemberColor = (id) => { const m = team.find(x => x.id === id); return m?.couleur || '#3e5de7'; };  // TEAM-01
+        const getTeamMemberColor = (id) => { const m = team.find(x => x.id === id); return safeColor(m?.couleur, '#3e5de7'); };  // TEAM-01
         const getInitials = (n) => n ? n.split(' ').map(x => x[0]).join('').toUpperCase().slice(0, 2) : '?';
 
         // RefList / ChoiceList helpers - STANDARDIZED
@@ -8206,11 +8309,11 @@ if (typeof globalThis !== 'undefined') {
         const getTags = (t) => getChoiceListArray(t?.tags);
         const getPriority = (t) => (t?.priorite >= 1 && t?.priorite <= 4) ? parseInt(t.priorite) : 3;
         function getTaskColor(t) {
-            if (t?.couleur && /^#[0-9a-f]{3,8}$/i.test(t.couleur)) return t.couleur;
+            if (t?.couleur) return safeColor(t.couleur);
             switch (colorMode) {
                 case 'project': return t?.projet ? getProjectColor(t.projet) : '#94a3b8';
                 case 'assignee': { const a = getAssignees(t); return a.length ? getTeamMemberColor(a[0]) : '#94a3b8'; }
-                case 'status': return TF.getStatus(statusCfg, t?.statut || statusCfg.firstValue).fillColor;
+                case 'status': return safeColor(TF.getStatus(statusCfg, t?.statut || statusCfg.firstValue).fillColor);
                 case 'priority':
                 default: return PRIORITY_COLORS[getPriority(t)];
             }
@@ -8437,13 +8540,23 @@ if (typeof globalThis !== 'undefined') {
         
         function updateFilterMenus() {
             const grp = (label, html, first) => '<div class="fm-group-label'+(first?' first':'')+'">'+label+'</div>'+html;
-            const projHtml = projects.length ? projects.map(p => `<div class="filter-option" onclick="toggleFilterValue('project', ${p.id})"><input type="checkbox" ${filters.project.includes(p.id)?'checked':''}><span style="color:${p.couleur||'#6366f1'}">●</span> ${escapeHtml(p.nom)}</div>`).join('') : '<div class="filter-option muted">Aucun projet</div>';
-            const prioHtml = [1,2,3,4].map(p => `<div class="filter-option" onclick="toggleFilterValue('priority', ${p})"><input type="checkbox" ${filters.priority.includes(p)?'checked':''}><span style="color:${PRIORITY_COLORS[p]}">●</span> ${PRIORITY_LABELS[p]}</div>`).join('');
+            const projHtml = projects.length ? projects.map(p => `<div class="filter-option" data-calendar-filter-type="project" data-calendar-filter-value="${escapeHtml(String(p.id))}"><input type="checkbox" ${filters.project.includes(p.id)?'checked':''}><span style="color:${safeColor(p.couleur, '#6366f1')}">●</span> ${escapeHtml(p.nom)}</div>`).join('') : '<div class="filter-option muted">Aucun projet</div>';
+            const prioHtml = [1,2,3,4].map(p => `<div class="filter-option" data-calendar-filter-type="priority" data-calendar-filter-value="${p}"><input type="checkbox" ${filters.priority.includes(p)?'checked':''}><span style="color:${PRIORITY_COLORS[p]}">●</span> ${PRIORITY_LABELS[p]}</div>`).join('');
             const team2 = team.filter(m => m.actif !== false);
-            const assHtml = team2.length ? team2.map(m => `<div class="filter-option" onclick="toggleFilterValue('assignee', ${m.id})"><input type="checkbox" ${filters.assignee.includes(m.id)?'checked':''}>${escapeHtml(m.nom)}</div>`).join('') : '<div class="filter-option muted">Aucun membre</div>';
+            const assHtml = team2.length ? team2.map(m => `<div class="filter-option" data-calendar-filter-type="assignee" data-calendar-filter-value="${escapeHtml(String(m.id))}"><input type="checkbox" ${filters.assignee.includes(m.id)?'checked':''}>${escapeHtml(m.nom)}</div>`).join('') : '<div class="filter-option muted">Aucun membre</div>';
             const total = filters.project.length + filters.priority.length + filters.assignee.length;
             const menu = document.getElementById('filterAllMenu');
-            if (menu) menu.innerHTML = grp('Personnes', assHtml, true) + grp('Projets', projHtml) + grp('Priorités', prioHtml) + (total ? '<div class="fm-foot"><span class="fm-clear" onclick="clearAllCalFilters()">Tout effacer</span></div>' : '');
+            if (menu) {
+                menu.innerHTML = grp('Personnes', assHtml, true) + grp('Projets', projHtml) + grp('Priorités', prioHtml) + (total ? '<div class="fm-foot"><span class="fm-clear" data-calendar-filter-action="clear-all">Tout effacer</span></div>' : '');
+                menu.querySelectorAll('[data-calendar-filter-type][data-calendar-filter-value]').forEach(option => {
+                    option.addEventListener('click', () => {
+                        const value = Number(option.dataset.calendarFilterValue);
+                        if (Number.isFinite(value)) toggleFilterValue(option.dataset.calendarFilterType, value);
+                    });
+                });
+                const clearButton = menu.querySelector('[data-calendar-filter-action="clear-all"]');
+                if (clearButton) clearButton.addEventListener('click', clearAllCalFilters);
+            }
             const cnt = document.getElementById('filterCount'); if (cnt) { cnt.textContent = total; cnt.style.display = total ? 'inline-flex' : 'none'; }
             const fbtn = document.getElementById('filterBtn'); if (fbtn) fbtn.classList.toggle('has-filter', total > 0);
             const ms = document.getElementById('moreSubsToggle'); if (ms) { ms.classList.toggle('on', showSubtasks); const off = workLevel !== 'all'; ms.style.opacity = off ? '0.45' : ''; ms.style.pointerEvents = off ? 'none' : ''; ms.title = off ? 'Indisponible : le filtre « Niveau » prime sur ce reglage' : ''; }
@@ -8453,14 +8566,22 @@ if (typeof globalThis !== 'undefined') {
         function renderFilterChips() {
             const bar = document.getElementById('filterChips'); if (!bar) return;
             const X = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
-            const chip = (type, val, label, color) => { const dot = color ? `<span class="fc-dot" style="background:${color}"></span>` : ''; return `<span class="fc-chip">${dot}${label}<span class="fc-x" title="Retirer" onclick="toggleFilterValue('${type}', ${val})">${X}</span></span>`; };
+            const chip = (type, val, label, color) => { const dot = color ? `<span class="fc-dot" style="background:${safeColor(color)}"></span>` : ''; return `<span class="fc-chip">${dot}${label}<span class="fc-x" title="Retirer" data-calendar-filter-type="${escapeHtml(type)}" data-calendar-filter-value="${escapeHtml(String(val))}">${X}</span></span>`; };
             const chips = [];
             filters.project.forEach(id => { const p = projects.find(x=>x.id===id); chips.push(chip('project', id, p?escapeHtml(p.nom):'Projet', p&&p.couleur)); });
             filters.priority.forEach(v => chips.push(chip('priority', v, PRIORITY_LABELS[v], PRIORITY_COLORS[v])));
             filters.assignee.forEach(id => { const m = team.find(x=>x.id===id); chips.push(chip('assignee', id, m?escapeHtml(m.nom):'Membre')); });
             if (!chips.length) { bar.style.display = 'none'; bar.innerHTML = ''; return; }
             bar.style.display = 'flex';
-            bar.innerHTML = '<span class="fc-label">Filtres actifs</span>' + chips.join('') + '<span class="fc-clear-all" onclick="clearAllCalFilters()">Tout effacer</span>';
+            bar.innerHTML = '<span class="fc-label">Filtres actifs</span>' + chips.join('') + '<span class="fc-clear-all" data-calendar-filter-action="clear-all">Tout effacer</span>';
+            bar.querySelectorAll('[data-calendar-filter-type][data-calendar-filter-value]').forEach(removeButton => {
+                removeButton.addEventListener('click', () => {
+                    const value = Number(removeButton.dataset.calendarFilterValue);
+                    if (Number.isFinite(value)) toggleFilterValue(removeButton.dataset.calendarFilterType, value);
+                });
+            });
+            const clearButton = bar.querySelector('[data-calendar-filter-action="clear-all"]');
+            if (clearButton) clearButton.addEventListener('click', clearAllCalFilters);
         }
                 function toggleFilterValue(type, val) {
             const arr = filters[type];
@@ -8479,8 +8600,8 @@ if (typeof globalThis !== 'undefined') {
             }
         }
         function changeColorMode(mode) {
-            colorMode = mode;
-            localStorage.setItem('taskflow_calendar_colormode', mode);
+            colorMode = TaskFlowDomSecurity.sanitizeEnumValue(mode, COLOR_MODES, 'priority');
+            localStorage.setItem('taskflow_calendar_colormode', colorMode);
             // Persistance locale uniquement — évite la demande d'enregistrement du doc.
             render();
         }
@@ -9489,21 +9610,23 @@ if (typeof globalThis !== 'undefined') {
                     ${periodTasks.length ? periodTasks.map(t => renderTaskCard(t)).join('') : '<div class="panel-empty">Aucune tâche</div>'}
                 </div>
             `;
+            bindTaskPanelActions(content);
             
             footer.innerHTML = `<button class="panel-btn primary" onclick="openCreatePanel()" style="width:100%">+ Nouvelle tâche</button>`;
         }
         
         function renderTaskCard(t) {
             const p = getPriority(t);
+            const progressValue = safePercentage(t.progression);
             const projectName = getProjectName(t.projet);
             const projectColor = getProjectColor(t.projet);
             const s = gristToDate(t.dateDebut), e = gristToDate(t.dateEcheance);
             const ds = s ? formatDate(s, 'short') : '';
             
-            return `<div class="panel-task-card p${p} ${t.id === selectedTaskId ? 'selected' : ''}" onclick="openTaskPanel(${t.id})">
+            return `<div class="panel-task-card p${p} ${t.id === selectedTaskId ? 'selected' : ''}" data-panel-action="open-task" data-task-id="${safeRecordId(t.id)}">
                 <div class="panel-task-title">${t.type === 'jalon' ? '◆ ' : ''}${escapeHtml(t.titre) || 'Sans titre'}</div>
                 <div class="panel-task-meta"><span>${ds}</span>${projectName ? `<span style="color:${projectColor}">● ${escapeHtml(projectName)}</span>` : ''}</div>
-                ${t.type !== 'jalon' ? `<div class="panel-task-progress"><div class="panel-task-progress-bar p${p}" style="width:${t.progression || 0}%"></div></div>` : ''}
+                ${t.type !== 'jalon' ? `<div class="panel-task-progress"><div class="panel-task-progress-bar p${p}" style="width:${progressValue}%"></div></div>` : ''}
             </div>`;
         }
 
@@ -9517,6 +9640,7 @@ if (typeof globalThis !== 'undefined') {
 
             const data = panelState.editData;
             if (!data) { backToPeriod(); return; }
+            const progressValue = safePercentage(data.progression);
 
             const canNavigate = panelState.periodTasks.length > 1 && !panelState.isNew;
             const navLabel = !panelState.isNew && panelState.periodTasks.length > 1 ? `${panelState.taskIndex + 1}/${panelState.periodTasks.length}` : '';
@@ -9534,7 +9658,7 @@ if (typeof globalThis !== 'undefined') {
             const e = gristToDate(data.dateEcheance);
             const priorityColor = PRIORITY_COLORS[getPriority(data)] || '#94a3b8';
             const currentProject = projects.find(p => p.id === data.projet);
-            const projectColor = currentProject?.couleur || '#94a3b8';
+            const projectColor = safeColor(currentProject?.couleur);
             const projectOptions = projects.filter(p => p.actif !== false).map(p =>
                 `<option value="${p.id}" ${data.projet === p.id ? 'selected' : ''}>${escapeHtml(p.nom)}</option>`
             ).join('');
@@ -9545,15 +9669,16 @@ if (typeof globalThis !== 'undefined') {
             const titlePlaceholder = data.type === 'jalon' ? 'Nom du jalon...' : data.type === 'reunion' ? 'Sujet de la réunion...' : 'Titre de la tâche...';
 
             // Assignés
-            const assigneesChips = data.assignees.map(id => `<span class="multi-select-chip">${escapeHtml(getTeamMemberName(id))}<span class="remove" onclick="event.stopPropagation();removeAssignee(${id})">×</span></span>`).join('');
+            const assigneesChips = data.assignees.map(id => `<span class="multi-select-chip">${escapeHtml(getTeamMemberName(id))}<span class="remove" data-panel-action="remove-assignee" data-member-id="${safeRecordId(id)}">×</span></span>`).join('');
             const assigneesOptions = team.filter(m => m.actif !== false).map(m => {
-                const swatches = COLOR_PRESETS.map(c => `<span class="color-swatch" style="background:${c}" onclick="event.stopPropagation();setMemberColor(${m.id},'${c}')"></span>`).join('');
-                return `<div class="multi-select-option ${data.assignees.includes(m.id) ? 'selected' : ''}" onclick="toggleAssignee(${m.id})">
+                const memberId = safeRecordId(m.id);
+                const swatches = COLOR_PRESETS.map(c => `<span class="color-swatch" style="background:${c}" data-panel-action="set-member-color" data-member-id="${memberId}" data-color="${c}"></span>`).join('');
+                return `<div class="multi-select-option ${data.assignees.includes(m.id) ? 'selected' : ''}" data-panel-action="toggle-assignee" data-member-id="${memberId}">
                     <div class="member-color-wrap">
-                        <span class="member-color-dot" style="background:${getTeamMemberColor(m.id)}" title="Changer la couleur du membre" onclick="event.stopPropagation();this.nextElementSibling.classList.toggle('open')"></span>
+                        <span class="member-color-dot" style="background:${getTeamMemberColor(m.id)}" title="Changer la couleur du membre" data-panel-action="toggle-member-color"></span>
                         <div class="member-color-picker">${swatches}</div>
                     </div>
-                    <input type="checkbox" ${data.assignees.includes(m.id) ? 'checked' : ''} onclick="event.stopPropagation();toggleAssignee(${m.id})">
+                    <input type="checkbox" ${data.assignees.includes(m.id) ? 'checked' : ''}>
                     ${escapeHtml(m.nom)}
                 </div>`;
             }
@@ -9565,27 +9690,27 @@ if (typeof globalThis !== 'undefined') {
             const chargeDescs = (!panelState.isNew && panelState.taskId) ? getAllDescendants(panelState.taskId) : [];
             const chargeConsol = chargeDescs.length ? TF.chargeByMember([{ charges: TF.chargesToJson(data.charges) }].concat(chargeDescs)) : null;
             const chargeConsolHtml = (chargeConsol && Object.keys(chargeConsol).length) ? ('<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border)"><div class="prop-label" style="margin-bottom:6px">Consolidé (avec sous-tâches)</div>' + Object.keys(chargeConsol).map(function(tid){ return '<div class="charge-row"><span class="an">' + escapeHtml(getTeamMemberName(Number(tid))) + '</span><span style="font-weight:600;font-size:0.82rem">' + chargeConsol[tid] + ' h</span></div>'; }).join('') + '<div style="margin-top:6px;font-size:0.78rem;color:var(--text-muted)">Total consolidé : <strong>' + Object.values(chargeConsol).reduce(function(s,h){ return s + h; }, 0) + '</strong> h</div></div>') : '';
-            const chargeRows = data.assignees.map(id => `<div style="display:flex;align-items:center;gap:8px"><span style="flex:1;font-size:0.8rem">${escapeHtml(getTeamMemberName(id))}</span><input type="number" min="0" step="0.5" value="${chargeOf(id)}" onchange="updateCharge(${id}, this.value)" style="width:64px;padding:4px 6px;border:1px solid var(--border);border-radius:6px"><span style="font-size:0.75rem;color:var(--text-muted)">h</span></div>`).join('');
+            const chargeRows = data.assignees.map(id => `<div style="display:flex;align-items:center;gap:8px"><span style="flex:1;font-size:0.8rem">${escapeHtml(getTeamMemberName(id))}</span><input type="number" min="0" step="0.5" value="${chargeOf(id)}" data-panel-change="update-charge" data-member-id="${safeRecordId(id)}" style="width:64px;padding:4px 6px;border:1px solid var(--border);border-radius:6px"><span style="font-size:0.75rem;color:var(--text-muted)">h</span></div>`).join('');
 
             // Dépendances
             const depsChips = data.dependDe.map(id => {
                 const d = tasks.find(t => t.id === id);
-                return d ? `<span class="multi-select-chip">${escapeHtml(d.titre)}<span class="remove" onclick="event.stopPropagation();removeDependency(${id})">×</span></span>` : '';
+                return d ? `<span class="multi-select-chip">${escapeHtml(d.titre)}<span class="remove" data-panel-action="remove-dependency" data-task-id="${safeRecordId(id)}">×</span></span>` : '';
             }).join('');
             const availableDeps = panelState.isNew ? tasks : getAvailableDependencies(panelState.taskId);
             const depsOptions = availableDeps.map(t =>
-                `<div class="multi-select-option ${data.dependDe.includes(t.id) ? 'selected' : ''}" onclick="toggleDependency(${t.id})"><input type="checkbox" ${data.dependDe.includes(t.id) ? 'checked' : ''} onclick="event.stopPropagation();toggleDependency(${t.id})">${escapeHtml(t.titre)}</div>`
+                `<div class="multi-select-option ${data.dependDe.includes(t.id) ? 'selected' : ''}" data-panel-action="toggle-dependency" data-task-id="${safeRecordId(t.id)}"><input type="checkbox" ${data.dependDe.includes(t.id) ? 'checked' : ''}>${escapeHtml(t.titre)}</div>`
             ).join('');
             let blockedHtml = '';
             if (!panelState.isNew) {
                 const blocked = getBlockedTasks(panelState.taskId);
                 if (blocked.length) {
-                    blockedHtml = `<div class="deps-display"><div class="deps-group"><div class="deps-group-label">→ Bloque :</div><div class="deps-list">${blocked.map(t => `<div class="dep-item" onclick="openTaskPanel(${t.id})">→ ${escapeHtml(t.titre)}</div>`).join('')}</div></div></div>`;
+                    blockedHtml = `<div class="deps-display"><div class="deps-group"><div class="deps-group-label">→ Bloque :</div><div class="deps-list">${blocked.map(t => `<div class="dep-item" data-panel-action="open-task" data-task-id="${safeRecordId(t.id)}">→ ${escapeHtml(t.titre)}</div>`).join('')}</div></div></div>`;
                 }
             }
 
             // Tags & Temps
-            const tagsChips = data.tags.map(tag => `<span class="tag-chip">#${escapeHtml(tag)}<span class="remove" onclick="removeTag('${escapeHtml(tag)}')">×</span></span>`).join('');
+            const tagsChips = data.tags.map((tag, index) => `<span class="tag-chip">#${escapeHtml(tag)}<span class="remove" onclick="removeTagAt(${index})">×</span></span>`).join('');
             const estim = data.estimationH || 0;
             const passe = data.tempsPasse || 0;
             const timePercent = estim > 0 ? Math.min((passe / estim) * 100, 100) : 0;
@@ -9597,7 +9722,7 @@ if (typeof globalThis !== 'undefined') {
                 const t = tasks.find(x => x.id === id);
                 if (!t) return '';
                 const st = t.statut || 'todo';
-                return `<div class="prereq-item ${TF.isTerminal(statusCfg, st) ? 'done' : ''}" onclick="openTaskPanel(${id})"><span class="prereq-item-icon">${TF.isTerminal(statusCfg, st) ? '✓' : '○'}</span><span class="prereq-item-title">${escapeHtml(t.titre)}</span><span class="prereq-badge" style="background:${TF.getStatus(statusCfg, st).fillColor};color:${TF.getStatus(statusCfg, st).textColor}">${escapeHtml(TF.getStatus(statusCfg, st).label)}</span></div>`;
+                return `<div class="prereq-item ${TF.isTerminal(statusCfg, st) ? 'done' : ''}" data-panel-action="open-task" data-task-id="${safeRecordId(id)}"><span class="prereq-item-icon">${TF.isTerminal(statusCfg, st) ? '✓' : '○'}</span><span class="prereq-item-title">${escapeHtml(t.titre)}</span><span class="prereq-badge" style="background:${safeColor(TF.getStatus(statusCfg, st).fillColor)};color:${safeColor(TF.getStatus(statusCfg, st).textColor, '#ffffff')}">${escapeHtml(TF.getStatus(statusCfg, st).label)}</span></div>`;
             }).join('');
 
             content.innerHTML = `
@@ -9614,7 +9739,7 @@ if (typeof globalThis !== 'undefined') {
                     <div class="prop-row pr-status">
                         <span class="prop-label">Statut</span>
                         <div class="prop-value"><div class="status-selector">
-                            ${(data.type !== 'jalon' ? statusCfg.list : statusCfg.list.filter(s => s.value === statusCfg.firstValue || s.value === statusCfg.terminalValue)).map(s => `<div class="status-pill ${data.statut === s.value ? 'selected' : ''}" data-status="${escapeHtml(s.value)}" onclick="updateField('statut', this.dataset.status)"><span class="panel-pill-dot" style="background:${s.fillColor}"></span>${escapeHtml(s.label)}</div>`).join('')}
+                            ${(data.type !== 'jalon' ? statusCfg.list : statusCfg.list.filter(s => s.value === statusCfg.firstValue || s.value === statusCfg.terminalValue)).map(s => `<div class="status-pill ${data.statut === s.value ? 'selected' : ''}" data-status="${escapeHtml(s.value)}" onclick="updateField('statut', this.dataset.status)"><span class="panel-pill-dot" style="background:${safeColor(s.fillColor)}"></span>${escapeHtml(s.label)}</div>`).join('')}
                         </div></div>
                     </div>
                     ${data.type !== 'reunion' ? `
@@ -9638,7 +9763,7 @@ if (typeof globalThis !== 'undefined') {
                         <span class="prop-label">Projet</span>
                         <div class="prop-value"><div class="project-select-wrap">
                             ${currentProject
-                                ? `<span class="project-color-dot" style="background:${projectColor}" title="Changer la couleur du projet" onclick="event.stopPropagation();this.nextElementSibling.classList.toggle('open')"></span><div class="color-picker-pop">${COLOR_PRESETS.map(c => `<span class="color-swatch" style="background:${c}" onclick="event.stopPropagation();setProjectColor(${currentProject.id},'${c}')"></span>`).join('')}</div>`
+                                ? `<span class="project-color-dot" style="background:${projectColor}" title="Changer la couleur du projet" data-panel-action="toggle-project-color"></span><div class="color-picker-pop">${COLOR_PRESETS.map(c => `<span class="color-swatch" style="background:${c}" data-panel-action="set-project-color" data-project-id="${safeRecordId(currentProject.id)}" data-color="${c}"></span>`).join('')}</div>`
                                 : `<span class="project-color-dot" style="background:${projectColor}"></span>`}
                             <select class="form-select" onchange="updateField('projet', parseInt(this.value) || null)"><option value="">Aucun projet</option>${projectOptions}</select>
                         </div></div>
@@ -9646,7 +9771,7 @@ if (typeof globalThis !== 'undefined') {
                     <div class="prop-row">
                         <span class="prop-label">Couleur</span>
                         <div class="prop-value"><div style="display:flex;gap:8px;align-items:center">
-                            <input type="color" value="${data.couleur || getTaskColor(data)}" onchange="updateField('couleur', this.value)" style="width:36px;height:28px;border:1px solid var(--border);border-radius:6px;cursor:pointer;padding:2px">
+                            <input type="color" value="${safeColor(data.couleur, getTaskColor(data))}" onchange="updateField('couleur', this.value)" style="width:36px;height:28px;border:1px solid var(--border);border-radius:6px;cursor:pointer;padding:2px">
                             ${data.couleur
                                 ? `<button class="btn" style="padding:4px 10px;font-size:0.72rem" onclick="updateField('couleur', null)">Réinitialiser</button>`
                                 : `<span style="font-size:0.72rem;color:var(--text-muted)">Héritée du mode « ${colorMode} »</span>`}
@@ -9658,7 +9783,7 @@ if (typeof globalThis !== 'undefined') {
                         <div class="prop-value">
                             ${data.parentTask
                                 ? `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
-                                    <span class="multi-select-chip" ${panelState.isNew ? '' : `onclick="openTaskPanel(${data.parentTask})"`} style="${panelState.isNew ? '' : 'cursor:pointer;'}background:var(--primary-light);color:var(--primary)">↑ ${escapeHtml((tasks.find(t => t.id === data.parentTask) || {}).titre || '(inconnu)')}</span>
+                                    <span class="multi-select-chip" ${panelState.isNew ? '' : `data-panel-action="open-task" data-task-id="${safeRecordId(data.parentTask)}"`} style="${panelState.isNew ? '' : 'cursor:pointer;'}background:var(--primary-light);color:var(--primary)">↑ ${escapeHtml((tasks.find(t => t.id === data.parentTask) || {}).titre || '(inconnu)')}</span>
                                     <button class="btn" style="padding:4px 10px;font-size:0.72rem" onclick="detachFromParent()">Détacher</button>
                                   </div>`
                                 : `<select class="form-select" onchange="if(this.value)setParent(parseInt(this.value))"><option value="">— Tâche racine —</option>${tasks.filter(t => t.id !== panelState.taskId && canSetParent(panelState.taskId, t.id)).map(t => `<option value="${t.id}">${escapeHtml(t.titre)}</option>`).join('')}</select>`}
@@ -9667,7 +9792,7 @@ if (typeof globalThis !== 'undefined') {
                     <div class="prop-row">
                         <span class="prop-label">${assignLabel}</span>
                         <div class="prop-value">
-                            ${data.assignees.length ? `<div class="asg-list">${data.assignees.map(id => { const nm = getTeamMemberName(id) || '?'; const initials = nm.split(' ').filter(Boolean).map(w => w[0]).slice(0,2).join('').toUpperCase(); const mem = team.find(x => x.id === id); return `<div class="asg"><span class="asg-ava" style="background:${getTeamMemberColor(id)}">${escapeHtml(initials)}</span><span class="an">${escapeHtml(nm)}</span>${mem && mem.role ? `<span class="ar">${escapeHtml(mem.role)}</span>` : ''}<button class="asg-x" title="Retirer" onclick="removeAssignee(${id})">×</button></div>`; }).join('')}</div>` : ''}
+                            ${data.assignees.length ? `<div class="asg-list">${data.assignees.map(id => { const nm = getTeamMemberName(id) || '?'; const initials = nm.split(' ').filter(Boolean).map(w => w[0]).slice(0,2).join('').toUpperCase(); const mem = team.find(x => x.id === id); return `<div class="asg"><span class="asg-ava" style="background:${getTeamMemberColor(id)}">${escapeHtml(initials)}</span><span class="an">${escapeHtml(nm)}</span>${mem && mem.role ? `<span class="ar">${escapeHtml(mem.role)}</span>` : ''}<button class="asg-x" title="Retirer" data-panel-action="remove-assignee" data-member-id="${safeRecordId(id)}">×</button></div>`; }).join('')}</div>` : ''}
                             <div class="multi-select" id="assigneesSelect"><button class="addbtn" onclick="toggleMultiSelect('assigneesSelect')"><span style="font-size:1rem;line-height:1">+</span> ${data.type === 'reunion' ? 'Ajouter un participant' : 'Assigner un membre'}</button><div class="multi-select-dropdown">${assigneesOptions || '<div class="multi-select-empty">Aucun membre</div>'}</div></div>
                         </div>
                     </div>
@@ -9680,7 +9805,7 @@ if (typeof globalThis !== 'undefined') {
                                 <div class="tc-box"><div class="tcl">Passé${CRA_ACTIVE ? ' <span style="font-weight:400;opacity:.6">(Feuille de temps)</span>' : ''}</div><div class="tcv"><input type="number" min="0" step="0.5" value="${passe || ''}" placeholder="0" ${CRA_ACTIVE ? 'readonly title="Saisi via la Feuille de temps"' : ''} onchange="updateField('tempsPasse', parseFloat(this.value) || null)"><small>h</small></div></div>
                             </div>
                             ${estim > 0 ? `<div class="tc-bar"><i class="${timeOver ? 'over' : ''}" style="width:${timePercent}%"></i></div><div class="tc-foot"><span>${Math.round((passe/estim)*100)}% consommé</span><span>reste ${Math.max(estim-passe,0)} h</span></div>` : ''}
-                            ${(data.assignees.length && TASK_COLS.has('charges')) ? `<div style="margin-top:13px"><div class="prop-label" style="margin-bottom:6px">Charge par personne</div>${data.assignees.map(id => `<div class="charge-row"><span class="an">${escapeHtml(getTeamMemberName(id))}</span><input type="number" min="0" step="0.5" value="${chargeOf(id)}" onchange="updateCharge(${id}, this.value)"><span style="font-size:0.75rem;color:var(--text-muted)">h</span></div>`).join('')}<div style="margin-top:6px;font-size:0.78rem;color:var(--text-muted)">Total : <strong>${chargeTotalH}</strong> h</div></div>` : ''}${chargeConsolHtml}
+                            ${(data.assignees.length && TASK_COLS.has('charges')) ? `<div style="margin-top:13px"><div class="prop-label" style="margin-bottom:6px">Charge par personne</div>${data.assignees.map(id => `<div class="charge-row"><span class="an">${escapeHtml(getTeamMemberName(id))}</span><input type="number" min="0" step="0.5" value="${chargeOf(id)}" data-panel-change="update-charge" data-member-id="${safeRecordId(id)}"><span style="font-size:0.75rem;color:var(--text-muted)">h</span></div>`).join('')}<div style="margin-top:6px;font-size:0.78rem;color:var(--text-muted)">Total : <strong>${chargeTotalH}</strong> h</div></div>` : ''}${chargeConsolHtml}
                         </div>
                     </div>` : ''}
                     ${data.type === 'tache' ? `
@@ -9688,10 +9813,10 @@ if (typeof globalThis !== 'undefined') {
                         <span class="prop-label">Progression</span>
                         <div class="prop-value">
                             <div class="progress-inline-wrap">
-                                <div class="progress-bar-mini"><div class="progress-bar-mini-fill" id="progressBarFill" style="width:${data.progression}%"></div></div>
-                                <span class="progress-pct-label" id="progressValue">${data.progression}%</span>
+                                <div class="progress-bar-mini"><div class="progress-bar-mini-fill" id="progressBarFill" style="width:${progressValue}%"></div></div>
+                                <span class="progress-pct-label" id="progressValue">${progressValue}%</span>
                             </div>
-                            <input type="range" class="progress-slider" min="0" max="100" value="${data.progression}" oninput="document.getElementById('progressValue').textContent=this.value+'%';document.getElementById('progressBarFill').style.width=this.value+'%'" onchange="updateField('progression', parseInt(this.value))">
+                            <input type="range" class="progress-slider" min="0" max="100" value="${progressValue}" oninput="document.getElementById('progressValue').textContent=this.value+'%';document.getElementById('progressBarFill').style.width=this.value+'%'" onchange="updateField('progression', parseInt(this.value))">
                             <div class="progress-presets">
                                 <div class="progress-preset ${data.progression === 0 ? 'active' : ''}" onclick="setProgressPreset(0)">0%</div>
                                 <div class="progress-preset ${data.progression === 25 ? 'active' : ''}" onclick="setProgressPreset(25)">25%</div>
@@ -9713,21 +9838,21 @@ if (typeof globalThis !== 'undefined') {
                 ${!panelState.isNew ? (function() {
                     const kids = getChildren(panelState.taskId);
                     const _par = data.parentTask ? tasks.find(x => x.id === data.parentTask) : null;
-                    const parentLink = _par ? '<div class="prereq-item" onclick="openTaskPanel(' + _par.id + ')" title="Ouvrir la tâche parent"><span style="flex-shrink:0;font-weight:700;color:var(--primary)">↑</span><span class="prereq-item-title">Parent : ' + escapeHtml(_par.titre) + '</span></div>' : '';
+                    const parentLink = _par ? '<div class="prereq-item" data-panel-action="open-task" data-task-id="' + safeRecordId(_par.id) + '" title="Ouvrir la tâche parent"><span style="flex-shrink:0;font-weight:700;color:var(--primary)">↑</span><span class="prereq-item-title">Parent : ' + escapeHtml(_par.titre) + '</span></div>' : '';
                     const kidsList = kids.map(k => {
                         const kp = getPriority(k);
-                        const kprog = hasChildren(k) ? aggregateProgress(k) : (k.progression || 0);
-                        return `<div class="prereq-item" onclick="openTaskPanel(${k.id})">
+                        const kprog = safePercentage(hasChildren(k) ? aggregateProgress(k) : k.progression);
+                        return `<div class="prereq-item" data-panel-action="open-task" data-task-id="${safeRecordId(k.id)}">
                             <span style="width:3px;height:16px;border-radius:2px;flex-shrink:0;background:${PRIORITY_COLORS[kp]};display:inline-block"></span>
                             <span class="prereq-item-title">${escapeHtml(k.titre)}</span>
-                            <span class="prereq-badge ${k.statut || 'todo'}">${kprog}%</span>
+                            <span class="prereq-badge ${safeClassToken(k.statut, 'todo')}">${kprog}%</span>
                         </div>`;
                     }).join('');
                     return `<div class="panel-section">
                         <div class="panel-section-header"><span class="panel-section-title">Sous-tâches (hiérarchie)</span>${kids.length ? `<span class="panel-section-badge">${kids.length}</span>` : ''}</div>
                         ${parentLink}
                         ${kids.length ? `<div class="prereq-list">${kidsList}</div>` : `<div class="prereq-empty">Aucune sous-tâche. Décomposez cette tâche en étapes planifiables.</div>`}
-                        <button class="panel-btn" style="width:auto;padding:6px 12px;font-size:0.78rem;margin-top:6px;margin-right:6px" onclick="openCreateTaskWithParent(${panelState.taskId})">+ Sous-tâche</button>${kids.length ? `<button class="btn" style="padding:6px 12px;font-size:0.78rem;margin-top:6px" onclick="adjustParentDatesToChildren()" title="Aligner les dates du parent sur min/max des descendants">↔ Ajuster dates</button>` : ''}
+                        <button class="panel-btn" style="width:auto;padding:6px 12px;font-size:0.78rem;margin-top:6px;margin-right:6px" data-panel-action="create-subtask" data-task-id="${safeRecordId(panelState.taskId)}">+ Sous-tâche</button>${kids.length ? `<button class="btn" style="padding:6px 12px;font-size:0.78rem;margin-top:6px" onclick="adjustParentDatesToChildren()" title="Aligner les dates du parent sur min/max des descendants">↔ Ajuster dates</button>` : ''}
                     </div>`;
                 })() : ''}
 
@@ -9740,7 +9865,7 @@ if (typeof globalThis !== 'undefined') {
                 ` : `
                 <div class="panel-section">
                     <div class="panel-section-header"><span class="panel-section-title">${data.type === 'reunion' ? 'Points à traiter' : 'Checklist'}</span>${subtasksTotal > 0 ? `<span class="panel-section-badge">${subtasksDone}/${subtasksTotal}</span>` : ''}</div>
-                    <div class="subtask-list">${(data.subtasks || []).map(st => `<div class="subtask-item ${st.done ? 'done' : ''}"><input type="checkbox" class="subtask-checkbox" ${st.done ? 'checked' : ''} onchange="toggleSubtask(${st.id})"><input class="subtask-text" value="${escapeHtml(st.text)}" onchange="editSubtask(${st.id}, this.value)" onkeydown="if(event.key==='Enter')this.blur()"><button class="subtask-remove" onclick="removeSubtask(${st.id})">×</button></div>`).join('')}</div>
+                    <div class="subtask-list">${(data.subtasks || []).map((st, index) => `<div class="subtask-item ${st.done ? 'done' : ''}" data-subtask-index="${index}"><input type="checkbox" class="subtask-checkbox" ${st.done ? 'checked' : ''}><input class="subtask-text" value="${escapeHtml(st.text)}"><button class="subtask-remove" type="button">×</button></div>`).join('')}</div>
                     <div class="subtask-add"><input type="text" id="newSubtaskInput" placeholder="Ajouter..." onkeydown="handleSubtaskKeydown(event)"><button onclick="addSubtask()">+</button></div>
                 </div>
                 `}
@@ -9758,6 +9883,9 @@ if (typeof globalThis !== 'undefined') {
 
                 ${!panelState.isNew ? `<div class="panel-footer-left"><button class="panel-btn danger" onclick="showDeleteConfirm()" style="width:auto;padding:10px 14px">Suppr.</button></div><div class="delete-confirm" id="deleteConfirm"><div class="delete-confirm-text">Supprimer ?</div><div class="delete-confirm-actions"><button class="delete-confirm-btn cancel" onclick="hideDeleteConfirm()">Annuler</button><button class="delete-confirm-btn confirm" onclick="confirmDelete()">Supprimer</button></div></div>` : ''}
             `;
+
+            bindTaskPanelActions(content);
+            bindSubtaskControls(content);
 
             // Footer
             if (panelState.isNew) {
@@ -9883,6 +10011,75 @@ if (typeof globalThis !== 'undefined') {
                 render();
             }
         }
+        function bindSubtaskControls(container) {
+            if (!container) return;
+            container.querySelectorAll('.subtask-item[data-subtask-index]').forEach(item => {
+                const index = Number(item.dataset.subtaskIndex);
+                const subtask = panelState.editData?.subtasks?.[index];
+                if (!subtask) return;
+                const checkbox = item.querySelector('.subtask-checkbox');
+                const textInput = item.querySelector('.subtask-text');
+                const removeButton = item.querySelector('.subtask-remove');
+                if (checkbox) checkbox.addEventListener('change', () => toggleSubtask(subtask.id));
+                if (textInput) {
+                    textInput.addEventListener('change', () => editSubtask(subtask.id, textInput.value));
+                    textInput.addEventListener('keydown', event => { if (event.key === 'Enter') textInput.blur(); });
+                }
+                if (removeButton) removeButton.addEventListener('click', () => removeSubtask(subtask.id));
+            });
+        }
+        function bindTaskPanelActions(container) {
+            if (!container) return;
+            if (container.__taskFlowPanelActionHandler) {
+                container.removeEventListener('click', container.__taskFlowPanelActionHandler);
+            }
+            if (container.__taskFlowPanelChangeHandler) {
+                container.removeEventListener('change', container.__taskFlowPanelChangeHandler);
+            }
+            const handler = event => {
+                const origin = event.target instanceof Element ? event.target : event.target?.parentElement;
+                const control = origin?.closest('[data-panel-action]');
+                if (!control || !container.contains(control)) return;
+                const action = control.dataset.panelAction;
+                event.stopPropagation();
+
+                if (action === 'toggle-member-color') {
+                    control.nextElementSibling?.classList.toggle('open');
+                    return;
+                }
+
+                const memberIdValue = safeRecordId(control.dataset.memberId);
+                const taskIdValue = safeRecordId(control.dataset.taskId);
+                const projectIdValue = safeRecordId(control.dataset.projectId);
+                const memberId = memberIdValue ? Number(memberIdValue) : null;
+                const taskId = taskIdValue ? Number(taskIdValue) : null;
+                const projectId = projectIdValue ? Number(projectIdValue) : null;
+
+                if (action === 'remove-assignee' && memberId) removeAssignee(memberId);
+                else if (action === 'toggle-assignee' && memberId) toggleAssignee(memberId);
+                else if (action === 'set-member-color' && memberId) setMemberColor(memberId, safeColor(control.dataset.color));
+                else if (action === 'remove-dependency' && taskId) removeDependency(taskId);
+                else if (action === 'toggle-dependency' && taskId) toggleDependency(taskId);
+                else if (action === 'open-task' && taskId) openTaskPanel(taskId);
+                else if (action === 'create-subtask' && taskId) openCreateTaskWithParent(taskId);
+                else if (action === 'toggle-project-color') control.nextElementSibling?.classList.toggle('open');
+                else if (action === 'set-project-color' && projectId) setProjectColor(projectId, safeColor(control.dataset.color));
+            };
+            const changeHandler = event => {
+                const origin = event.target instanceof Element ? event.target : event.target?.parentElement;
+                const control = origin?.closest('[data-panel-change]');
+                if (!control || !container.contains(control)) return;
+                const memberIdValue = safeRecordId(control.dataset.memberId);
+                const memberId = memberIdValue ? Number(memberIdValue) : null;
+                if (!memberId) return;
+                event.stopPropagation();
+                if (control.dataset.panelChange === 'update-charge') updateCharge(memberId, control.value);
+            };
+            container.addEventListener('click', handler);
+            container.addEventListener('change', changeHandler);
+            container.__taskFlowPanelActionHandler = handler;
+            container.__taskFlowPanelChangeHandler = changeHandler;
+        }
         function removeSubtask(id) {
             const data = panelState.editData;
             if (!data.subtasks) return;
@@ -9989,11 +10186,11 @@ if (typeof globalThis !== 'undefined') {
             }
         }
         
-        function removeTag(tag) {
+        function removeTagAt(index) {
             const data = panelState.editData;
-            const idx = data.tags.indexOf(tag);
-            if (idx !== -1) {
-                data.tags.splice(idx, 1);
+            const safeIndex = Number(index);
+            if (Number.isInteger(safeIndex) && safeIndex >= 0 && safeIndex < data.tags.length) {
+                data.tags.splice(safeIndex, 1);
                 syncLocalTask();  // FIX
                 if (!panelState.isNew && gristReady) saveTaskToGrist();
                 renderPanelTask();

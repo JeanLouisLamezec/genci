@@ -670,6 +670,104 @@ const DEFAULT_LAYOUT = [
 
 
 /* ============================================================================
+ * taskflow-dom-security.js — Primitives de rendu DOM partagees
+ * ----------------------------------------------------------------------------
+ * Ces fonctions ne remplacent pas les API DOM. Elles servent aux quelques
+ * rendus historiques encore construits sous forme de chaines HTML.
+ * ========================================================================== */
+(function (root, factory) {
+    var api = factory();
+    if (typeof module !== 'undefined' && module.exports) module.exports = api;
+    if (root) root.TaskFlowDomSecurity = api;
+})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+    'use strict';
+
+    /**
+     * Encode une valeur non fiable pour un noeud texte ou un attribut HTML
+     * delimite par des guillemets. Cette fonction ne doit jamais etre utilisee
+     * pour construire du JavaScript inline, une URL ou une regle CSS.
+     */
+    function escapeHtml(value) {
+        return String(value == null ? '' : value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    /**
+     * Les couleurs TaskFlow sont saisies avec <input type="color"> et sont
+     * stockees sous forme hexadecimale. Refuser toute autre syntaxe empeche une
+     * valeur Grist alteree de sortir d'un attribut style/value.
+     */
+    function sanitizeCssColor(value, fallback) {
+        var safeFallback = /^#[0-9a-fA-F]{6}$/.test(String(fallback || ''))
+            ? String(fallback)
+            : '#94a3b8';
+        var candidate = String(value == null ? '' : value).trim();
+        return /^#[0-9a-fA-F]{6}$/.test(candidate) ? candidate : safeFallback;
+    }
+
+    /**
+     * Valide un unique nom de classe avant son insertion dans un attribut
+     * class. Les espaces et caracteres de syntaxe HTML sont volontairement
+     * refuses : un statut persistant ne peut ainsi ni ajouter une classe ni
+     * sortir de l'attribut.
+     */
+    function sanitizeCssClassToken(value, fallback) {
+        var tokenPattern = /^[a-zA-Z0-9_-]+$/;
+        var safeFallback = tokenPattern.test(String(fallback || '')) ? String(fallback) : '';
+        var candidate = String(value == null ? '' : value);
+        return tokenPattern.test(candidate) ? candidate : safeFallback;
+    }
+
+    /**
+     * Convertit une valeur persistante en pourcentage fini et borne. Le retour
+     * est un nombre, directement utilisable dans une largeur CSS ou un input.
+     */
+    function sanitizePercentage(value, fallback) {
+        var fallbackNumber = Number(fallback);
+        if (!Number.isFinite(fallbackNumber)) fallbackNumber = 0;
+        var candidate = Number(value);
+        var result = Number.isFinite(candidate) ? candidate : fallbackNumber;
+        return Math.min(100, Math.max(0, result));
+    }
+
+    /**
+     * Restreint une preference persistante a une liste de valeurs connues.
+     * Les preferences locales restent une entree non fiable : une extension,
+     * un ancien build ou un script tiers peut avoir modifie localStorage.
+     */
+    function sanitizeEnumValue(value, allowedValues, fallback) {
+        var allowed = Array.isArray(allowedValues) ? allowedValues.map(String) : [];
+        var safeFallback = allowed.includes(String(fallback)) ? String(fallback) : (allowed[0] || '');
+        var candidate = String(value == null ? '' : value);
+        return allowed.includes(candidate) ? candidate : safeFallback;
+    }
+
+    /**
+     * Normalise une reference Grist avant son transport dans un attribut
+     * data-*. Une reference est un entier strictement positif ; toute autre
+     * valeur est refusee plutot que concatenee dans du HTML ou du JavaScript.
+     */
+    function sanitizeRecordId(value) {
+        var candidate = Number(value);
+        return Number.isSafeInteger(candidate) && candidate > 0 ? String(candidate) : '';
+    }
+
+    return {
+        escapeHtml: escapeHtml,
+        sanitizeCssColor: sanitizeCssColor,
+        sanitizeCssClassToken: sanitizeCssClassToken,
+        sanitizePercentage: sanitizePercentage,
+        sanitizeEnumValue: sanitizeEnumValue,
+        sanitizeRecordId: sanitizeRecordId
+    };
+});
+
+
+/* ============================================================================
  * taskflow-identity.js — Domaine d'identité commun TaskFlow
  * ----------------------------------------------------------------------------
  * Module pur : aucune dépendance au DOM, à Grist ou aux widgets.
@@ -7804,7 +7902,9 @@ let _compIdCounter = 100;
 // UTILITIES
 // ═══════════════════════════════════════════════════════════════════════════════
 const gristToDate  = ts => ts ? new Date(ts * 1000) : null;
-const escapeHtml   = t  => { if (!t) return ''; const d = document.createElement('div'); d.textContent = t; return d.innerHTML; };
+const escapeHtml   = t => TaskFlowDomSecurity.escapeHtml(t);
+const safeRecordId = value => TaskFlowDomSecurity.sanitizeRecordId(value);
+const safeColor    = (value, fallback) => TaskFlowDomSecurity.sanitizeCssColor(value, fallback);
 const isSameDay    = (a,b) => a && b && a.getDate()===b.getDate() && a.getMonth()===b.getMonth() && a.getFullYear()===b.getFullYear();
 const addDays      = (d,n) => { const r=new Date(d); r.setDate(r.getDate()+n); return r; };
 const startOfWeek  = d => { const t=new Date(d); const dow=t.getDay(); return addDays(t,-(dow===0?6:dow-1)); };
@@ -7880,52 +7980,87 @@ function toggleFilterPanel() {
     if (filterPanelOpen) renderFilterPanel();
 }
 
+function bindDashboardFilterActions(container) {
+    if (!container) return;
+    if (container.__taskFlowDashboardFilterHandler) {
+        container.removeEventListener('click', container.__taskFlowDashboardFilterHandler);
+    }
+    const handler = event => {
+        const origin = event.target && typeof event.target.closest === 'function' ? event.target : null;
+        const control = origin && origin.closest('[data-dashboard-filter-action]');
+        if (!control || !container.contains(control)) return;
+        const action = control.dataset.dashboardFilterAction;
+        if (action === 'clear-filters') {
+            clearFilters();
+            return;
+        }
+        const value = control.dataset.filterValue || '';
+        if (action === 'set-period') {
+            if (['week', 'month', 'quarter', 'all'].includes(value)) setPeriode(value);
+            return;
+        }
+        if (action === 'toggle-status') {
+            if (statusCfg.list.some(status => String(status.value) === value)) toggleFilterStatut(value);
+            return;
+        }
+        const recordId = safeRecordId(value);
+        if (!recordId) return;
+        if (action === 'toggle-project') toggleFilterProjet(Number(recordId));
+        else if (action === 'toggle-assignee') toggleFilterAssigne(Number(recordId));
+    };
+    container.addEventListener('click', handler);
+    container.__taskFlowDashboardFilterHandler = handler;
+}
+
 function renderFilterPanel() {
     const PERIODE_OPTIONS = [['week','Semaine'],['month','Mois'],['quarter','Trimestre'],['all','Tout']];
     let html = `
         <div class="filter-section">
             <div class="filter-section-label">Période</div>
             <div class="filter-btns">
-                ${PERIODE_OPTIONS.map(([v,l]) => `<button class="filter-btn ${filters.periode===v?'active':''}" onclick="setPeriode('${v}')">${l}</button>`).join('')}
+                ${PERIODE_OPTIONS.map(([v,l]) => `<button class="filter-btn ${filters.periode===v?'active':''}" data-dashboard-filter-action="set-period" data-filter-value="${escapeHtml(v)}">${l}</button>`).join('')}
             </div>
         </div>`;
     if (team.length) html += `
         <div class="filter-section">
             <div class="filter-section-label">Personnes</div>
             <div class="filter-checkboxes">
-                ${team.filter(m=>m.actif!==false).map(m => `<span class="filter-check ${filters.assignes.includes(String(m.id))?'active':''}" onclick="toggleFilterAssigne(${m.id})">${escapeHtml(m.nom)}</span>`).join('')}
+                ${team.filter(m=>m.actif!==false).map(m => `<span class="filter-check ${filters.assignes.includes(String(m.id))?'active':''}" data-dashboard-filter-action="toggle-assignee" data-filter-value="${safeRecordId(m.id)}">${escapeHtml(m.nom)}</span>`).join('')}
             </div>
         </div>`;
     if (projects.length) html += `
         <div class="filter-section">
             <div class="filter-section-label">Projet</div>
             <div class="filter-checkboxes">
-                ${projects.filter(p=>p.actif!==false).map(p => `<span class="filter-check ${filters.projets.includes(String(p.id))?'active':''}" onclick="toggleFilterProjet(${p.id})"><span style="color:${p.couleur||'#6366f1'}">●</span> ${escapeHtml(p.nom)}</span>`).join('')}
+                ${projects.filter(p=>p.actif!==false).map(p => `<span class="filter-check ${filters.projets.includes(String(p.id))?'active':''}" data-dashboard-filter-action="toggle-project" data-filter-value="${safeRecordId(p.id)}"><span style="color:${safeColor(p.couleur, '#6366f1')}">●</span> ${escapeHtml(p.nom)}</span>`).join('')}
             </div>
         </div>`;
     html += `
         <div class="filter-section">
             <div class="filter-section-label">Statut</div>
             <div class="filter-checkboxes">
-                ${statusCfg.list.map(s => `<span class="filter-check ${filters.statuts.includes(s.value)?'active':''}" onclick="toggleFilterStatut('${s.value}')">${s.label}</span>`).join('')}
+                ${statusCfg.list.map(s => `<span class="filter-check ${filters.statuts.includes(s.value)?'active':''}" data-dashboard-filter-action="toggle-status" data-filter-value="${escapeHtml(s.value)}">${escapeHtml(s.label)}</span>`).join('')}
             </div>
         </div>`;
-    if (hasActiveFilters()) html += `<div class="filter-section" style="justify-content:flex-end"><button class="filter-clear" onclick="clearFilters()">Réinitialiser</button></div>`;
-    document.getElementById('filterPanel').innerHTML = html;
+    if (hasActiveFilters()) html += `<div class="filter-section" style="justify-content:flex-end"><button class="filter-clear" data-dashboard-filter-action="clear-filters">Réinitialiser</button></div>`;
+    const panel = document.getElementById('filterPanel');
+    panel.innerHTML = html;
+    bindDashboardFilterActions(panel);
 }
 
 function renderFilterChips() {
     const chips = [];
-    if (filters.periode!=='all') { const labels={week:'Semaine',month:'Mois',quarter:'Trimestre'}; chips.push(`<span class="filter-chip">${labels[filters.periode]}<button title="Retirer" onclick="setPeriode('all')">×</button></span>`); }
-    filters.projets.forEach(id => { const p=projects.find(x=>String(x.id)===id); if(p) chips.push(`<span class="filter-chip"><span class="fc-dot" style="background:${p.couleur||'#6366f1'}"></span>${escapeHtml(p.nom)}<button title="Retirer" onclick="toggleFilterProjet(${p.id})">×</button></span>`); });
-    filters.assignes.forEach(id => { const m=team.find(x=>String(x.id)===id); if(m) chips.push(`<span class="filter-chip">${escapeHtml((m.nom||'').split(' ')[0])}<button title="Retirer" onclick="toggleFilterAssigne(${m.id})">×</button></span>`); });
-    filters.statuts.forEach(v => { const sc=TF.getStatus(statusCfg,v); chips.push(`<span class="filter-chip"><span class="fc-dot" style="background:${sc.fillColor}"></span>${sc.label}<button title="Retirer" onclick="toggleFilterStatut('${v}')">×</button></span>`); });
+    if (filters.periode!=='all') { const labels={week:'Semaine',month:'Mois',quarter:'Trimestre'}; chips.push(`<span class="filter-chip">${labels[filters.periode]}<button title="Retirer" data-dashboard-filter-action="set-period" data-filter-value="all">×</button></span>`); }
+    filters.projets.forEach(id => { const p=projects.find(x=>String(x.id)===id); if(p) chips.push(`<span class="filter-chip"><span class="fc-dot" style="background:${safeColor(p.couleur, '#6366f1')}"></span>${escapeHtml(p.nom)}<button title="Retirer" data-dashboard-filter-action="toggle-project" data-filter-value="${safeRecordId(p.id)}">×</button></span>`); });
+    filters.assignes.forEach(id => { const m=team.find(x=>String(x.id)===id); if(m) chips.push(`<span class="filter-chip">${escapeHtml((m.nom||'').split(' ')[0])}<button title="Retirer" data-dashboard-filter-action="toggle-assignee" data-filter-value="${safeRecordId(m.id)}">×</button></span>`); });
+    filters.statuts.forEach(v => { const sc=TF.getStatus(statusCfg,v); chips.push(`<span class="filter-chip"><span class="fc-dot" style="background:${safeColor(sc.fillColor, '#94a3b8')}"></span>${escapeHtml(sc.label)}<button type="button" title="Retirer" data-dashboard-filter-action="toggle-status" data-filter-value="${escapeHtml(v)}">×</button></span>`); });
     const total = (filters.periode!=='all'?1:0) + filters.projets.length + filters.assignes.length + filters.statuts.length;
     const cnt = document.getElementById('filterCount'); if (cnt) { cnt.textContent = total; cnt.style.display = total ? 'inline-flex' : 'none'; }
     const ftb = document.getElementById('filterToggleBtn'); if (ftb) ftb.classList.toggle('active', total>0);
     const host = document.getElementById('headerFilters');
     host.style.display = chips.length ? 'flex' : 'none';
-    host.innerHTML = chips.length ? ('<span class="hf-label">Filtres actifs</span>' + chips.join('') + '<span class="hf-clear" onclick="clearFilters()">Tout effacer</span>') : '';
+    host.innerHTML = chips.length ? ('<span class="hf-label">Filtres actifs</span>' + chips.join('') + '<span class="hf-clear" data-dashboard-filter-action="clear-filters">Tout effacer</span>') : '';
+    bindDashboardFilterActions(host);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -8014,6 +8149,92 @@ function getFilterValueOptions(field) {
     return [];
 }
 
+function bindDashboardEditorActions(container) {
+    if (!container) return;
+    if (container.__taskFlowDashboardEditorClickHandler) {
+        container.removeEventListener('click', container.__taskFlowDashboardEditorClickHandler);
+    }
+    if (container.__taskFlowDashboardEditorChangeHandler) {
+        container.removeEventListener('change', container.__taskFlowDashboardEditorChangeHandler);
+    }
+    if (container.__taskFlowDashboardEditorInputHandler) {
+        container.removeEventListener('input', container.__taskFlowDashboardEditorInputHandler);
+    }
+
+    const getControl = event => {
+        const origin = event.target && typeof event.target.closest === 'function' ? event.target : null;
+        const control = origin && origin.closest('[data-dashboard-edit-action]');
+        return control && container.contains(control) ? control : null;
+    };
+    const getComponent = control => {
+        const id = control.dataset.componentId || '';
+        return dashConfig.layout.find(component => component.id === id) || null;
+    };
+
+    const clickHandler = event => {
+        const control = getControl(event);
+        if (!control) return;
+        const action = control.dataset.dashboardEditAction;
+        if (action === 'add-component') {
+            const type = control.dataset.componentType || '';
+            if (Object.prototype.hasOwnProperty.call(CATALOG, type)) addComponent(type);
+            return;
+        }
+        const component = getComponent(control);
+        if (!component) return;
+        event.stopPropagation();
+        if (action === 'select-component') selectComponent(component.id, event);
+        else if (action === 'remove-component') removeComponent(component.id, event);
+        else if (action === 'set-span') {
+            const span = Number(control.dataset.componentSpan);
+            if (Number.isInteger(span) && span >= 1 && span <= 4) setSpan(component.id, span, event);
+        } else if (action === 'plan-shift') {
+            const delta = Number(control.dataset.shift);
+            if (delta === -1 || delta === 1) planChargeShift(component.id, delta);
+        } else if (action === 'plan-reset') {
+            planChargeReset(component.id);
+        }
+    };
+
+    const changeHandler = event => {
+        const control = getControl(event);
+        if (!control) return;
+        const component = getComponent(control);
+        if (!component) return;
+        const action = control.dataset.dashboardEditAction;
+        if (action === 'update-config') {
+            const key = control.dataset.configKey || '';
+            const field = (CONFIG_FIELDS[component.type] || []).find(item => item.key === key);
+            if (field && field.options.some(([value]) => String(value) === String(control.value))) {
+                updateCompConfig(component.id, key, control.value, event);
+            }
+        } else if (action === 'update-filter-field') {
+            if (FILTER_FIELDS.some(([value]) => String(value) === String(control.value))) {
+                updateCompFilterField(component.id, control.value, event);
+            }
+        } else if (action === 'update-filter-value') {
+            const field = component.config.compFilter && component.config.compFilter.field;
+            if (getFilterValueOptions(field).some(([value]) => String(value) === String(control.value))) {
+                updateCompFilterValue(component.id, control.value, event);
+            }
+        }
+    };
+
+    const inputHandler = event => {
+        const control = getControl(event);
+        if (!control || control.dataset.dashboardEditAction !== 'update-title') return;
+        const component = getComponent(control);
+        if (component) updateCompTitle(component.id, control.value);
+    };
+
+    container.addEventListener('click', clickHandler);
+    container.addEventListener('change', changeHandler);
+    container.addEventListener('input', inputHandler);
+    container.__taskFlowDashboardEditorClickHandler = clickHandler;
+    container.__taskFlowDashboardEditorChangeHandler = changeHandler;
+    container.__taskFlowDashboardEditorInputHandler = inputHandler;
+}
+
 function renderEditPanel() {
     const body = document.getElementById('editPanelBody');
     if (!body) return;
@@ -8028,33 +8249,33 @@ function renderEditPanel() {
         const configBody = isOpen ? `<div class="accordion-body">
             <div class="cfg-row">
                 <div class="cfg-label">Titre</div>
-                <input class="cfg-input" type="text" value="${escapeHtml(c.title)}" oninput="updateCompTitle('${c.id}',this.value)" />
+                <input class="cfg-input" type="text" value="${escapeHtml(c.title)}" data-component-id="${escapeHtml(c.id)}" data-dashboard-edit-action="update-title" />
             </div>
             ${cfgFields.map(f => `
             <div class="cfg-row">
                 <div class="cfg-label">${f.label}</div>
-                <select class="cfg-input" onchange="updateCompConfig('${c.id}','${f.key}',this.value,event)">
-                    ${f.options.map(([v,l]) => `<option value="${v}" ${String(c.config[f.key])===String(v)?'selected':''}>${l}</option>`).join('')}
+                <select class="cfg-input" data-component-id="${escapeHtml(c.id)}" data-config-key="${escapeHtml(f.key)}" data-dashboard-edit-action="update-config">
+                    ${f.options.map(([v,l]) => `<option value="${escapeHtml(v)}" ${String(c.config[f.key])===String(v)?'selected':''}>${escapeHtml(l)}</option>`).join('')}
                 </select>
             </div>`).join('')}
             <div class="cfg-row">
                 <div class="cfg-label">Filtre composant</div>
-                <select class="cfg-input" onchange="updateCompFilterField('${c.id}',this.value,event)">
-                    ${FILTER_FIELDS.map(([v,l]) => `<option value="${v}" ${cf.field===v?'selected':''}>${l}</option>`).join('')}
+                <select class="cfg-input" data-component-id="${escapeHtml(c.id)}" data-dashboard-edit-action="update-filter-field">
+                    ${FILTER_FIELDS.map(([v,l]) => `<option value="${escapeHtml(v)}" ${cf.field===v?'selected':''}>${escapeHtml(l)}</option>`).join('')}
                 </select>
-                ${cf.field ? `<select class="cfg-input" style="margin-top:4px" onchange="updateCompFilterValue('${c.id}',this.value,event)">
-                    ${valueOpts.map(([v,l]) => `<option value="${v}" ${String(cf.value)===String(v)?'selected':''}>${l}</option>`).join('')}
+                ${cf.field ? `<select class="cfg-input" style="margin-top:4px" data-component-id="${escapeHtml(c.id)}" data-dashboard-edit-action="update-filter-value">
+                    ${valueOpts.map(([v,l]) => `<option value="${escapeHtml(v)}" ${String(cf.value)===String(v)?'selected':''}>${escapeHtml(l)}</option>`).join('')}
                 </select>` : ''}
             </div>
         </div>` : '';
 
         return `<div class="accordion-item ${isOpen ? 'open' : ''}">
-            <div class="accordion-header" onclick="selectComponent('${c.id}',event)">
+            <div class="accordion-header" data-component-id="${escapeHtml(c.id)}" data-dashboard-edit-action="select-component">
                 <span class="accordion-chevron">▶</span>
                 <span class="accordion-label">${escapeHtml(c.title)}</span>
-                <div class="edit-controls" onclick="event.stopPropagation()">
-                    <div class="span-btns">${[1,2,3,4].map(n=>`<button class="span-btn ${c.colSpan===n?'active':''}" onclick="setSpan('${c.id}',${n},event)">${n}</button>`).join('')}</div>
-                    <button class="btn-icon danger" onclick="removeComponent('${c.id}',event)" title="Supprimer">×</button>
+                <div class="edit-controls">
+                    <div class="span-btns">${[1,2,3,4].map(n=>`<button class="span-btn ${c.colSpan===n?'active':''}" data-component-id="${escapeHtml(c.id)}" data-dashboard-edit-action="set-span" data-component-span="${n}">${n}</button>`).join('')}</div>
+                    <button class="btn-icon danger" data-component-id="${escapeHtml(c.id)}" data-dashboard-edit-action="remove-component" title="Supprimer">×</button>
                 </div>
             </div>
             ${configBody}
@@ -8067,7 +8288,7 @@ function renderEditPanel() {
         workload:'Équipe', charge:'Charge (h)', plancharge:'Plan de charge', upcoming:'Échéances', projects:'Projets', velocity:'Vélocité'
     };
     const catalogItems = Object.keys(CATALOG).map(type => `
-        <div class="catalog-item" onclick="addComponent('${type}')">
+        <div class="catalog-item" data-dashboard-edit-action="add-component" data-component-type="${escapeHtml(type)}">
             <div class="catalog-label" style="font-size:0.79rem;font-weight:600">${CATALOG_LABELS[type]}</div>
         </div>`).join('');
 
@@ -8082,6 +8303,7 @@ function renderEditPanel() {
                 <div class="catalog-grid">${catalogItems}</div>
             </div>
         </div>`;
+    bindDashboardEditorActions(body);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -8092,6 +8314,31 @@ function renderGrid() {
     grid.innerHTML = '';
     grid.className = 'dashboard-grid' + (isEditMode ? ' edit-mode' : '');
     dashConfig.layout.forEach(comp => grid.appendChild(createComp(comp)));
+    bindDashboardTaskActions(grid);
+    bindDashboardEditorActions(grid);
+}
+
+function bindDashboardTaskActions(container) {
+    if (!container) return;
+    if (container.__taskFlowDashboardTaskHandler) {
+        container.removeEventListener('click', container.__taskFlowDashboardTaskHandler);
+    }
+    const handler = event => {
+        const origin = event.target && typeof event.target.closest === 'function' ? event.target : null;
+        const control = origin && origin.closest('[data-dashboard-task-action]');
+        if (!control || !container.contains(control)) return;
+        const taskIdValue = safeRecordId(control.dataset.taskId);
+        if (!taskIdValue) return;
+        const taskId = Number(taskIdValue);
+        if (control.dataset.dashboardTaskAction === 'mark-done') {
+            event.stopPropagation();
+            markDone(taskId, event);
+        } else if (control.dataset.dashboardTaskAction === 'select-task') {
+            selectTask(taskId);
+        }
+    };
+    container.addEventListener('click', handler);
+    container.__taskFlowDashboardTaskHandler = handler;
 }
 
 function createComp(comp) {
@@ -8102,13 +8349,13 @@ function createComp(comp) {
 
     const cf = comp.config.compFilter;
     const hasCF = cf && cf.field && cf.value;
-    const cfLabel = hasCF ? ` <span class="comp-filter-badge">${cf.field}=${cf.value}</span>` : '';
+    const cfLabel = hasCF ? ` <span class="comp-filter-badge">${escapeHtml(cf.field)}=${escapeHtml(cf.value)}</span>` : '';
 
     const editControls = isEditMode ? `
-        <div class="edit-controls" onclick="event.stopPropagation()">
-            <div class="span-btns">${[1,2,3,4].map(n=>`<button class="span-btn ${comp.colSpan===n?'active':''}" onclick="setSpan('${comp.id}',${n},event)">${n}</button>`).join('')}</div>
-            <button class="btn-icon ${selectedCompId===comp.id?'active':''}" onclick="selectComponent('${comp.id}',event)" title="Configurer">⚙</button>
-            <button class="btn-icon danger" onclick="removeComponent('${comp.id}',event)" title="Supprimer">×</button>
+        <div class="edit-controls">
+            <div class="span-btns">${[1,2,3,4].map(n=>`<button class="span-btn ${comp.colSpan===n?'active':''}" data-component-id="${escapeHtml(comp.id)}" data-dashboard-edit-action="set-span" data-component-span="${n}">${n}</button>`).join('')}</div>
+            <button class="btn-icon ${selectedCompId===comp.id?'active':''}" data-component-id="${escapeHtml(comp.id)}" data-dashboard-edit-action="select-component" title="Configurer">⚙</button>
+            <button class="btn-icon danger" data-component-id="${escapeHtml(comp.id)}" data-dashboard-edit-action="remove-component" title="Supprimer">×</button>
         </div>` : '';
 
     const ft = getFilteredTasks(hasCF ? cf : null, comp.type === 'charge' || comp.type === 'plancharge');
@@ -8122,7 +8369,10 @@ function createComp(comp) {
         </div>
         <div class="comp-body">${renderCompBody(comp, ft)}</div>`;
 
-    if (isEditMode) div.addEventListener('click', () => selectComponent(comp.id));
+    if (isEditMode) div.addEventListener('click', event => {
+        if (event.target && typeof event.target.closest === 'function' && event.target.closest('[data-dashboard-edit-action]')) return;
+        selectComponent(comp.id);
+    });
     return div;
 }
 
@@ -8160,7 +8410,7 @@ function renderKPI(comp, ft) {
     }
     const cls = { total:'kpi-total', inprogress:'kpi-inprogress', done:'kpi-done', done_week:'kpi-done_week', late:'kpi-late', rate:'kpi-rate' }[metric]||'';
     const lateClass = metric==='late'&&value>0 ? 'kpi-late-border' : '';
-    if (lateClass) setTimeout(()=>{ const el=document.querySelector(`[data-id="${comp.id}"]`); if(el) el.classList.add(lateClass); },0);
+    if (lateClass) setTimeout(()=>{ const el=Array.from(document.querySelectorAll('.component[data-id]')).find(node => node.dataset.id === String(comp.id)); if(el) el.classList.add(lateClass); },0);
     return `<div class="${cls}"><div class="kpi-value">${metric==='rate'?value+'%':value}</div><div class="kpi-label">${label}</div></div>`;
 }
 
@@ -8175,11 +8425,11 @@ function groupByField(ft, field) {
         else if (field==='type')     key = t.type||'tache';
         if (key!==undefined) counts[key]=(counts[key]||0)+1;
     });
-    if (field==='statut')   return statusCfg.list.map(s=>({ key:s.value, label:s.label, count:counts[s.value]||0, color:s.fillColor }));
+    if (field==='statut')   return statusCfg.list.map(s=>({ key:s.value, label:s.label, count:counts[s.value]||0, color:safeColor(s.fillColor, '#94a3b8') }));
     if (field==='priorite') return [1,2,3,4].map(k=>({ key:String(k), label:PRIORITY_LABELS[k], count:counts[String(k)]||0, color:PRIORITY_COLORS[k] }));
-    if (field==='projet')   return projects.filter(p=>counts[String(p.id)]).map(p=>({ key:String(p.id), label:p.nom, count:counts[String(p.id)]||0, color:p.couleur||'#6366f1' }));
+    if (field==='projet')   return projects.filter(p=>counts[String(p.id)]).map(p=>({ key:String(p.id), label:p.nom, count:counts[String(p.id)]||0, color:safeColor(p.couleur, '#6366f1') }));
     if (field==='type')     return [['tache','Tâche','#3b82f6'],['jalon','Jalon','#f59e0b'],['reunion','Réunion','#10b981']].map(([k,l,c])=>({ key:k, label:l, count:counts[k]||0, color:c }));
-    if (field==='assignee') return team.filter(m=>counts[String(m.id)]).map(m=>({ key:String(m.id), label:(m.nom||'?').split(' ')[0], count:counts[String(m.id)]||0, color:m.couleur||'#4f46e5' }));
+    if (field==='assignee') return team.filter(m=>counts[String(m.id)]).map(m=>({ key:String(m.id), label:(m.nom||'?').split(' ')[0], count:counts[String(m.id)]||0, color:safeColor(m.couleur, '#4f46e5') }));
     return [];
 }
 
@@ -8236,7 +8486,7 @@ function renderWorkload(comp, ft) {
         const lvl=d.active>5?'high':d.active>3?'medium':'';
         const ini=(m.nom||'?').split(' ').map(n=>n[0]).join('').toUpperCase().slice(0,2);
         return `<div class="workload-item">
-            <div class="workload-avatar" style="background:${m.couleur||'#4f46e5'}">${ini}</div>
+            <div class="workload-avatar" style="background:${safeColor(m.couleur, '#4f46e5')}">${escapeHtml(ini)}</div>
             <div class="workload-info"><div class="workload-name">${escapeHtml(m.nom)}</div><div class="workload-tasks">${d.active} active${d.active>1?'s':''} / ${d.total} total</div></div>
             <div class="workload-bar"><div class="workload-bar-fill ${lvl}" style="width:${pct}%"></div></div>
         </div>`;
@@ -8257,7 +8507,7 @@ function renderCharge(comp, ft) {
         const lvl = h>40?'high':h>20?'medium':'';
         const ini=(m.nom||'?').split(' ').map(n=>n[0]).join('').toUpperCase().slice(0,2);
         return `<div class="workload-item">
-            <div class="workload-avatar" style="background:${m.couleur||'#4f46e5'}">${ini}</div>
+            <div class="workload-avatar" style="background:${safeColor(m.couleur, '#4f46e5')}">${escapeHtml(ini)}</div>
             <div class="workload-info"><div class="workload-name">${escapeHtml(m.nom)}</div><div class="workload-tasks">${h} h allouée${h>1?'s':''}</div></div>
             <div class="workload-bar"><div class="workload-bar-fill ${lvl}" style="width:${pct}%"></div></div>
         </div>`;
@@ -8291,7 +8541,8 @@ function renderPlanCharge(comp, ft) {
     const plabel = (p) => granularity === 'month' ? (p.slice(5) + '/' + p.slice(2, 4)) : ('S' + p.slice(6));
     const cellColor = (h, cap) => { const r = cap > 0 ? h / cap : 0; return r > 1 ? '#e5484d' : r > 0.85 ? '#f59e0b' : r > 0 ? '#3b82f6' : 'transparent'; };
     const navBtn = 'background:transparent;border:1px solid var(--border);color:var(--text-muted);border-radius:6px;padding:1px 9px;cursor:pointer;font-size:0.8rem';
-    let html = '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><button onclick="planChargeShift(\'' + comp.id + '\',-1)" style="' + navBtn + '">◀</button><span style="font-size:0.74rem;color:var(--text-muted)">' + plabel(periods[0]) + ' → ' + plabel(periods[periods.length - 1]) + '</span><button onclick="planChargeShift(\'' + comp.id + '\',1)" style="' + navBtn + '">▶</button>' + (offset !== 0 ? '<button onclick="planChargeReset(\'' + comp.id + '\')" style="' + navBtn + ';font-size:0.72rem">Aujourd\'hui</button>' : '') + '</div>';
+    const componentData = escapeHtml(comp.id);
+    let html = '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><button data-component-id="' + componentData + '" data-dashboard-edit-action="plan-shift" data-shift="-1" style="' + navBtn + '">◀</button><span style="font-size:0.74rem;color:var(--text-muted)">' + plabel(periods[0]) + ' → ' + plabel(periods[periods.length - 1]) + '</span><button data-component-id="' + componentData + '" data-dashboard-edit-action="plan-shift" data-shift="1" style="' + navBtn + '">▶</button>' + (offset !== 0 ? '<button data-component-id="' + componentData + '" data-dashboard-edit-action="plan-reset" style="' + navBtn + ';font-size:0.72rem">Aujourd\'hui</button>' : '') + '</div>';
     html += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.74rem"><thead><tr><th style="text-align:left;padding:4px 8px;color:var(--text-muted);font-weight:600">Membre</th>';
     for (const p of periods) html += '<th style="padding:4px 6px;text-align:center;font-weight:600;color:' + (p === nowKey ? 'var(--primary,#6366f1)' : 'var(--text-muted)') + '">' + plabel(p) + (p === nowKey ? ' •' : '') + '</th>';
     html += '</tr></thead><tbody>';
@@ -8326,17 +8577,18 @@ function renderUpcoming(comp, ft) {
         const p=getPriority(t);
         const proj=projects.find(x=>x.id===t.projet);
         const dc=days<0?'late':days===0?'today':'';
-        return `<div class="upcoming-item" onclick="selectTask(${t.id})">
+        const taskId = safeRecordId(t.id);
+        return `<div class="upcoming-item" data-dashboard-task-action="select-task" data-task-id="${taskId}">
             <div class="upcoming-prio p${p}"></div>
             <div class="upcoming-date ${dc}"><div class="upcoming-date-day">${d.getDate()}</div><div class="upcoming-date-month">${MONTHS_SHORT[d.getMonth()]}</div></div>
             <div class="upcoming-info">
                 <div class="upcoming-title">${escapeHtml(t.titre)}</div>
                 <div class="upcoming-meta">
-                    ${proj?`<span style="color:${proj.couleur||'#6366f1'}">● ${escapeHtml(proj.nom)}</span>`:''}
+                    ${proj?`<span style="color:${safeColor(proj.couleur, '#6366f1')}">● ${escapeHtml(proj.nom)}</span>`:''}
                     <span class="${days<0?'text-danger':''}">${days<0?Math.abs(days)+'j retard':days===0?"Aujourd'hui":'Dans '+days+'j'}</span>
                 </div>
             </div>
-            <button class="upcoming-done-btn" onclick="markDone(${t.id},event)" title="Marquer comme terminée">✓</button>
+            <button class="upcoming-done-btn" data-dashboard-task-action="mark-done" data-task-id="${taskId}" title="Marquer comme terminée">✓</button>
         </div>`;
     }).join('')}</div>`;
 }
@@ -8356,7 +8608,7 @@ function renderProjects(comp, ft) {
         const s=stats[p.id]||{total:0,done:0};
         const pct=s.total>0?Math.round(s.done/s.total*100):0;
         return `<div class="project-item">
-            <div class="project-color" style="background:${p.couleur||'#6366f1'}"></div>
+            <div class="project-color" style="background:${safeColor(p.couleur, '#6366f1')}"></div>
             <div class="project-info"><div class="project-name">${escapeHtml(p.nom)}</div><div class="project-stats">${s.done}/${s.total} terminées</div></div>
             <div class="project-progress">
                 <div class="project-progress-bar"><div class="project-progress-fill" style="width:${pct}%"></div></div>
@@ -8381,14 +8633,14 @@ function renderList(comp, ft) {
         const d=gristToDate(t.dateEcheance);
         const proj=projects.find(x=>x.id===t.projet);
         const isLate=d&&d<today&&!TF.isTerminal(statusCfg, s);
-        return `<div class="list-item" onclick="selectTask(${t.id})">
+        return `<div class="list-item" data-dashboard-task-action="select-task" data-task-id="${safeRecordId(t.id)}">
             <div class="list-prio p${p}"></div>
             <div class="list-info">
                 <div class="list-title">${escapeHtml(t.titre||'')}</div>
                 <div class="list-meta">
-                    ${proj?`<span style="color:${proj.couleur||'#6366f1'}">● ${escapeHtml(proj.nom)}</span>`:''}
+                    ${proj?`<span style="color:${safeColor(proj.couleur, '#6366f1')}">● ${escapeHtml(proj.nom)}</span>`:''}
                     ${d?`<span class="${isLate?'text-danger':''}">${d.getDate()} ${MONTHS_SHORT[d.getMonth()]}</span>`:''}
-                    <span class="status-badge" style="background:${TF.getStatus(statusCfg, s).fillColor};color:${TF.getStatus(statusCfg, s).textColor}">${TF.getStatus(statusCfg, s).label}</span>
+                    <span class="status-badge" style="background:${safeColor(TF.getStatus(statusCfg, s).fillColor, '#94a3b8')};color:${safeColor(TF.getStatus(statusCfg, s).textColor, '#ffffff')}">${escapeHtml(TF.getStatus(statusCfg, s).label)}</span>
                 </div>
             </div>
         </div>`;

@@ -467,6 +467,104 @@ tfoot td.left { text-align: left; color: var(--text-muted); font-weight: 600; }
 
 
 /* ============================================================================
+ * taskflow-dom-security.js — Primitives de rendu DOM partagees
+ * ----------------------------------------------------------------------------
+ * Ces fonctions ne remplacent pas les API DOM. Elles servent aux quelques
+ * rendus historiques encore construits sous forme de chaines HTML.
+ * ========================================================================== */
+(function (root, factory) {
+    var api = factory();
+    if (typeof module !== 'undefined' && module.exports) module.exports = api;
+    if (root) root.TaskFlowDomSecurity = api;
+})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+    'use strict';
+
+    /**
+     * Encode une valeur non fiable pour un noeud texte ou un attribut HTML
+     * delimite par des guillemets. Cette fonction ne doit jamais etre utilisee
+     * pour construire du JavaScript inline, une URL ou une regle CSS.
+     */
+    function escapeHtml(value) {
+        return String(value == null ? '' : value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    /**
+     * Les couleurs TaskFlow sont saisies avec <input type="color"> et sont
+     * stockees sous forme hexadecimale. Refuser toute autre syntaxe empeche une
+     * valeur Grist alteree de sortir d'un attribut style/value.
+     */
+    function sanitizeCssColor(value, fallback) {
+        var safeFallback = /^#[0-9a-fA-F]{6}$/.test(String(fallback || ''))
+            ? String(fallback)
+            : '#94a3b8';
+        var candidate = String(value == null ? '' : value).trim();
+        return /^#[0-9a-fA-F]{6}$/.test(candidate) ? candidate : safeFallback;
+    }
+
+    /**
+     * Valide un unique nom de classe avant son insertion dans un attribut
+     * class. Les espaces et caracteres de syntaxe HTML sont volontairement
+     * refuses : un statut persistant ne peut ainsi ni ajouter une classe ni
+     * sortir de l'attribut.
+     */
+    function sanitizeCssClassToken(value, fallback) {
+        var tokenPattern = /^[a-zA-Z0-9_-]+$/;
+        var safeFallback = tokenPattern.test(String(fallback || '')) ? String(fallback) : '';
+        var candidate = String(value == null ? '' : value);
+        return tokenPattern.test(candidate) ? candidate : safeFallback;
+    }
+
+    /**
+     * Convertit une valeur persistante en pourcentage fini et borne. Le retour
+     * est un nombre, directement utilisable dans une largeur CSS ou un input.
+     */
+    function sanitizePercentage(value, fallback) {
+        var fallbackNumber = Number(fallback);
+        if (!Number.isFinite(fallbackNumber)) fallbackNumber = 0;
+        var candidate = Number(value);
+        var result = Number.isFinite(candidate) ? candidate : fallbackNumber;
+        return Math.min(100, Math.max(0, result));
+    }
+
+    /**
+     * Restreint une preference persistante a une liste de valeurs connues.
+     * Les preferences locales restent une entree non fiable : une extension,
+     * un ancien build ou un script tiers peut avoir modifie localStorage.
+     */
+    function sanitizeEnumValue(value, allowedValues, fallback) {
+        var allowed = Array.isArray(allowedValues) ? allowedValues.map(String) : [];
+        var safeFallback = allowed.includes(String(fallback)) ? String(fallback) : (allowed[0] || '');
+        var candidate = String(value == null ? '' : value);
+        return allowed.includes(candidate) ? candidate : safeFallback;
+    }
+
+    /**
+     * Normalise une reference Grist avant son transport dans un attribut
+     * data-*. Une reference est un entier strictement positif ; toute autre
+     * valeur est refusee plutot que concatenee dans du HTML ou du JavaScript.
+     */
+    function sanitizeRecordId(value) {
+        var candidate = Number(value);
+        return Number.isSafeInteger(candidate) && candidate > 0 ? String(candidate) : '';
+    }
+
+    return {
+        escapeHtml: escapeHtml,
+        sanitizeCssColor: sanitizeCssColor,
+        sanitizeCssClassToken: sanitizeCssClassToken,
+        sanitizePercentage: sanitizePercentage,
+        sanitizeEnumValue: sanitizeEnumValue,
+        sanitizeRecordId: sanitizeRecordId
+    };
+});
+
+
+/* ============================================================================
  * taskflow-identity.js — Domaine d'identité commun TaskFlow
  * ----------------------------------------------------------------------------
  * Module pur : aucune dépendance au DOM, à Grist ou aux widgets.
@@ -7590,7 +7688,8 @@ const S = {
 };
 
 // ---- Utils ----------------------------------------------------------------
-const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const esc = (s) => TaskFlowDomSecurity.escapeHtml(s);
+const safeRecordId = (value) => TaskFlowDomSecurity.sanitizeRecordId(value);
 const gristToMs = (ts) => ts ? ts * 1000 : 0;
 const msToGrist = (ms) => Math.floor(ms / 1000);
 
@@ -8621,7 +8720,7 @@ function renderSaisie() {
       + '<div style="font-size:.8rem;color:var(--text-muted);margin-bottom:12px">Capacité: ' + (person.capaciteHebdo || 35) + 'h/semaine';
     
     if (st !== 'brouillon') {
-      html += ' | Statut: <span class="fbadge ' + st + '">' + st + '</span>';
+      html += ' | Statut: <span class="fbadge ' + safeSheetStatusClass(st) + '">' + esc(st) + '</span>';
     }
     html += '</div>';
     
@@ -8661,12 +8760,12 @@ function renderSaisie() {
           let cellHtml = '<td class="' + tdClass + '">';
           if (isDayIndispo) {
             cellHtml += '<div style="height:38px;display:flex;align-items:center;justify-content:center;background:var(--bg);color:var(--text-muted);font-size:.75rem">' 
-              + (ind.label || 'Indispo') + '</div>';
+              + esc(ind.label || 'Indispo') + '</div>';
           } else {
             // PHASE 5 : Utiliser displayedHours et fmtInputQty
             cellHtml += '<input type="number" min="0" step="0.5" value="' + fmtInputQty(displayedH, cellState.hasDisplayValue) + '"' 
               + (isLocked ? ' disabled' : '')
-              + ' onchange="setCell(' + t.id + ',' + d + ',' + personId + ',this.value)" style="width:100%;font-size:.85rem">';
+              + ' data-cra-change="set-cell" data-task-id="' + safeRecordId(t.id) + '" data-day-ms="' + esc(String(d)) + '" data-person-id="' + safeRecordId(personId) + '" style="width:100%;font-size:.85rem">';
             if (plannedH > 0 && !cellState.hasExplicitActual) {
               cellHtml += '<div class="planned-indicator">Prévu: <strong>' + fmtQty(plannedH) + '</strong></div>';
   }
@@ -8709,6 +8808,52 @@ function renderSaisie() {
   }
   
   main.innerHTML = html;
+  bindCraDynamicActions(main);
+}
+
+function bindCraDynamicActions(container) {
+  if (!container) return;
+  if (container.__taskFlowCraClickHandler) {
+    container.removeEventListener('click', container.__taskFlowCraClickHandler);
+  }
+  if (container.__taskFlowCraChangeHandler) {
+    container.removeEventListener('change', container.__taskFlowCraChangeHandler);
+  }
+
+  const clickHandler = function(event) {
+    const origin = event.target instanceof Element ? event.target : event.target?.parentElement;
+    const control = origin?.closest('[data-cra-action]');
+    if (!control || !container.contains(control)) return;
+    const sheetIdValue = safeRecordId(control.dataset.sheetId);
+    const sheetId = sheetIdValue ? Number(sheetIdValue) : null;
+    if (!sheetId) return;
+    event.stopPropagation();
+    const action = control.dataset.craAction;
+    if (action === 'validate-sheet') validerFeuille(sheetId);
+    else if (action === 'reject-sheet') rejeterFeuille(sheetId);
+    else if (action === 'open-correction') CraWorkflowIntegration.openCorrection(sheetId);
+    else if (action === 'enter-manager-correction') enterManagerCorrection(sheetId);
+    else if (action === 'revalidate-sheet') revalidateSheet(sheetId);
+  };
+
+  const changeHandler = function(event) {
+    const origin = event.target instanceof Element ? event.target : event.target?.parentElement;
+    const control = origin?.closest('[data-cra-change="set-cell"]');
+    if (!control || !container.contains(control)) return;
+    const taskIdValue = safeRecordId(control.dataset.taskId);
+    const personIdValue = safeRecordId(control.dataset.personId);
+    const taskId = taskIdValue ? Number(taskIdValue) : null;
+    const personId = personIdValue ? Number(personIdValue) : null;
+    const dayMs = Number(control.dataset.dayMs);
+    if (!taskId || !personId || !Number.isSafeInteger(dayMs) || dayMs <= 0) return;
+    event.stopPropagation();
+    setCell(taskId, dayMs, personId, control.value);
+  };
+
+  container.addEventListener('click', clickHandler);
+  container.addEventListener('change', changeHandler);
+  container.__taskFlowCraClickHandler = clickHandler;
+  container.__taskFlowCraChangeHandler = changeHandler;
 }
 
 function managerRetroactivePanelHtml(managerState) {
@@ -8754,7 +8899,7 @@ function renderValider() {
       const reportNames = S.team
         .filter(m => managerState.directReportIds.includes(m.id))
         .slice(0, 5)
-        .map(m => m.nom)
+        .map(m => esc(m.nom))
         .join(', ');
       
       const countText = managerState.directReportCount > 5
@@ -8794,22 +8939,23 @@ function renderValider() {
     // Actions selon le statut
     let act = '';
     if (status === 'soumis' || status === 'submitted') {
-      act = '<button class="btn" onclick="validerFeuille(' + f.id + ')">Valider</button> <button class="btn ghost" onclick="rejeterFeuille(' + f.id + ')">Rejeter</button>';
+      act = '<button class="btn" data-cra-action="validate-sheet" data-sheet-id="' + safeRecordId(f.id) + '">Valider</button> <button class="btn ghost" data-cra-action="reject-sheet" data-sheet-id="' + safeRecordId(f.id) + '">Rejeter</button>';
     } else if (status === 'valide' || status === 'validated') {
-      act = '<button class="btn ghost" onclick="CraWorkflowIntegration.openCorrection(' + f.id + ')">Ouvrir une correction</button>';
+      act = '<button class="btn ghost" data-cra-action="open-correction" data-sheet-id="' + safeRecordId(f.id) + '">Ouvrir une correction</button>';
     } else if (status === 'correction_manager') {
       // En mode correction_manager : bouton pour entrer dans le mode édition
-      act = '<button class="btn" onclick="enterManagerCorrection(' + f.id + ')">Corriger les heures</button> <button class="btn" onclick="revalidateSheet(' + f.id + ')">Revalider</button>';
+      act = '<button class="btn" data-cra-action="enter-manager-correction" data-sheet-id="' + safeRecordId(f.id) + '">Corriger les heures</button> <button class="btn" data-cra-action="revalidate-sheet" data-sheet-id="' + safeRecordId(f.id) + '">Revalider</button>';
     }
     
     html += '<tr><td class="tcell">' + esc(p ? p.nom : '?') + '</td>'
       + '<td class="tcell">' + new Date(wk).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' }) + '</td>'
       + '<td class="total">' + (fmtQty(weekTotalFor(f.membre, wk)) || '0') + '</td>'
-      + '<td class="tcell"><span class="fbadge ' + status + '">' + status + '</span>' + (f.motifCorrection ? '<br><small style="color:var(--text-muted);font-style:italic">' + esc(f.motifCorrection.substring(0, 50)) + '...</small>' : '') + '</td>'
+      + '<td class="tcell"><span class="fbadge ' + safeSheetStatusClass(status) + '">' + esc(status) + '</span>' + (f.motifCorrection ? '<br><small style="color:var(--text-muted);font-style:italic">' + esc(f.motifCorrection.substring(0, 50)) + '...</small>' : '') + '</td>'
       + '<td class="tcell">' + act + '</td></tr>';
   }
   html += '</tbody></table>';
   main.innerHTML = html;
+  bindCraDynamicActions(main);
 }
 
 function weekLabel() {
@@ -9621,6 +9767,13 @@ function normalizeSheetStatus(status) {
   return aliases[value] || value || 'brouillon';
 }
 
+function safeSheetStatusClass(status) {
+  const normalized = normalizeSheetStatus(status);
+  return ['brouillon', 'soumis', 'valide', 'rejete', 'correction_manager'].includes(normalized)
+    ? normalized
+    : 'brouillon';
+}
+
 function myStatutForPerson(personId) { 
   const f = S.feuilles.find(x => x.membre === personId && sameDay(gristToMs(x.semaine), S.weekStart)); 
   return f ? normalizeSheetStatus(f.statut) : 'brouillon'; 
@@ -10174,7 +10327,7 @@ function buildCraIndexes() {
 function showCraLoading(message) {
   const main = document.getElementById('main');
   if (main) {
-    main.innerHTML = '<div class="empty-cta">' + (message || 'Chargement…') + '</div>';
+    main.innerHTML = '<div class="empty-cta">' + esc(message || 'Chargement…') + '</div>';
   }
 }
 

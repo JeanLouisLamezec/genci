@@ -10,6 +10,7 @@
 <script src="core/identity/taskflow-identity-claim-service.js"></script>
 <script src="core/identity/taskflow-identity-gate.js"></script>
 <script src="core/permissions/taskflow-permissions.js"></script>
+<script src="core/security/taskflow-dom-security.js"></script>
 <style>
 :root {
   --primary: #3e5de7; --primary-dark: #2845c1; --primary-light: #dce6ff;
@@ -211,7 +212,14 @@ const S = {
   permissionRuntime: null,
 };
 
-const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const esc = (s) => String(s == null ? '' : s)
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;')
+  .replace(/'/g, '&#39;');
+const safeClassToken = (value, fallback = '') => TaskFlowDomSecurity.sanitizeCssClassToken(value, fallback);
+const safeRecordId = (value) => TaskFlowDomSecurity.sanitizeRecordId(value);
 const initials = (nom) => { const p = (nom || '').trim().split(/\s+/); return ((p[0]?.[0] || '') + (p[1]?.[0] || '')).toUpperCase() || '?'; };
 const refIds = (v) => (Array.isArray(v) && v[0] === 'L') ? v.slice(1).map(Number) : [];
 
@@ -343,7 +351,7 @@ function nodeRow(kind, id, nom, niveau, extra, charge, capacite, effectif, depth
   return '<div class="node' + (S.selId === key ? ' sel' : '') + (me ? ' me' : '') + '" data-key="' + key + '">'
     + '<span class="twirl' + (hasKids ? (isCol ? ' collapsed' : '') : ' leaf') + '" data-tw="' + key + '">' + (hasKids ? '▼' : '') + '</span>'
     + '<div class="nlabel"><div class="nname">' + esc(nom) + (me ? ' <span class="chef-badge">(moi)</span>' : '') + '</div>'
-    + '<div class="nmeta"><span class="lvl ' + (kind === 'p' ? 'personne' : esc(niveau || '')) + '">' + esc(kind === 'p' ? 'personne' : (niveau || 'unite')) + '</span>' + (extra || '') + '</div></div>'
+    + '<div class="nmeta"><span class="lvl ' + (kind === 'p' ? 'personne' : safeClassToken(niveau, 'unite')) + '">' + esc(kind === 'p' ? 'personne' : (niveau || 'unite')) + '</span>' + (extra || '') + '</div></div>'
     + right + '</div>';
 }
 
@@ -406,12 +414,12 @@ const NIVEAUX = ['organisation', 'direction', 'service', 'equipe'];
 function nivOpts(sel) { return NIVEAUX.map(n => '<option' + (n === sel ? ' selected' : '') + '>' + n + '</option>').join(''); }
 function entOpts(sel, excludeId) {
   let h = '<option value="0"' + (!sel ? ' selected' : '') + '>—</option>';
-  for (const e of S.entites) { if (e.id === excludeId) continue; h += '<option value="' + e.id + '"' + (e.id === sel ? ' selected' : '') + '>' + esc(e.nom) + '</option>'; }
+  for (const e of S.entites) { if (e.id === excludeId) continue; h += '<option value="' + safeRecordId(e.id) + '"' + (e.id === sel ? ' selected' : '') + '>' + esc(e.nom) + '</option>'; }
   return h;
 }
 function teamOpts(sel, excludeId) {
   let h = '<option value="0"' + (!sel ? ' selected' : '') + '>—</option>';
-  for (const p of S.team) { if (p.id === excludeId) continue; h += '<option value="' + p.id + '"' + (p.id === sel ? ' selected' : '') + '>' + esc(p.nom) + '</option>'; }
+  for (const p of S.team) { if (p.id === excludeId) continue; h += '<option value="' + safeRecordId(p.id) + '"' + (p.id === sel ? ' selected' : '') + '>' + esc(p.nom) + '</option>'; }
   return h;
 }
 async function applyAct(actions) {
@@ -463,6 +471,60 @@ window.ocAddPers = async (eid) => {
 window.ocDelE = async (id) => { S.entites = S.entites.filter(e => e.id !== id); S.selId = null; render(); await applyAct([['RemoveRecord', 'Entites', id]]); };
 window.ocDelP = async (id) => { S.team = S.team.filter(p => p.id !== id); S.selId = null; computeCharge(); render(); await applyAct([['RemoveRecord', 'Team', id]]); };
 
+const ORG_ENTITY_FIELDS = new Set(['nom', 'niveau', 'parent', 'chef']);
+const ORG_PERSON_FIELDS = new Set(['nom', 'email', 'role', 'capaciteHebdo', 'entite', 'responsable', 'actif', 'estAdmin']);
+
+function bindOrgchartPanelActions(panel) {
+  if (!panel) return;
+  if (panel.__taskFlowOrgchartChangeHandler) {
+    panel.removeEventListener('change', panel.__taskFlowOrgchartChangeHandler);
+  }
+  if (panel.__taskFlowOrgchartClickHandler) {
+    panel.removeEventListener('click', panel.__taskFlowOrgchartClickHandler);
+  }
+
+  const changeHandler = (event) => {
+    const origin = event.target && typeof event.target.closest === 'function' ? event.target : null;
+    const control = origin && origin.closest('[data-org-change]');
+    if (!control || !panel.contains(control)) return;
+    const idValue = safeRecordId(control.dataset.recordId);
+    if (!idValue) return;
+    const id = Number(idValue);
+    const action = control.dataset.orgChange;
+    if (action === 'set-identity') {
+      ocSetIdentity(id, control.value);
+      return;
+    }
+    const field = control.dataset.field || '';
+    const allowed = action === 'save-entity' ? ORG_ENTITY_FIELDS : action === 'save-person' ? ORG_PERSON_FIELDS : null;
+    if (!allowed || !allowed.has(field)) return;
+    const valueKind = control.dataset.valueKind || 'string';
+    const value = valueKind === 'boolean' ? control.checked : valueKind === 'number' ? Number(control.value) : control.value;
+    if (action === 'save-entity') ocSaveE(id, field, value);
+    else ocSaveP(id, field, value);
+  };
+
+  const clickHandler = (event) => {
+    const origin = event.target && typeof event.target.closest === 'function' ? event.target : null;
+    const control = origin && origin.closest('[data-org-action]');
+    if (!control || !panel.contains(control)) return;
+    const idValue = safeRecordId(control.dataset.recordId);
+    if (!idValue) return;
+    const id = Number(idValue);
+    const action = control.dataset.orgAction;
+    if (action === 'add-subentity') ocAddSous(id);
+    else if (action === 'add-person') ocAddPers(id);
+    else if (action === 'delete-entity') ocDelE(id);
+    else if (action === 'delete-person') ocDelP(id);
+    else if (action === 'select-person') selectNode('p:' + idValue);
+  };
+
+  panel.addEventListener('change', changeHandler);
+  panel.addEventListener('click', clickHandler);
+  panel.__taskFlowOrgchartChangeHandler = changeHandler;
+  panel.__taskFlowOrgchartClickHandler = clickHandler;
+}
+
 function renderPanel() {
   const panel = document.getElementById('panel');
   if (!S.selId) { panel.classList.remove('open'); return; }
@@ -471,15 +533,16 @@ function renderPanel() {
   let html = '';
   if (kind === 'e') {
     const e = S.entites.find(x => x.id === id); if (!e) { panel.classList.remove('open'); return; }
+    const recordId = safeRecordId(id);
     const people = descendantsPeople(id);
     let ch = 0, cap = 0; for (const p of people) { ch += hoursOf(p.id); cap += capPersonne(p); }
     const ratio = cap > 0 ? ch / cap : 0;
     html += '<div class="edit">'
-      + '<input class="etitle" value="' + esc(e.nom) + '" onchange="ocSaveE(' + id + ',\'nom\',this.value)">'
-      + erow('Niveau', '<select onchange="ocSaveE(' + id + ',\'niveau\',this.value)">' + nivOpts(e.niveau) + '</select>')
-      + erow('Parent', '<select onchange="ocSaveE(' + id + ',\'parent\',+this.value)">' + entOpts(e.parent, id) + '</select>')
-      + erow('Chef', '<select onchange="ocSaveE(' + id + ',\'chef\',+this.value)">' + teamOpts(e.chef, null) + '</select>')
-      + '<div class="eact"><button onclick="ocAddSous(' + id + ')">+ Sous-entite</button><button onclick="ocAddPers(' + id + ')">+ Personne</button><button class="del" onclick="ocDelE(' + id + ')">Supprimer</button></div>'
+      + '<input class="etitle" value="' + esc(e.nom) + '" data-org-change="save-entity" data-record-id="' + recordId + '" data-field="nom">'
+      + erow('Niveau', '<select data-org-change="save-entity" data-record-id="' + recordId + '" data-field="niveau">' + nivOpts(e.niveau) + '</select>')
+      + erow('Parent', '<select data-org-change="save-entity" data-record-id="' + recordId + '" data-field="parent" data-value-kind="number">' + entOpts(e.parent, id) + '</select>')
+      + erow('Chef', '<select data-org-change="save-entity" data-record-id="' + recordId + '" data-field="chef" data-value-kind="number">' + teamOpts(e.chef, null) + '</select>')
+      + '<div class="eact"><button data-org-action="add-subentity" data-record-id="' + recordId + '">+ Sous-entite</button><button data-org-action="add-person" data-record-id="' + recordId + '">+ Personne</button><button class="del" data-org-action="delete-entity" data-record-id="' + recordId + '">Supprimer</button></div>'
       + '</div>';
     html += '<div class="kpi-row">'
       + '<div class="kpi"><div class="v">' + people.length + '</div><div class="l">' + (people.length > 1 ? 'Personnes' : 'Personne') + '</div></div>'
@@ -488,31 +551,32 @@ function renderPanel() {
       + '</div><div class="plist">';
     for (const p of people.slice().sort((a, b) => hoursOf(b.id) - hoursOf(a.id))) {
       const pc = hoursOf(p.id), pcap = capPersonne(p), pr = pcap > 0 ? pc / pcap : 0;
-      html += '<div class="prow" onclick="selectNode(\'p:' + p.id + '\')"><div class="av">' + esc(initials(p.nom)) + '</div>'
+      html += '<div class="prow" data-org-action="select-person" data-record-id="' + safeRecordId(p.id) + '"><div class="av">' + esc(initials(p.nom)) + '</div>'
         + '<span class="pn">' + esc(p.nom) + '</span>'
         + '<span class="pc" style="color:' + heat(pr) + '">' + Math.round(pc) + '/' + Math.round(pcap) + ' h</span></div>';
     }
     html += '</div>';
   } else {
     const p = S.team.find(x => x.id === id); if (!p) { panel.classList.remove('open'); return; }
+    const recordId = safeRecordId(id);
     const pc = hoursOf(id), pcap = capPersonne(p), pr = pcap > 0 ? pc / pcap : 0;
     const sameGristId = p.gristUserId ? S.team.filter(x => x.gristUserId === p.gristUserId).length : 0;
     const identityStatus = !p.actif ? 'Inactif' : (sameGristId > 1 ? 'Conflit userId' : (p.gristUserId ? 'Associe' : 'Non associe'));
     const adminIdentityFields = S.actor && S.actor.isAdmin
       ? erow('Etat identite', '<strong>' + esc(identityStatus) + '</strong>')
-        + erow('User ID Grist', '<input type="number" min="1" value="' + (p.gristUserId || '') + '" placeholder="Non associe" onchange="ocSetIdentity(' + id + ',this.value)">')
-        + erow('Profil actif', '<input type="checkbox" ' + (p.actif ? 'checked' : '') + ' onchange="ocSaveP(' + id + ',\'actif\',this.checked)">')
-        + erow('Administrateur', '<input type="checkbox" ' + (p.estAdmin ? 'checked' : '') + ' onchange="ocSaveP(' + id + ',\'estAdmin\',this.checked)">')
+        + erow('User ID Grist', '<input type="number" min="1" value="' + (p.gristUserId || '') + '" placeholder="Non associe" data-org-change="set-identity" data-record-id="' + recordId + '">')
+        + erow('Profil actif', '<input type="checkbox" ' + (p.actif ? 'checked' : '') + ' data-org-change="save-person" data-record-id="' + recordId + '" data-field="actif" data-value-kind="boolean">')
+        + erow('Administrateur', '<input type="checkbox" ' + (p.estAdmin ? 'checked' : '') + ' data-org-change="save-person" data-record-id="' + recordId + '" data-field="estAdmin" data-value-kind="boolean">')
       : '';
     html += '<div class="edit">'
-      + '<input class="etitle" value="' + esc(p.nom) + '" onchange="ocSaveP(' + id + ',\'nom\',this.value)">'
-      + erow('Email', '<input value="' + esc(p.email || '') + '" placeholder="login Grist (pivot droits)" onchange="ocSaveP(' + id + ',\'email\',this.value)">')
-      + erow('Role', '<input value="' + esc(p.role || '') + '" onchange="ocSaveP(' + id + ',\'role\',this.value)">')
-      + erow('Cap./sem', '<input type="number" value="' + (p.capaciteHebdo || '') + '" onchange="ocSaveP(' + id + ',\'capaciteHebdo\',+this.value)"> h')
-      + erow('Entite', '<select onchange="ocSaveP(' + id + ',\'entite\',+this.value)">' + entOpts(p.entite, null) + '</select>')
-      + erow('Responsable', '<select onchange="ocSaveP(' + id + ',\'responsable\',+this.value)">' + teamOpts(p.responsable, id) + '</select>')
+      + '<input class="etitle" value="' + esc(p.nom) + '" data-org-change="save-person" data-record-id="' + recordId + '" data-field="nom">'
+      + erow('Email', '<input value="' + esc(p.email || '') + '" placeholder="login Grist (pivot droits)" data-org-change="save-person" data-record-id="' + recordId + '" data-field="email">')
+      + erow('Role', '<input value="' + esc(p.role || '') + '" data-org-change="save-person" data-record-id="' + recordId + '" data-field="role">')
+      + erow('Cap./sem', '<input type="number" value="' + (p.capaciteHebdo || '') + '" data-org-change="save-person" data-record-id="' + recordId + '" data-field="capaciteHebdo" data-value-kind="number"> h')
+      + erow('Entite', '<select data-org-change="save-person" data-record-id="' + recordId + '" data-field="entite" data-value-kind="number">' + entOpts(p.entite, null) + '</select>')
+      + erow('Responsable', '<select data-org-change="save-person" data-record-id="' + recordId + '" data-field="responsable" data-value-kind="number">' + teamOpts(p.responsable, id) + '</select>')
       + adminIdentityFields
-      + '<div class="eact"><button class="del" onclick="ocDelP(' + id + ')">Supprimer</button></div>'
+      + '<div class="eact"><button class="del" data-org-action="delete-person" data-record-id="' + recordId + '">Supprimer</button></div>'
       + '</div>';
     html += '<div class="kpi-row">'
       + '<div class="kpi"><div class="v">' + Math.round(pc) + ' h</div><div class="l">Charge</div></div>'
@@ -521,6 +585,7 @@ function renderPanel() {
       + '</div>';
   }
   panel.innerHTML = html;
+  bindOrgchartPanelActions(panel);
 }
 
 // ---- Mesure --------------------------------------------------------------

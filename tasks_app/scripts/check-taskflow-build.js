@@ -22,6 +22,7 @@ const SCHEMA_DIR = path.join(CORE_DIR, 'schema');
 // Fichiers sources dans l'ordre d'injection
 const SOURCE_FILES = [
     path.join(CORE_DIR, 'ui', 'taskflow-notifications.js'),
+    path.join(CORE_DIR, 'security', 'taskflow-dom-security.js'),
     path.join(CORE_DIR, 'identity', 'taskflow-identity.js'),
     path.join(CORE_DIR, 'identity', 'taskflow-identity-runtime.js'),
     path.join(CORE_DIR, 'identity', 'taskflow-identity-claim-service.js'),

@@ -911,6 +911,104 @@
 
 
 /* ============================================================================
+ * taskflow-dom-security.js — Primitives de rendu DOM partagees
+ * ----------------------------------------------------------------------------
+ * Ces fonctions ne remplacent pas les API DOM. Elles servent aux quelques
+ * rendus historiques encore construits sous forme de chaines HTML.
+ * ========================================================================== */
+(function (root, factory) {
+    var api = factory();
+    if (typeof module !== 'undefined' && module.exports) module.exports = api;
+    if (root) root.TaskFlowDomSecurity = api;
+})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+    'use strict';
+
+    /**
+     * Encode une valeur non fiable pour un noeud texte ou un attribut HTML
+     * delimite par des guillemets. Cette fonction ne doit jamais etre utilisee
+     * pour construire du JavaScript inline, une URL ou une regle CSS.
+     */
+    function escapeHtml(value) {
+        return String(value == null ? '' : value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    /**
+     * Les couleurs TaskFlow sont saisies avec <input type="color"> et sont
+     * stockees sous forme hexadecimale. Refuser toute autre syntaxe empeche une
+     * valeur Grist alteree de sortir d'un attribut style/value.
+     */
+    function sanitizeCssColor(value, fallback) {
+        var safeFallback = /^#[0-9a-fA-F]{6}$/.test(String(fallback || ''))
+            ? String(fallback)
+            : '#94a3b8';
+        var candidate = String(value == null ? '' : value).trim();
+        return /^#[0-9a-fA-F]{6}$/.test(candidate) ? candidate : safeFallback;
+    }
+
+    /**
+     * Valide un unique nom de classe avant son insertion dans un attribut
+     * class. Les espaces et caracteres de syntaxe HTML sont volontairement
+     * refuses : un statut persistant ne peut ainsi ni ajouter une classe ni
+     * sortir de l'attribut.
+     */
+    function sanitizeCssClassToken(value, fallback) {
+        var tokenPattern = /^[a-zA-Z0-9_-]+$/;
+        var safeFallback = tokenPattern.test(String(fallback || '')) ? String(fallback) : '';
+        var candidate = String(value == null ? '' : value);
+        return tokenPattern.test(candidate) ? candidate : safeFallback;
+    }
+
+    /**
+     * Convertit une valeur persistante en pourcentage fini et borne. Le retour
+     * est un nombre, directement utilisable dans une largeur CSS ou un input.
+     */
+    function sanitizePercentage(value, fallback) {
+        var fallbackNumber = Number(fallback);
+        if (!Number.isFinite(fallbackNumber)) fallbackNumber = 0;
+        var candidate = Number(value);
+        var result = Number.isFinite(candidate) ? candidate : fallbackNumber;
+        return Math.min(100, Math.max(0, result));
+    }
+
+    /**
+     * Restreint une preference persistante a une liste de valeurs connues.
+     * Les preferences locales restent une entree non fiable : une extension,
+     * un ancien build ou un script tiers peut avoir modifie localStorage.
+     */
+    function sanitizeEnumValue(value, allowedValues, fallback) {
+        var allowed = Array.isArray(allowedValues) ? allowedValues.map(String) : [];
+        var safeFallback = allowed.includes(String(fallback)) ? String(fallback) : (allowed[0] || '');
+        var candidate = String(value == null ? '' : value);
+        return allowed.includes(candidate) ? candidate : safeFallback;
+    }
+
+    /**
+     * Normalise une reference Grist avant son transport dans un attribut
+     * data-*. Une reference est un entier strictement positif ; toute autre
+     * valeur est refusee plutot que concatenee dans du HTML ou du JavaScript.
+     */
+    function sanitizeRecordId(value) {
+        var candidate = Number(value);
+        return Number.isSafeInteger(candidate) && candidate > 0 ? String(candidate) : '';
+    }
+
+    return {
+        escapeHtml: escapeHtml,
+        sanitizeCssColor: sanitizeCssColor,
+        sanitizeCssClassToken: sanitizeCssClassToken,
+        sanitizePercentage: sanitizePercentage,
+        sanitizeEnumValue: sanitizeEnumValue,
+        sanitizeRecordId: sanitizeRecordId
+    };
+});
+
+
+/* ============================================================================
  * taskflow-identity.js — Domaine d'identité commun TaskFlow
  * ----------------------------------------------------------------------------
  * Module pur : aucune dépendance au DOM, à Grist ou aux widgets.
@@ -8005,7 +8103,8 @@ if (typeof globalThis !== 'undefined') {
         let CRA_ACTIVE = false; // si la Feuille de temps (TimeEntries) est active, tempsPasse devient un rollup CRA -> saisie manuelle figee (anti-doublon)
         let statusCfg = TF.buildStatusConfig(TF.DEFAULT_STATUSES, 'default'); // #1 : statuts dynamiques, alimente par TF.loadStatusConfig en mode Grist
         let groupBy = 'statut', searchQuery = '', selectedTaskId = null, selectedActionId = null;  // NOUVEAU: selectedActionId
-        let colorMode = localStorage.getItem('taskflow_kanban_colormode') || 'priority';
+        const COLOR_MODES = ['priority', 'project', 'assignee', 'status'];
+        let colorMode = TaskFlowDomSecurity.sanitizeEnumValue(localStorage.getItem('taskflow_kanban_colormode'), COLOR_MODES, 'priority');
         let showSubtasks = localStorage.getItem('taskflow_kanban_showsubs') === '1';  // WBS-03: afficher enfants
         // #9 niveau de travail (par widget, opt-in, defaut 'all') : 'actions' = feuilles, 'parents' = noeuds de synthese.
         let workLevel = localStorage.getItem('taskflow_kanban_worklevel') || 'all';
@@ -8068,7 +8167,10 @@ if (typeof globalThis !== 'undefined') {
         }
         
         const showSaveIndicator = () => { const el = document.getElementById('saveIndicator'); el.classList.add('visible'); clearTimeout(saveTimeout); saveTimeout = setTimeout(() => el.classList.remove('visible'), 1500); };
-        const escapeHtml = (t) => { if (!t) return ''; const d = document.createElement('div'); d.textContent = t; return d.innerHTML; };
+        const escapeHtml = (value) => TaskFlowDomSecurity.escapeHtml(value);
+        const safeColor = (value, fallback = '#94a3b8') => TaskFlowDomSecurity.sanitizeCssColor(value, fallback);
+        const safePercentage = (value, fallback = 0) => TaskFlowDomSecurity.sanitizePercentage(value, fallback);
+        const safeRecordId = (value) => TaskFlowDomSecurity.sanitizeRecordId(value);
         const gristToDate = (ts) => ts ? new Date(ts * 1000) : null;
         const dateToGrist = (d) => d ? Math.floor(d.getTime() / 1000) : null;
         const formatDateInput = (d) => d ? d.toISOString().split('T')[0] : '';
@@ -8083,10 +8185,10 @@ if (typeof globalThis !== 'undefined') {
         };
         const addDays = (d, n) => { const r = new Date(d); r.setDate(r.getDate() + n); return r; };
         const getProjectName = (id) => { const p = projects.find(x => x.id === id); return p?.nom || ''; };
-        const getProjectColor = (id) => { const p = projects.find(x => x.id === id); return p?.couleur || '#64748b'; };
+        const getProjectColor = (id) => { const p = projects.find(x => x.id === id); return safeColor(p?.couleur, '#64748b'); };
         const getTeamMemberName = (id) => { const m = team.find(x => x.id === id); return m?.nom || ''; };
         // TEAM-01: Couleur personnalisée par membre
-        const getTeamMemberColor = (id) => { const m = team.find(x => x.id === id); return m?.couleur || '#3e5de7'; };  // Défaut: primary
+        const getTeamMemberColor = (id) => { const m = team.find(x => x.id === id); return safeColor(m?.couleur, '#3e5de7'); };  // Défaut: primary
         const getInitials = (n) => n ? n.split(' ').map(x => x[0]).join('').toUpperCase().slice(0, 2) : '?';
         const getRefListArray = (val) => { if (!val) return []; if (Array.isArray(val)) return val[0] === 'L' ? val.slice(1).map(Number).filter(n => !isNaN(n)) : val.map(Number).filter(n => !isNaN(n)); return []; };
         const toGristRefList = (arr) => arr && arr.length ? ['L', ...arr] : null;
@@ -8097,11 +8199,11 @@ if (typeof globalThis !== 'undefined') {
         const getTags = (t) => getChoiceListArray(t?.tags);
         const getPriority = (t) => (t?.priorite >= 1 && t?.priorite <= 4) ? parseInt(t.priorite) : 3;
         function getTaskColor(t) {
-            if (t?.couleur && /^#[0-9a-f]{3,8}$/i.test(t.couleur)) return t.couleur;
+            if (t?.couleur) return safeColor(t.couleur);
             switch (colorMode) {
                 case 'project': return t?.projet ? getProjectColor(t.projet) : '#94a3b8';
                 case 'assignee': { const a = getAssignees(t); return a.length ? getTeamMemberColor(a[0]) : '#94a3b8'; }
-                case 'status': return TF.getStatus(statusCfg, t?.statut || statusCfg.firstValue).fillColor;
+                case 'status': return safeColor(TF.getStatus(statusCfg, t?.statut || statusCfg.firstValue).fillColor);
                 case 'priority':
                 default: return PRIORITY_COLORS[getPriority(t)];
             }
@@ -8109,11 +8211,11 @@ if (typeof globalThis !== 'undefined') {
         
         // NOUVEAU: Couleur pour les Actions
         function getActionColor(a) {
-            if (a?.couleur && /^#[0-9a-f]{3,8}$/i.test(a.couleur)) return a.couleur;
+            if (a?.couleur) return safeColor(a.couleur);
             switch (colorMode) {
                 case 'project': return a?.task ? getProjectColor(tasks.find(tk => tk.id === a.task)?.projet) : '#94a3b8';
                 case 'assignee': return a?.assignee ? getTeamMemberColor(a.assignee) : '#94a3b8';
-                case 'status': return TF.getStatus(statusCfg, a?.statut || statusCfg.firstValue).fillColor;
+                case 'status': return safeColor(TF.getStatus(statusCfg, a?.statut || statusCfg.firstValue).fillColor);
                 case 'priority':
                 default: return PRIORITY_COLORS[parseInt(a?.priorite) || 3];
             }
@@ -8676,7 +8778,8 @@ if $projet and $projet.responsable:
                     message += '<div style="background:#fef2f2;border:1px solid #ef4444;border-radius:8px;padding:12px;margin:12px 0;font-size:0.85rem">';
                     message += '<strong>Colonnes dupliquées détectées :</strong><ul style="margin:8px 0 0 20px">';
                     inspection.duplicateColumns.forEach(function(dup) {
-                        message += '<li><strong>' + dup.table + '.' + dup.canonicalColumn + '</strong> → ' + dup.duplicates.join(', ') + '</li>';
+                        var duplicateNames = Array.isArray(dup.duplicates) ? dup.duplicates.map(escapeHtml).join(', ') : '';
+                        message += '<li><strong>' + escapeHtml(dup.table) + '.' + escapeHtml(dup.canonicalColumn) + '</strong> → ' + duplicateNames + '</li>';
                     });
                     message += '</ul></div>';
                 }
@@ -8690,7 +8793,7 @@ if $projet and $projet.responsable:
                 
                 if (inspection.missingTables && inspection.missingTables.length > 0) {
                     message += '<div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:12px;margin:12px 0;font-size:0.85rem">';
-                    message += '<strong>Tables manquantes :</strong> ' + inspection.missingTables.join(', ');
+                    message += '<strong>Tables manquantes :</strong> ' + inspection.missingTables.map(escapeHtml).join(', ');
                     message += '</div>';
                 }
                 
@@ -8698,7 +8801,7 @@ if $projet and $projet.responsable:
                     message += '<div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:12px;margin:12px 0;font-size:0.85rem">';
                     message += '<strong>Colonnes manquantes :</strong><ul style="margin:8px 0 0 20px">';
                     inspection.missingColumns.slice(0, 10).forEach(function(col) {
-                        message += '<li>' + col + '</li>';
+                        message += '<li>' + escapeHtml(col) + '</li>';
                     });
                     if (inspection.missingColumns.length > 10) {
                         message += '<li>… et ' + (inspection.missingColumns.length - 10) + ' autres</li>';
@@ -8715,7 +8818,7 @@ if $projet and $projet.responsable:
                 
                 if (inspection.missingTables && inspection.missingTables.length > 0) {
                     message += '<div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:12px;margin:12px 0;font-size:0.85rem">';
-                    message += '<strong>Tables manquantes :</strong> ' + inspection.missingTables.join(', ');
+                    message += '<strong>Tables manquantes :</strong> ' + inspection.missingTables.map(escapeHtml).join(', ');
                     message += '</div>';
                 }
                 
@@ -8723,7 +8826,7 @@ if $projet and $projet.responsable:
                     message += '<div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:12px;margin:12px 0;font-size:0.85rem">';
                     message += '<strong>Colonnes manquantes :</strong><ul style="margin:8px 0 0 20px">';
                     inspection.missingColumns.slice(0, 10).forEach(function(col) {
-                        message += '<li>' + col + '</li>';
+                        message += '<li>' + escapeHtml(col) + '</li>';
                     });
                     if (inspection.missingColumns.length > 10) {
                         message += '<li>… et ' + (inspection.missingColumns.length - 10) + ' autres</li>';
@@ -8835,7 +8938,7 @@ if $projet and $projet.responsable:
                 const choices = activeSteps.map(s => s.valeur);
                 const choiceOptions = {};
                 for (const s of activeSteps) {
-                    choiceOptions[s.valeur] = { fillColor: s.couleur || '#94a3b8', textColor: '#ffffff' };
+                    choiceOptions[s.valeur] = { fillColor: safeColor(s.couleur), textColor: '#ffffff' };
                 }
                 
                 await _writeStatutChoices(choices, choiceOptions);
@@ -8949,7 +9052,7 @@ if $projet and $projet.responsable:
                 const stepList = kanbanSteps
                     .filter(s => s.actif !== false)
                     .sort((a, b) => (a.ordre || 0) - (b.ordre || 0))
-                    .map(s => ({ value: s.valeur || s.nom, label: s.nom, fillColor: s.couleur || '#94a3b8', textColor: '#ffffff' }));
+                    .map(s => ({ value: s.valeur || s.nom, label: s.nom, fillColor: safeColor(s.couleur), textColor: '#ffffff' }));
                 if (stepList.length) {
                     statusCfg = TF.buildStatusConfig(stepList, 'kanban');
                     console.log('[DIAG kanban steps] statusCfg from KanbanSteps:', statusCfg);
@@ -9027,8 +9130,8 @@ if $projet and $projet.responsable:
         function toggleFilterMenu(id) { const m = document.querySelector('#' + id + ' .filter-menu'); const open = m && m.classList.contains('open'); document.querySelectorAll('.filter-menu').forEach(x => x.classList.remove('open')); if (m && !open) m.classList.add('open'); }
         function setGroupBy(g) { groupBy = g; document.querySelectorAll('.group-selector .btn').forEach(b => b.classList.remove('active')); document.getElementById('group' + g.charAt(0).toUpperCase() + g.slice(1)).classList.add('active'); render(); }
         function changeColorMode(mode) {
-            colorMode = mode;
-            localStorage.setItem('taskflow_kanban_colormode', mode);
+            colorMode = TaskFlowDomSecurity.sanitizeEnumValue(mode, COLOR_MODES, 'priority');
+            localStorage.setItem('taskflow_kanban_colormode', colorMode);
             // Persistance locale uniquement — évite la demande d'enregistrement du doc.
             render();
         }
@@ -9201,19 +9304,29 @@ if $projet and $projet.responsable:
             const bar = document.getElementById('filterChips'); if (!bar) return;
             const X = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
             const chip = (type, val, label, color) => { 
-              const dot = color ? `<span class="fc-dot" style="background:${color}"></span>` : ''; 
-              const v = (typeof val === 'number') ? val : JSON.stringify(val); 
-              return `<span class="fc-chip">${dot}${label}<span class="fc-x" title="Retirer" onclick="removeFilterChip('${type}', ${v})">${X}</span></span>`; 
+              const dot = color ? `<span class="fc-dot" style="background:${safeColor(color)}"></span>` : '';
+              return `<span class="fc-chip">${dot}${label}<span class="fc-x" title="Retirer" data-filter-chip-type="${escapeHtml(type)}" data-filter-chip-value="${escapeHtml(String(val))}">${X}</span></span>`;
             };
             const chips = [];
             filters.project.forEach(id => { const p = projects.find(x=>x.id===id); chips.push(chip('project', id, p?escapeHtml(p.nom):'Projet', p&&p.couleur)); });
             filters.task.forEach(id => { const t = tasks.find(x=>x.id===id); chips.push(chip('task', id, t?escapeHtml(t.titre):'Tâche')); });
             filters.assignee.forEach(id => { const m = team.find(x=>x.id===id); chips.push(chip('assignee', id, m?escapeHtml(m.nom):'Membre')); });
             filters.team.forEach(id => { const m = team.find(x=>x.id===id); chips.push(chip('team', id, m?escapeHtml(m.nom):'Équipe')); });
-            if (searchQuery) chips.push(`<span class="fc-chip">« ${escapeHtml(searchQuery)} »<span class="fc-x" title="Effacer la recherche" onclick="clearSearchChip()">${X}</span></span>`);
+            if (searchQuery) chips.push(`<span class="fc-chip">« ${escapeHtml(searchQuery)} »<span class="fc-x" title="Effacer la recherche" data-filter-chip-action="clear-search">${X}</span></span>`);
             if (!chips.length) { bar.style.display = 'none'; bar.innerHTML = ''; return; }
             bar.style.display = 'flex';
-            bar.innerHTML = '<span class="fc-label">Filtres actifs</span>' + chips.join('') + '<span class="fc-clear-all" onclick="filterManager.clearAll()">Tout effacer</span>';
+            bar.innerHTML = '<span class="fc-label">Filtres actifs</span>' + chips.join('') + '<span class="fc-clear-all" data-filter-chip-action="clear-all">Tout effacer</span>';
+            bar.querySelectorAll('[data-filter-chip-type][data-filter-chip-value]').forEach(removeButton => {
+              removeButton.addEventListener('click', () => {
+                removeFilterChip(removeButton.dataset.filterChipType, removeButton.dataset.filterChipValue);
+              });
+            });
+            const clearSearchButton = bar.querySelector('[data-filter-chip-action="clear-search"]');
+            if (clearSearchButton) clearSearchButton.addEventListener('click', clearSearchChip);
+            const clearAllButton = bar.querySelector('[data-filter-chip-action="clear-all"]');
+            if (clearAllButton) clearAllButton.addEventListener('click', () => {
+              if (filterManager) filterManager.clearAll();
+            });
         }
         function removeFilterChip(type, val) { 
           if (filterManager) {
@@ -9313,20 +9426,36 @@ if $projet and $projet.responsable:
             const columns = buildColumns(fa);
             
             container.innerHTML = columns.map(col => `
-                <div class="kanban-column" data-key="${col.key}">
-                    <div class="column-header" data-column-key="${col.key}" style="cursor: grab;">
-                        <span class="column-title ${groupBy === 'statut' ? 'editable' : ''}" ${groupBy === 'statut' ? `ondblclick="renameStatusColumn('${col.key}')"` : ''} title="${groupBy === 'statut' ? 'Double-cliquer pour renommer (drag depuis le header pour réordonner)' : ''}">
-                            ${groupBy === 'statut' ? `<span class="column-color-dot" style="background:${statusCfg.byValue[col.key]?.fillColor || '#94a3b8'}"></span>` : (col.icon || '')}
+                <div class="kanban-column" data-column-key="${escapeHtml(String(col.key))}">
+                    <div class="column-header" style="cursor: grab;">
+                        <span class="column-title ${groupBy === 'statut' ? 'editable' : ''}" ${groupBy === 'statut' ? 'data-column-action="rename"' : ''} title="${groupBy === 'statut' ? 'Double-cliquer pour renommer (drag depuis le header pour réordonner)' : ''}">
+                            ${groupBy === 'statut' ? `<span class="column-color-dot" style="background:${safeColor(statusCfg.byValue[col.key]?.fillColor)}"></span>` : (col.icon || '')}
                             ${escapeHtml(col.label)} <span class="column-count">${col.tasks.length}</span>
                         </span>
                         <div style="display:flex;align-items:center;gap:2px">
-                            ${groupBy === 'statut' ? `<button class="column-edit-btn" onclick="renameStatusColumn('${col.key}')" title="Renommer"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>` : ''}
-                            <button class="column-add" onclick="openCreateActionPanelForColumn('${col.key}')" title="Ajouter">+</button>
+                            ${groupBy === 'statut' ? `<button class="column-edit-btn" data-column-action="rename" title="Renommer"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>` : ''}
+                            <button class="column-add" data-column-action="create" title="Ajouter">+</button>
                         </div>
                     </div>
-                    <div class="column-body ${col.tasks.length ? '' : 'is-empty'}" id="col-${col.key}">${col.tasks.length ? col.tasks.map(a => renderActionCard(a)).join('') : renderEmptyColumn(col)}</div>
+                    <div class="column-body ${col.tasks.length ? '' : 'is-empty'}" data-column-key="${escapeHtml(String(col.key))}">${col.tasks.length ? col.tasks.map(a => renderActionCard(a)).join('') : renderEmptyColumn(col)}</div>
                 </div>
             `).join('') + (groupBy === 'statut' ? `<div class="kanban-add-column"><button onclick="addStatusColumn()" title="Ajouter une étape">+</button></div>` : '');
+
+            bindKanbanCardActions(container);
+
+            container.querySelectorAll('[data-column-action="rename"]').forEach(renameControl => {
+                const eventName = renameControl.classList.contains('column-title') ? 'dblclick' : 'click';
+                renameControl.addEventListener(eventName, () => {
+                    const column = renameControl.closest('.kanban-column');
+                    if (column) renameStatusColumn(column.dataset.columnKey, renameControl);
+                });
+            });
+            container.querySelectorAll('[data-column-action="create"]').forEach(createControl => {
+                createControl.addEventListener('click', () => {
+                    const column = createControl.closest('.kanban-column');
+                    if (column) openCreateActionPanelForColumn(column.dataset.columnKey);
+                });
+            });
             
             // Initialize Sortable sur les colonnes (drag & drop des étapes) - uniquement en mode statut
             // Utiliser 'handle' pour ne draguer que depuis le header, évitant le conflit avec les tâches
@@ -9345,18 +9474,35 @@ if $projet and $projet.responsable:
             }
             
             // Initialize Sortable sur les corps des colonnes (drag & drop des tâches)
-            columns.forEach(col => {
-                const el = document.getElementById(`col-${col.key}`);
-                if (el) {
-                    sortableInstances.push(new Sortable(el, {
-                        group: 'tasks',
-                        animation: 150,
-                        ghostClass: 'sortable-ghost',
-                        chosenClass: 'sortable-chosen',
-                        onEnd: (evt) => handleDrop(evt)
-                    }));
-                }
+            container.querySelectorAll('.column-body[data-column-key]').forEach(columnBody => {
+                sortableInstances.push(new Sortable(columnBody, {
+                    group: 'tasks',
+                    animation: 150,
+                    ghostClass: 'sortable-ghost',
+                    chosenClass: 'sortable-chosen',
+                    onEnd: (evt) => handleDrop(evt)
+                }));
             });
+        }
+
+        function bindKanbanCardActions(container) {
+            if (!container) return;
+            if (container.__taskFlowCardActionHandler) {
+                container.removeEventListener('click', container.__taskFlowCardActionHandler);
+            }
+            const handler = function(event) {
+                const origin = event.target instanceof Element ? event.target : event.target?.parentElement;
+                const control = origin?.closest('[data-card-action]');
+                if (!control || !container.contains(control)) return;
+                const actionIdValue = safeRecordId(control.dataset.actionId);
+                const actionId = actionIdValue ? Number(actionIdValue) : null;
+                if (!actionId) return;
+                event.stopPropagation();
+                if (control.dataset.cardAction === 'open-action') openActionPanel(actionId);
+                else if (control.dataset.cardAction === 'set-progress') setActionCardProgress(event, actionId, control);
+            };
+            container.addEventListener('click', handler);
+            container.__taskFlowCardActionHandler = handler;
         }
 
         function renderEmptyColumn(col) {
@@ -9379,7 +9525,7 @@ if $projet and $projet.responsable:
                 <span class="tf-empty-glyph">${inbox}</span>
                 <div class="tf-empty-title">Rien dans « ${escapeHtml(col.label)} »</div>
                 <div class="tf-empty-sub">Glissez une action ici ou créez-en une nouvelle.</div>
-                <button class="tf-empty-btn" onclick="openCreateActionPanelForColumn('${col.key}')"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> Nouvelle action</button>
+                <button class="tf-empty-btn" data-column-action="create"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> Nouvelle action</button>
             </div>`;
         }
 
@@ -9484,10 +9630,10 @@ if $projet and $projet.responsable:
         }
 
         // Renomme une étape existante (met à jour KanbanSteps + sync Choice + update tâches).
-        async function renameStatusColumn(oldValue) {
+        async function renameStatusColumn(oldValue, triggerElement) {
             if (TF.isReadOnly()) { showToast('Lecture seule : action impossible', 'error'); return; }
             if (groupBy !== 'statut') return;
-            const span = event?.currentTarget?.closest('.column-header')?.querySelector('.column-title');
+            const span = triggerElement?.closest('.column-header')?.querySelector('.column-title');
             if (!span) return;
             const oldLabel = statusCfg.byValue[oldValue]?.label || oldValue;
             // Remplace le span par un input inline
@@ -9587,7 +9733,7 @@ if $projet and $projet.responsable:
                 const stepList = activeSteps.map(s => ({
                     value: s.valeur || s.nom,
                     label: s.nom,
-                    fillColor: s.couleur || '#94a3b8',
+                    fillColor: safeColor(s.couleur),
                     textColor: '#ffffff'
                 }));
                 statusCfg = TF.buildStatusConfig(stepList, 'kanban');
@@ -9614,7 +9760,7 @@ if $projet and $projet.responsable:
                 const stepList = activeSteps.map(s => ({
                     value: s.valeur || s.nom,
                     label: s.nom,
-                    fillColor: s.couleur || '#94a3b8',
+                    fillColor: safeColor(s.couleur),
                     textColor: '#ffffff'
                 }));
                 statusCfg = TF.buildStatusConfig(stepList, 'kanban');
@@ -9630,7 +9776,7 @@ if $projet and $projet.responsable:
             } else if (groupBy === 'priorite') {
                 return [1,2,3,4].map(p => ({ key: String(p), label: PRIORITY_LABELS[p], icon: '', tasks: fa.filter(a => a.priorite === String(p)) }));
             } else if (groupBy === 'projet') {
-                const cols = projects.filter(p => p.actif !== false).map(p => ({ key: String(p.id), label: p.nom, icon: `<span style="color:${p.couleur}">●</span>`, tasks: fa.filter(a => a.task && tasks.find(tk => tk.id === a.task)?.projet === p.id) }));
+                const cols = projects.filter(p => p.actif !== false).map(p => ({ key: String(p.id), label: p.nom, icon: `<span style="color:${safeColor(p.couleur, '#64748b')}">●</span>`, tasks: fa.filter(a => a.task && tasks.find(tk => tk.id === a.task)?.projet === p.id) }));
                 cols.push({ key: 'none', label: 'Sans projet', icon: '', tasks: fa.filter(a => !a.task || !tasks.find(tk => tk.id === a.task)?.projet) });
                 return cols;
             }
@@ -9638,7 +9784,7 @@ if $projet and $projet.responsable:
         }
 
         function renderActionCard(a) {  // NOUVEAU: carte pour Action
-            const p = a.priorite || '3';
+            const p = getPriority(a);
             const assignee = a.assignee;
             console.log('[DIAG assignee] renderActionCard:', { actionId: a.id, assigneeRaw: assignee, assigneeType: typeof assignee });
             const taskObj = a.task ? tasks.find(tk => tk.id === a.task) : null;
@@ -9647,7 +9793,7 @@ if $projet and $projet.responsable:
             const typeIcon = '';  // Pas de type pour les Actions
 
             const barColor = getActionColor(a);
-            const prog = a.progression || 0;
+            const prog = safePercentage(a.progression);
             let dueHtml = '';
             if (a.dateEcheance) {
                 const _e = gristToDate(a.dateEcheance);
@@ -9669,7 +9815,7 @@ if $projet and $projet.responsable:
             const member = team.find(m => Number(m.id) === Number(assigneeId));
             console.log('[DIAG assignee] renderActionCard member lookup:', { assigneeId, member, teamLength: team.length });
             
-            return `<div class="task-card p${p} ${TF.isTerminal(statusCfg, a.statut) ? 'done' : ''} ${a.id === selectedActionId ? 'selected' : ''}" data-id="${a.id}" style="border-left-color:${barColor}" onclick="openActionPanel(${a.id})">
+            return `<div class="task-card p${p} ${TF.isTerminal(statusCfg, a.statut) ? 'done' : ''} ${a.id === selectedActionId ? 'selected' : ''}" data-id="${safeRecordId(a.id)}" data-card-action="open-action" data-action-id="${safeRecordId(a.id)}" style="border-left-color:${barColor}">
                 <div class="card-header">
                     <span class="card-title">${escapeHtml(a.titre) || 'Sans titre'}</span>
                     ${typeIcon ? `<span class="card-type">${typeIcon}</span>` : ''}
@@ -9680,8 +9826,8 @@ if $projet and $projet.responsable:
                     <span class="card-task" title="Tâche parente">📋 ${escapeHtml(taskTitle)}</span>
                     ${dueHtml}
                 </div>
-                ${a.progression !== undefined ? `<div class="card-progress-row"><div class="card-progress" onclick="event.stopPropagation();setActionCardProgress(event, ${a.id})"><div class="card-progress-fill p${p}" style="width:${prog}%"></div></div><span class="card-progress-pct">${prog}%</span></div>` : ''}
-                ${assignee ? `<div class="card-assignees"><div class="card-avatar" style="background:${getTeamMemberColor(assignee)}">${getInitials(getTeamMemberName(assignee))}</div></div>` : ''}
+                ${a.progression !== undefined ? `<div class="card-progress-row"><div class="card-progress" data-card-action="set-progress" data-action-id="${safeRecordId(a.id)}"><div class="card-progress-fill p${p}" style="width:${prog}%"></div></div><span class="card-progress-pct">${prog}%</span></div>` : ''}
+                ${assignee ? `<div class="card-assignees"><div class="card-avatar" style="background:${getTeamMemberColor(assignee)}">${escapeHtml(getInitials(getTeamMemberName(assignee)))}</div></div>` : ''}
             </div>`;
         }
 
@@ -9691,7 +9837,7 @@ if $projet and $projet.responsable:
             if (!action) return;
 
             // Lire la colonne de destination depuis evt.to (le conteneur d'arrivée).
-            const colKey = (evt.to && evt.to.id) ? evt.to.id.replace(/^col-/, '') : null;
+            const colKey = evt.to?.dataset?.columnKey ?? null;
             if (colKey === null) return;
 
             let updates = {};
@@ -9870,7 +10016,7 @@ if $projet and $projet.responsable:
             const options = candidates.map(task => {
                 const project = projects.find(item => item.id === task.projet);
                 const label = `${project?.nom || 'Sans projet'} — ${task.titre || `Tâche #${task.id}`}`;
-                return `<option value="${task.id}" ${selectedId === task.id ? 'selected' : ''}>${escapeHtml(label)}</option>`;
+                return `<option value="${safeRecordId(task.id)}" ${selectedId === task.id ? 'selected' : ''}>${escapeHtml(label)}</option>`;
             }).join('');
             const emptyResult = normalizedQuery && candidates.length === 0
                 ? '<option value="" disabled>Aucune tâche trouvée</option>'
@@ -9919,6 +10065,7 @@ if $projet and $projet.responsable:
             const footer = document.getElementById('panelFooter');
             const data = panelState.editData;
             if (!data) { closePanel(); return; }
+            const progressValue = safePercentage(data.progression);
 
             const canNavigate = panelState.columnTasks.length > 1 && !panelState.isNew;
             const navLabel = !panelState.isNew && panelState.columnTasks.length > 1 ? `${panelState.taskIndex + 1}/${panelState.columnTasks.length}` : '';
@@ -9926,7 +10073,7 @@ if $projet and $projet.responsable:
             const task = data.task ? tasks.find(t => t.id === (typeof data.task === 'object' ? data.task.id : data.task)) : null;
             const taskName = task ? escapeHtml(task.titre) : 'Aucune tâche';
             const taskProject = task ? projects.find(p => p.id === task.projet) : null;
-            const projectColor = taskProject?.couleur || '#94a3b8';
+            const projectColor = safeColor(taskProject?.couleur);
             const assignee = data.assignee;
             const assigneeName = assignee ? getTeamMemberName(assignee) : null;
             const assigneeInitials = assigneeName ? assigneeName.split(' ').filter(Boolean).map(w => w[0]).slice(0,2).join('').toUpperCase() : '?';
@@ -9935,7 +10082,7 @@ if $projet and $projet.responsable:
 
             const s = gristToDate(data.dateDebut), e = gristToDate(data.dateEcheance);
             const tagsArray = getChoiceListArray(data.tags || []);
-            const tagsChips = tagsArray.map(tag => `<span class="tag-chip">#${escapeHtml(tag)}<span class="remove" onclick="removeActionTag('${escapeHtml(tag)}')">×</span></span>`).join('');
+            const tagsChips = tagsArray.map((tag, index) => `<span class="tag-chip">#${escapeHtml(tag)}<span class="remove" onclick="removeActionTagAt(${index})">×</span></span>`).join('');
 
             header.innerHTML = `<div class="panel-nav"><button class="panel-nav-btn" onclick="navigatePanelAction(-1)" ${!canNavigate ? 'disabled' : ''}>◀</button>${navLabel ? `<span class="panel-title">${navLabel}</span>` : ''}<button class="panel-nav-btn" onclick="navigatePanelAction(1)" ${!canNavigate ? 'disabled' : ''}>▶</button></div><button class="panel-close" onclick="confirmClosePanel()">×</button>`;
 
@@ -9948,7 +10095,7 @@ if $projet and $projet.responsable:
                     <div class="prop-row pr-status">
                         <span class="prop-label">Statut</span>
                         <div class="prop-value"><div class="status-selector">
-                            ${statusCfg.list.map(s => `<div class="status-pill ${data.statut === s.value ? 'selected' : ''}" data-status="${escapeHtml(s.value)}" onclick="updateActionField('statut', this.dataset.status)"><span class="panel-pill-dot" style="background:${s.fillColor}"></span>${escapeHtml(s.label)}</div>`).join('')}
+                            ${statusCfg.list.map(s => `<div class="status-pill ${data.statut === s.value ? 'selected' : ''}" data-status="${escapeHtml(s.value)}" onclick="updateActionField('statut', this.dataset.status)"><span class="panel-pill-dot" style="background:${safeColor(s.fillColor)}"></span>${escapeHtml(s.label)}</div>`).join('')}
                         </div></div>
                     </div>
                     <div class="prop-row">
@@ -9977,7 +10124,7 @@ if $projet and $projet.responsable:
                         <div class="prop-value">
                             <select class="form-select" onchange="updateActionField('assignee', this.value ? parseInt(this.value) : null)">
                                 <option value="">Non assigné</option>
-                                ${team.filter(m => m.actif !== false).map(m => `<option value="${m.id}" ${data.assignee === m.id ? 'selected' : ''}>${escapeHtml(m.nom)}</option>`).join('')}
+                                ${team.filter(m => m.actif !== false).map(m => `<option value="${safeRecordId(m.id)}" ${data.assignee === m.id ? 'selected' : ''}>${escapeHtml(m.nom)}</option>`).join('')}
                             </select>
                         </div>
                     </div>
@@ -10003,16 +10150,16 @@ if $projet and $projet.responsable:
                         <span class="prop-label">Progression</span>
                         <div class="prop-value">
                             <div class="progress-inline-wrap">
-                                <div class="progress-bar-mini"><div class="progress-bar-mini-fill" id="progressBarFill" style="width:${data.progression}%"></div></div>
-                                <span class="progress-pct-label" id="progressValue">${data.progression}%</span>
+                                <div class="progress-bar-mini"><div class="progress-bar-mini-fill" id="progressBarFill" style="width:${progressValue}%"></div></div>
+                                <span class="progress-pct-label" id="progressValue">${progressValue}%</span>
                             </div>
-                            <input type="range" class="progress-slider" min="0" max="100" value="${data.progression}" oninput="document.getElementById('progressValue').textContent=this.value+'%';document.getElementById('progressBarFill').style.width=this.value+'%" onchange="updateActionField('progression', parseInt(this.value))">
+                            <input type="range" class="progress-slider" min="0" max="100" value="${progressValue}" oninput="document.getElementById('progressValue').textContent=this.value+'%';document.getElementById('progressBarFill').style.width=this.value+'%'" onchange="updateActionField('progression', parseInt(this.value))">
                         </div>
                     </div>
                     <div class="prop-row">
                         <span class="prop-label">Couleur</span>
                         <div class="prop-value"><div style="display:flex;gap:8px;align-items:center">
-                            <input type="color" value="${data.couleur || getActionColor(data)}" onchange="updateActionField('couleur', this.value)" style="width:36px;height:28px;border:1px solid var(--border);border-radius:6px;cursor:pointer;padding:2px">
+                            <input type="color" value="${safeColor(data.couleur, getActionColor(data))}" onchange="updateActionField('couleur', this.value)" style="width:36px;height:28px;border:1px solid var(--border);border-radius:6px;cursor:pointer;padding:2px">
                             ${data.couleur
                                 ? `<button class="btn" style="padding:4px 10px;font-size:0.72rem" onclick="updateActionField('couleur', null)">Réinitialiser</button>`
                                 : `<span style="font-size:0.72rem;color:var(--text-muted)">Héritée du mode « ${colorMode} »</span>`}
@@ -10134,13 +10281,13 @@ if $projet and $projet.responsable:
 
         // NOUVEAU: Gestion des tags pour Actions
         function handleActionTagKeydown(e) { const data = panelState.editData; if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); const tag = e.target.value.trim().replace(/^#/, ''); if (tag && !data.tags.includes(tag)) { data.tags.push(tag); e.target.value = ''; syncLocalAction(); if (!panelState.isNew && gristReady) saveActionToGrist(); renderPanelAction(); } } else if (e.key === 'Backspace' && !e.target.value && data.tags.length) { data.tags.pop(); syncLocalAction(); if (!panelState.isNew && gristReady) saveActionToGrist(); renderPanelAction(); } }
-        function removeActionTag(tag) { const data = panelState.editData; const idx = data.tags.indexOf(tag); if (idx !== -1) { data.tags.splice(idx, 1); syncLocalAction(); if (!panelState.isNew && gristReady) saveActionToGrist(); renderPanelAction(); } }
+        function removeActionTagAt(index) { const data = panelState.editData; const safeIndex = Number(index); if (Number.isInteger(safeIndex) && safeIndex >= 0 && safeIndex < data.tags.length) { data.tags.splice(safeIndex, 1); syncLocalAction(); if (!panelState.isNew && gristReady) saveActionToGrist(); renderPanelAction(); } }
 
         // NOUVEAU: Mise à jour progression par clic sur la carte Action
-        function setActionCardProgress(evt, actionId) {
+        function setActionCardProgress(evt, actionId, progressElement) {
             const action = actions.find(a => a.id === actionId);
             if (!action) return;
-            const rect = evt.currentTarget.getBoundingClientRect();
+            const rect = (progressElement || evt.currentTarget).getBoundingClientRect();
             const percent = Math.min(100, Math.max(0, Math.round((evt.clientX - rect.left) / rect.width * 100)));
             action.progression = percent;
             if (gristReady) {
