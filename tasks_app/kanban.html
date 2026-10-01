@@ -1873,10 +1873,29 @@
         'KanbanSteps',
         'Feuilles',
         'TimeEntries',
-        'UserFilters'
+        'UserFilters',
+        'TaskAssignments',
+        'Disponibilites',
+        'MemberDailyCapacities',
+        'TaskFlow_Meta',
+        'TaskFlowIdentityProbe',
+        'Competences'
     ];
 
-    var PERMISSION_DATA_TABLES = CONTROLLED_TABLES.concat(['TaskAssignments']);
+    // Les tables de capacité peuvent contenir plusieurs centaines de lignes.
+    // Elles sont contrôlées, mais chargées à la demande uniquement lorsqu'une
+    // mutation les vise afin de ne pas ralentir chaque écriture ordinaire.
+    var OPTIONAL_PERMISSION_DATA_TABLES = [
+        'Disponibilites',
+        'MemberDailyCapacities',
+        'TaskFlow_Meta',
+        'TaskFlowIdentityProbe',
+        'Competences'
+    ];
+    var PERMISSION_DATA_TABLES = CONTROLLED_TABLES.filter(function (table) {
+        return OPTIONAL_PERMISSION_DATA_TABLES.indexOf(table) === -1;
+    });
+    var SNAPSHOT_TABLES = CONTROLLED_TABLES.slice();
 
     var RECORD_ACTIONS = [
         'AddRecord',
@@ -1886,6 +1905,17 @@
         'BulkUpdateRecord',
         'BulkRemoveRecord'
     ];
+
+    var SCHEMA_ACTIONS = [
+        'AddTable',
+        'RemoveTable',
+        'RenameTable',
+        'AddColumn',
+        'RemoveColumn',
+        'RenameColumn',
+        'ModifyColumn'
+    ];
+    var SCHEMA_METADATA_TABLES = ['_grist_Tables', '_grist_Tables_column'];
 
     function normalizeId(value) {
         if (value === null || value === undefined || value === '') return null;
@@ -1923,6 +1953,32 @@
         return index;
     }
 
+    function addToSetMap(index, key, value) {
+        if (key === null || value === null) return;
+        var values = index.get(key);
+        if (!values) {
+            values = new Set();
+            index.set(key, values);
+        }
+        values.add(value);
+    }
+
+    function addToArrayMap(index, key, value) {
+        if (key === null || !value) return;
+        var values = index.get(key);
+        if (!values) {
+            values = [];
+            index.set(key, values);
+        }
+        values.push(value);
+    }
+
+    function isActivePlanningAssignment(assignment) {
+        if (!assignment) return false;
+        var active = assignment.actif;
+        return active === null || active === undefined || active === '' || isTruthy(active);
+    }
+
     function isTruthy(value) {
         return value === true || value === 1 || value === '1' || String(value).toLowerCase() === 'true';
     }
@@ -1950,7 +2006,12 @@
                 Feuilles: (data.Feuilles || data.feuilles || []).slice(),
                 TimeEntries: (data.TimeEntries || data.timeEntries || []).slice(),
                 TaskAssignments: (data.TaskAssignments || data.taskAssignments || []).slice(),
-                UserFilters: (data.UserFilters || data.userFilters || []).slice()
+                UserFilters: (data.UserFilters || data.userFilters || []).slice(),
+                Disponibilites: (data.Disponibilites || data.disponibilites || []).slice(),
+                MemberDailyCapacities: (data.MemberDailyCapacities || data.memberDailyCapacities || []).slice(),
+                TaskFlow_Meta: (data.TaskFlow_Meta || data.taskFlowMeta || []).slice(),
+                TaskFlowIdentityProbe: (data.TaskFlowIdentityProbe || data.taskFlowIdentityProbe || []).slice(),
+                Competences: (data.Competences || data.competences || []).slice()
             },
             indexes: null
         };
@@ -1958,6 +2019,24 @@
 
     function ensureIndexes(snapshot) {
         if (!snapshot.indexes) {
+            var operationalTaskIdsByMember = new Map();
+            (snapshot.tables.Tasks || []).forEach(function (task) {
+                var taskId = normalizeId(task && task.id);
+                normalizeRefList(task && task.assignees).forEach(function (memberId) {
+                    addToSetMap(operationalTaskIdsByMember, memberId, taskId);
+                });
+            });
+
+            var activePlanningAssignmentsByMember = new Map();
+            (snapshot.tables.TaskAssignments || []).forEach(function (assignment) {
+                if (!isActivePlanningAssignment(assignment)) return;
+                addToArrayMap(
+                    activePlanningAssignmentsByMember,
+                    normalizeId(assignment && assignment.membre),
+                    assignment
+                );
+            });
+
             snapshot.indexes = {
                 Team: indexById(snapshot.tables.Team),
                 Entites: indexById(snapshot.tables.Entites),
@@ -1969,7 +2048,14 @@
                 Feuilles: indexById(snapshot.tables.Feuilles),
                 TimeEntries: indexById(snapshot.tables.TimeEntries),
                 TaskAssignments: indexById(snapshot.tables.TaskAssignments),
-                UserFilters: indexById(snapshot.tables.UserFilters)
+                UserFilters: indexById(snapshot.tables.UserFilters),
+                Disponibilites: indexById(snapshot.tables.Disponibilites),
+                MemberDailyCapacities: indexById(snapshot.tables.MemberDailyCapacities),
+                TaskFlow_Meta: indexById(snapshot.tables.TaskFlow_Meta),
+                TaskFlowIdentityProbe: indexById(snapshot.tables.TaskFlowIdentityProbe),
+                Competences: indexById(snapshot.tables.Competences),
+                operationalTaskIdsByMember: operationalTaskIdsByMember,
+                activePlanningAssignmentsByMember: activePlanningAssignmentsByMember
             };
         }
         return snapshot.indexes;
@@ -2029,8 +2115,31 @@
         return ensureIndexes(snapshot).Tasks.get(normalizeId(action.task)) || null;
     }
 
+    function isOperationalTaskAssignee(snapshot, task, memberId) {
+        var resolvedMemberId = normalizeId(memberId);
+        if (resolvedMemberId === null) resolvedMemberId = actorId(snapshot);
+        var taskId = normalizeId(task && task.id);
+        if (resolvedMemberId === null || taskId === null) return false;
+        var taskIds = ensureIndexes(snapshot).operationalTaskIdsByMember.get(resolvedMemberId);
+        return Boolean(taskIds && taskIds.has(taskId));
+    }
+
+    // Alias public historique. Les décisions métier internes emploient le nom
+    // explicite afin de ne jamais confondre Tasks.assignees (opérationnel) avec
+    // TaskAssignments (charge et planification).
     function isTaskAssignee(snapshot, task) {
-        return Boolean(task) && normalizeRefList(task.assignees).indexOf(actorId(snapshot)) !== -1;
+        return isOperationalTaskAssignee(snapshot, task);
+    }
+
+    function hasActivePlanningAssignment(snapshot, memberId, taskId) {
+        memberId = normalizeId(memberId);
+        taskId = normalizeId(taskId);
+        if (memberId === null) return false;
+        var assignments = ensureIndexes(snapshot).activePlanningAssignmentsByMember.get(memberId) || [];
+        if (taskId === null) return assignments.length > 0;
+        return assignments.some(function (assignment) {
+            return normalizeId(assignment && assignment.tache) === taskId;
+        });
     }
 
     function isActionOwner(snapshot, action) {
@@ -2041,7 +2150,7 @@
         if (requireActor(snapshot)) return false;
         if (actorIsAdmin(snapshot)) return true;
         var project = projectForTask(snapshot, task);
-        return Boolean((project && canManageProject(snapshot, project)) || isTaskAssignee(snapshot, task));
+        return Boolean((project && canManageProject(snapshot, project)) || isOperationalTaskAssignee(snapshot, task));
     }
 
     function listActionTaskCandidates(snapshot) {
@@ -2206,8 +2315,19 @@
         if (temporalError) return temporalError;
         if (actorIsAdmin(snapshot)) return allow('ADMIN');
         var project = projectForTask(snapshot, current);
-        if (project && canManageProject(snapshot, project)) return allow('PROJECT_SCOPE');
-        if (isTaskAssignee(snapshot, current)) {
+        if (project && canManageProject(snapshot, project)) {
+            if (normalizeId(nextTask.projet) !== normalizeId(current && current.projet)) {
+                var targetProject = projectForTask(snapshot, nextTask);
+                if (!targetProject || !canManageProject(snapshot, targetProject)) {
+                    return deny(
+                        'TASK_TARGET_PROJECT_FORBIDDEN',
+                        'Vous devez disposer des droits sur le projet de départ et le projet de destination.'
+                    );
+                }
+            }
+            return allow('PROJECT_SCOPE');
+        }
+        if (isOperationalTaskAssignee(snapshot, current)) {
             var protectedFields = ['projet', 'assignees', 'dependDe', 'parentTask', 'dateDebut', 'dateEcheance'];
             var changesScope = Object.keys(proposed || {}).some(function (field) {
                 return protectedFields.indexOf(field) !== -1;
@@ -2254,7 +2374,7 @@
         var task = taskForAction(snapshot, proposed);
         var project = projectForTask(snapshot, task);
         if (task && project && canManageProject(snapshot, project)) return allow('PROJECT_SCOPE');
-        if (task && isTaskAssignee(snapshot, task) && normalizeId(proposed.assignee) === actorId(snapshot)) {
+        if (task && isOperationalTaskAssignee(snapshot, task) && normalizeId(proposed.assignee) === actorId(snapshot)) {
             return allow('TASK_ASSIGNEE_OWN_ACTION');
         }
         if (!task && normalizeId(proposed && proposed.assignee) === actorId(snapshot)) return allow('OWN_UNLINKED_ACTION');
@@ -2265,7 +2385,22 @@
         if (actorIsAdmin(snapshot)) return allow('ADMIN');
         var task = taskForAction(snapshot, current);
         var project = projectForTask(snapshot, task);
-        if (task && project && canManageProject(snapshot, project)) return allow('PROJECT_SCOPE');
+        if (task && project && canManageProject(snapshot, project)) {
+            if (Object.prototype.hasOwnProperty.call(proposed || {}, 'task')) {
+                var managedTargetTaskId = normalizeId(proposed.task);
+                if (managedTargetTaskId !== null) {
+                    var managedTargetTask = ensureIndexes(snapshot).Tasks.get(managedTargetTaskId) || null;
+                    var managedTargetProject = projectForTask(snapshot, managedTargetTask);
+                    if (!managedTargetTask || !managedTargetProject || !canManageProject(snapshot, managedTargetProject)) {
+                        return deny(
+                            'ACTION_TARGET_TASK_FORBIDDEN',
+                            'Vous devez disposer des droits sur les tâches de départ et de destination.'
+                        );
+                    }
+                }
+            }
+            return allow('PROJECT_SCOPE');
+        }
 
         if (!isActionOwner(snapshot, current)) {
             return deny('ACTION_OUTSIDE_SCOPE', 'Cette action ne vous appartient pas et son projet est hors de votre perimetre.');
@@ -2279,7 +2414,7 @@
             var nextTaskId = normalizeId(proposed.task);
             if (nextTaskId !== null) {
                 var nextTask = ensureIndexes(snapshot).Tasks.get(nextTaskId);
-                if (!nextTask || !isTaskAssignee(snapshot, nextTask)) {
+                if (!nextTask || !isOperationalTaskAssignee(snapshot, nextTask)) {
                     return deny('ACTION_TASK_CHANGE_FORBIDDEN', 'Vous ne pouvez rattacher votre action qu\'a une tache a laquelle vous etes affecte.');
                 }
             }
@@ -2402,7 +2537,7 @@
 
     function canManagePlanningEntry(snapshot, entry) {
         var assignment = planningAssignmentForEntry(snapshot, entry);
-        if (!assignment || assignment.actif === false || assignment.actif === 0) return false;
+        if (!isActivePlanningAssignment(assignment)) return false;
         if (normalizeId(assignment.membre) !== normalizeId(entry && entry.membre) ||
             normalizeId(assignment.tache) !== normalizeId(entry && entry.tache)) return false;
         var task = ensureIndexes(snapshot).Tasks.get(normalizeId(assignment.tache)) || null;
@@ -2442,7 +2577,7 @@
             return deny('CRA_TIME_ENTRY_CREATE_FIELDS_FORBIDDEN', 'La feuille est verrouillee ou contient des champs de saisie interdits.');
         }
         var assignment = ensureIndexes(snapshot).TaskAssignments.get(normalizeId(proposed.affectation)) || null;
-        if (!assignment || normalizeId(assignment.membre) !== actorId(snapshot) || normalizeId(assignment.tache) !== normalizeId(proposed.tache) || assignment.actif === false || assignment.actif === 0) {
+        if (!isActivePlanningAssignment(assignment) || normalizeId(assignment.membre) !== actorId(snapshot) || normalizeId(assignment.tache) !== normalizeId(proposed.tache)) {
             return deny('CRA_TIME_ENTRY_ASSIGNMENT_REQUIRED', 'Une affectation active correspondant au membre et a la tache est obligatoire.');
         }
         return allow('CRA_TIME_ENTRY_OWNER_CREATE');
@@ -2518,6 +2653,66 @@
         return allow('USER_FILTER_OWNER');
     }
 
+    function canManageMember(snapshot, memberId) {
+        memberId = normalizeId(memberId);
+        return memberId !== null && (
+            actorIsAdmin(snapshot) ||
+            memberId === actorId(snapshot) ||
+            isDirectManagerOfMember(snapshot, memberId)
+        );
+    }
+
+    function canManageAssignmentRecord(snapshot, assignment) {
+        var task = ensureIndexes(snapshot).Tasks.get(normalizeId(assignment && assignment.tache)) || null;
+        var project = projectForTask(snapshot, task);
+        return Boolean(task && project && canManageProject(snapshot, project));
+    }
+
+    function canMutateTaskAssignment(snapshot, kind, current, proposed) {
+        if (actorIsAdmin(snapshot)) return allow('ADMIN');
+        var next = Object.assign({}, current || {}, proposed || {});
+        if (kind !== 'create' && !canManageAssignmentRecord(snapshot, current)) {
+            return deny('TASK_ASSIGNMENT_SOURCE_FORBIDDEN', 'Cette affectation appartient à un projet hors de votre périmètre.');
+        }
+        if (kind !== 'delete' && !canManageAssignmentRecord(snapshot, next)) {
+            return deny('TASK_ASSIGNMENT_TARGET_FORBIDDEN', 'Vous ne pouvez affecter un membre que sur une tâche de votre périmètre projet.');
+        }
+        return allow('PROJECT_SCOPE_ASSIGNMENT');
+    }
+
+    function canMutateAvailability(snapshot, kind, current, proposed) {
+        if (actorIsAdmin(snapshot)) return allow('ADMIN');
+        var next = Object.assign({}, current || {}, proposed || {});
+        if (kind !== 'create' && !canManageMember(snapshot, current && current.membre)) {
+            return deny('AVAILABILITY_SOURCE_FORBIDDEN', 'Cette disponibilité appartient à un membre hors de votre périmètre.');
+        }
+        if (kind !== 'delete' && !canManageMember(snapshot, next.membre)) {
+            return deny('AVAILABILITY_TARGET_FORBIDDEN', 'Vous ne pouvez gérer que vos disponibilités ou celles de vos collaborateurs directs.');
+        }
+        return allow('MEMBER_SCOPE_AVAILABILITY');
+    }
+
+    function canManageCapacityMember(snapshot, memberId) {
+        memberId = normalizeId(memberId);
+        if (canManageMember(snapshot, memberId)) return true;
+        var assignments = ensureIndexes(snapshot).activePlanningAssignmentsByMember.get(memberId) || [];
+        return assignments.some(function (assignment) {
+            return canManageAssignmentRecord(snapshot, assignment);
+        });
+    }
+
+    function canMutateDailyCapacity(snapshot, kind, current, proposed) {
+        if (actorIsAdmin(snapshot)) return allow('ADMIN');
+        var next = Object.assign({}, current || {}, proposed || {});
+        if (kind !== 'create' && !canManageCapacityMember(snapshot, current && current.membre)) {
+            return deny('CAPACITY_SOURCE_FORBIDDEN', 'Cette capacité appartient à un membre hors de votre périmètre.');
+        }
+        if (kind !== 'delete' && !canManageCapacityMember(snapshot, next.membre)) {
+            return deny('CAPACITY_TARGET_FORBIDDEN', 'Vous ne pouvez recalculer la capacité que pour un membre rattaché à votre périmètre.');
+        }
+        return allow('MEMBER_SCOPE_CAPACITY');
+    }
+
     function authorizeRecordMutation(snapshot, mutation) {
         var actorError = requireActor(snapshot);
         if (actorError) return actorError;
@@ -2527,7 +2722,8 @@
         var current = mutation.current;
         var proposed = mutation.proposed || {};
 
-        if (table === 'Team' || table === 'Entites' || table === 'Programmes' || table === 'KanbanSteps') {
+        if (table === 'Team' || table === 'Entites' || table === 'Programmes' || table === 'KanbanSteps' ||
+            table === 'TaskFlow_Meta' || table === 'Competences') {
             return actorIsAdmin(snapshot)
                 ? allow('ADMIN')
                 : deny('ADMIN_REQUIRED', 'Cette operation est reservee aux administrateurs.');
@@ -2567,12 +2763,28 @@
             return canMutateUserFilters(snapshot, kind, current, proposed);
         }
 
-        return allow('UNCONTROLLED_TABLE');
+        if (table === 'TaskAssignments') {
+            return canMutateTaskAssignment(snapshot, kind, current, proposed);
+        }
+
+        if (table === 'Disponibilites') {
+            return canMutateAvailability(snapshot, kind, current, proposed);
+        }
+
+        if (table === 'MemberDailyCapacities') {
+            return canMutateDailyCapacity(snapshot, kind, current, proposed);
+        }
+
+        if (table === 'TaskFlowIdentityProbe') {
+            return deny('IDENTITY_PROBE_DIRECT_MUTATION_FORBIDDEN', 'La table technique d’association d’identité ne peut être modifiée que par le parcours sécurisé.');
+        }
+
+        return deny('TABLE_MUTATION_NOT_ALLOWED', 'Cette table n’est pas autorisée par le garde d’écriture TaskFlow.');
     }
 
     function cloneTables(snapshot) {
         var out = {};
-        PERMISSION_DATA_TABLES.forEach(function (table) {
+        SNAPSHOT_TABLES.forEach(function (table) {
             out[table] = (snapshot.tables[table] || []).map(function (row) { return Object.assign({}, row); });
         });
         return out;
@@ -2647,7 +2859,10 @@
     function authorizeMutationBatch(snapshot, actions) {
         var working = copySnapshot(snapshot);
         var flat = [];
-        (actions || []).forEach(function (action) {
+        if (!Array.isArray(actions)) {
+            return deny('INVALID_MUTATION_BATCH', 'Le lot d’écriture est invalide.');
+        }
+        actions.forEach(function (action) {
             flat = flat.concat(expandBulkAction(action));
         });
 
@@ -2655,12 +2870,53 @@
             var action = flat[i];
             var type = action && action[0];
             var table = action && action[1];
-            if (CONTROLLED_TABLES.indexOf(table) === -1) continue;
+            if (!Array.isArray(action) || typeof type !== 'string' || typeof table !== 'string') {
+                return deny('INVALID_MUTATION_ACTION', 'Une action d’écriture est mal formée.', {
+                    deniedAction: action,
+                    deniedIndex: i
+                });
+            }
 
-            // Les opérations de schéma restent hors du contrôle fonctionnel du
-            // POC afin de ne pas bloquer bootstrap et migrations Grist.
-            if (RECORD_ACTIONS.indexOf(type) === -1) {
+            if (SCHEMA_ACTIONS.indexOf(type) !== -1) {
+                var schemaActorError = requireActor(working);
+                if (schemaActorError) return Object.assign(schemaActorError, { deniedAction: action, deniedIndex: i, table: table });
+                if (!actorIsAdmin(working)) {
+                    return deny('SCHEMA_ADMIN_REQUIRED', 'Les migrations et changements de schéma sont réservés aux administrateurs.', {
+                        deniedAction: action,
+                        deniedIndex: i,
+                        table: table
+                    });
+                }
                 continue;
+            }
+
+            if (SCHEMA_METADATA_TABLES.indexOf(table) !== -1 && RECORD_ACTIONS.indexOf(type) !== -1) {
+                var metadataActorError = requireActor(working);
+                if (metadataActorError) return Object.assign(metadataActorError, { deniedAction: action, deniedIndex: i, table: table });
+                if (!actorIsAdmin(working)) {
+                    return deny('SCHEMA_ADMIN_REQUIRED', 'Les migrations et changements de schéma sont réservés aux administrateurs.', {
+                        deniedAction: action,
+                        deniedIndex: i,
+                        table: table
+                    });
+                }
+                continue;
+            }
+
+            if (RECORD_ACTIONS.indexOf(type) === -1) {
+                return deny('MUTATION_TYPE_NOT_ALLOWED', 'Ce type de mutation n’est pas autorisé par le garde TaskFlow.', {
+                    deniedAction: action,
+                    deniedIndex: i,
+                    table: table
+                });
+            }
+
+            if (CONTROLLED_TABLES.indexOf(table) === -1) {
+                return deny('TABLE_MUTATION_NOT_ALLOWED', 'Cette table n’est pas autorisée par le garde d’écriture TaskFlow.', {
+                    deniedAction: action,
+                    deniedIndex: i,
+                    table: table
+                });
             }
 
             var mutation = normalizeRecordAction(action, working);
@@ -2725,6 +2981,17 @@
             normalizeId(fields.gristUserId) === claim.gristUserId;
     }
 
+    function optionalTablesForActions(actions) {
+        var requested = [];
+        (Array.isArray(actions) ? actions : []).forEach(function (action) {
+            var table = Array.isArray(action) ? action[1] : null;
+            if (OPTIONAL_PERMISSION_DATA_TABLES.indexOf(table) !== -1 && requested.indexOf(table) === -1) {
+                requested.push(table);
+            }
+        });
+        return requested;
+    }
+
     function createGristPermissionRuntime(grist, options) {
         options = options || {};
         var snapshot = null;
@@ -2738,6 +3005,7 @@
         async function refresh(refreshOptions) {
             refreshOptions = refreshOptions || {};
             var force = !!refreshOptions.force;
+            var extraTables = Array.isArray(refreshOptions.extraTables) ? refreshOptions.extraTables : [];
 
             // Toute décision d'écriture utilise force=true. Si un chargement
             // plus ancien est encore actif, attendre sa fin puis reconstruire
@@ -2754,7 +3022,13 @@
                 var identityState = await identityRuntime.refresh({ force: force });
                 var existingTables = await grist.docApi.listTables();
                 var data = { Team: identityState.team || [] };
-                await Promise.all(PERMISSION_DATA_TABLES.map(async function (table) {
+                var requestedTables = PERMISSION_DATA_TABLES.slice();
+                extraTables.forEach(function (table) {
+                    if (OPTIONAL_PERMISSION_DATA_TABLES.indexOf(table) !== -1 && requestedTables.indexOf(table) === -1) {
+                        requestedTables.push(table);
+                    }
+                });
+                await Promise.all(requestedTables.map(async function (table) {
                     if (table === 'Team') return;
                     if (existingTables.indexOf(table) === -1) {
                         data[table] = [];
@@ -2782,7 +3056,53 @@
             }
         }
 
+        async function authorizeIdentityProbe(actions) {
+            var hasProbeAction = Array.isArray(actions) && actions.some(function (action) {
+                return Array.isArray(action) && action[1] === 'TaskFlowIdentityProbe';
+            });
+            if (!hasProbeAction) return null;
+            if (actions.length !== 1 || !Array.isArray(actions[0])) {
+                return deny('IDENTITY_PROBE_BATCH_FORBIDDEN', 'La sonde d’identité doit être exécutée seule.');
+            }
+
+            var action = actions[0];
+            var currentUser = await getCurrentGristUser(grist);
+            var currentUserId = normalizeId(currentUser && currentUser.userId);
+            if (currentUserId === null) {
+                return deny('IDENTITY_PROBE_USER_UNAVAILABLE', 'L’identifiant du compte Grist est indisponible.');
+            }
+
+            if (action[0] === 'AddRecord') {
+                var fields = action[3];
+                var nonce = fields && typeof fields.nonce === 'string' ? fields.nonce.trim() : '';
+                if (fields && hasExactFields(fields, ['gristUserId', 'nonce']) &&
+                    normalizeId(fields.gristUserId) === currentUserId && nonce.length > 0 && nonce.length <= 200) {
+                    return { allowed: true, code: 'IDENTITY_PROBE_CREATE_ALLOWED', checkedActions: 1, identityProbe: true };
+                }
+                return deny('IDENTITY_PROBE_CREATE_FORBIDDEN', 'La sonde d’identité ne correspond pas au compte Grist courant.');
+            }
+
+            if (action[0] === 'RemoveRecord') {
+                var probeId = normalizeId(action[2]);
+                if (probeId === null) return deny('IDENTITY_PROBE_DELETE_FORBIDDEN', 'La sonde d’identité à supprimer est invalide.');
+                try {
+                    var probeRows = columnarToRows(await grist.docApi.fetchTable('TaskFlowIdentityProbe'));
+                    var probe = probeRows.find(function (row) { return normalizeId(row && row.id) === probeId; }) || null;
+                    if (probe && normalizeId(probe.gristUserId) === currentUserId) {
+                        return { allowed: true, code: 'IDENTITY_PROBE_DELETE_ALLOWED', checkedActions: 1, identityProbe: true };
+                    }
+                } catch (error) {
+                    return deny('IDENTITY_PROBE_DATA_UNAVAILABLE', 'La sonde d’identité ne peut pas être vérifiée.');
+                }
+                return deny('IDENTITY_PROBE_DELETE_FORBIDDEN', 'Vous ne pouvez supprimer que votre propre sonde d’identité.');
+            }
+
+            return deny('IDENTITY_PROBE_MUTATION_FORBIDDEN', 'Cette mutation de la sonde d’identité n’est pas autorisée.');
+        }
+
         async function authorize(actions) {
+            var probeDecision = await authorizeIdentityProbe(actions);
+            if (probeDecision) return probeDecision;
             if (Array.isArray(actions) && actions.length === 1) {
                 var action = actions[0];
                 if (Array.isArray(action) && action[0] === 'UpdateRecord' && action[1] === 'Team') {
@@ -2797,7 +3117,7 @@
                     }
                 }
             }
-            await refresh({ force: true });
+            await refresh({ force: true, extraTables: optionalTablesForActions(actions) });
             return authorizeMutationBatch(snapshot, actions);
         }
 
@@ -2814,6 +3134,10 @@
     var api = {
         CONTROLLED_TABLES: CONTROLLED_TABLES,
         PERMISSION_DATA_TABLES: PERMISSION_DATA_TABLES,
+        OPTIONAL_PERMISSION_DATA_TABLES: OPTIONAL_PERMISSION_DATA_TABLES,
+        RECORD_ACTIONS: RECORD_ACTIONS,
+        SCHEMA_ACTIONS: SCHEMA_ACTIONS,
+        SCHEMA_METADATA_TABLES: SCHEMA_METADATA_TABLES,
         normalizeId: normalizeId,
         normalizeRefList: normalizeRefList,
         columnarToRows: columnarToRows,
@@ -2822,7 +3146,10 @@
         createSnapshot: createSnapshot,
         isProjectOwner: isProjectOwner,
         isDirectManagerOfProjectOwner: isDirectManagerOfProjectOwner,
+        isOperationalTaskAssignee: isOperationalTaskAssignee,
         isTaskAssignee: isTaskAssignee,
+        isActivePlanningAssignment: isActivePlanningAssignment,
+        hasActivePlanningAssignment: hasActivePlanningAssignment,
         isActionOwner: isActionOwner,
         canSelectTaskForAction: canSelectTaskForAction,
         listActionTaskCandidates: listActionTaskCandidates,
@@ -3604,14 +3931,6 @@ const TF = (function () {
         }
     }
 
-    function hasControlledActions(actions) {
-        const permissions = typeof globalThis !== 'undefined' && globalThis.TaskFlowPermissions;
-        const tables = permissions && permissions.CONTROLLED_TABLES;
-        if (!Array.isArray(tables)) return false;
-        return (actions || []).some(function (action) {
-            return Array.isArray(action) && tables.indexOf(action[1]) !== -1;
-        });
-    }
     // Garde transverse : enrobe grist.docApi.applyUserActions une seule fois pour
     // respecter les droits sur TOUS les sites d'ecriture sans les modifier un a un.
     // - lecture seule -> bloque + opts.onReadOnly()
@@ -3631,8 +3950,8 @@ const TF = (function () {
         grist.docApi.applyUserActions = async function (actions) {
             if (isReadOnly()) { try { guardOptions.onReadOnly && guardOptions.onReadOnly(); } catch (e) {} const err = new Error('Document en lecture seule'); err.tfReadOnly = true; throw err; }
             const runtime = guardOptions.permissionRuntime;
-            const controlled = runtime && hasControlledActions(actions);
-            if (controlled) {
+            const guarded = Boolean(runtime && typeof runtime.authorize === 'function');
+            if (guarded) {
                 const decision = await runtime.authorize(actions);
                 if (!decision.allowed) {
                     const denied = new Error(decision.message || 'Modification refusee par vos droits');
@@ -3647,7 +3966,7 @@ const TF = (function () {
             }
             try {
                 const result = await raw(actions);
-                if (controlled) runtime.invalidate();
+                if (guarded && typeof runtime.invalidate === 'function') runtime.invalidate();
                 return result;
             }
             catch (e) { if (!e.tfPermissionDenied && isAccessError(e)) { try { guardOptions.onDenied && guardOptions.onDenied(e); } catch (e2) {} } throw e; }

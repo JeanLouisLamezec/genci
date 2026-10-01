@@ -23,7 +23,9 @@
     };
   };
   
-  var createMemberPlanningOrchestrator = global.createMemberPlanningOrchestrator;
+  var createMemberPlanningOrchestrator = typeof module !== 'undefined' && module.exports
+    ? require('./member-planning-orchestrator.js').createMemberPlanningOrchestrator
+    : global.createMemberPlanningOrchestrator;
   
   if (!createMemberPlanningOrchestrator) {
     throw new Error('createMemberPlanningOrchestrator is not defined in global scope');

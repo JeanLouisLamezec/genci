@@ -17,7 +17,13 @@ function gristFixture() {
       actif: [true],
       estAdmin: [false]
     },
-    Tasks: { id: [1], titre: ['Interdite'], projet: [0], assignees: [null] }
+    Tasks: { id: [1], titre: ['Interdite'], projet: [0], assignees: [null] },
+    TaskFlowIdentityProbe: {
+      id: [44, 45],
+      gristUserId: [101, 202],
+      nonce: ['own-probe', 'foreign-probe']
+    },
+    MemberDailyCapacities: { id: [], membre: [], date: [] }
   };
   return {
     docApi: {
@@ -116,5 +122,41 @@ describe('Runtime permissions - identité commune', () => {
     await expect(runtime.authorize([
       ['UpdateRecord', 'Team', 7, { gristUserId: 101, nom: 'Intrusion' }]
     ])).resolves.toMatchObject({ allowed: false, code: 'ASSOCIATION_CONFIRMATION_REQUIRED' });
+  });
+
+  test('autorise uniquement une sonde d’identité liée au compte courant', async () => {
+    const grist = gristFixture();
+    const runtime = permissions.createGristPermissionRuntime(grist);
+
+    await expect(runtime.authorize([[
+      'AddRecord', 'TaskFlowIdentityProbe', null, { gristUserId: 101, nonce: 'nonce-1' }
+    ]])).resolves.toMatchObject({ allowed: true, code: 'IDENTITY_PROBE_CREATE_ALLOWED' });
+
+    await expect(runtime.authorize([[
+      'AddRecord', 'TaskFlowIdentityProbe', null, { gristUserId: 202, nonce: 'nonce-2' }
+    ]])).resolves.toMatchObject({ allowed: false, code: 'IDENTITY_PROBE_CREATE_FORBIDDEN' });
+
+    await expect(runtime.authorize([
+      ['RemoveRecord', 'TaskFlowIdentityProbe', 44]
+    ])).resolves.toMatchObject({ allowed: true, code: 'IDENTITY_PROBE_DELETE_ALLOWED' });
+
+    await expect(runtime.authorize([
+      ['RemoveRecord', 'TaskFlowIdentityProbe', 45]
+    ])).resolves.toMatchObject({ allowed: false, code: 'IDENTITY_PROBE_DELETE_FORBIDDEN' });
+  });
+
+  test('ne charge les capacités quotidiennes que pour une mutation qui les vise', async () => {
+    const grist = gristFixture();
+    const runtime = permissions.createGristPermissionRuntime(grist);
+
+    await runtime.authorize([
+      ['UpdateRecord', 'Tasks', 1, { titre: 'Toujours interdite' }]
+    ]);
+    expect(grist.docApi.fetchTable.mock.calls.some(([table]) => table === 'MemberDailyCapacities')).toBe(false);
+
+    await runtime.authorize([[
+      'AddRecord', 'MemberDailyCapacities', null, { membre: 7, date: 1 }
+    ]]);
+    expect(grist.docApi.fetchTable.mock.calls.some(([table]) => table === 'MemberDailyCapacities')).toBe(true);
   });
 });

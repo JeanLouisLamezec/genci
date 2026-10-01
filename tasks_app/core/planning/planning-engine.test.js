@@ -1585,7 +1585,7 @@ describe('Planning Engine - Doublons hors période', () => {
     expect(result.desiredPlan).toEqual([]);
   });
   
-  test('Doublon avant la période → avertissement historique protégé', () => {
+  test('Doublon avant la période → blocage sans modification de l’historique', () => {
     const assignment = {
       id: 1,
       taskId: 1,
@@ -1630,9 +1630,9 @@ describe('Planning Engine - Doublons hors période', () => {
       existingEntries
     });
     
-    expect(result.diagnostics.some(d => d.code === 'PROTECTED_DUPLICATE_EXISTING_ENTRY')).toBe(true);
-    expect(result.diagnostics.some(d => d.code === 'DUPLICATE_EXISTING_ENTRY')).toBe(false);
-    expect(result.desiredPlan.reduce((sum, entry) => sum + entry.plannedHours, 0)).toBe(10);
+    const duplicateDiagnostic = result.diagnostics.find(d => d.code === 'DUPLICATE_EXISTING_ENTRY');
+    expect(duplicateDiagnostic).toEqual(expect.objectContaining({ protected: true }));
+    expect(result.desiredPlan).toEqual([]);
   });
 });
 

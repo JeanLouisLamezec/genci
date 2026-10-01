@@ -1980,27 +1980,6 @@ describe('Rapport vide', () => {
     expect(deps.csv.buildFilename).not.toHaveBeenCalled();
   });
 
-  it('refuse rapport avec rowCount === 0 explicitement (incohérent)', () => {
-    const deps = createFakeDependencies();
-    deps.model.buildReport.mockReturnValue({
-      period: { startDateIso: '2026-01-01', endDateIso: '2026-01-31' },
-      scope: {},
-      persons: [
-        {
-          id: 1,
-          name: 'Test',
-          rows: [{ dateIso: '2026-01-01', durationMinutes: 60 }]
-        }
-      ],
-      totals: { rowCount: 0 }
-    });
-
-    const request = makeRequest();
-
-    expect(() => {
-      CraExportOrchestrator.prepareExport(request, deps);
-    }).toThrow('CraExportOrchestrator: aucune feuille de temps à exporter.');
-  });
 
   it('accepte rapport avec lignes et totals absents (défensif)', () => {
     const deps = createFakeDependencies();

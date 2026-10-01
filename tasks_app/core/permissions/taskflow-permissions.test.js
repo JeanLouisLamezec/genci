@@ -39,7 +39,16 @@ function fixture(actorMemberId = 1, overrides = {}) {
     Entites: [{ id: 1, nom: 'Equipe' }],
     Programmes: [{ id: 1, nom: 'Programme' }],
     KanbanSteps: [{ id: 1, nom: 'A faire' }],
-    UserFilters: overrides.userFilters || []
+    UserFilters: overrides.userFilters || [],
+    Feuilles: overrides.feuilles || [],
+    TimeEntries: overrides.timeEntries || [],
+    TaskAssignments: overrides.taskAssignments || [
+      { id: 1, tache: 100, membre: 4, heuresAllouees: 7, actif: true }
+    ],
+    Disponibilites: overrides.disponibilites || [],
+    MemberDailyCapacities: overrides.memberDailyCapacities || [],
+    TaskFlow_Meta: overrides.taskFlowMeta || [{ id: 1, schemaVersion: 8 }],
+    Competences: overrides.competences || [{ id: 1, nom: 'JavaScript' }]
   }, identity);
 }
 
@@ -247,6 +256,14 @@ describe('TaskFlow permissions - projets et tâches', () => {
     expect(authorize(snapshot, ['UpdateRecord', 'Projects', 20, { nom: 'X' }]).allowed).toBe(false);
   });
 
+  test('un déplacement de tâche exige les droits sur les projets source et cible', () => {
+    const snapshot = fixture(3);
+    expect(authorize(snapshot, ['UpdateRecord', 'Tasks', 100, { projet: 20 }])).toMatchObject({
+      allowed: false,
+      code: 'TASK_TARGET_PROJECT_FORBIDDEN'
+    });
+  });
+
   test('la relation de management ne remonte pas au-delà du responsable direct', () => {
     const snapshot = fixture(2);
     expect(authorize(snapshot, ['UpdateRecord', 'Tasks', 100, { titre: 'X' }]).allowed).toBe(true);
@@ -293,6 +310,138 @@ describe('TaskFlow permissions - projets et tâches', () => {
   });
 });
 
+
+describe('TaskFlow permissions - séparation opérationnel / planification', () => {
+  test('Tasks.assignees suffit au droit opérationnel sans TaskAssignment', () => {
+    const snapshot = fixture(4, { taskAssignments: [] });
+    const task = snapshot.tables.Tasks.find(row => row.id === 100);
+
+    expect(permissions.isOperationalTaskAssignee(snapshot, task)).toBe(true);
+    expect(permissions.hasActivePlanningAssignment(snapshot, 4, 100)).toBe(false);
+    expect(authorize(snapshot, ['UpdateRecord', 'Tasks', 100, { progression: 30 }])).toMatchObject({
+      allowed: true,
+      code: 'BATCH_ALLOWED'
+    });
+    expect(authorize(snapshot, ['AddRecord', 'Actions', null, {
+      titre: 'Action opérationnelle',
+      task: 100,
+      assignee: 4
+    }]).allowed).toBe(true);
+  });
+
+  test('TaskAssignments autorise le CRA mais ne donne aucun droit opérationnel implicite', () => {
+    const snapshot = fixture(4, {
+      tasks: [{ id: 100, titre: 'Planifiée seulement', projet: 10, assignees: ['L'] }],
+      taskAssignments: [{ id: 1, tache: 100, membre: 4, heuresAllouees: 7, actif: true }],
+      feuilles: [{ id: 50, membre: 4, statut: 'brouillon' }]
+    });
+    const task = snapshot.tables.Tasks[0];
+
+    expect(permissions.isOperationalTaskAssignee(snapshot, task)).toBe(false);
+    expect(permissions.hasActivePlanningAssignment(snapshot, 4, 100)).toBe(true);
+    expect(authorize(snapshot, ['UpdateRecord', 'Tasks', 100, { progression: 30 }])).toMatchObject({
+      allowed: false,
+      code: 'TASK_OUTSIDE_SCOPE'
+    });
+    expect(authorize(snapshot, ['AddRecord', 'Actions', null, {
+      titre: 'Action refusée',
+      task: 100,
+      assignee: 4
+    }]).allowed).toBe(false);
+    expect(authorize(snapshot, ['AddRecord', 'TimeEntries', null, {
+      membre: 4,
+      tache: 100,
+      date: 1,
+      heures: 7,
+      affectation: 1,
+      feuille: 50
+    }])).toMatchObject({
+      allowed: true,
+      code: 'BATCH_ALLOWED'
+    });
+  });
+
+  test('une affectation de planification inactive ne vaut pas autorisation CRA', () => {
+    const snapshot = fixture(4, {
+      taskAssignments: [{ id: 1, tache: 100, membre: 4, heuresAllouees: 7, actif: false }],
+      feuilles: [{ id: 50, membre: 4, statut: 'brouillon' }]
+    });
+
+    expect(permissions.isOperationalTaskAssignee(snapshot, snapshot.tables.Tasks[0])).toBe(true);
+    expect(permissions.hasActivePlanningAssignment(snapshot, 4, 100)).toBe(false);
+    expect(authorize(snapshot, ['UpdateRecord', 'Tasks', 100, { progression: 30 }]).allowed).toBe(true);
+    expect(authorize(snapshot, ['AddRecord', 'TimeEntries', null, {
+      membre: 4,
+      tache: 100,
+      date: 1,
+      heures: 7,
+      affectation: 1,
+      feuille: 50
+    }])).toMatchObject({
+      allowed: false,
+      code: 'CRA_TIME_ENTRY_ASSIGNMENT_REQUIRED'
+    });
+  });
+
+  test('les index du snapshot sont invalidés après chaque mutation du lot', () => {
+    const result = permissions.authorizeMutationBatch(fixture(3), [
+      ['UpdateRecord', 'Tasks', 100, { assignees: ['L', 6] }],
+      ['UpdateRecord', 'TaskAssignments', 1, { actif: false }]
+    ]);
+
+    expect(result.allowed).toBe(true);
+    const nextTask = result.nextSnapshot.tables.Tasks.find(row => row.id === 100);
+    expect(permissions.isOperationalTaskAssignee(result.nextSnapshot, nextTask, 4)).toBe(false);
+    expect(permissions.isOperationalTaskAssignee(result.nextSnapshot, nextTask, 6)).toBe(true);
+    expect(permissions.hasActivePlanningAssignment(result.nextSnapshot, 4, 100)).toBe(false);
+  });
+
+  test('les droits de périmètre projet restent prioritaires sans aucune affectation', () => {
+    const snapshot = fixture(3, {
+      tasks: [{ id: 100, titre: 'Sans affectation', projet: 10, assignees: ['L'] }],
+      taskAssignments: []
+    });
+
+    expect(authorize(snapshot, ['UpdateRecord', 'Tasks', 100, { dateDebut: 1 }]).allowed).toBe(true);
+    expect(authorize(snapshot, ['AddRecord', 'TaskAssignments', null, {
+      tache: 100,
+      membre: 4,
+      heuresAllouees: 7,
+      actif: true
+    }]).allowed).toBe(true);
+  });
+
+  test('les index restent cohérents au volume cible de 51 projets, 306 tâches et 50 membres', () => {
+    const team = [];
+    for (let memberId = 1; memberId <= 50; memberId += 1) {
+      team.push({ id: memberId, gristUserId: 100 + memberId, actif: true, estAdmin: false });
+    }
+    const projects = Array.from({ length: 51 }, (_, index) => ({
+      id: index + 1,
+      nom: `Projet ${index + 1}`,
+      responsable: 50
+    }));
+    const tasks = [];
+    const taskAssignments = [];
+    projects.forEach(project => {
+      for (let taskOffset = 0; taskOffset < 6; taskOffset += 1) {
+        const index = tasks.length;
+        const taskId = 1000 + index;
+        tasks.push({ id: taskId, projet: project.id, assignees: ['L', 2 + (index % 49)] });
+        taskAssignments.push({ id: 2000 + index, tache: taskId, membre: 2 + ((index + 1) % 49), actif: true });
+      }
+    });
+
+    const snapshot = fixture(4, { team, projects, tasks, taskAssignments });
+    const expected = tasks.filter(task => task.assignees[1] === 4).map(task => task.id);
+    expect(permissions.listActionTaskCandidates(snapshot).map(task => task.id)).toEqual(expected);
+    const planningOnly = taskAssignments.find(assignment => assignment.membre === 4);
+    const planningTask = tasks.find(task => task.id === planningOnly.tache);
+    expect(permissions.hasActivePlanningAssignment(snapshot, 4, planningTask.id)).toBe(true);
+    expect(permissions.isOperationalTaskAssignee(snapshot, planningTask)).toBe(false);
+  });
+});
+
 describe('TaskFlow permissions - actions', () => {
   test('préfiltre les tâches liables avec la même portée que la création d’action', () => {
     expect(permissions.listActionTaskCandidates(fixture(1)).map(task => task.id)).toEqual([100, 101, 200]);
@@ -326,6 +475,84 @@ describe('TaskFlow permissions - actions', () => {
     expect(authorize(fixture(3), ['UpdateRecord', 'Actions', 1001, { assignee: 4 }]).allowed).toBe(true);
     expect(authorize(fixture(2), ['RemoveRecord', 'Actions', 1001]).allowed).toBe(true);
     expect(authorize(fixture(2), ['UpdateRecord', 'Actions', 2000, { titre: 'X' }]).allowed).toBe(false);
+  });
+
+  test('un chef de projet ne rattache pas une action à une tâche hors périmètre', () => {
+    const snapshot = fixture(3);
+    expect(authorize(snapshot, ['UpdateRecord', 'Actions', 1000, { task: 200 }])).toMatchObject({
+      allowed: false,
+      code: 'ACTION_TARGET_TASK_FORBIDDEN'
+    });
+  });
+});
+
+describe('TaskFlow permissions - tables de planification et techniques', () => {
+  test('les affectations vérifient les projets source et cible', () => {
+    const snapshot = fixture(3);
+    expect(authorize(snapshot, ['UpdateRecord', 'TaskAssignments', 1, { heuresAllouees: 14 }]).allowed).toBe(true);
+    expect(authorize(snapshot, ['UpdateRecord', 'TaskAssignments', 1, { tache: 200 }])).toMatchObject({
+      allowed: false,
+      code: 'TASK_ASSIGNMENT_TARGET_FORBIDDEN'
+    });
+    expect(authorize(fixture(4), ['UpdateRecord', 'TaskAssignments', 1, { heuresAllouees: 14 }])).toMatchObject({
+      allowed: false,
+      code: 'TASK_ASSIGNMENT_SOURCE_FORBIDDEN'
+    });
+  });
+
+  test('les disponibilités restent limitées à soi ou à un collaborateur direct', () => {
+    expect(authorize(fixture(4), ['AddRecord', 'Disponibilites', null, { membre: 4, dispo: 0 }]).allowed).toBe(true);
+    expect(authorize(fixture(3), ['AddRecord', 'Disponibilites', null, { membre: 4, dispo: 0 }]).allowed).toBe(true);
+    expect(authorize(fixture(5), ['AddRecord', 'Disponibilites', null, { membre: 4, dispo: 0 }])).toMatchObject({
+      allowed: false,
+      code: 'AVAILABILITY_TARGET_FORBIDDEN'
+    });
+  });
+
+  test('le responsable projet peut recalculer la capacité d’un membre affecté', () => {
+    const snapshot = fixture(3, {
+      taskAssignments: [{ id: 2, tache: 100, membre: 6, heuresAllouees: 7, actif: true }]
+    });
+    expect(authorize(snapshot, ['AddRecord', 'MemberDailyCapacities', null, { membre: 6, date: 1 }]).allowed).toBe(true);
+    expect(authorize(fixture(5), ['AddRecord', 'MemberDailyCapacities', null, { membre: 4, date: 1 }])).toMatchObject({
+      allowed: false,
+      code: 'CAPACITY_TARGET_FORBIDDEN'
+    });
+  });
+
+  test('les métadonnées et compétences sont réservées aux administrateurs', () => {
+    expect(authorize(fixture(3), ['UpdateRecord', 'TaskFlow_Meta', 1, { schemaVersion: 9 }])).toMatchObject({
+      allowed: false,
+      code: 'ADMIN_REQUIRED'
+    });
+    expect(authorize(fixture(1), ['UpdateRecord', 'Competences', 1, { nom: 'Sécurité' }]).allowed).toBe(true);
+  });
+
+  test('refuse les tables et types inconnus, et réserve le schéma aux administrateurs', () => {
+    expect(authorize(fixture(1), ['UpdateRecord', 'TableInconnue', 1, { valeur: true }])).toMatchObject({
+      allowed: false,
+      code: 'TABLE_MUTATION_NOT_ALLOWED'
+    });
+    expect(authorize(fixture(1), ['CommandeInconnue', 'Tasks', 1, {}])).toMatchObject({
+      allowed: false,
+      code: 'MUTATION_TYPE_NOT_ALLOWED'
+    });
+    expect(authorize(fixture(3), ['ModifyColumn', 'Tasks', 'titre', { label: 'Nom' }])).toMatchObject({
+      allowed: false,
+      code: 'SCHEMA_ADMIN_REQUIRED'
+    });
+    expect(authorize(fixture(1), ['ModifyColumn', 'Tasks', 'titre', { label: 'Nom' }])).toMatchObject({
+      allowed: true,
+      code: 'BATCH_ALLOWED'
+    });
+    expect(authorize(fixture(3), ['UpdateRecord', '_grist_Tables_column', 1, { visibleCol: 2 }])).toMatchObject({
+      allowed: false,
+      code: 'SCHEMA_ADMIN_REQUIRED'
+    });
+    expect(authorize(fixture(1), ['UpdateRecord', '_grist_Tables_column', 1, { visibleCol: 2 }])).toMatchObject({
+      allowed: true,
+      code: 'BATCH_ALLOWED'
+    });
   });
 });
 

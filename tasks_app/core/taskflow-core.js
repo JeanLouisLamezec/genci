@@ -561,14 +561,6 @@ const TF = (function () {
         }
     }
 
-    function hasControlledActions(actions) {
-        const permissions = typeof globalThis !== 'undefined' && globalThis.TaskFlowPermissions;
-        const tables = permissions && permissions.CONTROLLED_TABLES;
-        if (!Array.isArray(tables)) return false;
-        return (actions || []).some(function (action) {
-            return Array.isArray(action) && tables.indexOf(action[1]) !== -1;
-        });
-    }
     // Garde transverse : enrobe grist.docApi.applyUserActions une seule fois pour
     // respecter les droits sur TOUS les sites d'ecriture sans les modifier un a un.
     // - lecture seule -> bloque + opts.onReadOnly()
@@ -588,8 +580,8 @@ const TF = (function () {
         grist.docApi.applyUserActions = async function (actions) {
             if (isReadOnly()) { try { guardOptions.onReadOnly && guardOptions.onReadOnly(); } catch (e) {} const err = new Error('Document en lecture seule'); err.tfReadOnly = true; throw err; }
             const runtime = guardOptions.permissionRuntime;
-            const controlled = runtime && hasControlledActions(actions);
-            if (controlled) {
+            const guarded = Boolean(runtime && typeof runtime.authorize === 'function');
+            if (guarded) {
                 const decision = await runtime.authorize(actions);
                 if (!decision.allowed) {
                     const denied = new Error(decision.message || 'Modification refusee par vos droits');
@@ -604,7 +596,7 @@ const TF = (function () {
             }
             try {
                 const result = await raw(actions);
-                if (controlled) runtime.invalidate();
+                if (guarded && typeof runtime.invalidate === 'function') runtime.invalidate();
                 return result;
             }
             catch (e) { if (!e.tfPermissionDenied && isAccessError(e)) { try { guardOptions.onDenied && guardOptions.onDenied(e); } catch (e2) {} } throw e; }

@@ -130,7 +130,7 @@ describe('CRA Export Model - Exports', () => {
   });
   
   test('Export navigateur avec CRAController valide', () => {
-    const controllerPath = path.resolve(__dirname, 'cra-time-entry-controller.js');
+    const controllerPath = path.resolve(__dirname, '../controller/cra-time-entry-controller.js');
     const controllerCode = fs.readFileSync(controllerPath, 'utf-8');
     
     const modelPath = path.resolve(__dirname, '../export/cra-export-model.js');

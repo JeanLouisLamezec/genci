@@ -1347,7 +1347,7 @@ describe('Grist Planning Adapter - Parité dryRun / réel', () => {
           membre: 1,
           date: 1719792000,
           heuresPrevues: 7,
-          heures: 0,
+          heures: null,
           capaciteTheorique: 7,
           capaciteDisponible: 7,
           capaciteJour: 1,
@@ -1360,7 +1360,7 @@ describe('Grist Planning Adapter - Parité dryRun / réel', () => {
           membre: 1,
           date: 1719878400,
           heuresPrevues: 7,
-          heures: 0,
+          heures: null,
           capaciteTheorique: 7,
           capaciteDisponible: 7,
           capaciteJour: 2,
@@ -1601,7 +1601,7 @@ describe('Grist Planning Adapter - Correction des snapshots de capacité', () =>
             membre: 1,
             date: 1785369600,
             heuresPrevues: 5,
-            heures: 0,
+            heures: null,
             capaciteJour: null,
             capaciteTheorique: 5,
             capaciteDisponible: 5,
@@ -1685,7 +1685,7 @@ describe('Grist Planning Adapter - Correction des snapshots de capacité', () =>
             membre: 1,
             date: 1785369600,
             heuresPrevues: 7,
-            heures: 0,
+            heures: null,
             capaciteJour: 10,
             capaciteTheorique: 7,
             capaciteDisponible: 7,
@@ -1744,7 +1744,7 @@ describe('Grist Planning Adapter - Correction des snapshots de capacité', () =>
             membre: 1,
             date: 1785369600,
             heuresPrevues: 7,
-            heures: 0,
+            heures: null,
             capaciteJour: null, // Obsolète
             capaciteTheorique: 7,
             capaciteDisponible: 7,
@@ -1808,7 +1808,7 @@ describe('Grist Planning Adapter - Correction des snapshots de capacité', () =>
             membre: 1,
             date: 1785369600,
             heuresPrevues: 7,
-            heures: 0,
+            heures: null,
             capaciteJour: 10, // Déjà correct
             capaciteTheorique: 5, // Obsolète
             capaciteDisponible: 5, // Obsolète
@@ -1872,7 +1872,7 @@ describe('Grist Planning Adapter - Correction des snapshots de capacité', () =>
             membre: 1,
             date: 1785369600,
             heuresPrevues: 7,
-            heures: 0,
+            heures: null,
             capaciteJour: 10,
             capaciteTheorique: 7,
             capaciteDisponible: 7,
@@ -2254,7 +2254,9 @@ describe('Grist Planning Adapter - Correction 2 : Diagnostics bloquants dans pla
       }
     });
     
-    const result = await planAssignment(mockGrist, 1);
+    const result = await planAssignment(mockGrist, 1, {
+      replanFromDate: '2026-07-30'
+    });
     
     expect(result.success).toBe(false);
     expect(result.error.code).toBe('BLOCKING_DIAGNOSTICS');

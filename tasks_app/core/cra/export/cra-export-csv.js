@@ -433,9 +433,13 @@ function buildFilename(report, options) {
     // Nettoyer les caractères interdits
     name = name.replace(INVALID_FILENAME_CHARS, '_');
     
-    // Garantir une seule extension CSV (sans tenir compte de la casse)
-    const lowerName = name.toLowerCase();
-    if (!lowerName.endsWith('.csv')) {
+    // Garantir une seule extension CSV sans modifier la casse choisie par
+    // l'utilisateur lorsqu'une extension est déjà présente.
+    const repeatedCsvExtension = /(?:\.csv)+$/i;
+    if (repeatedCsvExtension.test(name)) {
+      const existingExtension = name.slice(-4);
+      name = name.replace(repeatedCsvExtension, '') + existingExtension;
+    } else {
       name += '.csv';
     }
     

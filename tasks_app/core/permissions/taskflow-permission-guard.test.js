@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 const permissions = require('./taskflow-permissions.js');
+const orgchartSource = fs.readFileSync(path.join(__dirname, '..', '..', 'orgchart.html'), 'utf8');
 
 function loadCore() {
   const source = fs.readFileSync(path.join(__dirname, '..', 'taskflow-core.js'), 'utf8');
@@ -63,11 +64,11 @@ describe('TaskFlow guardWrites - permissions fonctionnelles', () => {
     expect(onPermissionDenied).toHaveBeenCalledWith(expect.objectContaining({ tfPermissionDenied: true }), decision);
   });
 
-  test('laisse passer les écritures techniques non contrôlées', async () => {
+  test('soumet aussi les écritures techniques au garde commun', async () => {
     const TF = loadCore();
     const raw = jest.fn(async () => 'ok');
     const runtime = {
-      authorize: jest.fn(),
+      authorize: jest.fn(async () => ({ allowed: true })),
       invalidate: jest.fn()
     };
     const grist = { docApi: { applyUserActions: raw } };
@@ -75,8 +76,11 @@ describe('TaskFlow guardWrites - permissions fonctionnelles', () => {
     TF.guardWrites(grist, { permissionRuntime: runtime });
     await grist.docApi.applyUserActions([['UpdateRecord', 'TaskAssignments', 1, { heuresAllouees: 10 }]]);
 
-    expect(runtime.authorize).not.toHaveBeenCalled();
+    expect(runtime.authorize).toHaveBeenCalledWith([
+      ['UpdateRecord', 'TaskAssignments', 1, { heuresAllouees: 10 }]
+    ]);
     expect(raw).toHaveBeenCalledTimes(1);
+    expect(runtime.invalidate).toHaveBeenCalledTimes(1);
   });
 
   test('un second appel à guardWrites enrichit la garde existante', async () => {
@@ -93,5 +97,11 @@ describe('TaskFlow guardWrites - permissions fonctionnelles', () => {
     await grist.docApi.applyUserActions([['UpdateRecord', 'Tasks', 1, { titre: 'X' }]]);
 
     expect(runtime.authorize).toHaveBeenCalledTimes(1);
+  });
+
+  test('la garde autonome de l’Organigramme refuse aussi les tables inconnues', () => {
+    expect(orgchartSource).toContain("const guarded = !aclOnly;");
+    expect(orgchartSource).toContain('await permissionRuntime.authorize(a)');
+    expect(orgchartSource).not.toContain('controlledTables.includes(action[1])');
   });
 });

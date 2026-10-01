@@ -980,8 +980,6 @@ function buildAssignmentPlan(input) {
   // car les entrées hors période participent au calcul comptable du réalisé validé
   const duplicateCheck = findDuplicates(existingEntries || []);
   if (duplicateCheck.hasDuplicates) {
-    let hasBlockingDuplicate = false;
-
     for (const dup of duplicateCheck.duplicates) {
       const duplicateEntries = [dup.firstEntry, dup.entry];
       const isProtectedHistoricalDuplicate = duplicateEntries.every(entry => {
@@ -990,41 +988,33 @@ function buildAssignmentPlan(input) {
         return protectedSheet || beforeReplan;
       });
 
-      if (!isProtectedHistoricalDuplicate) {
-        hasBlockingDuplicate = true;
-      }
-
       diagnostics.push({
-        code: isProtectedHistoricalDuplicate
-          ? "PROTECTED_DUPLICATE_EXISTING_ENTRY"
-          : "DUPLICATE_EXISTING_ENTRY",
+        code: "DUPLICATE_EXISTING_ENTRY",
         key: dup.key,
         assignmentId: dup.entry.assignmentId,
         date: dup.entry.date,
         entryIds: [dup.firstEntry.id, dup.entry.id],
         protected: isProtectedHistoricalDuplicate,
         message: isProtectedHistoricalDuplicate
-          ? `Doublon historique protégé conservé : entrées ${dup.firstEntry.id} et ${dup.entry.id} pour ${dup.key}`
+          ? `Doublon historique protégé détecté : entrées ${dup.firstEntry.id} et ${dup.entry.id} pour ${dup.key}. Le recalcul est bloqué jusqu'à régularisation.`
           : `Doublon détecté : entrées ${dup.firstEntry.id} et ${dup.entry.id} pour ${dup.key}`
       });
     }
 
-    if (hasBlockingDuplicate) {
-      return {
-        desiredPlan: [],
-        summary: {
-          allocatedHours: toHours(allocatedCentiHours),
-          validatedActualHours,
-          protectedPlannedHours: 0,
-          remainingHours: 0,
-          newlyPlannedHours: 0,
-          unplannedHours: 0,
-          overconsumedHours: 0,
-          overprotectedHours: 0
-        },
-        diagnostics
-      };
-    }
+    return {
+      desiredPlan: [],
+      summary: {
+        allocatedHours: toHours(allocatedCentiHours),
+        validatedActualHours,
+        protectedPlannedHours: 0,
+        remainingHours: 0,
+        newlyPlannedHours: 0,
+        unplannedHours: 0,
+        overconsumedHours: 0,
+        overprotectedHours: 0
+      },
+      diagnostics
+    };
   }
   
   let protectedPlannedCentiHours = 0;

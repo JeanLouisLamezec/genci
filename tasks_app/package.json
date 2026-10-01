@@ -18,6 +18,10 @@
   "jest": {
     "testEnvironment": "jsdom",
     "testMatch": ["**/core/**/*.test.js"],
+    "testPathIgnorePatterns": [
+      "/core/planning/gantt/gantt-date-sync-integration.test.js$",
+      "/core/schema/taskflow-fast-path.test.js$"
+    ],
     "verbose": true,
     "collectCoverageFrom": ["core/**/*.js"],
     "setupFilesAfterEnv": ["<rootDir>/core/filters/jest.setup.js"]

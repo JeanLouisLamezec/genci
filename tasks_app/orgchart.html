@@ -825,12 +825,17 @@ document.getElementById('aclModal').addEventListener('click', (e) => { if (e.tar
       if (ro() && !document.getElementById('tf-ro-banner')) { const b = document.createElement('div'); b.id = 'tf-ro-banner'; b.textContent = 'Lecture seule — vos droits ne permettent pas la modification'; b.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#b45309;color:#fff;font:600 12px/1.4 system-ui,sans-serif;text-align:center;padding:6px 10px;box-sizing:border-box'; document.body.appendChild(b); document.body.style.paddingTop = ((parseFloat(getComputedStyle(document.body).paddingTop) || 0) + (b.offsetHeight || 28)) + 'px'; }
       if (window.grist && grist.docApi && !grist.docApi._tfGuarded) {
         const raw = grist.docApi.applyUserActions.bind(grist.docApi);
-        const controlledTables = TaskFlowPermissions.CONTROLLED_TABLES;
+        // Les mutations ACL appartiennent à l'outil propriétaire Grist dédié
+        // ci-dessus et restent contrôlées par le serveur. Toute autre écriture
+        // passe par le runtime TaskFlow, y compris une table inconnue, afin de
+        // conserver le même refus par défaut que les autres widgets.
+        const aclTables = new Set(['_grist_ACLRules', '_grist_ACLResources']);
         grist.docApi._tfGuarded = true;
         grist.docApi.applyUserActions = async function (a) {
           if (ro()) { const e = new Error('Document en lecture seule'); e.tfReadOnly = true; throw e; }
-          const controlled = (a || []).some(action => Array.isArray(action) && controlledTables.includes(action[1]));
-          if (controlled) {
+          const aclOnly = Array.isArray(a) && a.length > 0 && a.every(action => Array.isArray(action) && aclTables.has(action[1]));
+          const guarded = !aclOnly;
+          if (guarded) {
             const decision = await permissionRuntime.authorize(a);
             if (!decision.allowed) {
               window.alert(decision.message || 'Modification refusée par vos droits');
@@ -840,7 +845,7 @@ document.getElementById('aclModal').addEventListener('click', (e) => { if (e.tar
             }
           }
           const result = await raw(a);
-          if (controlled) permissionRuntime.invalidate();
+          if (guarded) permissionRuntime.invalidate();
           return result;
         };
       }

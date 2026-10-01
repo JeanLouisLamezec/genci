@@ -454,7 +454,7 @@ describe('Lot 2 Corrections - revisionPlan', () => {
             membre: 1,
             date: 1719792000,
             heuresPrevues: 7,
-            heures: 0,
+            heures: null,
             capaciteTheorique: 7,
             capaciteDisponible: 7,
             revisionPlan: 1
@@ -1321,7 +1321,7 @@ describe('Lot 2 Corrections - revisionPlan parcours réel', () => {
         membre: 1,
         date: 1719792000,
         heuresPrevues: 2,
-        heures: 0,
+        heures: null,
         revisionPlan: 5
       }]
     ]);

@@ -8,7 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
-const ROOT_DIR = path.join(__dirname, '../..');
+const ROOT_DIR = path.join(__dirname, '../../..');
 const BUILD_SCRIPT = path.join(ROOT_DIR, 'scripts', 'build-cra-browser.js');
 const BUNDLE_PATH = path.join(ROOT_DIR, 'core', 'generated', 'taskflow-cra-browser.js');
 
