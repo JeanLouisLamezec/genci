@@ -23,6 +23,7 @@ function gristFixture() {
       gristUserId: [101, 202],
       nonce: ['own-probe', 'foreign-probe']
     },
+    TimeEntries: { id: [99], membre: [7], heures: [1] },
     MemberDailyCapacities: { id: [], membre: [], date: [] }
   };
   return {
@@ -145,18 +146,71 @@ describe('Runtime permissions - identité commune', () => {
     ])).resolves.toMatchObject({ allowed: false, code: 'IDENTITY_PROBE_DELETE_FORBIDDEN' });
   });
 
-  test('ne charge les capacités quotidiennes que pour une mutation qui les vise', async () => {
+  test('calcule les dépendances minimales des principales écritures', () => {
+    expect(permissions.permissionTablesForActions([[
+      'AddRecord', 'Tasks', null, { projet: 1 }
+    ]])).toEqual(['Team', 'Tasks', 'Projects']);
+
+    expect(permissions.permissionTablesForActions([[
+      'AddRecord', 'TaskAssignments', null, { tache: 1, membre: 7 }
+    ]])).toEqual(['Team', 'Tasks', 'Projects']);
+
+    expect(permissions.permissionTablesForActions([[
+      'AddRecord', 'TimeEntries', null, { tache: 1, membre: 7 }
+    ]])).toEqual(['Team', 'Feuilles', 'TaskAssignments', 'Tasks', 'Projects']);
+
+    expect(permissions.permissionTablesForActions([[
+      'UpdateRecord', 'TimeEntries', 9, { heures: 2 }
+    ]])).toEqual(['Team', 'TimeEntries', 'Feuilles', 'TaskAssignments', 'Tasks', 'Projects']);
+
+    expect(permissions.permissionTablesForActions([[
+      'AddRecord', 'MemberDailyCapacities', null, { membre: 7, date: 1 }
+    ]])).toEqual(['Team', 'TaskAssignments', 'Tasks', 'Projects']);
+  });
+
+  test('une autorisation de tâche ne télécharge ni CRA ni capacités', async () => {
     const grist = gristFixture();
     const runtime = permissions.createGristPermissionRuntime(grist);
 
     await runtime.authorize([
       ['UpdateRecord', 'Tasks', 1, { titre: 'Toujours interdite' }]
     ]);
-    expect(grist.docApi.fetchTable.mock.calls.some(([table]) => table === 'MemberDailyCapacities')).toBe(false);
 
-    await runtime.authorize([[
-      'AddRecord', 'MemberDailyCapacities', null, { membre: 7, date: 1 }
-    ]]);
-    expect(grist.docApi.fetchTable.mock.calls.some(([table]) => table === 'MemberDailyCapacities')).toBe(true);
+    const fetched = grist.docApi.fetchTable.mock.calls.map(([table]) => table);
+    expect(fetched).toContain('Team');
+    expect(fetched).toContain('Tasks');
+    expect(fetched).not.toContain('TimeEntries');
+    expect(fetched).not.toContain('Feuilles');
+    expect(fetched).not.toContain('MemberDailyCapacities');
+  });
+
+  test('le snapshot ciblé ne remplace pas le snapshot complet de l’interface', async () => {
+    const grist = gristFixture();
+    const runtime = permissions.createGristPermissionRuntime(grist);
+
+    await runtime.refresh({ force: true });
+    expect(runtime.getSnapshot().tables.TimeEntries.map(row => row.id)).toEqual([99]);
+    grist.docApi.fetchTable.mockClear();
+
+    await runtime.authorize([
+      ['UpdateRecord', 'Tasks', 1, { titre: 'Toujours interdite' }]
+    ]);
+
+    expect(runtime.getSnapshot().tables.TimeEntries.map(row => row.id)).toEqual([99]);
+    expect(grist.docApi.fetchTable.mock.calls.some(([table]) => table === 'TimeEntries')).toBe(false);
+  });
+
+  test('l’union des dépendances d’un lot reste sans doublon', () => {
+    const tables = permissions.permissionTablesForActions([
+      ['AddRecord', 'Tasks', null, { projet: 1 }],
+      ['UpdateRecord', 'TimeEntries', 9, { heures: 2 }],
+      ['AddRecord', 'MemberDailyCapacities', null, { membre: 7, date: 1 }]
+    ]);
+
+    expect(tables).toEqual([
+      'Team', 'Tasks', 'Projects', 'TimeEntries', 'Feuilles',
+      'TaskAssignments'
+    ]);
+    expect(new Set(tables).size).toBe(tables.length);
   });
 });

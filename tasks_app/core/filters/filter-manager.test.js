@@ -227,6 +227,50 @@ describe('FilterManager - Filtre Programme', () => {
     const filtered = fm.filterTasks(mockData.tasks);
     expect(filtered.length).toBe(2);
   });
+
+  test('indexe les projets avec des IDs normalisés', () => {
+    const fm = createFilterManager({
+      data: {
+        ...mockData,
+        projects: [{ id: '1', nom: 'Projet importé', programme: 1 }]
+      },
+      initialFilters: { programme: ['1'] }
+    });
+
+    expect(fm.filterTasks([mockData.tasks[0]]).map(task => task.id)).toEqual([1]);
+  });
+
+  test('ne parcourt pas la liste des projets pour chaque tâche', () => {
+    const projects = mockData.projects.slice();
+    projects.find = () => { throw new Error('Recherche linéaire interdite'); };
+    const fm = createFilterManager({
+      data: { ...mockData, projects },
+      initialFilters: { programme: ['1'] }
+    });
+
+    expect(fm.filterTasks(mockData.tasks).map(task => task.id)).toEqual([1, 3]);
+  });
+
+  test('conserve le résultat attendu au volume cible de 51 projets et 306 tâches', () => {
+    const projects = Array.from({ length: 51 }, (_, index) => ({
+      id: index + 1,
+      nom: `Projet ${index + 1}`,
+      programme: index % 2 === 0 ? 1 : 2
+    }));
+    const tasks = projects.flatMap(project => Array.from({ length: 6 }, (_, index) => ({
+      id: project.id * 100 + index,
+      titre: `Tâche ${project.id}-${index}`,
+      projet: project.id
+    })));
+    const fm = createFilterManager({
+      data: { ...mockData, projects, tasks },
+      initialFilters: { programme: ['1'] }
+    });
+
+    const filtered = fm.filterTasks(tasks);
+    expect(filtered).toHaveLength(26 * 6);
+    expect(filtered.every(task => task.projet % 2 === 1)).toBe(true);
+  });
 });
 
 describe('FilterManager - Gestion des erreurs', () => {
@@ -430,9 +474,21 @@ describe('FilterManager - setData', () => {
     
     fm.setData(newData);
     
-  // Vérifier que l'UI a été reconstruite
-  expect(fm.ui.programme.checkboxContainer.innerHTML).toContain('Nouveau Programme');
-});
+    // Vérifier que l'UI a été reconstruite
+    expect(fm.ui.programme.checkboxContainer.innerHTML).toContain('Nouveau Programme');
+  });
+
+  test('reconstruit l index projet quand les donnees changent', () => {
+    const fm = createFilterManager({ initialFilters: { programme: ['1'] } });
+    expect(fm.filterTasks([mockData.tasks[0]])).toHaveLength(1);
+
+    fm.setData({
+      ...mockData,
+      projects: [{ id: 1, nom: 'Projet déplacé', programme: 2 }]
+    });
+
+    expect(fm.filterTasks([mockData.tasks[0]])).toHaveLength(0);
+  });
 
 // Import normalizeFilters pour les tests
 const { normalizeFilters } = require('./filter-manager.js');

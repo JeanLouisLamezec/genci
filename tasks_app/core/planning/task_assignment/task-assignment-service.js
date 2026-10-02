@@ -616,6 +616,7 @@
 
                 // 8. Mettre à jour les champs legacy (seulement si changement)
                 var legacyActionsCount = 0;
+                var verifiedAssignments = null;
                 if (syncOptions.updateLegacy !== false) {
                     var legacyResult = await deriveLegacyTaskFields(taskId);
                     if (!legacyResult.ok) {
@@ -637,6 +638,7 @@
                         };
                     }
                     legacyActionsCount = legacyResult.actionsExecuted || 0;
+                    verifiedAssignments = legacyResult.assignments || null;
                 }
 
                 // 9. Retourner le résultat avec le compteur total
@@ -649,7 +651,8 @@
                     unchangedIds: diff.unchanged,
                     warnings: diff.warnings,
                     conflicts: diff.conflicts,
-                    actionsExecuted: actions.length + legacyActionsCount
+                    actionsExecuted: actions.length + legacyActionsCount,
+                    verifiedAssignments: verifiedAssignments
                 };
 
             } catch (e) {
@@ -720,7 +723,13 @@
                     
                     if (assigneesEqual && chargesEqual) {
                         log('Champs legacy inchangés pour la tâche ' + taskId);
-                        return { ok: true, assignees: assignees, charges: charges, actionsExecuted: 0 };
+                        return {
+                            ok: true,
+                            assignees: assignees,
+                            charges: charges,
+                            assignments: assignments,
+                            actionsExecuted: 0
+                        };
                     }
                 }
 
@@ -733,7 +742,13 @@
                 ]);
 
                 log('Champs legacy mis à jour pour la tâche ' + taskId);
-                return { ok: true, assignees: assignees, charges: charges, actionsExecuted: 1 };
+                return {
+                    ok: true,
+                    assignees: assignees,
+                    charges: charges,
+                    assignments: assignments,
+                    actionsExecuted: 1
+                };
 
             } catch (e) {
                 log('Erreur lors de la mise à jour des champs legacy : ' + e.message);

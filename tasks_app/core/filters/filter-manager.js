@@ -76,6 +76,24 @@ class FilterManager {
     this.postFilter = options.postFilter || null;
     this.widgetConfig = options.widgetConfig || {};
     this._isBroadcasting = false; // Indicateur interne pour éviter les boucles
+    this._indexes = null;
+    this._rebuildIndexes();
+  }
+
+  /**
+   * Reconstruit les index dérivés des données de référence.
+   *
+   * Les lignes Grist sont remplacées lors d'un rechargement. Garder les index
+   * dans le FilterManager évite une recherche O(projets) pour chaque tâche et
+   * chaque rendu, sans mettre en cache le résultat final du filtrage (qui doit
+   * rester immédiatement sensible aux filtres courants).
+   * @private
+   */
+  _rebuildIndexes() {
+    const projects = Array.isArray(this.data.projects) ? this.data.projects : [];
+    this._indexes = {
+      projectsById: new Map(projects.map(project => [String(project.id), project]))
+    };
   }
 
   // ========== INITIALISATION UI ==========
@@ -381,32 +399,37 @@ class FilterManager {
   filterTasks(tasks, options = {}) {
     let result = [...tasks];
     const ignoredFilters = new Set(options.ignoreFilters || []);
+    const selectedAssignees = new Set(this.filters.assignee || []);
+    const selectedTeams = new Set(this.filters.team || []);
+    const selectedProjects = new Set(this.filters.project || []);
+    const selectedProgrammes = new Set(this.filters.programme || []);
+    const selectedTasks = new Set(this.filters.task || []);
  
     // Filtre par assignee (via charges ou assignees directement)
-    if (!ignoredFilters.has('assignee') && this.filters.assignee && this.filters.assignee.length > 0) {
+    if (!ignoredFilters.has('assignee') && selectedAssignees.size > 0) {
       result = result.filter(t => {
         const charges = this.effCharges(t);
         // Vérifier dans les charges d'abord
-        if (charges.some(c => this.filters.assignee.includes(String(c.teamId)))) {
+        if (charges.some(c => selectedAssignees.has(String(c.teamId)))) {
           return true;
         }
         // Si pas de charges, vérifier dans le champ assignees directement
         if (t.assignees) {
           const assigneeIds = this._getRefListArray(t.assignees);
-          return assigneeIds.some(id => this.filters.assignee.includes(String(id)));
+          return assigneeIds.some(id => selectedAssignees.has(String(id)));
         }
         return false;
       });
     }
  
     // Filtre par équipe/entité (via entité des membres)
-    if (this.filters.team && this.filters.team.length > 0) {
+    if (selectedTeams.size > 0) {
       result = result.filter(t => {
         const charges = this.effCharges(t);
         // Vérifier dans les charges d'abord
         if (charges.some(c => {
           const member = this.teamById(c.teamId);
-          return member && member.entite && this.filters.team.includes(String(member.entite));
+          return member && member.entite && selectedTeams.has(String(member.entite));
         })) {
           return true;
         }
@@ -415,7 +438,7 @@ class FilterManager {
           const assigneeIds = this._getRefListArray(t.assignees);
           return assigneeIds.some(id => {
             const member = this.teamById(id);
-            return member && member.entite && this.filters.team.includes(String(member.entite));
+            return member && member.entite && selectedTeams.has(String(member.entite));
           });
         }
         return false;
@@ -423,24 +446,23 @@ class FilterManager {
     }
  
     // Filtre par projet
-    if (this.filters.project && this.filters.project.length > 0) {
-      result = result.filter(t => t.projet && this.filters.project.includes(String(t.projet)));
+    if (selectedProjects.size > 0) {
+      result = result.filter(t => t.projet && selectedProjects.has(String(t.projet)));
     }
  
     // Filtre par programme (via projets) - rétrocompatible portefeuille/programme
-    if (this.filters.programme && this.filters.programme.length > 0) {
+    if (selectedProgrammes.size > 0) {
       result = result.filter(t => {
-        const p = this.data.projects?.find(proj => proj.id === t.projet);
+        const p = this._indexes.projectsById.get(String(t.projet));
         if (!p) return false;
         const progId = p.programme || p.portefeuille; // rétrocompatible
-        // Debug: console.log('Filter programme:', { taskId: t.id, taskProjet: t.projet, project: p?.nom, progId: progId, filterValues: this.filters.programme });
-        return progId != null && this.filters.programme.includes(String(progId));
+        return progId != null && selectedProgrammes.has(String(progId));
       });
     }
  
     // Filtre par tâche spécifique
-    if (this.filters.task && this.filters.task.length > 0) {
-      result = result.filter(t => t.id && this.filters.task.includes(String(t.id)));
+    if (selectedTasks.size > 0) {
+      result = result.filter(t => t.id && selectedTasks.has(String(t.id)));
     }
  
     // Appliquer le post-filter spécifique au widget si défini
@@ -569,9 +591,8 @@ class FilterManager {
    * @param {Object} data - { team: [], entites: [], projects: [], tasks: [], actions: [], programmes: [] }
    */
   setData(data) {
-    const previousFilters = this.getState();
-    
-    this.data = data;
+    this.data = data || {};
+    this._rebuildIndexes();
     
     if (this.ui) {
       Object.keys(this.ui).forEach(type => {

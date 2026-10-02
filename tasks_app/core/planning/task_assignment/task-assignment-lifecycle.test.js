@@ -204,6 +204,9 @@ describe('Cycle de vie TaskAssignments - Intégration réelle', () => {
             expect(result.expectedAssignments).toBe(1);
             expect(result.createdIds).toHaveLength(1);
             expect(result.verifiedIds).toHaveLength(1);
+            const assignmentReads = mockGrist.docApi.fetchTable.mock.calls
+                .filter(call => call[0] === 'TaskAssignments');
+            expect(assignmentReads).toHaveLength(2);
 
             // Vérifier les données dans TaskAssignments
             expect(taskAssignmentsTable.id).toHaveLength(1);

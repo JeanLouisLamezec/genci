@@ -329,6 +329,8 @@ describe('Gantt Assignment Modes - Integration stateful', () => {
 
         expect(result.ok).toBe(true);
         expect(result.actionsExecuted).toBeGreaterThan(0);
+        expect(result.verifiedAssignments).toHaveLength(2);
+        expect(result.verifiedAssignments.map(a => a.id).sort()).toEqual(result.verifiedIds.slice().sort());
 
         const assignmentsTable = await mockGrist.docApi.fetchTable('TaskAssignments');
         const assignments = columnarToRows(assignmentsTable);

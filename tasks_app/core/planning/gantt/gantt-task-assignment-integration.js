@@ -770,8 +770,14 @@
 
                     log('Synchronisation après création : ' + JSON.stringify(result));
                     
-                    // 3. Vérification POST-CONDITION : relire et vérifier que les affectations existent
-                    var actualAssignments = await assignmentService.loadAssignmentsForTask(taskId);
+                    // 3. Vérification POST-CONDITION : deriveLegacyTaskFields a déjà
+                    // relu les affectations après leur écriture. Réutiliser cette
+                    // vue vérifiée et ne relire qu'en repli si le service n'en
+                    // dispose pas (par exemple lorsque la projection legacy est
+                    // explicitement désactivée).
+                    var actualAssignments = Array.isArray(result.verifiedAssignments)
+                        ? result.verifiedAssignments
+                        : await assignmentService.loadAssignmentsForTask(taskId);
                     var activeAssignments = actualAssignments.filter(function(a) { return a.actif !== false; });
                     
                     if (activeAssignments.length < desiredAssignments.length) {
@@ -843,6 +849,7 @@
                         expectedAssignments: desiredAssignments.length,
                         createdIds: result.createdIds,
                         verifiedIds: activeAssignments.map(function(a) { return a.id; }),
+                        verifiedAssignments: activeAssignments,
                         actionsExecuted: result.actionsExecuted,
                         planningResult: planningResult
                     };

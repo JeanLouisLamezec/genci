@@ -604,3 +604,66 @@ describe('TaskFlow permissions - lots atomiques', () => {
     expect(result.code).toBe('TEAM_ASSOCIATION_REQUIRED');
   });
 });
+
+describe('TaskFlow permissions - snapshots ciblés', () => {
+  test('conserve les mêmes décisions que le snapshot complet', () => {
+    const scenarios = [
+      { actor: 3, action: ['AddRecord', 'Projects', null, { nom: 'Nouveau', responsable: 4 }] },
+      { actor: 3, action: ['UpdateRecord', 'Projects', 10, { nom: 'Renommé' }] },
+      { actor: 3, action: ['RemoveRecord', 'Projects', 10] },
+      { actor: 3, action: ['AddRecord', 'Tasks', null, { titre: 'Nouvelle', projet: 10 }] },
+      { actor: 3, action: ['UpdateRecord', 'Tasks', 100, { titre: 'Renommée' }] },
+      { actor: 3, action: ['RemoveRecord', 'Tasks', 100] },
+      { actor: 3, action: ['AddRecord', 'Actions', null, { titre: 'Action', task: 100, assignee: 4 }] },
+      { actor: 3, action: ['UpdateRecord', 'Actions', 1000, { titre: 'Action renommée' }] },
+      { actor: 3, action: ['RemoveRecord', 'Actions', 1000] },
+      {
+        actor: 3,
+        action: ['AddRecord', 'Feuilles', null, {
+          membre: 3, semaine: 1, statut: 'brouillon', revisionValidation: 0
+        }]
+      },
+      {
+        actor: 3,
+        action: ['AddRecord', 'TimeEntries', null, {
+          affectation: 1, tache: 100, membre: 4, date: 1,
+          heuresPrevues: 1, heures: null, capaciteTheorique: 7,
+          capaciteDisponible: 7, capaciteJour: null, revisionPlan: 1,
+          description: null, imputation: null
+        }]
+      },
+      { actor: 3, action: ['AddRecord', 'UserFilters', null, { gristUserId: 103, filters: '{}' }] },
+      {
+        actor: 3,
+        action: ['AddRecord', 'TaskAssignments', null, {
+          tache: 100, membre: 4, heuresAllouees: 7, actif: true
+        }]
+      },
+      { actor: 3, action: ['AddRecord', 'Disponibilites', null, { membre: 4, dispo: 0 }] },
+      { actor: 3, action: ['AddRecord', 'MemberDailyCapacities', null, { membre: 4, date: 1 }] },
+      { actor: 1, action: ['UpdateRecord', 'Entites', 1, { nom: 'Équipe renommée' }] }
+    ];
+
+    scenarios.forEach(({ actor, action }) => {
+      const full = fixture(actor);
+      const requested = permissions.permissionTablesForActions([action]);
+      const scopedData = {};
+      requested.forEach(table => {
+        scopedData[table] = full.tables[table];
+      });
+      const scoped = permissions.createSnapshot(scopedData, full.actor);
+      const fullDecision = permissions.authorizeMutationBatch(full, [action]);
+      const scopedDecision = permissions.authorizeMutationBatch(scoped, [action]);
+
+      expect({
+        action: action.slice(0, 2),
+        allowed: scopedDecision.allowed,
+        code: scopedDecision.code
+      }).toEqual({
+        action: action.slice(0, 2),
+        allowed: fullDecision.allowed,
+        code: fullDecision.code
+      });
+    });
+  });
+});

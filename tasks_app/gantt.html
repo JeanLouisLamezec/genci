@@ -14,10 +14,10 @@
     <script src="core/gantt/gantt-task-date-constraints.js"></script>
     <script src="core/gantt/gantt-date-change-transaction.js?v=20260901"></script>
     <script src="core/gantt/gantt-task-panel-rules.js?v=20260921-project-context"></script>
-    <script src="core/planning/task_assignment/task-assignment-service.js"></script>
-    <script src="core/planning/gantt/gantt-task-assignment-integration.js?v=20260827"></script>
+    <script src="core/planning/task_assignment/task-assignment-service.js?v=20261002-perf2"></script>
+    <script src="core/planning/gantt/gantt-task-assignment-integration.js?v=20261002-perf3"></script>
     <script src="core/planning/gantt/gantt-auto-planning-integration.js?v=20260827-retro"></script>
-    <script src="core/generated/taskflow-planning-browser.js?v=20260827-retro"></script>
+    <script src="core/generated/taskflow-planning-browser.js?v=20261002-perf2"></script>
     <link rel="stylesheet" href="core/theme/taskflow-theme.css">
     <link rel="stylesheet" href="core/filters/filter-styles.css">
     <link rel="stylesheet" href="core/time/time-view-selector.css">
@@ -2999,12 +2999,73 @@
             normalizeId(fields.gristUserId) === claim.gristUserId;
     }
 
-    function optionalTablesForActions(actions) {
-        var requested = [];
+    function addPermissionTable(requested, table) {
+        if (CONTROLLED_TABLES.indexOf(table) !== -1 && requested.indexOf(table) === -1) {
+            requested.push(table);
+        }
+    }
+
+    function recordActionKind(type) {
+        if (type === 'AddRecord' || type === 'BulkAddRecord') return 'create';
+        if (type === 'UpdateRecord' || type === 'BulkUpdateRecord') return 'update';
+        if (type === 'RemoveRecord' || type === 'BulkRemoveRecord') return 'delete';
+        return null;
+    }
+
+    // Dépendances minimales du cœur pur ci-dessus. Team est fourni par le
+    // runtime d'identité et reste relu avant chaque écriture. Cette matrice ne
+    // change aucune règle : elle évite seulement de télécharger des tables
+    // sans rapport avec la mutation (notamment TimeEntries, très volumineuse).
+    function permissionTablesForActions(actions) {
+        var requested = ['Team'];
         (Array.isArray(actions) ? actions : []).forEach(function (action) {
-            var table = Array.isArray(action) ? action[1] : null;
-            if (OPTIONAL_PERMISSION_DATA_TABLES.indexOf(table) !== -1 && requested.indexOf(table) === -1) {
-                requested.push(table);
+            if (!Array.isArray(action)) return;
+            var type = action[0];
+            var table = action[1];
+            var kind = recordActionKind(type);
+            if (!kind || CONTROLLED_TABLES.indexOf(table) === -1) return;
+
+            // Une mise à jour/suppression doit toujours relire la ligne source.
+            if (kind !== 'create') addPermissionTable(requested, table);
+
+            if (table === 'Projects') {
+                if (kind === 'delete') addPermissionTable(requested, 'Tasks');
+                return;
+            }
+            if (table === 'Tasks') {
+                addPermissionTable(requested, 'Tasks');
+                addPermissionTable(requested, 'Projects');
+                return;
+            }
+            if (table === 'Actions') {
+                addPermissionTable(requested, 'Tasks');
+                addPermissionTable(requested, 'Projects');
+                return;
+            }
+            if (table === 'Feuilles') {
+                return;
+            }
+            if (table === 'TimeEntries') {
+                addPermissionTable(requested, 'Feuilles');
+                addPermissionTable(requested, 'TaskAssignments');
+                addPermissionTable(requested, 'Tasks');
+                addPermissionTable(requested, 'Projects');
+                return;
+            }
+            if (table === 'UserFilters') {
+                // La création contrôle aussi l'unicité de la ligne utilisateur.
+                addPermissionTable(requested, 'UserFilters');
+                return;
+            }
+            if (table === 'TaskAssignments') {
+                addPermissionTable(requested, 'Tasks');
+                addPermissionTable(requested, 'Projects');
+                return;
+            }
+            if (table === 'MemberDailyCapacities') {
+                addPermissionTable(requested, 'TaskAssignments');
+                addPermissionTable(requested, 'Tasks');
+                addPermissionTable(requested, 'Projects');
             }
         });
         return requested;
@@ -3024,6 +3085,8 @@
             refreshOptions = refreshOptions || {};
             var force = !!refreshOptions.force;
             var extraTables = Array.isArray(refreshOptions.extraTables) ? refreshOptions.extraTables : [];
+            var scopedTables = Array.isArray(refreshOptions.tables) ? refreshOptions.tables : null;
+            var publish = refreshOptions.publish !== false;
 
             // Toute décision d'écriture utilise force=true. Si un chargement
             // plus ancien est encore actif, attendre sa fin puis reconstruire
@@ -3031,7 +3094,10 @@
             if (force) {
                 while (loading) await loading;
             } else {
-                if (loading) return loading;
+                if (loading) {
+                    await loading;
+                    if (valid) return snapshot;
+                }
                 if (valid) return snapshot;
             }
 
@@ -3040,9 +3106,10 @@
                 var identityState = await identityRuntime.refresh({ force: force });
                 var existingTables = await grist.docApi.listTables();
                 var data = { Team: identityState.team || [] };
-                var requestedTables = PERMISSION_DATA_TABLES.slice();
+                var requestedTables = scopedTables ? scopedTables.slice() : PERMISSION_DATA_TABLES.slice();
+                if (requestedTables.indexOf('Team') === -1) requestedTables.unshift('Team');
                 extraTables.forEach(function (table) {
-                    if (OPTIONAL_PERMISSION_DATA_TABLES.indexOf(table) !== -1 && requestedTables.indexOf(table) === -1) {
+                    if (CONTROLLED_TABLES.indexOf(table) !== -1 && requestedTables.indexOf(table) === -1) {
                         requestedTables.push(table);
                     }
                 });
@@ -3054,16 +3121,22 @@
                     }
                     data[table] = columnarToRows(await grist.docApi.fetchTable(table));
                 }));
-                snapshot = createSnapshot(data, identityState.actor);
-                valid = true;
-                return snapshot;
+                var loadedSnapshot = createSnapshot(data, identityState.actor);
+                if (publish) {
+                    snapshot = loadedSnapshot;
+                    valid = true;
+                }
+                return loadedSnapshot;
                 } catch (error) {
                     var identity = { identified: false, status: 'PERMISSION_DATA_UNAVAILABLE', memberId: null, member: null, isAdmin: false };
-                    snapshot = createSnapshot({}, identity);
-                    valid = true;
+                    var unavailableSnapshot = createSnapshot({}, identity);
+                    if (publish) {
+                        snapshot = unavailableSnapshot;
+                        valid = true;
+                    }
                     if (typeof options.onError === 'function') options.onError(error);
                     if (typeof options.onIdentity === 'function') options.onIdentity(identity);
-                    return snapshot;
+                    return unavailableSnapshot;
                 }
             })();
             loading = request;
@@ -3135,8 +3208,12 @@
                     }
                 }
             }
-            await refresh({ force: true, extraTables: optionalTablesForActions(actions) });
-            return authorizeMutationBatch(snapshot, actions);
+            var authorizationSnapshot = await refresh({
+                force: true,
+                tables: permissionTablesForActions(actions),
+                publish: false
+            });
+            return authorizeMutationBatch(authorizationSnapshot, actions);
         }
 
         return {
@@ -3144,7 +3221,9 @@
             authorize: authorize,
             invalidate: function () { valid = false; identityRuntime.invalidate(); },
             getSnapshot: function () { return snapshot; },
-            getActor: function () { return snapshot && snapshot.actor; },
+            getActor: function () {
+                return identityRuntime.getActor ? identityRuntime.getActor() : (snapshot && snapshot.actor);
+            },
             getIdentityRuntime: function () { return identityRuntime; }
         };
     }
@@ -3153,6 +3232,7 @@
         CONTROLLED_TABLES: CONTROLLED_TABLES,
         PERMISSION_DATA_TABLES: PERMISSION_DATA_TABLES,
         OPTIONAL_PERMISSION_DATA_TABLES: OPTIONAL_PERMISSION_DATA_TABLES,
+        permissionTablesForActions: permissionTablesForActions,
         RECORD_ACTIONS: RECORD_ACTIONS,
         SCHEMA_ACTIONS: SCHEMA_ACTIONS,
         SCHEMA_METADATA_TABLES: SCHEMA_METADATA_TABLES,
@@ -3924,7 +4004,10 @@ const TF = (function () {
                 throw new Error('Moteur de permissions TaskFlow non charge');
             }
             const runtime = permissions.createGristPermissionRuntime(grist, opts);
-            await runtime.refresh();
+            const initialRefreshOptions = Array.isArray(opts.initialPermissionTables)
+                ? { tables: opts.initialPermissionTables }
+                : undefined;
+            await runtime.refresh(initialRefreshOptions);
             const gateModule = typeof globalThis !== 'undefined' && globalThis.TaskFlowIdentityGate;
             if (opts.identityGate !== false && gateModule && typeof gateModule.createIdentityGate === 'function') {
                 const identityGate = gateModule.createIdentityGate({
@@ -8641,19 +8724,25 @@ if (typeof globalThis !== 'undefined') {
         const validateTaskHierarchy = (task, taskSet = tasks, taskId = panelState.taskId) =>
             GanttTaskPanelRules.validateHierarchy(task, taskSet, taskId);
 
-        function canCreateTaskInProject(project) {
+        function canCreateTaskInProject(project, snapshotOverride) {
             if (!project || project.actif === false) return false;
             if (!gristReady) return true;
             const permissions = window.TaskFlowPermissions;
-            const snapshot = permissionRuntime && permissionRuntime.getSnapshot
-                ? permissionRuntime.getSnapshot()
-                : null;
+            const snapshot = snapshotOverride || (
+                panelState.isNew && panelState.creationPermissionSnapshot
+                    ? panelState.creationPermissionSnapshot
+                    : (permissionRuntime && permissionRuntime.getSnapshot
+                        ? permissionRuntime.getSnapshot()
+                        : null)
+            );
             if (!permissions || typeof permissions.canCreateTask !== 'function' || !snapshot) return false;
             return Boolean(permissions.canCreateTask(snapshot, { projet: project.id }).allowed);
         }
 
-        function getCreatableProjects() {
-            return GanttTaskPanelRules.filterCreatableProjects(projects, canCreateTaskInProject);
+        function getCreatableProjects(snapshotOverride) {
+            return GanttTaskPanelRules.filterCreatableProjects(projects, function(project) {
+                return canCreateTaskInProject(project, snapshotOverride);
+            });
         }
 
         // Couleur d'une tâche selon le mode courant, avec override individuel (task.couleur)
@@ -9973,9 +10062,13 @@ if (typeof globalThis !== 'undefined') {
         }
         // WBS-02: création d'une sous-tâche (ou tâche racine si parentId === null)
         async function openCreateTaskWithParent(parentId, dependencyId, preferredProjectId) {
+            let creationPermissionSnapshot = null;
             if (gristReady && permissionRuntime && typeof permissionRuntime.refresh === 'function') {
                 try {
-                    await permissionRuntime.refresh({ force: true });
+                    creationPermissionSnapshot = await permissionRuntime.refresh({
+                        tables: ['Team', 'Tasks', 'Projects'],
+                        publish: false
+                    });
                 } catch (error) {
                     console.warn('[Gantt permissions] Actualisation avant création impossible', error);
                     showToast('Impossible de vérifier vos droits de création. Réessayez.', 'error');
@@ -9992,7 +10085,7 @@ if (typeof globalThis !== 'undefined') {
                 showToast('Création impossible : un jalon ne peut pas contenir de tâche.', 'error');
                 return;
             }
-            const creatableProjects = getCreatableProjects();
+            const creatableProjects = getCreatableProjects(creationPermissionSnapshot);
             if (parent && !creatableProjects.some(project => GanttTaskPanelRules.sameProject(project.id, parent.projet))) {
                 showToast('Création impossible : vous n’avez pas les droits sur ce projet.', 'error');
                 return;
@@ -10039,7 +10132,8 @@ if (typeof globalThis !== 'undefined') {
                 },
                 assignmentModes: {},
                 originalAssignmentModes: {},
-                chargeUnits: {}
+                chargeUnits: {},
+                creationPermissionSnapshot: creationPermissionSnapshot
             };
             renderPanel();
             openPanel();
@@ -10180,27 +10274,41 @@ if (typeof globalThis !== 'undefined') {
             return JSON.stringify(left.modes) === JSON.stringify(right.modes);
         }
 
-        async function verifyPersistedAssignmentModes(taskId, expectedModes, assigneeIds) {
+        async function verifyPersistedAssignmentModes(taskId, expectedModes, assigneeIds, verifiedAssignments) {
             try {
-                var assignmentsTable = await grist.docApi.fetchTable('TaskAssignments');
                 var assignmentsByMember = {};
                 var actualModesByMember = {};
                 var errors = [];
 
-                // Collecter toutes les affectations actives par membre
-                if (assignmentsTable.id) {
-                    for (var i = 0; i < assignmentsTable.id.length; i++) {
-                        if (assignmentsTable.tache[i] === taskId && assignmentsTable.actif[i] !== false) {
-                            var memberId = assignmentsTable.membre[i];
-                            var mode = assignmentsTable.modeRepartition[i] || 'uniforme';
+                function collectAssignment(id, assignmentTaskId, memberId, mode, active) {
+                    if (assignmentTaskId !== taskId || active === false) return;
+                    mode = mode || 'uniforme';
+                    if (!assignmentsByMember[memberId]) assignmentsByMember[memberId] = [];
+                    assignmentsByMember[memberId].push({ id: id, mode: mode });
+                }
 
-                            if (!assignmentsByMember[memberId]) {
-                                assignmentsByMember[memberId] = [];
-                            }
-                            assignmentsByMember[memberId].push({
-                                id: assignmentsTable.id[i],
-                                mode: mode
-                            });
+                // Collecter toutes les affectations actives par membre
+                if (Array.isArray(verifiedAssignments)) {
+                    verifiedAssignments.forEach(function(assignment) {
+                        collectAssignment(
+                            assignment.id,
+                            assignment.tache,
+                            assignment.membre,
+                            assignment.modeRepartition,
+                            assignment.actif
+                        );
+                    });
+                } else {
+                    var assignmentsTable = await grist.docApi.fetchTable('TaskAssignments');
+                    if (assignmentsTable.id) {
+                        for (var i = 0; i < assignmentsTable.id.length; i++) {
+                            collectAssignment(
+                                assignmentsTable.id[i],
+                                assignmentsTable.tache[i],
+                                assignmentsTable.membre[i],
+                                assignmentsTable.modeRepartition[i],
+                                assignmentsTable.actif[i]
+                            );
                         }
                     }
                 }
@@ -11509,7 +11617,8 @@ if (typeof globalThis !== 'undefined') {
                     var verification = await verifyPersistedAssignmentModes(
                         taskId,
                         currentAssignmentModes,
-                        assigneeIds
+                        assigneeIds,
+                        syncResult.verifiedAssignments
                     );
 
                     if (!verification.ok) {
@@ -12081,7 +12190,11 @@ if (typeof globalThis !== 'undefined') {
             try { statusCfg = await TF.loadStatusConfig(grist, 'Tasks', 'statut', tasks.map(t => t && t.statut)); } catch (e) {}
             
             // Initialiser le FilterManager
-            initGanttFilterManager();
+            // Le FilterManager porte des écouteurs globaux. Le recréer après
+            // chaque mutation Grist empilerait ces écouteurs et ralentirait
+            // progressivement le widget. Les données sont actualisées juste
+            // après via setData().
+            if (!filterManager) initGanttFilterManager();
             
             // Mettre à jour les données du FilterManager
             if (filterManager) {
@@ -12215,6 +12328,7 @@ if (typeof globalThis !== 'undefined') {
             // #7 respect des droits : bandeau lecture seule + garde transverse sur toutes les ecritures.
             TF.readOnlyBanner();
             permissionRuntime = await TF.createPermissionRuntime(grist, {
+                initialPermissionTables: ['Team', 'Tasks', 'Projects'],
                 onIdentity: (identity) => {
                     if (!identity.identified) showToast('Identité non associée : modifications bloquées', 'error');
                 },

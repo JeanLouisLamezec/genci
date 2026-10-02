@@ -2646,12 +2646,73 @@ window.addEventListener('unhandledrejection', function(e) {
             normalizeId(fields.gristUserId) === claim.gristUserId;
     }
 
-    function optionalTablesForActions(actions) {
-        var requested = [];
+    function addPermissionTable(requested, table) {
+        if (CONTROLLED_TABLES.indexOf(table) !== -1 && requested.indexOf(table) === -1) {
+            requested.push(table);
+        }
+    }
+
+    function recordActionKind(type) {
+        if (type === 'AddRecord' || type === 'BulkAddRecord') return 'create';
+        if (type === 'UpdateRecord' || type === 'BulkUpdateRecord') return 'update';
+        if (type === 'RemoveRecord' || type === 'BulkRemoveRecord') return 'delete';
+        return null;
+    }
+
+    // Dépendances minimales du cœur pur ci-dessus. Team est fourni par le
+    // runtime d'identité et reste relu avant chaque écriture. Cette matrice ne
+    // change aucune règle : elle évite seulement de télécharger des tables
+    // sans rapport avec la mutation (notamment TimeEntries, très volumineuse).
+    function permissionTablesForActions(actions) {
+        var requested = ['Team'];
         (Array.isArray(actions) ? actions : []).forEach(function (action) {
-            var table = Array.isArray(action) ? action[1] : null;
-            if (OPTIONAL_PERMISSION_DATA_TABLES.indexOf(table) !== -1 && requested.indexOf(table) === -1) {
-                requested.push(table);
+            if (!Array.isArray(action)) return;
+            var type = action[0];
+            var table = action[1];
+            var kind = recordActionKind(type);
+            if (!kind || CONTROLLED_TABLES.indexOf(table) === -1) return;
+
+            // Une mise à jour/suppression doit toujours relire la ligne source.
+            if (kind !== 'create') addPermissionTable(requested, table);
+
+            if (table === 'Projects') {
+                if (kind === 'delete') addPermissionTable(requested, 'Tasks');
+                return;
+            }
+            if (table === 'Tasks') {
+                addPermissionTable(requested, 'Tasks');
+                addPermissionTable(requested, 'Projects');
+                return;
+            }
+            if (table === 'Actions') {
+                addPermissionTable(requested, 'Tasks');
+                addPermissionTable(requested, 'Projects');
+                return;
+            }
+            if (table === 'Feuilles') {
+                return;
+            }
+            if (table === 'TimeEntries') {
+                addPermissionTable(requested, 'Feuilles');
+                addPermissionTable(requested, 'TaskAssignments');
+                addPermissionTable(requested, 'Tasks');
+                addPermissionTable(requested, 'Projects');
+                return;
+            }
+            if (table === 'UserFilters') {
+                // La création contrôle aussi l'unicité de la ligne utilisateur.
+                addPermissionTable(requested, 'UserFilters');
+                return;
+            }
+            if (table === 'TaskAssignments') {
+                addPermissionTable(requested, 'Tasks');
+                addPermissionTable(requested, 'Projects');
+                return;
+            }
+            if (table === 'MemberDailyCapacities') {
+                addPermissionTable(requested, 'TaskAssignments');
+                addPermissionTable(requested, 'Tasks');
+                addPermissionTable(requested, 'Projects');
             }
         });
         return requested;
@@ -2671,6 +2732,8 @@ window.addEventListener('unhandledrejection', function(e) {
             refreshOptions = refreshOptions || {};
             var force = !!refreshOptions.force;
             var extraTables = Array.isArray(refreshOptions.extraTables) ? refreshOptions.extraTables : [];
+            var scopedTables = Array.isArray(refreshOptions.tables) ? refreshOptions.tables : null;
+            var publish = refreshOptions.publish !== false;
 
             // Toute décision d'écriture utilise force=true. Si un chargement
             // plus ancien est encore actif, attendre sa fin puis reconstruire
@@ -2678,7 +2741,10 @@ window.addEventListener('unhandledrejection', function(e) {
             if (force) {
                 while (loading) await loading;
             } else {
-                if (loading) return loading;
+                if (loading) {
+                    await loading;
+                    if (valid) return snapshot;
+                }
                 if (valid) return snapshot;
             }
 
@@ -2687,9 +2753,10 @@ window.addEventListener('unhandledrejection', function(e) {
                 var identityState = await identityRuntime.refresh({ force: force });
                 var existingTables = await grist.docApi.listTables();
                 var data = { Team: identityState.team || [] };
-                var requestedTables = PERMISSION_DATA_TABLES.slice();
+                var requestedTables = scopedTables ? scopedTables.slice() : PERMISSION_DATA_TABLES.slice();
+                if (requestedTables.indexOf('Team') === -1) requestedTables.unshift('Team');
                 extraTables.forEach(function (table) {
-                    if (OPTIONAL_PERMISSION_DATA_TABLES.indexOf(table) !== -1 && requestedTables.indexOf(table) === -1) {
+                    if (CONTROLLED_TABLES.indexOf(table) !== -1 && requestedTables.indexOf(table) === -1) {
                         requestedTables.push(table);
                     }
                 });
@@ -2701,16 +2768,22 @@ window.addEventListener('unhandledrejection', function(e) {
                     }
                     data[table] = columnarToRows(await grist.docApi.fetchTable(table));
                 }));
-                snapshot = createSnapshot(data, identityState.actor);
-                valid = true;
-                return snapshot;
+                var loadedSnapshot = createSnapshot(data, identityState.actor);
+                if (publish) {
+                    snapshot = loadedSnapshot;
+                    valid = true;
+                }
+                return loadedSnapshot;
                 } catch (error) {
                     var identity = { identified: false, status: 'PERMISSION_DATA_UNAVAILABLE', memberId: null, member: null, isAdmin: false };
-                    snapshot = createSnapshot({}, identity);
-                    valid = true;
+                    var unavailableSnapshot = createSnapshot({}, identity);
+                    if (publish) {
+                        snapshot = unavailableSnapshot;
+                        valid = true;
+                    }
                     if (typeof options.onError === 'function') options.onError(error);
                     if (typeof options.onIdentity === 'function') options.onIdentity(identity);
-                    return snapshot;
+                    return unavailableSnapshot;
                 }
             })();
             loading = request;
@@ -2782,8 +2855,12 @@ window.addEventListener('unhandledrejection', function(e) {
                     }
                 }
             }
-            await refresh({ force: true, extraTables: optionalTablesForActions(actions) });
-            return authorizeMutationBatch(snapshot, actions);
+            var authorizationSnapshot = await refresh({
+                force: true,
+                tables: permissionTablesForActions(actions),
+                publish: false
+            });
+            return authorizeMutationBatch(authorizationSnapshot, actions);
         }
 
         return {
@@ -2791,7 +2868,9 @@ window.addEventListener('unhandledrejection', function(e) {
             authorize: authorize,
             invalidate: function () { valid = false; identityRuntime.invalidate(); },
             getSnapshot: function () { return snapshot; },
-            getActor: function () { return snapshot && snapshot.actor; },
+            getActor: function () {
+                return identityRuntime.getActor ? identityRuntime.getActor() : (snapshot && snapshot.actor);
+            },
             getIdentityRuntime: function () { return identityRuntime; }
         };
     }
@@ -2800,6 +2879,7 @@ window.addEventListener('unhandledrejection', function(e) {
         CONTROLLED_TABLES: CONTROLLED_TABLES,
         PERMISSION_DATA_TABLES: PERMISSION_DATA_TABLES,
         OPTIONAL_PERMISSION_DATA_TABLES: OPTIONAL_PERMISSION_DATA_TABLES,
+        permissionTablesForActions: permissionTablesForActions,
         RECORD_ACTIONS: RECORD_ACTIONS,
         SCHEMA_ACTIONS: SCHEMA_ACTIONS,
         SCHEMA_METADATA_TABLES: SCHEMA_METADATA_TABLES,
@@ -3571,7 +3651,10 @@ const TF = (function () {
                 throw new Error('Moteur de permissions TaskFlow non charge');
             }
             const runtime = permissions.createGristPermissionRuntime(grist, opts);
-            await runtime.refresh();
+            const initialRefreshOptions = Array.isArray(opts.initialPermissionTables)
+                ? { tables: opts.initialPermissionTables }
+                : undefined;
+            await runtime.refresh(initialRefreshOptions);
             const gateModule = typeof globalThis !== 'undefined' && globalThis.TaskFlowIdentityGate;
             if (opts.identityGate !== false && gateModule && typeof gateModule.createIdentityGate === 'function') {
                 const identityGate = gateModule.createIdentityGate({

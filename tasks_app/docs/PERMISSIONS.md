@@ -70,6 +70,20 @@ puis l’utilisateur clique de nouveau sur « Associer mon compte ».
 droit fonctionnel v6. Le management projet utilise un seul niveau direct via
 `Team.responsable`.
 
+`Tasks.assignees` et `TaskAssignments` ont désormais des responsabilités
+distinctes dans toutes les décisions d’autorisation :
+
+- `Tasks.assignees` est la source du droit opérationnel de l’exécutant sur la
+  tâche et de la possibilité d’y rattacher sa propre action ;
+- une ligne active de `TaskAssignments` est la source de la charge, des dates de
+  planification, des heures prévues et de l’éligibilité de la tâche dans le CRA ;
+- une ligne `TaskAssignments` seule ne donne jamais le droit de modifier la
+  tâche, et `Tasks.assignees` seul ne permet jamais de créer une saisie CRA sans
+  affectation de planification active correspondante.
+
+Le service d’affectation peut synchroniser explicitement ces deux projections,
+mais la garde d’écriture ne déduit jamais silencieusement l’une de l’autre.
+
 Un administrateur fonctionnel peut tout faire, y compris soumettre la feuille
 d’un autre membre, s’auto-valider, rejeter hors périmètre et ouvrir ou éditer
 une correction. Les invariants de données et les états du workflow restent

@@ -536,7 +536,10 @@ const TF = (function () {
                 throw new Error('Moteur de permissions TaskFlow non charge');
             }
             const runtime = permissions.createGristPermissionRuntime(grist, opts);
-            await runtime.refresh();
+            const initialRefreshOptions = Array.isArray(opts.initialPermissionTables)
+                ? { tables: opts.initialPermissionTables }
+                : undefined;
+            await runtime.refresh(initialRefreshOptions);
             const gateModule = typeof globalThis !== 'undefined' && globalThis.TaskFlowIdentityGate;
             if (opts.identityGate !== false && gateModule && typeof gateModule.createIdentityGate === 'function') {
                 const identityGate = gateModule.createIdentityGate({

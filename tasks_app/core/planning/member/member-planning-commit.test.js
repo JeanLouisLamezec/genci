@@ -22,10 +22,12 @@ describe('Member Planning Orchestrator - Commit et actions Grist', function() {
     };
     
     var appliedActions = [];
+    var fetchCounts = {};
     
     var mockApi = {
       docApi: {
         fetchTable: function(table) {
+          fetchCounts[table] = (fetchCounts[table] || 0) + 1;
           var tableData = data[table] || [];
           var columns = expectedColumns[table] || ['id'];
           var result = {};
@@ -54,6 +56,9 @@ describe('Member Planning Orchestrator - Commit et actions Grist', function() {
         },
         resetActions: function() {
           appliedActions = [];
+        },
+        getFetchCount: function(table) {
+          return fetchCounts[table] || 0;
         }
       }
     };
@@ -137,6 +142,39 @@ describe('Member Planning Orchestrator - Commit et actions Grist', function() {
       expect(action[3].heuresPrevues).toBe(7);
       expect(action[3].affectation).toBe(1);
     }
+  });
+
+  it('réutilise les capacités fraîches du recalcul ciblé sans troisième lecture', async function() {
+    var monday = new Date(Date.UTC(2026, 6, 20)).getTime() / 1000;
+    var friday = new Date(Date.UTC(2026, 6, 24)).getTime() / 1000;
+    var mockGrist = createMockGristWithData({
+      'Team': [{ id: 1, nom: 'Alice', capaciteHebdo: 35 }],
+      'TaskAssignments': [{ id: 1, tache: 1, membre: 1, heuresAllouees: 7, dateDebut: monday, dateFin: friday, actif: true }],
+      'Tasks': [{ id: 1, titre: 'Tâche A' }],
+      'TimeEntries': [],
+      'Feuilles': [],
+      'Disponibilites': [],
+      'MemberDailyCapacities': [
+        { id: 1, membre: 1, date: monday, capaciteTheorique: 7, capaciteDisponible: 7 },
+        { id: 2, membre: 1, date: monday + 86400, capaciteTheorique: 7, capaciteDisponible: 7 },
+        { id: 3, membre: 1, date: monday + 2 * 86400, capaciteTheorique: 7, capaciteDisponible: 7 },
+        { id: 4, membre: 1, date: monday + 3 * 86400, capaciteTheorique: 7, capaciteDisponible: 7 },
+        { id: 5, membre: 1, date: monday + 4 * 86400, capaciteTheorique: 7, capaciteDisponible: 7 }
+      ]
+    });
+    var orchestrator = createMemberPlanningOrchestrator(mockGrist);
+    var preview = await orchestrator.previewMember(1, {
+      todayIso: '2026-07-20',
+      targetAssignmentIds: [1]
+    });
+
+    expect(preview.success).toBe(true);
+    expect(mockGrist.docApi.getFetchCount('MemberDailyCapacities')).toBe(1);
+
+    var commitResult = await orchestrator.commitMember(1, preview, { todayIso: '2026-07-20' });
+
+    expect(commitResult.success).toBe(true);
+    expect(mockGrist.docApi.getFetchCount('MemberDailyCapacities')).toBe(2);
   });
   
   it('Scénario 6: Idempotence - deuxième commit = 0 action', async function() {

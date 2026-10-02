@@ -1561,44 +1561,18 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
         
         log('Données rechargées : ' + refreshedData.assignments.length + ' affectations, ' + refreshedData.timeEntries.length + ' TimeEntries, ' + refreshedProtectedEntries.length + ' protégées');
         
-        // Recharger MemberDailyCapacities pour obtenir les vrais IDs
-        var capacitiesTable = await grist.docApi.fetchTable('MemberDailyCapacities');
+        // loadMemberData vient de relire MemberDailyCapacities après la phase 1.
+        // Réutiliser cette vue fraîche évite un troisième transfert complet de la
+        // table sans affaiblir le recalcul post-écriture ni sa protection contre
+        // les previews devenus obsolètes.
+        var refreshedCapacities = refreshedData.capacities || [];
         var capacityIdByDate = {};
-        
-        if (capacitiesTable.id) {
-          for (var capI = 0; capI < capacitiesTable.id.length; capI++) {
-            if (capacitiesTable.membre[capI] === memberId) {
-              var capDate = typeof capacitiesTable.date[capI] === 'number'
-                ? formatDateUTC(new Date(capacitiesTable.date[capI] * 1000))
-                : capacitiesTable.date[capI];
-              capacityIdByDate[capDate] = capacitiesTable.id[capI];
-            }
-          }
+
+        for (var capI = 0; capI < refreshedCapacities.length; capI++) {
+          capacityIdByDate[refreshedCapacities[capI].date] = refreshedCapacities[capI].id;
         }
-        
+
         log('Capacités rechargées : ' + Object.keys(capacityIdByDate).length + ' dates indexées');
-        
-        // Reconstruire les capacités effectives
-        var refreshedCapacities = [];
-        if (capacitiesTable.id) {
-          for (var capJ = 0; capJ < capacitiesTable.id.length; capJ++) {
-            if (capacitiesTable.membre[capJ] === memberId) {
-              refreshedCapacities.push({
-                id: capacitiesTable.id[capJ],
-                membre: capacitiesTable.membre[capJ],
-                date: typeof capacitiesTable.date[capJ] === 'number'
-                  ? formatDateUTC(new Date(capacitiesTable.date[capJ] * 1000))
-                  : capacitiesTable.date[capJ],
-                capaciteTheorique: Number(capacitiesTable.capaciteTheorique[capJ] || 0),
-                disponibiliteRatio: capacitiesTable.disponibiliteRatio[capJ] == null ? 1 : Number(capacitiesTable.disponibiliteRatio[capJ]),
-                capaciteDisponible: Number(capacitiesTable.capaciteDisponible[capJ] || 0),
-                absenceHeures: Number(capacitiesTable.absenceHeures[capJ] || 0),
-                source: capacitiesTable.source[capJ] || 'calcul',
-                revision: Number(capacitiesTable.revision[capJ] || 1)
-              });
-            }
-          }
-        }
         
         // Recalculer la période de capacité avec les données fraîches
         var refreshedPeriod = calculateCapacityPeriod(refreshedData.assignments, refreshedProtectedEntries, historyCutoffDate);
