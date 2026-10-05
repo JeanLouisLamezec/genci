@@ -9044,6 +9044,98 @@ if $projet and $projet.responsable:
 
         // Single-flight guard pour éviter les installations concurrentes
         var schemaInstallPromise = null;
+
+        function rowsFromGristTable(data) {
+            if (!data) return [];
+            if (Array.isArray(data)) return data.slice();
+            var columns = Object.keys(data);
+            if (!columns.length) return [];
+            var length = Array.isArray(data[columns[0]]) ? data[columns[0]].length : 0;
+            var rows = [];
+            for (var index = 0; index < length; index++) {
+                var row = {};
+                columns.forEach(function(column) { row[column] = data[column][index]; });
+                rows.push(row);
+            }
+            return rows;
+        }
+
+        function isEnabled(value) {
+            return value === true || value === 1 || value === '1';
+        }
+
+        // Le garde d'écriture TaskFlow s'appuie sur Team. Lors du tout premier
+        // bootstrap, il faut donc créer (ou associer) l'administrateur initial
+        // AVANT d'activer ce garde, à partir du compte Grist courant.
+        async function provisionInitialTaskFlowAdministrator() {
+            var teamRows = rowsFromGristTable(await grist.docApi.fetchTable('Team'));
+            if (teamRows.some(function(member) { return isEnabled(member.estAdmin); })) {
+                return { ready: true, created: false, reason: 'ADMIN_ALREADY_PRESENT' };
+            }
+
+            var runtime = typeof TaskFlowIdentityRuntime !== 'undefined'
+                ? TaskFlowIdentityRuntime
+                : null;
+            if (!runtime || typeof runtime.getCurrentGristUser !== 'function') {
+                return { ready: false, created: false, reason: 'CURRENT_GRIST_USER_UNAVAILABLE' };
+            }
+
+            var currentUser = await runtime.getCurrentGristUser(grist);
+            var userId = Number(currentUser && currentUser.userId);
+            var email = String(currentUser && currentUser.email || '').trim().toLowerCase();
+            if (!Number.isFinite(userId) || userId <= 0) {
+                return { ready: false, created: false, reason: 'CURRENT_GRIST_USER_UNAVAILABLE' };
+            }
+
+            // Cas de récupération fréquent : le schéma a été créé, puis le
+            // premier profil Team a été saisi manuellement. Les jetons Grist
+            // ne contiennent pas toujours l'e-mail ; une association par e-mail
+            // ne peut alors pas aboutir. S'il n'existe aucun administrateur et
+            // qu'il n'y a qu'un profil non associé, l'utilisateur qui dispose
+            // déjà de l'accès complet au document devient explicitement le
+            // premier administrateur TaskFlow.
+            if (teamRows.length === 1) {
+                var candidate = teamRows[0];
+                var candidateUserId = Number(candidate && candidate.gristUserId);
+                if (!Number.isFinite(candidateUserId) || candidateUserId <= 0) {
+                    await grist.docApi.applyUserActions([[
+                        'UpdateRecord', 'Team', candidate.id,
+                        { gristUserId: userId, estAdmin: true, actif: true }
+                    ]]);
+                    return {
+                        ready: true,
+                        created: false,
+                        recovered: true,
+                        email: email,
+                        gristUserId: userId
+                    };
+                }
+            }
+            if (teamRows.length > 0) {
+                return {
+                    ready: false,
+                    created: false,
+                    reason: 'TEAM_ALREADY_POPULATED_WITHOUT_ADMIN'
+                };
+            }
+            // Un accès au document peut fournir un identifiant Grist sans e-mail
+            // (cas observé sur certaines instances). L'identifiant numérique est
+            // suffisant et plus fiable pour l'association initiale ; l'e-mail
+            // pourra être complété plus tard dans Team si nécessaire.
+            var localPart = email ? email.split('@')[0].replace(/[._-]+/g, ' ').trim() : '';
+            await grist.docApi.applyUserActions([[
+                'AddRecord', 'Team', null,
+                {
+                    nom: localPart || ('Administrateur Grist #' + userId),
+                    email: email || null,
+                    role: 'chef',
+                    estAdmin: true,
+                    actif: true,
+                    gristUserId: userId
+                }
+            ]]);
+            return { ready: true, created: true, email: email, gristUserId: userId };
+        }
         
         async function initGenciSchema(btn) {
             if (TF.isReadOnly()) { 
@@ -9139,6 +9231,17 @@ if $projet and $projet.responsable:
                         }
                         
                         console.log('[Kanban] ✓ Schema validated successfully after installation');
+                        result.bootstrapAdmin = await provisionInitialTaskFlowAdministrator();
+                        if (!result.bootstrapAdmin.ready) {
+                            result.warnings = result.warnings || [];
+                            result.warnings.push({
+                                phase: 'initial-admin',
+                                code: result.bootstrapAdmin.reason
+                            });
+                            showToast('Schéma créé, mais le premier administrateur doit être ajouté dans Team', 'warning');
+                        } else if (result.bootstrapAdmin.created) {
+                            console.log('[Kanban] Initial TaskFlow administrator provisioned');
+                        }
                     } else {
                         var errorMsg = 'Échec initialisation GENCI';
                         if (result.errors && result.errors.length > 0) {
@@ -9258,6 +9361,7 @@ if $projet and $projet.responsable:
             } else {
                 title = '⚙️ Schéma TaskFlow incomplet';
                 message = '<p>Le schéma TaskFlow n\'est pas entièrement installé.</p>';
+                message += '<p style="margin-top:12px;color:#475569">Sur un nouveau document, aucune identité TaskFlow n\'est requise avant cette étape : l\'installation crée notamment la table <code>Team</code>. Les droits complets sur le document Grist suffisent.</p>';
                 
                 if (inspection.missingTables && inspection.missingTables.length > 0) {
                     message += '<div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:12px;margin:12px 0;font-size:0.85rem">';
@@ -9326,8 +9430,11 @@ if $projet and $projet.responsable:
             // Lancer l'installation
             initGenciSchema(btn).then(function(result) {
                 if (result && result.success) {
-                    // Recharger les données après succès
-                    loadAllData();
+                    if (!result.bootstrapAdmin || !result.bootstrapAdmin.ready) return;
+                    // Le runtime d'identité dépend de Team, qui vient seulement
+                    // d'être créée. Reprendre le bootstrap complet afin de créer
+                    // les permissions, les filtres et les listeners dans l'ordre.
+                    return initGrist();
                 }
             }).catch(function(e) {
                 console.error('[Diagnostic] Installation failed:', e);
@@ -11151,8 +11258,28 @@ if $projet and $projet.responsable:
                 console.warn('[Kanban] → Schema incomplete, showing admin panel...');
                 showSchemaDiagnostic(schemaState.inspection, false);
             }
+
+            // L'identité et le garde d'écriture TaskFlow dépendent de la table
+            // Team. Sur un nouveau document elle n'existe pas encore : ne pas
+            // poursuivre le démarrage après le panneau d'installation, sinon on
+            // masque le vrai problème derrière « Identité impossible ».
+            if (!schemaState.ready) {
+                console.log('[Kanban] ===== initGrist END (schema installation required) =====');
+                return;
+            }
             
             CRA_ACTIVE = schemaState.ready;
+            // Répare le cas où le premier profil Team a été saisi à la main
+            // avant que son association Grist ne soit connue. Cette opération
+            // n'est possible que sans administrateur TaskFlow existant.
+            try {
+                var bootstrapIdentity = await provisionInitialTaskFlowAdministrator();
+                if (bootstrapIdentity.recovered) {
+                    showToast('Premier administrateur TaskFlow associé à votre compte Grist', 'success');
+                }
+            } catch (error) {
+                console.warn('[Kanban] Initial administrator bootstrap unavailable', error);
+            }
             permissionRuntime = await TF.createPermissionRuntime(grist, {
                 onIdentity: (identity) => {
                     if (!identity.identified) showToast('Identité non associée : modifications bloquées', 'error');
