@@ -309,6 +309,28 @@ function normalizeDateMs(value) {
 }
 
 /**
+ * Indique si une feuille porte une preuve exploitable de validation.
+ *
+ * Les cellules Grist vides peuvent être renvoyées sous la forme 0 ou ''.
+ * Ces sentinelles ne doivent pas empêcher le retrait d'une feuille soumise.
+ * À l'inverse, une référence valide ou une date positive reste une preuve
+ * conservatrice de validation et interdit le retrait.
+ *
+ * @param {Object} sheet - Feuille à contrôler
+ * @returns {boolean} true lorsqu'une validation est effectivement tracée
+ */
+function hasValidationAudit(sheet) {
+  if (!sheet) return false;
+
+  if (normalizeMemberId(sheet.validePar) !== null) {
+    return true;
+  }
+
+  const validationDateMs = normalizeDateMs(sheet.dateValidation);
+  return typeof validationDateMs === 'number' && validationDateMs > 0;
+}
+
+/**
  * Formate un timestamp en date civile ISO (YYYY-MM-DD) Europe/Paris
  * @param {number} ms - Timestamp en millisecondes
  * @returns {string|null} Date ISO ou null
@@ -877,7 +899,7 @@ function canWithdrawSheet(context) {
     };
   }
 
-  if (sheet.validePar != null || sheet.dateValidation != null) {
+  if (hasValidationAudit(sheet)) {
     return {
       can: false,
       reason: 'Feuille déjà validée',
@@ -1777,7 +1799,7 @@ function buildWithdrawActions(params) {
     };
   }
 
-  if (sheet.validePar != null || sheet.dateValidation != null) {
+  if (hasValidationAudit(sheet)) {
     return {
       allowed: false,
       can: false,

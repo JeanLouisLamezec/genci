@@ -15,6 +15,7 @@
  * Version 6: Marqueur d'administration fonctionnelle Team.estAdmin
  * Version 7: Filtres personnels persistants
  * Version 8: Sonde serveur pour l'association automatique des comptes Grist
+ * Version 9: Horodatage de création des feuilles hebdomadaires
  * ============================================================================ */
 
 (function (global) {
@@ -883,6 +884,39 @@
     }
 
     // ========================================================================
+    // MIGRATION V8 → V9 — Traçabilité de création des feuilles
+    // ========================================================================
+
+    async function migrateToV9(grist, metadata) {
+        log('Migration v8 → v9: weekly-sheet-created-at-v9');
+
+        var docApi = getDocApi(grist);
+        var existingTables = metadata.tablesByName || {};
+        var existingColumns = metadata.columnsByKey || {};
+        var actions = [];
+
+        if (!existingTables.Feuilles) {
+            throw new Error('WEEKLY_SHEET_TABLE_MISSING: La table Feuilles est requise');
+        }
+
+        if (!existingColumns['Feuilles.createdAt']) {
+            actions.push(['AddColumn', 'Feuilles', 'createdAt', {
+                type: 'DateTime',
+                isFormula: false
+            }]);
+        }
+
+        if (actions.length > 0) await docApi.applyUserActions(actions);
+
+        return {
+            success: true,
+            message: 'Migration v9 appliquée',
+            actionsExecuted: actions.length,
+            metadata: actions.length ? await loadMigrationMetadata(grist) : metadata
+        };
+    }
+
+    // ========================================================================
     // LISTE DES MIGRATIONS
     // ========================================================================
     
@@ -928,6 +962,12 @@
             name: 'identity-probe-v8',
             description: 'Ajout de la sonde serveur pour associer automatiquement un compte Grist à Team',
             run: migrateToV8
+        },
+        {
+            version: 9,
+            name: 'weekly-sheet-created-at-v9',
+            description: 'Ajout de Feuilles.createdAt pour diagnostiquer les créations concurrentes',
+            run: migrateToV9
         }
     ];
 

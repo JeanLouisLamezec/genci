@@ -1278,16 +1278,10 @@ async function saveCraCellChange(input, dependencies) {
   }
 
   let sheetCreated = false;
+  let sheetReconciliation = null;
   
   if (matchingSheets.length === 1) {
     currentSheet = matchingSheets[0];
-  } else if (matchingSheets.length > 1) {
-    return {
-      ok: false,
-      action: 'blocked',
-      code: 'DUPLICATE_WEEKLY_SHEET',
-      sheetIds: matchingSheets.map(function(s) { return s.id; })
-    };
   } else if (typeof ensureWeeklySheet === 'function') {
     let ensured;
     try {
@@ -1318,6 +1312,10 @@ async function saveCraCellChange(input, dependencies) {
     }
     currentSheet = ensured.sheet;
     sheetCreated = Boolean(ensured.created);
+    sheetReconciliation = ensured.repaired ? {
+      removedSheetIds: ensured.removedSheetIds || [],
+      relinkedEntryIds: ensured.relinkedEntryIds || []
+    } : null;
   } else {
     return {
       ok: false,
@@ -1365,6 +1363,7 @@ async function saveCraCellChange(input, dependencies) {
       sheetId: currentSheet ? currentSheet.id : null,
       sheet: currentSheet || null,
       sheetCreated,
+      sheetReconciliation,
       fields: {},
       actionsExecuted: 0
     };
@@ -1392,7 +1391,9 @@ async function saveCraCellChange(input, dependencies) {
     try {
       const updateActions = [];
       const returnedFields = Object.assign({}, actionResult.fields);
-      if (!existingEntry.feuille) {
+      if (!existingEntry.feuille || (
+        sheetReconciliation && Number(existingEntry.feuille) !== Number(currentSheet.id)
+      )) {
         // Deux actions distinctes sont intentionnelles : la garde ACL vérifie
         // d'abord le rattachement à la feuille, puis l'édition des heures dans
         // le snapshot mis à jour. Cela reste autorisé au propriétaire et à
@@ -1477,6 +1478,7 @@ async function saveCraCellChange(input, dependencies) {
         sheetId: currentSheet.id,
         sheet: currentSheet,
         sheetCreated,
+        sheetReconciliation,
         fields: fieldsToCreate,
         actionsExecuted: 1
       };
@@ -1499,6 +1501,7 @@ async function saveCraCellChange(input, dependencies) {
     sheetId: currentSheet ? currentSheet.id : null,
     sheet: currentSheet || null,
     sheetCreated,
+    sheetReconciliation,
     fields: actionResult.fields,
     actionsExecuted: actionsExecuted
   };

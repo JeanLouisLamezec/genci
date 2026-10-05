@@ -1025,8 +1025,8 @@ describe('CRA — Mode ponctuel : saisie hors dates prévues (stateful)', () => 
       });
     });
     
-    describe('B3.11 — doublon de feuilles bloqué', () => {
-      test('deux feuilles pour même semaine bloquent', async () => {
+    describe('B3.11 — doublon de feuilles réconcilié', () => {
+      test('deux feuilles pour même semaine sont réconciliées avant la saisie', async () => {
         const dependencies = {
           tasks: [{ id: TASK_ID, projet: 1 }],
           projects: [{ id: 1, dateDebut: dateToTimestamp(PROJECT_START), dateFin: dateToTimestamp(PROJECT_END) }],
@@ -1047,7 +1047,16 @@ describe('CRA — Mode ponctuel : saisie hors dates prévues (stateful)', () => 
           ],
           dailyCapacities: [],
           team: [{ id: MEMBER_ID }],
-          grist: { docApi: { applyUserActions: jest.fn() } }
+          grist: { docApi: { applyUserActions: jest.fn().mockResolvedValue({ id: [999] }) } },
+          ensureWeeklySheet: jest.fn().mockResolvedValue({
+            success: true,
+            created: false,
+            repaired: true,
+            sheetId: 50,
+            sheet: { id: 50, membre: MEMBER_ID, semaine: dateToTimestamp('2026-07-27'), statut: 'brouillon' },
+            removedSheetIds: [51],
+            relinkedEntryIds: []
+          })
         };
         
         const result = await saveCraCellChange({
@@ -1057,9 +1066,12 @@ describe('CRA — Mode ponctuel : saisie hors dates prévues (stateful)', () => 
           hours: 4
         }, dependencies);
         
-        expect(result.ok).toBe(false);
-        expect(result.code).toBe('DUPLICATE_WEEKLY_SHEET');
-        expect(result.sheetIds).toEqual([50, 51]);
+        expect(result.ok).toBe(true);
+        expect(result.sheetId).toBe(50);
+        expect(result.sheetReconciliation).toEqual({
+          removedSheetIds: [51],
+          relinkedEntryIds: []
+        });
       });
     });
     

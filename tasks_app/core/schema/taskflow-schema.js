@@ -37,7 +37,7 @@
     }
 
     // Version courante du schéma
-    var SCHEMA_VERSION = 8;
+    var SCHEMA_VERSION = 9;
 
     // Ordre de création des tables (important pour les dépendances)
     var TABLE_ORDER = [
@@ -284,7 +284,8 @@
                 { id: 'soumisPar',        opts: refColumn('Team') },
                 { id: 'dateSoumission',   opts: dataColumn('DateTime') },
                 { id: 'revisionValidation', opts: dataColumn('Int') },
-                { id: 'motifCorrection',  opts: dataColumn('Text') }
+                { id: 'motifCorrection',  opts: dataColumn('Text') },
+                { id: 'createdAt',        opts: dataColumn('DateTime') }
             ]
         },
 

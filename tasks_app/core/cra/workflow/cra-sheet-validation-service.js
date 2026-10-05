@@ -32,6 +32,7 @@ const SERVICE_ERROR_CODES = {
   WORKFLOW_POSTCONDITION_FAILED: 'WORKFLOW_POSTCONDITION_FAILED',
   TIME_ENTRY_SCOPE_INCOMPLETE: 'TIME_ENTRY_SCOPE_INCOMPLETE',
   WEEKLY_SHEET_DUPLICATE: 'WEEKLY_SHEET_DUPLICATE',
+  WEEKLY_SHEET_DEDUPLICATION_FAILED: 'WEEKLY_SHEET_DEDUPLICATION_FAILED',
   WEEKLY_SHEET_CREATE_FAILED: 'WEEKLY_SHEET_CREATE_FAILED',
   WEEKLY_SHEET_POSTCONDITION_FAILED: 'WEEKLY_SHEET_POSTCONDITION_FAILED',
   WEEKLY_SHEET_INVALID_MEMBER: 'WEEKLY_SHEET_INVALID_MEMBER',
@@ -95,6 +96,15 @@ function validateTimestamp(nowUnixSeconds) {
   return { valid: true, value: check.value };
 }
 
+/**
+ * Les cellules Grist vides de type Reference/Date peuvent être sérialisées
+ * avec les sentinelles 0 ou '0'. Pour les métadonnées de workflow, elles
+ * ont la même signification que null.
+ */
+function isEmptyWorkflowMetadata(value) {
+  return value === null || value === undefined || value === '' || value === 0 || value === '0';
+}
+
 function columnarToRows(columnarData) {
   if (!columnarData || Array.isArray(columnarData)) return columnarData || [];
   const cols = Object.keys(columnarData);
@@ -109,6 +119,136 @@ function columnarToRows(columnarData) {
     rows.push(rec);
   }
   return rows;
+}
+
+const SHEET_STATUS_PRIORITY = {
+  brouillon: 1,
+  draft: 1,
+  rejete: 2,
+  rejected: 2,
+  soumis: 3,
+  submitted: 3,
+  valide: 4,
+  validated: 4,
+  correction_manager: 5,
+  manager_correction: 5
+};
+
+function numericValue(value, fallback) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : fallback;
+}
+
+function compareWeeklySheetCandidates(left, right) {
+  const leftStatus = String(left.statut || '').trim().toLowerCase();
+  const rightStatus = String(right.statut || '').trim().toLowerCase();
+  const statusDelta = (SHEET_STATUS_PRIORITY[rightStatus] || 0) - (SHEET_STATUS_PRIORITY[leftStatus] || 0);
+  if (statusDelta !== 0) return statusDelta;
+  const revisionDelta = numericValue(right.revisionValidation, 0) - numericValue(left.revisionValidation, 0);
+  if (revisionDelta !== 0) return revisionDelta;
+  const leftWorkflowDate = Math.max(numericValue(left.dateValidation, 0), numericValue(left.dateSoumission, 0));
+  const rightWorkflowDate = Math.max(numericValue(right.dateValidation, 0), numericValue(right.dateSoumission, 0));
+  if (rightWorkflowDate !== leftWorkflowDate) return rightWorkflowDate - leftWorkflowDate;
+  const leftCreatedAt = numericValue(left.createdAt, Number.POSITIVE_INFINITY);
+  const rightCreatedAt = numericValue(right.createdAt, Number.POSITIVE_INFINITY);
+  if (leftCreatedAt !== rightCreatedAt) return leftCreatedAt - rightCreatedAt;
+  return numericValue(left.id, Number.POSITIVE_INFINITY) - numericValue(right.id, Number.POSITIVE_INFINITY);
+}
+
+function selectCanonicalWeeklySheet(sheets) {
+  const candidates = (sheets || []).filter(function(sheet) {
+    return weeklySheet.normalizeMemberId(sheet && sheet.id) !== null;
+  });
+  return candidates.length ? candidates.slice().sort(compareWeeklySheetCandidates)[0] : null;
+}
+
+async function repairWeeklySheetDuplicates(params) {
+  const { grist, memberId, weekStartIso } = params || {};
+  const normalizedMemberId = weeklySheet.normalizeMemberId(memberId);
+  if (normalizedMemberId === null) {
+    return { success: false, code: SERVICE_ERROR_CODES.WEEKLY_SHEET_INVALID_MEMBER };
+  }
+  // La réparation est rare : elle relit la source de vérité au lieu du cache.
+  const allSheets = columnarToRows(await grist.docApi.fetchTable('Feuilles'));
+  const resolution = weeklySheet.resolveWeeklySheetState({
+    memberId: normalizedMemberId, weekStartIso, sheets: allSheets
+  });
+  if (resolution.status === 'FOUND') {
+    return {
+      success: true, repaired: false, sheet: resolution.sheet, sheetId: resolution.sheetId,
+      removedSheetIds: [], relinkedEntryIds: []
+    };
+  }
+  if (resolution.status !== 'DUPLICATE_WEEKLY_SHEET') {
+    return {
+      success: false, code: SERVICE_ERROR_CODES.WEEKLY_SHEET_DEDUPLICATION_FAILED,
+      error: 'NO_DUPLICATE_TO_REPAIR'
+    };
+  }
+
+  const canonicalSheet = selectCanonicalWeeklySheet(resolution.duplicates);
+  const canonicalSheetId = canonicalSheet && weeklySheet.normalizeMemberId(canonicalSheet.id);
+  if (canonicalSheetId === null) {
+    return {
+      success: false, code: SERVICE_ERROR_CODES.WEEKLY_SHEET_DEDUPLICATION_FAILED,
+      error: 'CANONICAL_SHEET_NOT_FOUND'
+    };
+  }
+
+  const duplicateSheets = resolution.duplicates.filter(function(sheet) {
+    return weeklySheet.normalizeMemberId(sheet.id) !== canonicalSheetId;
+  });
+  const removedSheetIds = duplicateSheets.map(function(sheet) {
+    return weeklySheet.normalizeMemberId(sheet.id);
+  });
+  const removedSheetIdSet = new Set(removedSheetIds);
+  const entries = columnarToRows(await grist.docApi.fetchTable('TimeEntries'));
+  const relinkedEntryIds = entries.filter(function(entry) {
+    return removedSheetIdSet.has(weeklySheet.normalizeMemberId(entry.feuille));
+  }).map(function(entry) {
+    return weeklySheet.normalizeMemberId(entry.id);
+  }).filter(function(entryId) { return entryId !== null; });
+
+  const actions = relinkedEntryIds.map(function(entryId) {
+    return ['UpdateRecord', 'TimeEntries', entryId, { feuille: canonicalSheetId }];
+  });
+  for (const duplicateSheetId of removedSheetIds) {
+    actions.push(['RemoveRecord', 'Feuilles', duplicateSheetId]);
+  }
+
+  let repairError = null;
+  try {
+    await grist.docApi.applyUserActions(actions);
+  } catch (error) {
+    // Une autre iframe peut avoir terminé la même réparation entre la lecture
+    // et l'écriture. La postcondition ci-dessous décide alors du résultat.
+    repairError = error;
+  }
+
+  const refreshedSheets = columnarToRows(await grist.docApi.fetchTable('Feuilles'));
+  const postResolution = weeklySheet.resolveWeeklySheetState({
+    memberId: normalizedMemberId, weekStartIso, sheets: refreshedSheets
+  });
+  if (postResolution.status !== 'FOUND') {
+    return {
+      success: false,
+      code: SERVICE_ERROR_CODES.WEEKLY_SHEET_DEDUPLICATION_FAILED,
+      error: 'DEDUPLICATION_POSTCONDITION_FAILED',
+      details: repairError && (repairError.message || String(repairError)),
+      duplicates: postResolution.duplicates || []
+    };
+  }
+
+  if (typeof console !== 'undefined' && typeof console.warn === 'function') {
+    console.warn('[CRA weekly sheet] Doublons consolidés', {
+      memberId: normalizedMemberId, weekStartIso, keptSheetId: postResolution.sheetId,
+      removedSheetIds, relinkedEntryIds
+    });
+  }
+  return {
+    success: true, repaired: true, sheet: postResolution.sheet, sheetId: postResolution.sheetId,
+    removedSheetIds, relinkedEntryIds
+  };
 }
 
 // ============================================================================
@@ -135,7 +275,15 @@ function columnarToRows(columnarData) {
  * @returns {Object} { success, created, sheet, sheetId, error, code }
  */
 async function ensureWeeklySheet(params) {
-  const { grist, memberId, weekStartIso, sheets, entries, createOnlyWhenEntriesExist = false } = params || {};
+  const {
+    grist,
+    memberId,
+    weekStartIso,
+    sheets,
+    entries,
+    createOnlyWhenEntriesExist = false,
+    nowUnixSeconds = Math.floor(Date.now() / 1000)
+  } = params || {};
 
   // 1. Valider les paramètres de base
   if (!grist || !grist.docApi || !grist.docApi.fetchTable || !grist.docApi.applyUserActions) {
@@ -193,7 +341,7 @@ async function ensureWeeklySheet(params) {
     }
 
     // 4. Résoudre l'état de la feuille
-    const resolution = weeklySheet.resolveWeeklySheetState({
+    let resolution = weeklySheet.resolveWeeklySheetState({
       memberId: normalizedMemberId,
       weekStartIso,
       sheets: allSheets
@@ -212,26 +360,66 @@ async function ensureWeeklySheet(params) {
     }
 
     if (resolution.status === 'DUPLICATE_WEEKLY_SHEET') {
-      // Doublon → échec bloquant
-      return {
-        success: false,
+      const repaired = await repairWeeklySheetDuplicates({
+        grist,
+        memberId: normalizedMemberId,
+        weekStartIso
+      });
+      if (!repaired.success) {
+        return Object.assign({ created: false }, repaired);
+      }
+      return Object.assign({
+        success: true,
         created: false,
-        sheet: null,
-        sheetId: null,
-        error: 'DUPLICATE_WEEKLY_SHEET',
-        code: SERVICE_ERROR_CODES.WEEKLY_SHEET_DUPLICATE,
-        duplicates: resolution.duplicates
-      };
+        error: null,
+        code: 'OK'
+      }, repaired);
     }
 
     if (resolution.status === 'CREATION_REQUIRED') {
+      // Le snapshot est suffisant pour la voie nominale. Avant une écriture,
+      // une unique relecture évite toutefois qu'un autre client ait créé la
+      // feuille entre-temps. Ce coût ne concerne donc que la création.
+      const freshSheetsData = await grist.docApi.fetchTable('Feuilles');
+      allSheets = columnarToRows(freshSheetsData);
+      resolution = weeklySheet.resolveWeeklySheetState({
+        memberId: normalizedMemberId,
+        weekStartIso,
+        sheets: allSheets
+      });
+
+      if (resolution.status === 'FOUND') {
+        return {
+          success: true,
+          created: false,
+          sheet: resolution.sheet,
+          sheetId: resolution.sheetId,
+          error: null,
+          code: 'OK'
+        };
+      }
+
+      if (resolution.status === 'DUPLICATE_WEEKLY_SHEET') {
+        const repaired = await repairWeeklySheetDuplicates({
+          grist,
+          memberId: normalizedMemberId,
+          weekStartIso
+        });
+        if (!repaired.success) return Object.assign({ created: false }, repaired);
+        return Object.assign({
+          success: true,
+          created: false,
+          error: null,
+          code: 'OK'
+        }, repaired);
+      }
+
       // 5. Vérifier si des entrées existent (si createOnlyWhenEntriesExist = true)
       if (createOnlyWhenEntriesExist) {
-        let allEntries = entries;
-        if (!allEntries) {
-          const entriesData = await grist.docApi.fetchTable('TimeEntries');
-          allEntries = columnarToRows(entriesData);
-        }
+        // Même principe : lors d'une création seulement, éviter de décider à
+        // partir d'un cache périmé qu'aucune entrée n'existe.
+        const entriesData = await grist.docApi.fetchTable('TimeEntries');
+        const allEntries = columnarToRows(entriesData);
 
         const memberWeekEntries = weeklySheet.findEntriesForMemberWeek({
           memberId: normalizedMemberId,
@@ -253,7 +441,10 @@ async function ensureWeeklySheet(params) {
       }
 
       // 6. Créer la feuille
-      const creationActions = weeklySheet.buildSheetCreationActions(resolution.creationFields);
+      const creationFields = Object.assign({}, resolution.creationFields, {
+        createdAt: nowUnixSeconds
+      });
+      const creationActions = weeklySheet.buildSheetCreationActions(creationFields);
       
       let addResult;
       try {
@@ -289,16 +480,18 @@ async function ensureWeeklySheet(params) {
       });
 
       if (postResolution.status === 'DUPLICATE_WEEKLY_SHEET') {
-        // Doublon détecté après création (concurrence inter-clients)
-        return {
-          success: false,
+        const repaired = await repairWeeklySheetDuplicates({
+          grist,
+          memberId: normalizedMemberId,
+          weekStartIso
+        });
+        if (!repaired.success) return Object.assign({ created: false }, repaired);
+        return Object.assign({
+          success: true,
           created: false,
-          sheet: null,
-          sheetId: null,
-          error: 'DUPLICATE_AFTER_CREATE',
-          code: SERVICE_ERROR_CODES.WEEKLY_SHEET_DUPLICATE,
-          duplicates: postResolution.duplicates
-        };
+          error: null,
+          code: 'OK'
+        }, repaired);
       }
 
       if (postResolution.status !== 'FOUND') {
@@ -345,18 +538,20 @@ async function ensureWeeklySheet(params) {
 // SNAPSHOT
 // ============================================================================
 
-async function loadWorkflowSnapshot(grist, sheetId) {
+async function loadWorkflowSnapshot(grist, sheetId, options = {}) {
+  const includeEntries = options.includeEntries !== false;
+  const includeCapacities = options.includeCapacities !== false;
   const [teamData, sheetsData, entriesData, capacitiesData] = await Promise.all([
     grist.docApi.fetchTable('Team'),
     grist.docApi.fetchTable('Feuilles'),
-    grist.docApi.fetchTable('TimeEntries'),
-    grist.docApi.fetchTable('MemberDailyCapacities')
+    includeEntries ? grist.docApi.fetchTable('TimeEntries') : Promise.resolve(null),
+    includeCapacities ? grist.docApi.fetchTable('MemberDailyCapacities') : Promise.resolve(null)
   ]);
 
   const team = columnarToRows(teamData);
   const sheets = columnarToRows(sheetsData);
-  const allEntries = columnarToRows(entriesData);
-  const allCapacities = columnarToRows(capacitiesData);
+  const allEntries = entriesData ? columnarToRows(entriesData) : [];
+  const allCapacities = capacitiesData ? columnarToRows(capacitiesData) : [];
 
   const normalizedSheetId = workflow.normalizeMemberId(sheetId);
   const sheet = sheets.find(s => workflow.normalizeMemberId(s.id) === normalizedSheetId) || null;
@@ -734,12 +929,13 @@ async function executeTransition(params) {
     validateFunctional,
     verifyPostWrite,
     transitionName,
+    snapshotOptions = {},
     userContext = null
   } = params;
 
   try {
     // === SNAPSHOT 1 ===
-    const snapshot1 = await loadWorkflowSnapshot(grist, sheetId);
+    const snapshot1 = await loadWorkflowSnapshot(grist, sheetId, snapshotOptions);
 
     // === VALIDATION 1 (si applicable) ===
     let validation1 = null;
@@ -786,7 +982,7 @@ async function executeTransition(params) {
     }
 
     // === SNAPSHOT 2 ===
-    const snapshot2 = await loadWorkflowSnapshot(grist, sheetId);
+    const snapshot2 = await loadWorkflowSnapshot(grist, sheetId, snapshotOptions);
 
     // === COMPARAISON ET RE-CONSTRUCTION ===
     let finalDecision = decision1;
@@ -846,7 +1042,7 @@ async function executeTransition(params) {
     await applyWorkflowActions(grist, finalDecision.actions);
 
     // === SNAPSHOT 3 (POST-ÉCRITURE) ===
-    const snapshot3 = await loadWorkflowSnapshot(grist, sheetId);
+    const snapshot3 = await loadWorkflowSnapshot(grist, sheetId, snapshotOptions);
 
     // === VÉRIFICATION ===
     const verifyResult = await verifyPostWrite(snapshot3, finalDecision, finalValidation, userContext);
@@ -998,6 +1194,7 @@ async function withdrawSheet(params) {
     sheetId,
     actorId: validation.actorId,
     transitionName: 'withdraw',
+    snapshotOptions: { includeEntries: false, includeCapacities: false },
     userContext: { actorMemberId, actorIsAdmin },
     buildDecision: (snapshot, context) => {
       return workflow.buildWithdrawActions({
@@ -1010,13 +1207,13 @@ async function withdrawSheet(params) {
     validateFunctional: null,
     verifyPostWrite: (snapshot, decision) => {
       const sheet = snapshot.sheet;
-      if (sheet.responsableValidation != null) {
+      if (!isEmptyWorkflowMetadata(sheet.responsableValidation)) {
         return { valid: false, reason: 'responsableValidation non effacé', actual: sheet };
       }
-      if (sheet.soumisPar != null) {
+      if (!isEmptyWorkflowMetadata(sheet.soumisPar)) {
         return { valid: false, reason: 'soumisPar non effacé', actual: sheet };
       }
-      if (sheet.dateSoumission != null) {
+      if (!isEmptyWorkflowMetadata(sheet.dateSoumission)) {
         return { valid: false, reason: 'dateSoumission non effacée', actual: sheet };
       }
       return verifyTransitionResult(grist, snapshot.sheet.id, 'brouillon');
@@ -1417,6 +1614,8 @@ module.exports = {
   revalidateSheet,
   updateManagerActual,
   ensureWeeklySheet,
+  repairWeeklySheetDuplicates,
+  selectCanonicalWeeklySheet,
   loadWorkflowSnapshot,
   verifyTransitionResult,
   buildFingerprint,

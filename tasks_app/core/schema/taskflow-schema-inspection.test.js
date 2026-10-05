@@ -7,14 +7,14 @@
  * 3. Ne pas signaler les colonnes légitimes finissant par un chiffre
  */
 
-describe('TaskFlow Schema v8', () => {
+describe('TaskFlow Schema v9', () => {
     
     // Charger le schéma
     require('./taskflow-schema.js');
     const SCHEMA = global.TASKFLOW_SCHEMA;
     
-    test('TASKFLOW_SCHEMA.version === 8 et les tables techniques sont déclarées', () => {
-        expect(SCHEMA.version).toBe(8);
+    test('TASKFLOW_SCHEMA.version === 9 et les tables techniques sont déclarées', () => {
+        expect(SCHEMA.version).toBe(9);
         const teamColumns = SCHEMA.tables.Team.columns;
         const adminColumn = teamColumns.find(column => column.id === 'estAdmin');
         expect(adminColumn).toBeDefined();
@@ -46,6 +46,7 @@ describe('TaskFlow Schema v8', () => {
         expect(columnIds).toContain('dateSoumission');
         expect(columnIds).toContain('revisionValidation');
         expect(columnIds).toContain('motifCorrection');
+        expect(columnIds).toContain('createdAt');
         
         // Vérifier que les anciennes colonnes sont toujours là
         expect(columnIds).toContain('membre');

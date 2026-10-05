@@ -12,8 +12,8 @@
 <script src="core/cra/loader/cra-data-loader.js"></script>
 <script src="core/generated/taskflow-planning-browser.js?v=20260827-retro"></script>
 
-<script src="core/generated/taskflow-cra-browser.js?v=20260830-admin"></script>
-<script src="core/cra/workflow/cra-workflow-integration.js?v=20260831-admin-edit"></script>
+<script src="core/generated/taskflow-cra-browser.js?v=20261005-submit-batching"></script>
+<script src="core/cra/workflow/cra-workflow-integration.js?v=20261005-submit-batching"></script>
 <script src="core/cra/export/cra-export-model.js"></script>
 <script src="core/cra/export/cra-export-pdf.js"></script>
 <script src="core/cra/export/cra-export-csv.js"></script>
@@ -3815,7 +3815,7 @@ if (typeof globalThis !== 'undefined') {
     }
 
     // Version courante du schéma
-    var SCHEMA_VERSION = 8;
+    var SCHEMA_VERSION = 9;
 
     // Ordre de création des tables (important pour les dépendances)
     var TABLE_ORDER = [
@@ -4062,7 +4062,8 @@ if (typeof globalThis !== 'undefined') {
                 { id: 'soumisPar',        opts: refColumn('Team') },
                 { id: 'dateSoumission',   opts: dataColumn('DateTime') },
                 { id: 'revisionValidation', opts: dataColumn('Int') },
-                { id: 'motifCorrection',  opts: dataColumn('Text') }
+                { id: 'motifCorrection',  opts: dataColumn('Text') },
+                { id: 'createdAt',        opts: dataColumn('DateTime') }
             ]
         },
 
@@ -5170,6 +5171,7 @@ if (typeof globalThis !== 'undefined') {
  * Version 6: Marqueur d'administration fonctionnelle Team.estAdmin
  * Version 7: Filtres personnels persistants
  * Version 8: Sonde serveur pour l'association automatique des comptes Grist
+ * Version 9: Horodatage de création des feuilles hebdomadaires
  * ============================================================================ */
 
 (function (global) {
@@ -6038,6 +6040,39 @@ if (typeof globalThis !== 'undefined') {
     }
 
     // ========================================================================
+    // MIGRATION V8 → V9 — Traçabilité de création des feuilles
+    // ========================================================================
+
+    async function migrateToV9(grist, metadata) {
+        log('Migration v8 → v9: weekly-sheet-created-at-v9');
+
+        var docApi = getDocApi(grist);
+        var existingTables = metadata.tablesByName || {};
+        var existingColumns = metadata.columnsByKey || {};
+        var actions = [];
+
+        if (!existingTables.Feuilles) {
+            throw new Error('WEEKLY_SHEET_TABLE_MISSING: La table Feuilles est requise');
+        }
+
+        if (!existingColumns['Feuilles.createdAt']) {
+            actions.push(['AddColumn', 'Feuilles', 'createdAt', {
+                type: 'DateTime',
+                isFormula: false
+            }]);
+        }
+
+        if (actions.length > 0) await docApi.applyUserActions(actions);
+
+        return {
+            success: true,
+            message: 'Migration v9 appliquée',
+            actionsExecuted: actions.length,
+            metadata: actions.length ? await loadMigrationMetadata(grist) : metadata
+        };
+    }
+
+    // ========================================================================
     // LISTE DES MIGRATIONS
     // ========================================================================
     
@@ -6083,6 +6118,12 @@ if (typeof globalThis !== 'undefined') {
             name: 'identity-probe-v8',
             description: 'Ajout de la sonde serveur pour associer automatiquement un compte Grist à Team',
             run: migrateToV8
+        },
+        {
+            version: 9,
+            name: 'weekly-sheet-created-at-v9',
+            description: 'Ajout de Feuilles.createdAt pour diagnostiquer les créations concurrentes',
+            run: migrateToV9
         }
     ];
 
@@ -9552,6 +9593,14 @@ async function setCell(taskId, dayMs, personId, qtyStr) {
     }
   }
   
+  // Une consolidation a supprimé des feuilles concurrentes et réaffecté des
+  // saisies. Elle est rare : recharger la source de vérité évite de conserver
+  // dans l'interface une feuille qui vient d'être supprimée.
+  if (result.sheetReconciliation) {
+    await reloadCra('weekly-sheet-deduplicated', { immediate: true });
+    return;
+  }
+
   // METTRE À JOUR L'ÉTAT LOCAL APRÈS SUCCÈS
   if (S.alone) {
     // Mode démo : mise à jour locale seulement
@@ -10772,6 +10821,13 @@ function registerGristListenersOnce() {
   craGristListenersRegistered = true;
   
   grist.onRecords(() => {
+    // Les transitions du workflow déclenchent leur propre rechargement une
+    // fois la vérification post-écriture terminée. Ne pas lancer un second
+    // chargement complet (dont TimeEntries) pendant cette fenêtre.
+    if (S.workflowBusy) {
+      return;
+    }
+
     CraDataLoader.requestCraReload({
       reason: 'grist.onRecords',
       immediate: false,
@@ -10801,6 +10857,10 @@ async function initGrist() {
     TF.readOnlyBanner();
 
     const permissionRuntime = await TF.createPermissionRuntime(grist, {
+      // Le contrôle d'une écriture relit toujours les tables utiles avec
+      // force=true. Au démarrage, seule l'identité est nécessaire : éviter
+      // de charger TimeEntries une première fois pour le runtime de droits.
+      initialPermissionTables: [],
       onIdentity: identity => {
         if (!identity.identified) console.warn('[CRA permissions]', identity.status);
       },

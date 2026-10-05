@@ -485,6 +485,23 @@ describe('CRA Sheet Workflow - Autorisations : Retrait', () => {
       expect(result.code).toBe('SHEET_ALREADY_VALIDATED');
     });
 
+    it('devrait accepter les sentinelles Grist vides de validation', () => {
+      const context = {
+        actorMemberId: 2,
+        sheet: {
+          id: 1, membre: 2, semaine: 1704672000, statut: 'soumis',
+          validePar: 0, dateValidation: 0
+        },
+        sheets: [{
+          id: 1, membre: 2, semaine: 1704672000, statut: 'soumis',
+          validePar: 0, dateValidation: 0
+        }]
+      };
+      const result = workflow.canWithdrawSheet(context);
+      expect(result.can).toBe(true);
+      expect(result.code).toBe('OK');
+    });
+
     it('devrait refuser si feuille absente de la collection', () => {
       const context = {
         actorMemberId: 2,

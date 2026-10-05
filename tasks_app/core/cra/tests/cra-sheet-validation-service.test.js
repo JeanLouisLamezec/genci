@@ -278,6 +278,22 @@ describe('CRA Sheet Validation Service - Retrait', () => {
     expect(sheets.statut[sheetIndex]).toBe('brouillon');
   });
 
+  it('devrait retirer une feuille soumise lorsque Grist renvoie les sentinelles vides', async () => {
+    const data = createBaseData({ sheetStatut: 'soumis' });
+    data.Feuilles[0].validePar = 0;
+    data.Feuilles[0].dateValidation = 0;
+    const grist = createMockGristWithData(data);
+
+    const result = await service.withdrawSheet({
+      grist,
+      actorMemberId: 2,
+      sheetId: 1
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.code).toBe('OK');
+  });
+
   it('devrait refuser si feuille validée', async () => {
     const data = createBaseData({ sheetStatut: 'soumis' });
     data.Feuilles[0].validePar = 1;

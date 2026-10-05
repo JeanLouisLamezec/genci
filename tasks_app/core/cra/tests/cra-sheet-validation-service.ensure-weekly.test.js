@@ -37,59 +37,51 @@ function createMockGrist(options = {}) {
     addRecordError = null
   } = options;
 
-  let sheetsData = [...sheets];
-  let entriesData = [...entries];
+  let sheetsData = sheets.map(sheet => ({ ...sheet }));
+  let entriesData = entries.map(entry => ({ ...entry }));
   let nextId = 1000;
+  const appliedActions = [];
+
+  function toColumnar(rows) {
+    const columnNames = new Set(['id']);
+    rows.forEach(row => Object.keys(row).forEach(key => columnNames.add(key)));
+    const data = {};
+    columnNames.forEach(columnName => {
+      data[columnName] = rows.map(row => row[columnName]);
+    });
+    return data;
+  }
 
   return {
     docApi: {
       fetchTable: async (tableName) => {
-        if (tableName === 'Feuilles') {
-          return {
-            id: sheetsData.map(s => s.id),
-            membre: sheetsData.map(s => s.membre),
-            semaine: sheetsData.map(s => s.semaine),
-            statut: sheetsData.map(s => s.statut),
-            revisionValidation: sheetsData.map(s => s.revisionValidation)
-          };
-        }
-        if (tableName === 'TimeEntries') {
-          return {
-            id: entriesData.map(e => e.id),
-            membre: entriesData.map(e => e.membre),
-            date: entriesData.map(e => e.date),
-            heures: entriesData.map(e => e.heures),
-            feuille: entriesData.map(e => e.feuille)
-          };
-        }
+        if (tableName === 'Feuilles') return toColumnar(sheetsData);
+        if (tableName === 'TimeEntries') return toColumnar(entriesData);
         return {};
       },
       applyUserActions: async (actions) => {
-        if (addRecordError) {
-          throw new Error(addRecordError);
-        }
-
+        if (addRecordError) throw new Error(addRecordError);
+        const createdIds = [];
         for (const action of actions) {
           const [type, table, id, fields] = action;
+          appliedActions.push(action);
           if (type === 'AddRecord' && table === 'Feuilles') {
             const newId = addRecordResult?.id ? addRecordResult.id[0] : nextId++;
-            const newSheet = {
-              id: newId,
-              ...fields
-            };
-            sheetsData.push(newSheet);
-            if (addRecordResult) {
-              return { id: [newId] };
-            }
-            return { id: [newId] };
+            sheetsData.push({ id: newId, ...fields });
+            createdIds.push(newId);
+          } else if (type === 'UpdateRecord' && table === 'TimeEntries') {
+            const entry = entriesData.find(item => item.id === id);
+            if (entry) Object.assign(entry, fields);
+          } else if (type === 'RemoveRecord' && table === 'Feuilles') {
+            sheetsData = sheetsData.filter(sheet => sheet.id !== id);
           }
         }
-        return addRecordResult || {};
+        return createdIds.length ? { id: createdIds } : {};
       }
-    }
+    },
+    state: () => ({ sheets: sheetsData, entries: entriesData, appliedActions })
   };
 }
-
 // ============================================================================
 // TESTS : ensureWeeklySheet
 // ============================================================================
@@ -269,37 +261,70 @@ describe('ensureWeeklySheet', () => {
     expect(result.code).toBe(SERVICE_ERROR_CODES.WEEKLY_SHEET_POSTCONDITION_FAILED);
   });
 
-  // Test 8 : Postcondition avec deux feuilles (doublon)
-  test('devrait échouer en cas de doublon détecté après création', async () => {
-    // Simuler un doublon créé par un autre client
-    const grist = {
-      docApi: {
-        fetchTable: async (tableName) => {
-          if (tableName === 'Feuilles') {
-            return {
-              id: [100, 101],
-              membre: [20, 20],
-              semaine: [1753056000, 1753056000],
-              statut: ['brouillon', 'brouillon']
-            };
-          }
-          return {};
-        },
-        applyUserActions: async () => ({ id: [100] })
-      }
-    };
+  // Test 8 : un doublon est consolidé selon le statut le plus protecteur
+  test('consolide un brouillon concurrent vers la feuille validée et rattache ses entrées', async () => {
+    const sheets = [
+      { id: 100, membre: 20, semaine: 1753056000, statut: 'brouillon', createdAt: 200 },
+      { id: 101, membre: 20, semaine: 1753056000, statut: 'valide', createdAt: 100 }
+    ];
+    const entries = [{ id: 501, membre: 20, date: 1753056000, feuille: 100 }];
+    const grist = createMockGrist({ sheets, entries });
 
     const result = await ensureWeeklySheet({
       grist,
       memberId: 20,
-      weekStartIso: '2025-07-21'
+      weekStartIso: '2025-07-21',
+      sheets
     });
 
-    expect(result.success).toBe(false);
+    expect(result.success).toBe(true);
     expect(result.created).toBe(false);
-    expect(result.error).toBe('DUPLICATE_WEEKLY_SHEET');
-    expect(result.code).toBe(SERVICE_ERROR_CODES.WEEKLY_SHEET_DUPLICATE);
-    expect(result.duplicates).toHaveLength(2);
+    expect(result.repaired).toBe(true);
+    expect(result.sheetId).toBe(101);
+    expect(result.removedSheetIds).toEqual([100]);
+    expect(grist.state().sheets).toEqual([expect.objectContaining({ id: 101, statut: 'valide' })]);
+    expect(grist.state().entries[0].feuille).toBe(101);
+  });
+
+  test('préserve correction_manager comme statut prioritaire lors de la consolidation', async () => {
+    const sheets = [
+      { id: 100, membre: 20, semaine: 1753056000, statut: 'valide', createdAt: 100 },
+      { id: 101, membre: 20, semaine: 1753056000, statut: 'correction_manager', createdAt: 200 }
+    ];
+    const grist = createMockGrist({ sheets });
+
+    const result = await ensureWeeklySheet({
+      grist,
+      memberId: 20,
+      weekStartIso: '2025-07-21',
+      sheets
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.repaired).toBe(true);
+    expect(result.sheetId).toBe(101);
+    expect(grist.state().sheets).toEqual([
+      expect.objectContaining({ id: 101, statut: 'correction_manager' })
+    ]);
+  });
+
+  test('relit Feuilles avant création afin de ne pas créer un doublon sur cache périmé', async () => {
+    const concurrentSheet = {
+      id: 101, membre: 20, semaine: 1753056000, statut: 'brouillon', createdAt: 50
+    };
+    const grist = createMockGrist({ sheets: [concurrentSheet] });
+
+    const result = await ensureWeeklySheet({
+      grist,
+      memberId: 20,
+      weekStartIso: '2025-07-21',
+      sheets: []
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.created).toBe(false);
+    expect(result.sheetId).toBe(101);
+    expect(grist.state().appliedActions).toHaveLength(0);
   });
 
   // Test 9 : Verrou libéré après succès

@@ -480,8 +480,15 @@
       throw new Error('CraWorkflowIntegration non configuré');
     }
     
-    // Verrouiller
+    // Verrouiller la totalité de l'orchestration. Les écritures préparatoires
+    // (création/consolidation de feuille et rattachement des saisies) génèrent
+    // aussi des événements Grist : le listener UI ne doit pas recharger tout
+    // TimeEntries entre ces étapes. L'adaptateur maintient ce verrou jusqu'au
+    // rechargement final après la soumission.
     submitCurrentWeekPending = true;
+    if (typeof config.setBusy === 'function') {
+      config.setBusy(true);
+    }
     
     try {
       const state = config.getState();
@@ -506,24 +513,6 @@
         return { success: false, code: 'NOT_SHEET_OWNER' };
       }
       
-      // LOG DE DIAGNOSTIC v20260726-4
-      console.info('[CRA submit v20260726-4]', {
-        actorMemberId: actorMemberId,
-        targetMemberId: requestedMemberId,
-        weekStartRaw: state.weekStart,
-        weekStartLocal: new Date(state.weekStart).toString(),
-        weekStartIso: getWeekStartIso(state.weekStart),
-        entryCount: state.entries ? state.entries.length : 0,
-        memberEntries: (state.entries || [])
-          .filter(entry => Number(entry.membre) === Number(requestedMemberId))
-          .map(entry => ({
-            id: entry.id,
-            date: entry.date,
-            weekIso: getWeekStartIso(entry.date),
-            feuille: entry.feuille
-          }))
-      });
-      
       // CORRECTION : Calculer le lundi canonique avec la date locale, pas UTC
       const mondayMs = mondayOf(state.weekStart);
       const mondayIso = localDateIso(mondayMs);
@@ -535,8 +524,35 @@
       const sheetResult = resolveMemberSheet(state, requestedMemberId);
       
       if (sheetResult.status === 'duplicate') {
-        if (config.notify) config.notify('Plusieurs feuilles existent pour cette semaine', 'error');
-        return { success: false, code: 'DUPLICATE_WEEKLY_SHEET' };
+        // Cas exceptionnel : la consolidation relit Feuilles, conserve le
+        // statut métier le plus protecteur puis rattache les saisies avant de
+        // supprimer les concurrents. La voie normale ne passe jamais ici.
+        if (!config.taskFlowCra || !config.taskFlowCra.service || !config.taskFlowCra.service.ensureWeeklySheet) {
+          if (config.notify) config.notify('Service de réparation de feuille indisponible', 'error');
+          return { success: false, code: 'SERVICE_UNAVAILABLE' };
+        }
+        try {
+          const repairedSheetResult = await config.taskFlowCra.service.ensureWeeklySheet({
+            grist: config.grist,
+            memberId: requestedMemberId,
+            weekStartIso: mondayIso,
+            sheets: state.feuilles,
+            entries: state.entries,
+            createOnlyWhenEntriesExist: false
+          });
+          if (!repairedSheetResult.success || !repairedSheetResult.sheetId) {
+            if (config.notify) config.notify('Réparation de la feuille impossible', 'error');
+            return {
+              success: false,
+              code: repairedSheetResult.code || 'WEEKLY_SHEET_DEDUPLICATION_FAILED'
+            };
+          }
+          sheetId = repairedSheetResult.sheetId;
+        } catch (e) {
+          console.error('[CRA] Erreur de consolidation de feuille:', e);
+          if (config.notify) config.notify('Réparation de la feuille impossible', 'error');
+          return { success: false, code: 'WEEKLY_SHEET_DEDUPLICATION_FAILED' };
+        }
       }
       
       // 2. Si aucune feuille mais des entrées existent, créer la feuille
@@ -576,11 +592,6 @@
             }
             
             sheetId = weeklySheetResult.sheetId;
-            
-            // Recharger les données pour avoir la feuille à jour
-            if (typeof config.reload === 'function') {
-              await config.reload({ reason: 'sheet-created', immediate: true });
-            }
           } catch (e) {
             console.error('[CRA] Erreur ensureWeeklySheet:', e);
             if (config.notify) config.notify('Erreur lors de la création de la feuille', 'error');
@@ -590,7 +601,7 @@
           if (config.notify) config.notify('Service ensureWeeklySheet indisponible', 'error');
           return { success: false, code: 'SERVICE_UNAVAILABLE' };
         }
-      } else {
+      } else if (sheetResult.status === 'found') {
         sheetId = sheetResult.sheet.id;
       }
       
@@ -614,13 +625,10 @@
               { feuille: sheetId }
             ]);
             
-            // Appliquer les actions
+            // Appliquer les actions. Le service de soumission relit ensuite un
+            // instantané frais avant de valider, puis l'adaptateur déclenche le
+            // seul rechargement UI nécessaire après la transition.
             await config.grist.docApi.applyUserActions(linkActions);
-            
-            // Recharger pour avoir les données à jour
-            if (typeof config.reload === 'function') {
-              await config.reload({ reason: 'entries-linked', immediate: true });
-            }
           }
         } catch (e) {
           console.error('[CRA] Erreur rattachement entrées:', e);
@@ -634,6 +642,9 @@
     } finally {
       // CORRECTION : Déverrouiller dans tous les cas
       submitCurrentWeekPending = false;
+      if (typeof config.setBusy === 'function') {
+        config.setBusy(false);
+      }
     }
   }
   
@@ -665,12 +676,47 @@
       return { success: false, code: 'NOT_SHEET_OWNER' };
     }
 
-    const sheetResult = resolveMemberSheet(state, requestedMemberId);
+    let sheetResult = resolveMemberSheet(state, requestedMemberId);
+
+    if (sheetResult.status === 'duplicate') {
+      const ensureWeeklySheet = config.taskFlowCra?.service?.ensureWeeklySheet;
+      if (typeof ensureWeeklySheet !== 'function') {
+        if (config.notify) config.notify('Service de réparation de feuille indisponible', 'error');
+        return { success: false, code: 'SERVICE_UNAVAILABLE' };
+      }
+
+      try {
+        const repaired = await ensureWeeklySheet({
+          grist: config.grist,
+          memberId: requestedMemberId,
+          weekStartIso: getWeekStartIso(state.weekStart),
+          sheets: state.feuilles,
+          entries: state.entries,
+          createOnlyWhenEntriesExist: false
+        });
+        if (!repaired.success || !repaired.sheetId) {
+          if (config.notify) config.notify('Réparation de la feuille impossible', 'error');
+          return {
+            success: false,
+            code: repaired.code || 'WEEKLY_SHEET_DEDUPLICATION_FAILED'
+          };
+        }
+        sheetResult = { status: 'found', sheet: { id: repaired.sheetId } };
+        if (typeof config.reload === 'function') {
+          await config.reload({ reason: 'weekly-sheet-deduplicated', immediate: true });
+        }
+      } catch (error) {
+        console.error('[CRA] Erreur de consolidation de feuille:', error);
+        if (config.notify) config.notify('Réparation de la feuille impossible', 'error');
+        return { success: false, code: 'WEEKLY_SHEET_DEDUPLICATION_FAILED' };
+      }
+    }
+
     if (sheetResult.status !== 'found' || !sheetResult.sheet) {
       if (config.notify) config.notify('Aucune feuille trouvée', 'error');
       return { success: false, code: 'NO_SHEET' };
     }
-    
+
     return await adapter.withdraw(sheetResult.sheet.id);
   }
   

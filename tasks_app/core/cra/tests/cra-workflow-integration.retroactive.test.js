@@ -41,6 +41,76 @@ describe('CraWorkflowIntegration - régularisation rétroactive', () => {
     expect(adapter.withdraw).toHaveBeenCalledWith(50);
   });
 
+  test('consolide un doublon avant de soumettre la feuille canonique', async () => {
+    jest.resetModules();
+    delete global.CraWorkflowIntegration;
+    require('../workflow/cra-workflow-integration.js');
+
+    const mondaySeconds = Math.floor(new Date(2026, 7, 31, 12).getTime() / 1000);
+    const adapter = { submit: jest.fn(async () => ({ success: true })) };
+    const ensureWeeklySheet = jest.fn(async () => ({
+      success: true, repaired: true, sheetId: 51,
+      sheet: { id: 51, membre: 2, semaine: mondaySeconds, statut: 'brouillon' }
+    }));
+
+    global.CraWorkflowIntegration.configure({
+      grist: { docApi: { applyUserActions: jest.fn() } },
+      taskFlowCra: { service: { ensureWeeklySheet }, createUiAdapter: jest.fn(() => adapter) },
+      getState: () => ({
+        currentUserMemberId: 2,
+        currentUserActor: { isAdmin: false },
+        weekStart: mondaySeconds,
+        feuilles: [
+          { id: 50, membre: 2, semaine: mondaySeconds, statut: 'brouillon' },
+          { id: 51, membre: 2, semaine: mondaySeconds, statut: 'brouillon' }
+        ],
+        entries: []
+      }),
+      reload: jest.fn(async () => {})
+    });
+
+    await expect(global.CraWorkflowIntegration.submitCurrentWeek(2))
+      .resolves.toMatchObject({ success: true });
+    expect(ensureWeeklySheet).toHaveBeenCalledWith(expect.objectContaining({
+      memberId: 2, weekStartIso: '2026-08-31'
+    }));
+    expect(adapter.submit).toHaveBeenCalledWith(51);
+  });
+
+  test('consolide un doublon avant de retirer la soumission', async () => {
+    jest.resetModules();
+    delete global.CraWorkflowIntegration;
+    require('../workflow/cra-workflow-integration.js');
+
+    const mondaySeconds = Math.floor(new Date(2026, 7, 31, 12).getTime() / 1000);
+    const adapter = { withdraw: jest.fn(async () => ({ success: true })) };
+    const ensureWeeklySheet = jest.fn(async () => ({
+      success: true, repaired: true, sheetId: 51
+    }));
+
+    global.CraWorkflowIntegration.configure({
+      grist: { docApi: { applyUserActions: jest.fn() } },
+      taskFlowCra: { service: { ensureWeeklySheet }, createUiAdapter: jest.fn(() => adapter) },
+      getState: () => ({
+        currentUserMemberId: 2,
+        currentUserActor: { isAdmin: false },
+        weekStart: mondaySeconds,
+        feuilles: [
+          { id: 50, membre: 2, semaine: mondaySeconds, statut: 'soumis' },
+          { id: 51, membre: 2, semaine: mondaySeconds, statut: 'brouillon' }
+        ],
+        entries: []
+      }),
+      reload: jest.fn(async () => {})
+    });
+
+    await expect(global.CraWorkflowIntegration.withdrawCurrentWeek(2))
+      .resolves.toMatchObject({ success: true });
+    expect(ensureWeeklySheet).toHaveBeenCalledWith(expect.objectContaining({
+      memberId: 2, weekStartIso: '2026-08-31'
+    }));
+    expect(adapter.withdraw).toHaveBeenCalledWith(51);
+  });
   test('un non-admin ne peut pas piloter directement la feuille d’un autre membre', async () => {
     jest.resetModules();
     delete global.CraWorkflowIntegration;
