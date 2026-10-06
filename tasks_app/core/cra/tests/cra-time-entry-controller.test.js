@@ -1109,6 +1109,16 @@ describe('CRA Time Entry Controller', () => {
       const entry = { heures: null, heuresPrevues: 0 };
       expect(CRAController.effectiveDisplayedHours(entry)).toBe(0);
     });
+
+    test('masque une proposition strictement inférieure à 30 minutes', () => {
+      const entry = { heures: null, heuresPrevues: 0.22 };
+      expect(CRAController.effectiveDisplayedHours(entry)).toBe(0);
+    });
+
+    test('ramène aussi une saisie inférieure à 30 minutes à zéro', () => {
+      const entry = { heures: 0.22, heuresPrevues: 0.22 };
+      expect(CRAController.effectiveDisplayedHours(entry)).toBe(0);
+    });
   });
   
   describe('isPrefilledFromPlanning (PHASE 3)', () => {
@@ -1129,6 +1139,11 @@ describe('CRA Time Entry Controller', () => {
     
     test('retourne false quand heuresPrevues = 0', () => {
       const entry = { heures: null, heuresPrevues: 0 };
+      expect(CRAController.isPrefilledFromPlanning(entry)).toBe(false);
+    });
+
+    test('retourne false pour une proposition sous 30 minutes', () => {
+      const entry = { heures: null, heuresPrevues: 0.22 };
       expect(CRAController.isPrefilledFromPlanning(entry)).toBe(false);
     });
     
@@ -1174,6 +1189,26 @@ describe('CRA Time Entry Controller', () => {
       const patch = CRAController.buildSubmissionEntryPatch(entry, 50);
       
       expect(patch.heuresPrevues).toBeUndefined();
+    });
+
+    test('matérialise zéro pour une proposition sous 30 minutes', () => {
+      const entry = { id: 42, heures: null, heuresPrevues: 0.22, feuille: null };
+      const patch = CRAController.buildSubmissionEntryPatch(entry, 50);
+
+      expect(patch.heures).toBe(0);
+      expect(patch.feuille).toBe(50);
+    });
+
+    test('ramène une saisie utilisateur sous 30 minutes à zéro', () => {
+      const result = CRAController.determineEntryAction(
+        { id: 42, heures: 1 },
+        0.22,
+        null,
+        null,
+        true
+      );
+
+      expect(result.fields).toEqual({ heures: 0 });
     });
     
     test('ne modifie pas affectation, date, etc.', () => {
@@ -1229,6 +1264,17 @@ describe('CRA Time Entry Controller', () => {
       expect(state.displayedHours).toBe(2);
       expect(state.hasDisplayValue).toBe(true);
       expect(state.hasExplicitActual).toBe(true);
+      expect(state.isPrefilled).toBe(false);
+    });
+
+    test('affiche zéro pour une proposition sous 30 minutes sans en faire un réalisé', () => {
+      const state = CRAController.buildCellDisplayState([{ heures: null, heuresPrevues: 0.22 }]);
+
+      expect(state.actualHours).toBe(0);
+      expect(state.plannedHours).toBe(0);
+      expect(state.displayedHours).toBe(0);
+      expect(state.hasDisplayValue).toBe(true);
+      expect(state.hasExplicitActual).toBe(false);
       expect(state.isPrefilled).toBe(false);
     });
     

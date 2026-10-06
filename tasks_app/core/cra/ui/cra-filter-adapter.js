@@ -107,6 +107,13 @@
     });
 
     return (tasks || []).filter(function(task) {
+      // Un jalon est un repère de planning, et non une activité à saisir.
+      // Ne jamais le proposer dans une feuille de temps, même s'il est
+      // explicitement ciblé par un filtre ou une affectation historique.
+      if (String((task && task.type) || '').trim().toLowerCase() === 'jalon') {
+        return false;
+      }
+
       var taskId = String(task.id);
       var projectId = task.projet == null ? null : String(task.projet);
 

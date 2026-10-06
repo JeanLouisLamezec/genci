@@ -74,6 +74,10 @@ const TERMINAL_STATUSES = [
   SHEET_STATUS.VALIDATED
 ];
 
+// Le planning peut conserver des micro-charges, mais elles ne préremplissent
+// pas les feuilles de temps : sous 30 minutes, le CRA matérialise zéro.
+const MINIMUM_CRA_PREFILL_HOURS = 0.5;
+
 // ============================================================================
 // HELPERS : STATUTS
 // ============================================================================
@@ -1706,11 +1710,18 @@ function buildSubmissionActions(params) {
   for (const entry of timeEntries || []) {
     const fields = {};
 
-    if (!hasExplicitActual(entry)) {
+    if (hasExplicitActual(entry)) {
+      const actualHours = Number(entry.heures);
+      if (actualHours > 0 && actualHours < MINIMUM_CRA_PREFILL_HOURS) {
+        fields.heures = 0;
+      }
+    } else {
       const plannedHours = entry.heuresPrevues;
       const hasValidPlanned = plannedHours !== null && plannedHours !== undefined && plannedHours !== '' && Number.isFinite(Number(plannedHours));
       if (hasValidPlanned) {
-        fields.heures = Number(plannedHours);
+        fields.heures = Number(plannedHours) >= MINIMUM_CRA_PREFILL_HOURS
+          ? Number(plannedHours)
+          : 0;
       }
     }
 

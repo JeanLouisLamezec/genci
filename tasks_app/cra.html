@@ -7,12 +7,12 @@
 <script src="https://docs.getgrist.com/grist-plugin-api.js"></script>
 <script src="core/filters/filter-manager.js"></script>
 <script src="core/cra/ui/cra-person-filter.js?v=20260830-filter-v2"></script>
-<script src="core/cra/ui/cra-filter-adapter.js?v=20260830-filter-v2"></script>
-<script src="core/cra/controller/cra-time-entry-controller.js?v=20260831-sheet-cache"></script>
+<script src="core/cra/ui/cra-filter-adapter.js?v=20261006-no-milestones"></script>
+<script src="core/cra/controller/cra-time-entry-controller.js?v=20261006-minimum-hours-v2"></script>
 <script src="core/cra/loader/cra-data-loader.js"></script>
 <script src="core/generated/taskflow-planning-browser.js?v=20260827-retro"></script>
 
-<script src="core/generated/taskflow-cra-browser.js?v=20261005-submit-batching"></script>
+<script src="core/generated/taskflow-cra-browser.js?v=20261006-minimum-hours-v2"></script>
 <script src="core/cra/workflow/cra-workflow-integration.js?v=20261005-submit-batching"></script>
 <script src="core/cra/export/cra-export-model.js"></script>
 <script src="core/cra/export/cra-export-pdf.js"></script>
@@ -8243,7 +8243,13 @@ function isPunctualCraEntry(entry) {
 // une affectation ponctuelle. Elle ne doit plus préremplir le CRA : seul le
 // réalisé explicitement saisi par l'utilisateur compte.
 function effectiveCraPlannedHours(entry) {
-  return isPunctualCraEntry(entry) ? 0 : (Number(entry && entry.heuresPrevues) || 0);
+  const plannedHours = Number(entry && entry.heuresPrevues) || 0;
+  return isPunctualCraEntry(entry) || plannedHours < 0.5 ? 0 : plannedHours;
+}
+
+function effectiveCraActualHours(entry) {
+  const actualHours = Number(entry && entry.heures) || 0;
+  return actualHours > 0 && actualHours < 0.5 ? 0 : actualHours;
 }
 
 function hasExplicitCraActual(entry) {
@@ -8252,7 +8258,7 @@ function hasExplicitCraActual(entry) {
 }
 
 function effectiveCraDisplayedHours(entry) {
-  return hasExplicitCraActual(entry) ? Number(entry.heures) : effectiveCraPlannedHours(entry);
+  return hasExplicitCraActual(entry) ? effectiveCraActualHours(entry) : effectiveCraPlannedHours(entry);
 }
 
 // PHASE 5 : Helper pour obtenir l'état d'affichage d'une cellule
@@ -8298,9 +8304,9 @@ function getCellDisplayState(taskId, dayMs, personId) {
       Number.isFinite(Number(entry.heures))
     );
     
-    const entryActual = hasActual ? Number(entry.heures) : 0;
+    const entryActual = hasActual ? effectiveCraActualHours(entry) : 0;
     const entryPlanned = effectiveCraPlannedHours(entry);
-    const entryDisplayed = hasActual ? Number(entry.heures) : entryPlanned;
+    const entryDisplayed = hasActual ? effectiveCraActualHours(entry) : entryPlanned;
     
     actualHours += entryActual;
     plannedHours += entryPlanned;
@@ -8447,7 +8453,7 @@ function cellHours(taskId, dayMs, personId) {
   let h = 0;
   for (const e of S.entries) 
     if (e.membre === personId && e.tache === taskId && sameDay(gristToMs(e.date), dayMs)) 
-      h += (Number(e.heures) || 0);
+      h += effectiveCraActualHours(e);
   return h;
 }
 
@@ -8504,7 +8510,7 @@ function cellActualHours(taskId, dayMs, personId) {
   const entries = cellEntries(taskId, dayMs, personId);
   let h = 0;
   for (const e of entries) {
-    h += (Number(e.heures) || 0);
+    h += effectiveCraActualHours(e);
   }
   return h;
 }
@@ -8536,7 +8542,7 @@ function dayActualHours(dayMs, personId) {
           const eDate = typeof e.date === 'number' ? new Date(e.date * 1000) : new Date(0);
           const edk = [eDate.getFullYear(), String(eDate.getMonth() + 1).padStart(2, '0'), String(eDate.getDate()).padStart(2, '0')].join('-');
           if (edk === dk) {
-            h += (Number(e.heures) || 0);
+            h += effectiveCraActualHours(e);
           }
         }
       }
@@ -8547,7 +8553,7 @@ function dayActualHours(dayMs, personId) {
   // Fallback
   for (const e of S.entries) {
     if (e.membre === personId && sameDay(gristToMs(e.date), dayMs)) {
-      h += (Number(e.heures) || 0);
+      h += effectiveCraActualHours(e);
     }
   }
   return h;
@@ -8600,7 +8606,7 @@ function taskWeekActualHours(taskId, personId) {
       for (const e of entries) {
         const eMs = typeof e.date === 'number' ? e.date * 1000 : 0;
         if (eMs >= weekStartMs && eMs <= weekEndMs) {
-          h += (Number(e.heures) || 0);
+          h += effectiveCraActualHours(e);
         }
       }
     }
@@ -8660,7 +8666,7 @@ function weekActualHours(personId) {
         for (const e of entries) {
           const eMs = typeof e.date === 'number' ? e.date * 1000 : 0;
           if (eMs >= weekStartMs && eMs <= weekEndMs) {
-            h += (Number(e.heures) || 0);
+            h += effectiveCraActualHours(e);
           }
         }
       }
@@ -8707,6 +8713,19 @@ function weekPlannedHours(personId) {
 }
 
 // Tâches pour une personne donnée (optimisé avec index)
+function isCraTimeTrackableTask(task) {
+  return String((task && task.type) || '').trim().toLowerCase() !== 'jalon';
+}
+
+function isCraTimeTrackableEntry(entry) {
+  const task = (S.tasks || []).find(candidate =>
+    String(candidate.id) === String(entry && entry.tache)
+  );
+  // Une référence de tâche devenue introuvable reste visible : seul un jalon
+  // explicitement identifié est retiré de la feuille de temps.
+  return !task || isCraTimeTrackableTask(task);
+}
+
 function gridTasksForPerson(personId) {
   const ids = new Set();
   
@@ -8766,7 +8785,7 @@ function gridTasksForPerson(personId) {
       return S.indexes.taskById.get(id);
     }
     return S.tasks.find(t => t.id === id);
-  }).filter(Boolean);
+  }).filter(Boolean).filter(isCraTimeTrackableTask);
   
   // Appliquer les filtres project, programme, task
   return S.filterSync.filterCraTasks(candidateTasks, S.filters, S.projects);
@@ -9723,7 +9742,7 @@ function taskRealizedHours(taskId) {
   let h = 0; 
   for (const e of S.entries) 
     if (e.tache === taskId) 
-      h += Number(e.heures) || 0; 
+      h += effectiveCraActualHours(e);
   return h; 
 }
 
@@ -10234,7 +10253,7 @@ function myStatutForPerson(personId) {
 function myStatut() { return myStatutForPerson(S.selectedPersonId); }
 
 function isLocked() { return ['soumis', 'valide'].includes(myStatut()); }
-function weekTotalFor(membre, wkMs) { let h = 0; for (let i = 0; i < 7; i++) { const d = wkMs + i * DAY; for (const e of S.entries) if (e.membre === membre && sameDay(gristToMs(e.date), d)) h += Number(e.heures) || 0; } return h; }
+function weekTotalFor(membre, wkMs) { let h = 0; for (let i = 0; i < 7; i++) { const d = wkMs + i * DAY; for (const e of S.entries) if (e.membre === membre && sameDay(gristToMs(e.date), d)) h += effectiveCraActualHours(e); } return h; }
 
 /**
  * Extrait l'ID d'un enregistrement créé par applyUserActions
@@ -10444,7 +10463,7 @@ function exportCSV() {
   const fmtDate = (sec) => { const d = new Date(sec * 1000); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
   const rows = [['Agent', 'Date', 'Projet/Imputation', 'Tache', 'Heures realisees', 'Heures prevues', 'Ecart', 'Statut feuille']];
   S.entries.slice().sort((a, b) => a.date - b.date).forEach(e => {
-    const realized = Number(e.heures) || 0;
+    const realized = effectiveCraActualHours(e);
     const planned = effectiveCraPlannedHours(e);
     const gap = realized - planned;
     rows.push([
@@ -10581,7 +10600,7 @@ function ensureFilterManager() {
       team: S.team || [],
       entites: S.entites || [],
       projects: S.projects || [],
-      tasks: S.tasks || [],
+      tasks: (S.tasks || []).filter(isCraTimeTrackableTask),
       programmes: S.programmes || []
     },
     initialFilters: S.filters || { assignee: [], team: [], project: [], programme: [] },
@@ -10953,6 +10972,11 @@ async function initGrist() {
       applySnapshot: function(normalized, metadata) {
         // PHASE 3 : Application atomique avec initialisation défensive
         Object.assign(S, normalized);
+
+        // Les jalons ne portent jamais de temps. On les retire uniquement de
+        // l'état local du CRA (et donc des lignes et totaux affichés), sans
+        // modifier ni supprimer les éventuelles données historiques Grist.
+        S.entries = (S.entries || []).filter(isCraTimeTrackableEntry);
         
         // 1.2.1 - SÉPARATION IDENTITÉ : S.me devient selectedPersonId
         // currentUserMemberId reste immuable (ne change jamais avec les filtres)

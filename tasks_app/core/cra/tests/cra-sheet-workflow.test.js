@@ -865,6 +865,23 @@ describe('CRA Sheet Workflow - Actions Grist', () => {
       expect(result.actions[1][3].statut).toBe('soumis');
     });
 
+    it('devrait matérialiser zéro pour une proposition sous 30 minutes', () => {
+      const timeEntries = [
+        { id: 1, heures: null, heuresPrevues: 0.22, feuille: 1, membre: 2, date: 1704672000 }
+      ];
+      const result = workflow.buildSubmissionActions({
+        actorMemberId: 2,
+        sheet: sheets[0],
+        team,
+        sheets,
+        timeEntries,
+        nowUnixSeconds: 1704672000
+      });
+
+      expect(result.allowed).toBe(true);
+      expect(result.actions[0][3].heures).toBe(0);
+    });
+
     it('devrait rejeter une soumission avec entrée sans feuille', () => {
       const timeEntries = [
         { id: 1, heures: null, heuresPrevues: 3, feuille: null, membre: 2, date: 1704672000 }
@@ -918,6 +935,23 @@ describe('CRA Sheet Workflow - Actions Grist', () => {
       // heures = 0 est explicite, ne pas modifier
       expect(result.actions[0][3].heures).toBeUndefined();
       expect(result.actions[0][3].feuille).toBeUndefined();
+    });
+
+    it('devrait ramener à zéro un réalisé existant sous 30 minutes', () => {
+      const timeEntries = [
+        { id: 1, heures: 0.2, heuresPrevues: 0.2, feuille: 1, membre: 2, date: 1704672000 }
+      ];
+      const result = workflow.buildSubmissionActions({
+        actorMemberId: 2,
+        sheet: sheets[0],
+        team,
+        sheets,
+        timeEntries,
+        nowUnixSeconds: 1704672000
+      });
+
+      expect(result.allowed).toBe(true);
+      expect(result.actions[0][3].heures).toBe(0);
     });
 
     it('devrait conserver les valeurs explicites heures = 2', () => {

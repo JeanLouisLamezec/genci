@@ -169,6 +169,18 @@ describe('filterCraTasks', () => {
     expect(result.length).toBe(1);
     expect(result[0].id).toBe(50);
   });
+
+  test('exclut toujours les jalons des feuilles de temps', () => {
+    const tasks = [
+      ...mockTasks,
+      { id: 54, titre: 'Jalon de livraison', projet: 1, type: 'jalon' }
+    ];
+
+    expect(filterCraTasks(tasks, {}, mockProjects).map(t => t.id))
+      .not.toContain(54);
+    expect(filterCraTasks(tasks, { task: ['54'] }, mockProjects))
+      .toEqual([]);
+  });
   
   test('Test 7 — Combinaison project + programme + task', () => {
     const result = filterCraTasks(

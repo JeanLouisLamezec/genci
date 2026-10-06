@@ -390,6 +390,8 @@ function hasSheetLink(entry) {
  * @returns {{ action: 'update' | 'create' | 'delete' | 'none' | 'blocked', fields: object|null, reason: string }}
  */
 function determineEntryAction(existingEntry, actualHours, activeAssignment, currentSheet, hasPlanningData) {
+  actualHours = normalizedCraHours(actualHours);
+
   // ============================================================================
   // CAS 1 : LIGNE EXISTANTE - MISE À JOUR
   // ============================================================================
@@ -773,6 +775,26 @@ function hasExplicitActualHours(entry) {
   );
 }
 
+// Les micro-charges lissées restent utiles au plan de charge, mais ne doivent
+// pas préremplir une feuille de temps. Le seuil ne concerne jamais le réalisé
+// explicitement renseigné par la personne.
+const MINIMUM_CRA_PREFILL_HOURS = 0.5;
+
+function plannedHoursForCra(entry) {
+  const plannedHours = Number(entry && entry.heuresPrevues) || 0;
+  return plannedHours >= MINIMUM_CRA_PREFILL_HOURS ? plannedHours : 0;
+}
+
+function normalizedCraHours(value) {
+  const hours = Number(value) || 0;
+  return hours > 0 && hours < MINIMUM_CRA_PREFILL_HOURS ? 0 : hours;
+}
+
+function hasSuppressedCraPlannedHours(entry) {
+  const plannedHours = Number(entry && entry.heuresPrevues) || 0;
+  return plannedHours > 0 && plannedHours < MINIMUM_CRA_PREFILL_HOURS;
+}
+
 /**
  * Détermine la valeur affichée pour une entrée
  * CONTRAT :
@@ -789,10 +811,10 @@ function effectiveDisplayedHours(entry) {
   }
 
   if (hasExplicitActualHours(entry)) {
-    return Number(entry.heures);
+    return normalizedCraHours(entry.heures);
   }
 
-  return Number(entry.heuresPrevues) || 0;
+  return plannedHoursForCra(entry);
 }
 
 /**
@@ -808,7 +830,7 @@ function isPrefilledFromPlanning(entry) {
   return (
     Boolean(entry) &&
     !hasExplicitActualHours(entry) &&
-    (Number(entry.heuresPrevues) || 0) > 0
+    plannedHoursForCra(entry) > 0
   );
 }
 
@@ -836,7 +858,7 @@ function buildSubmissionEntryPatch(entry, sheetId) {
 
   // Matérialiser la proposition si pas de réalisé explicite
   if (!hasExplicitActualHours(entry)) {
-    fields.heures = Number(entry.heuresPrevues) || 0;
+    fields.heures = plannedHoursForCra(entry);
   }
 
   return fields;
@@ -875,11 +897,12 @@ function buildCellDisplayState(entries, options) {
   let displayedHours = 0;
   let hasExplicitActual = false;
   let isPrefilled = false;
+  let hasSuppressedPlannedHours = false;
 
   for (const entry of entries) {
-    const entryActual = hasExplicitActualHours(entry) ? Number(entry.heures) : 0;
-    const entryPlanned = ignorePlanned ? 0 : (Number(entry.heuresPrevues) || 0);
-    const entryDisplayed = hasExplicitActualHours(entry) ? Number(entry.heures) : entryPlanned;
+    const entryActual = hasExplicitActualHours(entry) ? normalizedCraHours(entry.heures) : 0;
+    const entryPlanned = ignorePlanned ? 0 : plannedHoursForCra(entry);
+    const entryDisplayed = hasExplicitActualHours(entry) ? normalizedCraHours(entry.heures) : entryPlanned;
 
     actualHours += entryActual;
     plannedHours += entryPlanned;
@@ -892,11 +915,15 @@ function buildCellDisplayState(entries, options) {
     if (!ignorePlanned && isPrefilledFromPlanning(entry)) {
       isPrefilled = true;
     }
+
+    if (!ignorePlanned && !hasExplicitActualHours(entry) && hasSuppressedCraPlannedHours(entry)) {
+      hasSuppressedPlannedHours = true;
+    }
   }
 
   // PHASE 5 : hasDisplayValue = true si displayedHours > 0 OU s'il y a un réalisé explicite (même 0)
   // Cela permet d'afficher "0" dans l'input quand l'utilisateur a explicitement saisi 0
-  const hasDisplayValue = displayedHours > 0 || hasExplicitActual || virtualZero;
+  const hasDisplayValue = displayedHours > 0 || hasExplicitActual || virtualZero || hasSuppressedPlannedHours;
 
   return {
     actualHours,
