@@ -375,6 +375,8 @@
                     success: true,
                     canCommit: false,
                     code: 'INSUFFICIENT_SHARED_CAPACITY',
+                    totals: { totalUnplannedHours: 12.5 },
+                    historyCutoffDate: '2026-07-01',
                     capacityActions: [],
                     timeEntryActions: []
                 })
@@ -411,6 +413,8 @@
 
             expect(result.success).toBe(false);
             expect(result.blockedMemberIds.length).toBeGreaterThan(0);
+            expect(result.members[0].unplannedHours).toBe(12.5);
+            expect(result.members[0].historyCutoffDate).toBe('2026-07-01');
         });
     });
 

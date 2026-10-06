@@ -39,10 +39,10 @@
         body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); display: flex; flex-direction: column; }
 
         /* Header */
-        .header { background: var(--card-bg); border-bottom: 1px solid var(--border); padding: 10px 16px; display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-shrink: 0; }
+        .header { background: var(--card-bg); border-bottom: 1px solid var(--border); padding: 10px 16px; display: flex; align-items: center; justify-content: space-between; gap: 24px; flex-shrink: 0; }
         .header-left { display: flex; align-items: center; gap: 16px; }
         .header h1 { font-size: 1.25rem; font-weight: 700; color: var(--primary); display: flex; align-items: center; gap: 8px; white-space: nowrap; }
-        .header-center { display: flex; align-items: center; gap: 8px; }
+        .header-center { display: flex; align-items: center; gap: 14px; flex: 1; justify-content: center; }
         .header-right { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
         .header-right select { max-width: 185px; }
         .btn { padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--card-bg); font-weight: 500; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; font-size: 0.8rem; transition: all 0.15s; color: var(--text); }
@@ -55,8 +55,6 @@
         .view-controls .btn { border: none; background: transparent; padding: 5px 10px; border-radius: 4px; color: var(--text); }  /* BUG-03: color explicite */
         .view-controls .btn.active { background: var(--primary); color: white; }
         .current-period { font-weight: 600; font-size: 0.85rem; min-width: 140px; text-align: center; }
-        .sort-selector select { padding: 5px 8px; border: 1px solid var(--border); border-radius: 5px; font-size: 0.72rem; background: var(--card-bg); }
-
         /* Filters (integrated in header) */
         .filter-dropdown { position: relative; }
         .filter-btn { display: flex; align-items: center; gap: 6px; padding: 6px 10px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 6px; cursor: pointer; font-size: 0.75rem; white-space: nowrap; color: var(--text-muted); }
@@ -70,7 +68,7 @@
         .filter-option .dot { width: 8px; height: 8px; border-radius: 50%; }
         /* Gantt Container */
         .main-content { display: flex; flex: 1; min-height: 0; overflow: hidden; position: relative; }
-        .gantt-wrapper { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden; transition: margin-right 0.25s ease; }
+        .gantt-wrapper { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden; position: relative; transition: margin-right 0.25s ease; }
         .gantt-wrapper.panel-open { margin-right: var(--panel-width); }
 
         .gantt-header { display: flex; background: var(--card-bg); border-bottom: 1px solid var(--border); flex-shrink: 0; }
@@ -87,6 +85,9 @@
 
         .gantt-body { display: flex; flex: 1; min-height: 0; overflow: hidden; position: relative; }
         .task-list { width: var(--task-list-width); min-width: var(--task-list-width); overflow-y: auto; border-right: 1px solid var(--border); background: var(--card-bg); }
+        .task-list-resizer { position: absolute; top: 0; bottom: 0; left: var(--task-list-width); width: 14px; transform: translateX(-7px); cursor: col-resize; z-index: 40; touch-action: none; }
+        .task-list-resizer::after { content: ''; position: absolute; top: 50%; left: 5px; width: 3px; height: 42px; transform: translateY(-50%); border-radius: 4px; background: var(--border-dark); opacity: .45; transition: opacity .15s, background .15s; }
+        .task-list-resizer:hover::after, .task-list-resizer.dragging::after { background: var(--primary); opacity: 1; }
 
         /* 06 · États vides & chargement */
         .tf-overlay { position: absolute; inset: 0; background: var(--card-bg); z-index: 6; display: flex; align-items: center; justify-content: center; padding: 24px; }
@@ -148,13 +149,9 @@
         .gantt-project-span.selected { outline: 2px solid var(--primary); outline-offset: 2px; z-index: 16; }
         .gantt-project-span-label { display: block; padding: 0 7px; font-size: 0.65rem; font-weight: 700; line-height: 14px; text-shadow: 0 1px 2px rgba(0,0,0,.45); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .gantt-bar.dimmed, .gantt-milestone.dimmed { opacity: 0.4; }
-        /* Barre parent = bande-résumé plus fine + chevrons */
-        .gantt-bar.parent { height: 8px !important; margin-top: 8px; }
-        .gantt-bar.parent .gantt-bar-label, .gantt-bar.parent .gantt-bar-external-label { display: none; }
-        .gantt-bar.parent .resize-handle { display: none; }
-        .gantt-bar.parent::before, .gantt-bar.parent::after { content: ''; position: absolute; top: 100%; width: 0; height: 0; border-style: solid; }
-        .gantt-bar.parent::before { left: 0; border-width: 4px 0 0 4px; border-color: inherit transparent transparent transparent; filter: brightness(0.7); }
-        .gantt-bar.parent::after { right: 0; border-width: 4px 4px 0 0; border-color: inherit transparent transparent transparent; filter: brightness(0.7); }
+        /* Une tâche parente reste une tâche manipulable : même épaisseur,
+           libellé et poignées de redimensionnement que les autres barres. */
+        .gantt-bar.parent::before, .gantt-bar.parent::after { display: none; }
         .task-avatars { display: flex; margin-left: auto; }
         .task-avatar { width: 18px; height: 18px; border-radius: 50%; background: var(--primary); color: white; display: flex; align-items: center; justify-content: center; font-size: 0.5rem; font-weight: 600; margin-left: -4px; border: 1.5px solid var(--card-bg); }
         .task-avatar:first-child { margin-left: 0; }
@@ -202,6 +199,11 @@
         .dependency-line.highlight { stroke: var(--primary); stroke-width: 2; stroke-dasharray: none; }
         .dependency-arrow { fill: var(--text-muted); }
         .dependency-arrow.highlight { fill: var(--primary); }
+
+        /* Hiérarchie : liaison discrète parent → sous-tâche, derrière les barres. */
+        .hierarchy-layer { position: absolute; top: 0; left: 0; pointer-events: none; z-index: 6; overflow: visible; }
+        .hierarchy-link { fill: none; stroke: color-mix(in srgb, var(--text-muted) 84%, var(--border)); stroke-width: 1.6; stroke-dasharray: 3 4; stroke-linecap: round; opacity: .9; }
+        .hierarchy-link.highlight { stroke: var(--primary); stroke-width: 1.75; opacity: .85; }
 
         /* Today Line */
         .today-line { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--danger); z-index: 25; }
@@ -321,14 +323,7 @@
         .dates-inline .today-btn { padding: 4px 8px; font-size: 0.7rem; background: var(--primary-light); color: var(--primary); border: none; border-radius: 4px; cursor: pointer; margin-left: auto; transition: all 0.15s; }
         .dates-inline .today-btn:hover { background: var(--primary); color: white; }
 
-        /* Project select with dot */
-        .project-select-wrap { display: flex; align-items: center; gap: 8px; position: relative; }
-        .project-color-dot { width: 14px; height: 14px; border-radius: 50%; background: var(--text-muted); flex-shrink: 0; cursor: pointer; border: 2px solid rgba(255,255,255,0.5); box-shadow: 0 1px 3px rgba(0,0,0,0.2); transition: transform 0.15s; }
-        .project-color-dot:hover { transform: scale(1.25); }
-        .project-select-wrap .form-select { flex: 1; }
-        /* Color picker unifié (Projects/Team) — pattern Kanban A15 */
-        .color-picker-pop { display: none; position: absolute; left: 20px; top: 100%; margin-top: 4px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; padding: 6px; box-shadow: var(--shadow-lg); z-index: 200; flex-wrap: wrap; gap: 4px; width: 128px; }
-        .color-picker-pop.open { display: flex; }
+        .project-select-wrap .form-select { width: 100%; }
         .color-swatch { width: 18px; height: 18px; border-radius: 50%; cursor: pointer; border: 2px solid transparent; transition: all 0.15s; }
         .color-swatch:hover { transform: scale(1.3); border-color: rgba(0,0,0,0.2); }
         .member-color-wrap { position: relative; display: inline-flex; align-items: center; flex-shrink: 0; }
@@ -392,7 +387,7 @@
         .demo-badge { position: fixed; top: 8px; right: 8px; background: var(--warning); color: white; padding: 4px 8px; border-radius: 4px; font-size: 0.65rem; font-weight: 600; z-index: 100; }
 
         @media (max-width: 900px) { :root { --task-list-width: 200px; --cell-width: 28px; --panel-width: 360px; } }
-        @media (max-width: 700px) { :root { --task-list-width: 140px; --cell-width: 24px; --panel-width: 100%; } .gantt-wrapper.panel-open { margin-right: 0; } .panel { left: 0; width: 100%; } .task-dates, .task-progress-badge { display: none; } .form-row { grid-template-columns: 1fr; } }
+        @media (max-width: 700px) { :root { --task-list-width: 140px !important; --cell-width: 24px; --panel-width: 100%; } .gantt-wrapper.panel-open { margin-right: 0; } .panel { left: 0; width: 100%; } .task-list-resizer { display: none; } .task-dates, .task-progress-badge { display: none; } .form-row { grid-template-columns: 1fr; } }
         
         /* GEN-03: Export Print/PDF */
         @media print {
@@ -538,8 +533,10 @@
         /* ═════ Barre d'outils — clusters propres + contrôles segmentés ═════ */
         .header { flex-wrap: wrap; gap: 10px 20px; align-items: center; }
         .header-left, .header-center, .header-right { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-        .header-center { gap: 14px; }
+        .header-center { gap: 16px; }
         .header-right { margin-left: auto; }
+        .header-period-controls { display: flex; align-items: center; gap: 8px; padding-right: 16px; border-right: 1px solid var(--border); }
+        .header-filter-controls { display: flex; align-items: center; }
         .btn, .filter-btn { white-space: nowrap; }
         .btn-nav { width: 34px; padding: 0; }
         .current-period { font-weight: 650; font-size: 0.95rem; letter-spacing: -0.01em; white-space: nowrap; }
@@ -547,7 +544,6 @@
         .view-controls .btn { border: none; background: transparent; box-shadow: none; height: 28px; padding: 0 11px; color: var(--text-muted); }
         .view-controls .btn:hover { background: rgba(127,127,127,.08); }
         .view-controls .btn.active { background: var(--card-bg); color: var(--primary); box-shadow: var(--shadow); }
-        .sort-selector select, #colorSelect { height: 34px; border-radius: 8px; border: 1px solid var(--border); background: var(--card-bg); color: var(--text); font-size: 0.74rem; padding: 0 8px; }
         .filter-btn.has-filter, .filter-btn.active { background: var(--p-50); border-color: var(--primary); color: var(--primary); }
         .icon-btn { width: 34px; padding: 0; display: inline-flex; align-items: center; justify-content: center; }
         .filter-count { background: var(--primary); color: #fff; border-radius: 999px; min-width: 17px; height: 17px; padding: 0 4px; font-size: 0.62rem; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; margin-left: 4px; }
@@ -564,10 +560,11 @@
             .header h1 { font-size: 1.05rem; }
             .header-left, .header-center, .header-right { width: 100%; gap: 6px; }
             .header-right { margin-left: 0; }
+            .header-period-controls { width: 100%; padding: 0 0 8px; border-right: 0; border-bottom: 1px solid var(--border); }
             .current-period { order: -1; flex: 1; }
             .view-controls { overflow-x: auto; max-width: 100%; }
             .btn, .filter-btn { min-height: 38px; }
-            :root { --task-list-width: 132px; --cell-width: 26px; }
+            :root { --task-list-width: 132px !important; --cell-width: 26px; }
             /* Panneau → feuille glissant du bas (bottom-sheet) */
             .panel { top: auto; bottom: 0; left: 0; right: 0; width: 100%; height: 88%;
                      transform: translateY(100%); border-left: none; border-top: 1px solid var(--border);
@@ -581,30 +578,18 @@
     <div class="header">
         <div class="header-left">
             <h1><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/><rect x="3" y="4" width="8" height="4" rx="1" fill="currentColor" stroke="none"/><rect x="8" y="10" width="10" height="4" rx="1" fill="currentColor" stroke="none"/><rect x="5" y="16" width="6" height="4" rx="1" fill="currentColor" stroke="none"/></svg> Gantt</h1>
-            <div class="sort-selector">
-                <select id="sortSelect" onchange="changeSortMode(this.value)">
-                    <option value="priority">Tri: Priorité</option>
-                    <option value="date">Tri: Date</option>
-                    <option value="manual">Tri: Manuel</option>
-                </select>
-            </div>
-            <div class="sort-selector">
-                <select id="colorSelect" onchange="changeColorMode(this.value)" title="Couleur des barres">
-                    <option value="priority">Couleur: Priorité</option>
-                    <option value="project">Couleur: Projet</option>
-                    <option value="assignee">Couleur: Assigné</option>
-                    <option value="status">Couleur: Statut</option>
-                </select>
-            </div>
         </div>
         <div class="header-center">
-            <button class="btn btn-nav" onclick="navigate(-1)">◀</button>
-            <button class="btn" onclick="goToToday()">Aujourd'hui</button>
-            <button class="btn" onclick="fitToTasks()" title="Afficher toute la période couverte par les tâches actuellement filtrées, sans modifier leurs dates">Tout afficher</button>
-            <button class="btn btn-nav" onclick="navigate(1)">▶</button>
-            <span class="current-period" id="currentPeriod"></span>
-            <div class="time-view-controls" id="timeViewSelector" aria-label="Granularité temporelle"></div>
-            <div class="filter-dropdown">
+            <div class="header-period-controls" aria-label="Navigation et période">
+                <button class="btn btn-nav" onclick="navigate(-1)">◀</button>
+                <button class="btn" onclick="goToToday()">Aujourd'hui</button>
+                <button class="btn" onclick="fitToTasks()" title="Afficher toute la période couverte par les tâches actuellement filtrées, sans modifier leurs dates">Tout afficher</button>
+                <button class="btn btn-nav" onclick="navigate(1)">▶</button>
+                <span class="current-period" id="currentPeriod"></span>
+                <div class="time-view-controls" id="timeViewSelector" aria-label="Granularité temporelle"></div>
+            </div>
+            <div class="header-filter-controls">
+              <div class="filter-dropdown">
                 <button class="filter-btn" id="btnFilterToggle"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon></svg> Filtres <span class="filter-count" style="display:none"></span>▾</button>
                 <div class="filter-panel" id="filterPanel">
                     <div class="filter-sections">
@@ -618,6 +603,7 @@
                     <button class="btn ghost" id="btnClearFilters">× Effacer tout</button>
                   </div>
                 </div>
+              </div>
             </div>
         </div>
         <div class="header-right">
@@ -636,6 +622,7 @@
                     </div>
                 </div>
             </div>
+            <div class="task-list-resizer" id="taskListResizer" role="separator" aria-label="Redimensionner la colonne des projets et tâches" aria-orientation="vertical" tabindex="0"></div>
             <div class="gantt-body">
                 <div class="task-list" id="taskList"></div>
                 <div class="timeline-scroll" id="timelineScroll">
@@ -681,7 +668,7 @@
         ];
         const PRIORITY_COLORS = { 1: '#e5484d', 2: '#f0982d', 3: '#4c7ef3', 4: '#8a97ab' };
         // STATUS_COLORS / STATUS_LABELS supprimes : statuts lus dynamiquement via statusCfg (#1)
-        // Palette standard TaskFlow (partagée entre widgets) — utilisée pour les pickers Projects/Team/Tasks
+        // Palette standard TaskFlow — utilisée pour les couleurs des membres.
         const COLOR_PRESETS = ['#3e5de7','#10b981','#f59e0b','#ef4444','#3b82f6','#8b5cf6','#ec4899','#14b8a6','#f97316','#64748b'];
         const TYPE_ICONS = { tache: '', jalon: '◆', reunion: '' };
         const MONTHS = ['Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin', 'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre'];
@@ -8572,8 +8559,7 @@ if (typeof globalThis !== 'undefined') {
         let selectedTaskId = null;
         let selectedProjectId = null;
         let sortMode = localStorage.getItem('taskflow_gantt_sort') || 'priority';
-        const COLOR_MODES = ['priority', 'project', 'assignee', 'status'];
-        let colorMode = TaskFlowDomSecurity.sanitizeEnumValue(localStorage.getItem('taskflow_gantt_colormode'), COLOR_MODES, 'priority');
+        const colorMode = 'priority';
         // WBS-02: état expand/collapse par tâche parente
         let expandedTasks = new Set();
         try { expandedTasks = new Set(JSON.parse(localStorage.getItem('taskflow_gantt_expanded') || '[]').map(Number).filter(n => !isNaN(n))); } catch (e) {}
@@ -8586,7 +8572,7 @@ if (typeof globalThis !== 'undefined') {
         let filters = { assignee: [], team: [], project: [], programme: [], task: [] };  // Filtres unifiés avec Kanban/Plan
         let dragState = { active: false, type: null, taskId: null, startX: 0, originalLeft: 0, originalWidth: 0, originalStart: null, originalEnd: null };
         let dragCommitInProgress = false;
-        let panelState = { open: false, kind: 'task', isNew: false, taskId: null, projectId: null, taskIndex: -1, taskList: [], editData: null, chargeUnits: {} };
+        let panelState = { open: false, kind: 'task', isNew: false, taskId: null, projectId: null, taskIndex: -1, taskList: [], editData: null, chargeUnits: {}, timeUnit: 'j' };
         let assignmentIntegration = null;  // Global pour les fonctions de sauvegarde
         let permissionRuntime = null;       // Identité courante, notamment pour l'override admin de suppression
         let userFilterStore = null;
@@ -8634,6 +8620,38 @@ if (typeof globalThis !== 'undefined') {
          * @param {Object} result - Résultat de autoPlanMembersAfterTaskSync
          */
         function showPlanningResult(result) {
+            // Une affectation peut être enregistrée alors que sa répartition
+            // matérielle est impossible. Afficher la contrainte réelle au lieu
+            // d'un vague appel à « Replanifier » (qui ne la résout pas seul).
+            if (result && result.blockedMemberIds && result.blockedMemberIds.length > 0) {
+                var blockedResults = (result.members || []).filter(function(member) {
+                    return member && member.status === 'blocked';
+                });
+                var unplannedHours = blockedResults.reduce(function(total, member) {
+                    return total + (Number(member.unplannedHours) || 0);
+                }, 0);
+                var memberNames = blockedResults.map(function(member) {
+                    var teamMember = team.find(function(candidate) { return candidate.id === member.memberId; });
+                    return teamMember ? teamMember.nom : 'Membre ' + member.memberId;
+                }).filter(Boolean);
+                var cutoffDate = blockedResults.map(function(member) { return member.historyCutoffDate; }).find(Boolean);
+                var capacityBlocked = blockedResults.some(function(member) {
+                    return member.code === 'INSUFFICIENT_SHARED_CAPACITY';
+                });
+                var quantity = new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 2 }).format(unplannedHours);
+                var message = 'Tâche enregistrée, mais ' + (unplannedHours > 0 ? quantity + ' h' : 'une partie de la charge') +
+                    ' ne peut pas être planifiée' + (memberNames.length ? ' pour ' + memberNames.join(', ') : '') + '.';
+                if (capacityBlocked) {
+                    message += ' Aucune capacité libre n’est disponible sur la période modifiable.';
+                }
+                if (cutoffDate) {
+                    message += ' Les temps antérieurs au ' + new Intl.DateTimeFormat('fr-FR', { day: '2-digit', month: 'long', year: 'numeric', timeZone: 'UTC' }).format(new Date(cutoffDate + 'T00:00:00Z')) + ' sont protégés.';
+                }
+                message += ' Ajustez les dates, la charge ou la capacité dans le Plan de charge.';
+                showToast(message, 'warning');
+                return;
+            }
+
             // Cas d'erreur ou d'échec
             if (
                 !result ||
@@ -8647,17 +8665,6 @@ if (typeof globalThis !== 'undefined') {
             ) {
                 showToast(
                     'Tâche enregistrée, mais le planning automatique a échoué. ' +
-                    'Utilisez « Replanifier » dans le Plan.',
-                    'warning'
-                );
-                return;
-            }
-
-            // Cas bloqué
-            if (result.blockedMemberIds && result.blockedMemberIds.length > 0) {
-                var blockedCount = result.blockedMemberIds.length;
-                showToast(
-                    'Tâche enregistrée, mais le planning nécessite un arbitrage (' + blockedCount + ' membre(s) bloqué(s)). ' +
                     'Utilisez « Replanifier » dans le Plan.',
                     'warning'
                 );
@@ -8912,6 +8919,18 @@ if (typeof globalThis !== 'undefined') {
             }
             return arr.slice(); // 'manual' — respecte l'ordre dans tasks[]
         }
+
+        // L'ordre des projets est une convention de vue, indépendante de leur
+        // ordre de création dans Grist : toujours A → Z, de façon déterministe.
+        function getAlphabeticallyOrderedProjects() {
+            return projects.slice().sort(function(a, b) {
+                const left = String(a?.nom || '').trim();
+                const right = String(b?.nom || '').trim();
+                return left.localeCompare(right, 'fr', { sensitivity: 'base', numeric: true }) ||
+                    String(a?.id || '').localeCompare(String(b?.id || ''), 'fr', { numeric: true });
+            });
+        }
+
         // Construit la liste unique Projet -> Tâche -> Sous-tâche en combinant
         // les filtres métier et la fenêtre temporelle courante.
         function buildVisibleTasks() {
@@ -8920,7 +8939,7 @@ if (typeof globalThis !== 'undefined') {
             const hasTaskOnlyFilters = ['team', 'task']
                 .some(type => Array.isArray(filters[type]) && filters[type].length > 0);
             currentVisibleModel = GanttVisibleTree.buildVisibleRows({
-                tasks, projects, filteredTasks: getFilteredTasks(),
+                tasks, projects: getAlphabeticallyOrderedProjects(), filteredTasks: getFilteredTasks(),
                 includeEmptyProjects: !(filterManager && filterManager.hasActiveFilters()),
                 selectedProjectIds: hasTaskOnlyFilters ? [] : filters.project,
                 selectedProgrammeIds: hasTaskOnlyFilters ? [] : filters.programme,
@@ -9172,22 +9191,6 @@ if (typeof globalThis !== 'undefined') {
             // la demande d'enregistrement du document à chaque changement de préférence UI.
             sortTasks(); render();
         }
-        function changeColorMode(mode) {
-            colorMode = TaskFlowDomSecurity.sanitizeEnumValue(mode, COLOR_MODES, 'priority');
-            localStorage.setItem('taskflow_gantt_colormode', colorMode);
-            render();
-        }
-        // Édite la couleur d'un projet (lue par tous les widgets TaskFlow via getProjectColor)
-        async function setProjectColor(projectId, color) {
-            const p = projects.find(x => x.id === projectId);
-            if (!p) return;
-            p.couleur = color;
-            if (gristReady) {
-                try { await grist.docApi.applyUserActions([['UpdateRecord', 'Projects', projectId, { couleur: color }]]); showSaveIndicator(); }
-                catch (e) { showToast('Erreur couleur projet', 'error'); }
-            }
-            renderPanel(); render();
-        }
         // Édite la couleur d'un membre Team (pattern Kanban A15)
         async function setMemberColor(memberId, color) {
             const m = team.find(x => x.id === memberId);
@@ -9255,6 +9258,7 @@ if (typeof globalThis !== 'undefined') {
         // RENDER FUNCTIONS
         // ═══════════════════════════════════════════════════════════════════════
         function render() {
+            hideTaskTooltip();
             renderTimeViewSelector();
             // En mode loading, afficher uniquement le skeleton
             if (appMode === 'loading' || dataLoadState === 'loading') {
@@ -9549,7 +9553,7 @@ if (typeof globalThis !== 'undefined') {
                     '<div class="task-info">' +
                         '<div class="task-name">' + (jalon ? '◆ ' : '') + (escapeHtml(t.titre) || 'Sans titre') + '</div>' +
                         '<div class="task-meta">' +
-                            '<span class="task-dates">' + formatDateShort(start) + ' → ' + formatDateShort(end) + '</span>' +
+                            '<span class="task-dates">' + formatDate(start) + ' → ' + formatDate(end) + '</span>' +
                             (!jalon ? '<span class="task-progress-badge">' + progress + '%</span>' : '') +
                             subBadge +
                             childBadge +
@@ -9697,6 +9701,8 @@ if (typeof globalThis !== 'undefined') {
                 grid.appendChild(todayLine);
             }
 
+            renderHierarchyLinks(taskRows, start, pxPerDay, taskIndexMap, totalWidth);
+
             // Barres et jalons — ordre Y = currentVisible (DFS avec expand/collapse)
             currentVisible.forEach((row, idx) => {
                 if (row.kind === 'project') {
@@ -9773,9 +9779,9 @@ if (typeof globalThis !== 'undefined') {
                     bar.style.background = getTaskBarGradient(t);
                     bar.style.borderColor = getTaskColor(t);
                     bar.innerHTML = '<div class="gantt-bar-progress" style="width:' + progVal + '%"></div>' +
-                        (isParent ? '' : '<div class="resize-handle left" onmousedown="startDrag(event, this.parentElement, \'resize-left\')"></div>') +
+                        '<div class="resize-handle left" onmousedown="startDrag(event, this.parentElement, \'resize-left\')"></div>' +
                         '<span class="gantt-bar-label" style="position:relative;z-index:1;">' + escapeHtml(t.titre) + '</span>' +
-                        (isParent ? '' : '<div class="resize-handle right" onmousedown="startDrag(event, this.parentElement, \'resize-right\')"></div>') +
+                        '<div class="resize-handle right" onmousedown="startDrag(event, this.parentElement, \'resize-right\')"></div>' +
                         '<span class="gantt-bar-external-label">' + escapeHtml(t.titre) + '</span>';
                     bar.onclick = (e) => { if (!e.target.classList.contains('resize-handle')) openTaskPanel(t.id); };
                     bar.onmousedown = (e) => { if (!e.target.classList.contains('resize-handle')) startDrag(e, bar, 'move'); };
@@ -9785,6 +9791,64 @@ if (typeof globalThis !== 'undefined') {
             });
 
             renderDependencies(ft, start, pxPerDay, taskIndexMap);
+        }
+
+        function renderHierarchyLinks(taskRows, start, pxPerDay, taskIndexMap, totalWidth) {
+            const grid = document.getElementById('timelineGrid');
+            const existing = grid.querySelector('.hierarchy-layer');
+            if (existing) existing.remove();
+
+            const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+            const gridHeight = Math.max(1, currentVisible.length * 44);
+            svg.classList.add('hierarchy-layer');
+            // Des dimensions et un viewBox explicites évitent que le repère SVG
+            // reste à sa taille par défaut dans l'iframe Grist.
+            svg.setAttribute('width', String(totalWidth));
+            svg.setAttribute('height', String(gridHeight));
+            svg.setAttribute('viewBox', '0 0 ' + totalWidth + ' ' + gridHeight);
+            svg.setAttribute('preserveAspectRatio', 'none');
+            svg.style.width = totalWidth + 'px';
+            svg.style.height = gridHeight + 'px';
+
+            function barStart(task) {
+                let taskStart = gristToDate(task.dateDebut);
+                if (!taskStart && hasChildren(task)) {
+                    taskStart = gristToDate(aggregateDates(task).start);
+                }
+                if (!taskStart) return null;
+                const left = Math.round(getDaysDiff(start, taskStart) * pxPerDay);
+                return Math.max(0, Math.min(totalWidth, left));
+            }
+
+            taskRows.forEach(function(child) {
+                // Les jalons restent volontairement isolés de la hiérarchie visuelle.
+                if (isJalon(child)) return;
+
+                const parent = getParent(child);
+                if (!parent || isJalon(parent)) return;
+
+                const parentIndex = taskIndexMap[parent.id];
+                const childIndex = taskIndexMap[child.id];
+                if (parentIndex === undefined || childIndex === undefined) return;
+
+                const parentLeft = barStart(parent);
+                const childLeft = barStart(child);
+                if (parentLeft === null || childLeft === null) return;
+
+                const parentY = parentIndex * 44 + 22;
+                const childY = childIndex * 44 + 22;
+                const trunkX = Math.max(3, Math.min(parentLeft, childLeft) - 10);
+                const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+                path.setAttribute('d', 'M' + parentLeft + ',' + parentY +
+                    ' H' + trunkX + ' V' + childY + ' H' + childLeft);
+                path.classList.add('hierarchy-link');
+                if (selectedTaskId === parent.id || selectedTaskId === child.id) {
+                    path.classList.add('highlight');
+                }
+                svg.appendChild(path);
+            });
+
+            grid.appendChild(svg);
         }
 
         function renderDependencies(ft, start, pxPerDay, taskIndexMap) {
@@ -9834,6 +9898,14 @@ if (typeof globalThis !== 'undefined') {
             document.getElementById('timelineGrid').appendChild(svg);
         }
 
+        function hideTaskTooltip() {
+            const tooltip = document.getElementById('tooltip');
+            if (!tooltip) return;
+            tooltip.classList.remove('visible');
+            tooltip.style.left = '';
+            tooltip.style.top = '';
+        }
+
         function setupTooltip(el, task, dimmed) {
             const tooltip = document.getElementById('tooltip');
             el.addEventListener('mouseenter', () => {
@@ -9849,9 +9921,17 @@ if (typeof globalThis !== 'undefined') {
                 tooltip.classList.add('visible');
             });
             el.addEventListener('mousemove', (e) => { tooltip.style.left = (e.clientX + 15) + 'px'; tooltip.style.top = (e.clientY + 15) + 'px'; });
-            el.addEventListener('mouseleave', () => tooltip.classList.remove('visible'));
-            el.addEventListener('click', () => tooltip.classList.remove('visible')); // clic = ouverture panel : masquer le tooltip
+            el.addEventListener('mouseleave', hideTaskTooltip);
+            el.addEventListener('pointerleave', hideTaskTooltip);
+            el.addEventListener('click', hideTaskTooltip); // clic = ouverture panel : masquer le tooltip
         }
+
+        // Un changement d'onglet ou une perte de focus ne déclenche pas toujours
+        // mouseleave dans une iframe : ne jamais laisser une infobulle orpheline.
+        window.addEventListener('blur', hideTaskTooltip);
+        document.addEventListener('visibilitychange', function() {
+            if (document.hidden) hideTaskTooltip();
+        });
 
         function syncScroll() {
             const taskList = document.getElementById('taskList');
@@ -9870,6 +9950,7 @@ if (typeof globalThis !== 'undefined') {
 
             // Sync both vertical and horizontal scroll
             timeline.onscroll = () => {
+                hideTaskTooltip();
                 taskList.scrollTop = timeline.scrollTop;
                 // Sync horizontal scroll with headers using transform
                 const scrollX = timeline.scrollLeft;
@@ -9883,7 +9964,7 @@ if (typeof globalThis !== 'undefined') {
         // ═══════════════════════════════════════════════════════════════════════
         function openPanel() {
             panelState.open = true;
-            const _tt = document.getElementById('tooltip'); if (_tt) _tt.classList.remove('visible'); // masque le tooltip survol quand le panel s'ouvre
+            hideTaskTooltip();
             document.getElementById('panel').classList.add('open');
             document.getElementById('ganttWrapper').classList.add('panel-open');
             document.getElementById('panelOverlay').classList.add('visible');
@@ -9894,7 +9975,8 @@ if (typeof globalThis !== 'undefined') {
             document.getElementById('panel').classList.remove('open');
             document.getElementById('ganttWrapper').classList.remove('panel-open');
             document.getElementById('panelOverlay').classList.remove('visible');
-            panelState = { open: false, kind: 'task', isNew: false, taskId: null, projectId: null, taskIndex: -1, taskList: panelState.taskList, editData: null, chargeUnits: {} };
+            hideTaskTooltip();
+            panelState = { open: false, kind: 'task', isNew: false, taskId: null, projectId: null, taskIndex: -1, taskList: panelState.taskList, editData: null, chargeUnits: {}, timeUnit: 'j' };
             render();
         }
         function confirmClosePanel() {
@@ -9924,6 +10006,7 @@ if (typeof globalThis !== 'undefined') {
             panelState.assignmentModes = {};
             panelState.originalAssignmentModes = {};
             panelState.chargeUnits = {};
+            panelState.timeUnit = 'j';
             (initialData.assignees || []).forEach(function(id) { panelState.chargeUnits[id] = 'j'; });
 
             renderPanel();
@@ -9986,9 +10069,30 @@ if (typeof globalThis !== 'undefined') {
             panelState.taskId = null;
             panelState.projectId = project.id;
             panelState.editData = null;
+            panelState.projectEditData = {
+                nom: project.nom || '',
+                dateDebut: formatDateISO(gristToDate(project.dateDebut)),
+                dateFin: formatDateISO(gristToDate(project.dateFin)),
+                couleur: project.couleur || null
+            };
             renderProjectPanel();
             openPanel();
             render();
+        }
+
+        // Les droits d'édition du panneau Projet sont volontairement identiques
+        // aux droits de suppression : responsable du projet ou administrateur.
+        // Un manager direct garde ses droits sur les tâches, pas sur les
+        // métadonnées du projet de son collaborateur.
+        function canEditProjectDetails(actor, snapshot, project) {
+            return Boolean(
+                actor && (
+                    actor.isAdmin ||
+                    (window.TaskFlowPermissions &&
+                        typeof window.TaskFlowPermissions.isProjectOwner === 'function' &&
+                        window.TaskFlowPermissions.isProjectOwner(snapshot, project))
+                )
+            );
         }
 
         function renderProjectPanel() {
@@ -10012,14 +10116,15 @@ if (typeof globalThis !== 'undefined') {
             const permissionSnapshot = permissionRuntime && permissionRuntime.getSnapshot
                 ? permissionRuntime.getSnapshot()
                 : null;
-            const canDelete = Boolean(
-                actor && (
-                    actor.isAdmin ||
-                    (window.TaskFlowPermissions &&
-                        typeof window.TaskFlowPermissions.isProjectOwner === 'function' &&
-                        window.TaskFlowPermissions.isProjectOwner(permissionSnapshot, project))
-                )
-            );
+            const canEdit = canEditProjectDetails(actor, permissionSnapshot, project);
+            const canDelete = canEdit;
+            const projectEditData = panelState.projectEditData || {
+                nom: project.nom || '',
+                dateDebut: formatDateISO(gristToDate(project.dateDebut)),
+                dateFin: formatDateISO(gristToDate(project.dateFin)),
+                couleur: project.couleur || null
+            };
+            panelState.projectEditData = projectEditData;
             const deleteHint = linkedTasks.length
                 ? 'Ce projet contient encore ' + linkedTasks.length + ' tâche(s). Déplacez-les ou supprimez-les d’abord.'
                 : (canDelete ? 'La suppression est définitive.' : 'Seuls le responsable du projet ou un administrateur peuvent supprimer ce projet.');
@@ -10035,9 +10140,23 @@ if (typeof globalThis !== 'undefined') {
             content.innerHTML =
                 '<div class="panel-accent-bar" style="background:' + safeColor(project.couleur, '#64748b') + '"></div>' +
                 '<div class="panel-type-row"><span class="type-pill selected">Projet</span></div>' +
-                '<div class="panel-title-edit" style="cursor:default">' + escapeHtml(project.nom || 'Sans nom') + '</div>' +
+                (canEdit
+                    ? '<input type="text" class="panel-title-edit" id="projectName" aria-label="Nom du projet" value="' + escapeHtml(projectEditData.nom) + '" oninput="updateProjectPanelDraft(\'nom\', this.value)">'
+                    : '<div class="panel-title-edit" style="cursor:default">' + escapeHtml(project.nom || 'Sans nom') + '</div>') +
                 '<div class="props-list">' +
-                    '<div class="prop-row"><span class="prop-label">Période</span><div class="prop-value">' + formatDate(gristToDate(project.dateDebut)) + ' → ' + formatDate(gristToDate(project.dateFin)) + '</div></div>' +
+                    '<div class="prop-row"><span class="prop-label">Période</span><div class="prop-value">' +
+                        (canEdit
+                            ? '<div class="dates-inline"><input type="date" aria-label="Date de début du projet" value="' + escapeHtml(projectEditData.dateDebut) + '" onchange="updateProjectPanelDraft(\'dateDebut\', this.value)"><span class="dates-arrow">→</span><input type="date" aria-label="Date de fin du projet" value="' + escapeHtml(projectEditData.dateFin) + '" onchange="updateProjectPanelDraft(\'dateFin\', this.value)"></div>'
+                            : formatDate(gristToDate(project.dateDebut)) + ' → ' + formatDate(gristToDate(project.dateFin))) +
+                    '</div></div>' +
+                    '<div class="prop-row" data-panel-field="color"><span class="prop-label">Couleur</span><div class="prop-value"><div style="display:flex;gap:8px;align-items:center">' +
+                        (canEdit
+                            ? '<input type="color" aria-label="Couleur du projet" value="' + safeColor(projectEditData.couleur, '#64748b') + '" onchange="updateProjectPanelColor(this.value)" style="width:36px;height:28px;border:1px solid var(--border);border-radius:6px;cursor:pointer;padding:2px">' +
+                              (projectEditData.couleur
+                                  ? '<button class="btn" style="padding:4px 10px;font-size:0.72rem" onclick="updateProjectPanelColor(null)">Réinitialiser</button>'
+                                  : '<span style="font-size:0.72rem;color:var(--text-muted)">Couleur par défaut</span>')
+                            : '<span style="width:18px;height:18px;border-radius:50%;display:inline-block;background:' + safeColor(project.couleur, '#64748b') + '"></span>') +
+                    '</div></div></div>' +
                     '<div class="prop-row"><span class="prop-label">Responsable</span><div class="prop-value">' + escapeHtml(getTeamMemberName(project.responsable) || 'Non renseigné') + '</div></div>' +
                     '<div class="prop-row"><span class="prop-label">Programme</span><div class="prop-value">' + escapeHtml((programme && programme.nom) || 'Non renseigné') + '</div></div>' +
                     '<div class="prop-row"><span class="prop-label">État</span><div class="prop-value">' + (project.actif === false ? 'Inactif' : 'Actif') + '</div></div>' +
@@ -10048,10 +10167,93 @@ if (typeof globalThis !== 'undefined') {
                     '<div style="font-size:0.8rem;color:var(--text-muted);line-height:1.45">' + escapeHtml(deleteHint) + '</div>' +
                 '</div>';
             bindTaskPanelActions(content);
-            footer.innerHTML = canDelete
-                ? '<button class="panel-btn danger" onclick="showDeleteConfirm()" ' + (linkedTasks.length ? 'disabled title="Le projet doit être vide"' : '') + '>Supprimer le projet</button>' +
+            footer.innerHTML = canEdit
+                ? '<div style="display:flex;gap:8px;width:100%;align-items:center"><button class="panel-btn success" style="flex:1" onclick="saveProjectDetails()">Enregistrer</button>' +
+                  '<button class="panel-btn danger" style="flex:0 0 auto;width:auto" onclick="showDeleteConfirm()" ' + (linkedTasks.length ? 'disabled title="Le projet doit être vide"' : '') + '>Supprimer</button></div>' +
                   (!linkedTasks.length ? '<div class="delete-confirm" id="deleteConfirm"><div class="delete-confirm-text">Supprimer définitivement ce projet vide ?</div><div class="delete-confirm-actions"><button class="delete-confirm-btn cancel" onclick="hideDeleteConfirm()">Annuler</button><button class="delete-confirm-btn confirm" onclick="confirmDeleteProject()">Supprimer</button></div></div>' : '')
                 : '';
+        }
+
+        function updateProjectPanelDraft(field, value) {
+            if (panelState.kind !== 'project') return;
+            if (!panelState.projectEditData) panelState.projectEditData = {};
+            panelState.projectEditData[field] = value;
+        }
+
+        function updateProjectPanelColor(value) {
+            updateProjectPanelDraft('couleur', value === null ? null : safeColor(value, '#64748b'));
+            renderProjectPanel();
+        }
+
+        async function saveProjectDetails() {
+            if (panelState.kind !== 'project' || !panelState.projectId || !gristReady) return;
+            const projectId = panelState.projectId;
+            const project = projects.find(function(candidate) {
+                return GanttTaskPanelRules.sameProject(candidate.id, projectId);
+            });
+            if (!project) return;
+            const draft = panelState.projectEditData || {};
+            const name = String(draft.nom || '').trim();
+            if (!name) {
+                showToast('Le nom du projet est obligatoire.', 'error');
+                return;
+            }
+            // Les dates Grist sont normalisées à minuit UTC : éviter tout décalage
+            // lié au fuseau horaire local du navigateur.
+            const start = draft.dateDebut ? dateToGrist(new Date(draft.dateDebut)) : null;
+            const end = draft.dateFin ? dateToGrist(new Date(draft.dateFin)) : null;
+            if (start !== null && end !== null && start > end) {
+                showToast('La date de début doit être antérieure ou égale à la date de fin.', 'error');
+                return;
+            }
+            const currentStart = dateToGrist(gristToDate(project.dateDebut));
+            const currentEnd = dateToGrist(gristToDate(project.dateFin));
+            const color = draft.couleur ? safeColor(draft.couleur, '#64748b') : null;
+            const changes = {};
+            if (name !== String(project.nom || '')) changes.nom = name;
+            if (start !== currentStart) changes.dateDebut = start;
+            if (end !== currentEnd) changes.dateFin = end;
+            if (color !== (project.couleur || null)) changes.couleur = color;
+            if (!Object.keys(changes).length) {
+                showToast('Aucune modification à enregistrer.', 'info');
+                return;
+            }
+            try {
+                if (!permissionRuntime || typeof permissionRuntime.refresh !== 'function' || typeof permissionRuntime.authorize !== 'function') {
+                    showToast('Modification impossible : service de permissions indisponible.', 'error');
+                    return;
+                }
+                await permissionRuntime.refresh({ force: true });
+                const snapshot = permissionRuntime.getSnapshot ? permissionRuntime.getSnapshot() : null;
+                const actor = permissionRuntime.getActor ? permissionRuntime.getActor() : null;
+                const liveProject = snapshot && snapshot.tables && Array.isArray(snapshot.tables.Projects)
+                    ? snapshot.tables.Projects.find(function(candidate) { return GanttTaskPanelRules.sameProject(candidate.id, projectId); })
+                    : project;
+                if (!liveProject || !canEditProjectDetails(actor, snapshot, liveProject)) {
+                    showToast('Modification refusée : seuls le responsable du projet ou un administrateur peuvent modifier son nom ou ses dates.', 'error');
+                    return;
+                }
+                const decision = await permissionRuntime.authorize([['UpdateRecord', 'Projects', projectId, changes]]);
+                if (!decision.allowed) {
+                    showToast(decision.message || 'Modification du projet refusée.', 'error');
+                    return;
+                }
+                await grist.docApi.applyUserActions([['UpdateRecord', 'Projects', projectId, changes]]);
+                Object.assign(project, changes);
+                panelState.projectEditData = {
+                    nom: project.nom || '',
+                    dateDebut: formatDateISO(gristToDate(project.dateDebut)),
+                    dateFin: formatDateISO(gristToDate(project.dateFin)),
+                    couleur: project.couleur || null
+                };
+                renderProjectPanel();
+                render();
+                showSaveIndicator();
+                showToast('Projet mis à jour.', 'success');
+            } catch (error) {
+                console.error('[Gantt] Modification projet impossible', error);
+                showToast('Le projet n’a pas été modifié : ' + (error && error.message ? error.message : 'erreur inconnue'), 'error');
+            }
         }
 
         async function confirmDeleteProject() {
@@ -10174,6 +10376,7 @@ if (typeof globalThis !== 'undefined') {
                 assignmentModes: {},
                 originalAssignmentModes: {},
                 chargeUnits: {},
+                timeUnit: 'j',
                 creationPermissionSnapshot: creationPermissionSnapshot
             };
             renderPanel();
@@ -10529,8 +10732,6 @@ if (typeof globalThis !== 'undefined') {
             const s = gristToDate(data.dateDebut);
             const e = gristToDate(data.dateEcheance);
             const priorityColor = PRIORITY_COLORS[getTaskPriority(data)] || '#94a3b8';
-            const currentProject = projects.find(p => GanttTaskPanelRules.sameProject(p.id, data.projet));
-            const projectColor = safeColor(currentProject?.couleur);
             const selectableProjects = panelState.isNew ? getCreatableProjects() : projects.filter(p => p.actif !== false);
             const projectOptions = selectableProjects.map(p =>
                 '<option value="' + p.id + '" ' + (GanttTaskPanelRules.sameProject(data.projet, p.id) ? 'selected' : '') + '>' + escapeHtml(p.nom) + '</option>'
@@ -10559,6 +10760,10 @@ if (typeof globalThis !== 'undefined') {
 
             // #3 : charge par personne. Le stockage reste en heures ; l'unité
             // choisie ici ne concerne que la saisie et l'affichage du panneau.
+            const timeUnit = GanttTaskPanelRules.normalizeUnit(panelState.timeUnit);
+            const formatPanelDuration = function(hours) {
+                return GanttTaskPanelRules.hoursToDisplayValue(hours, timeUnit) + ' ' + timeUnit;
+            };
             const chargeOf = (mid) => { const c = (data.charges || []).find(x => x.teamId === mid); return c ? c.heures : 0; };
             const chargeUnitOf = (mid) => GanttTaskPanelRules.normalizeUnit(panelState.chargeUnits && panelState.chargeUnits[mid]);
             const chargeDisplayOf = (mid) => GanttTaskPanelRules.hoursToDisplayValue(chargeOf(mid), chargeUnitOf(mid));
@@ -10568,7 +10773,7 @@ if (typeof globalThis !== 'undefined') {
             const parentCandidates = GanttTaskPanelRules.filterParentTasks(tasks, panelState.taskId, data.projet, canSetParent);
             const chargeDescs = (!panelState.isNew && panelState.taskId) ? getAllDescendants(panelState.taskId) : [];
             const chargeConsol = chargeDescs.length ? TF.chargeByMember([{ charges: TF.chargesToJson(data.charges) }].concat(chargeDescs)) : null;
-            const chargeConsolHtml = (chargeConsol && Object.keys(chargeConsol).length) ? ('<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border)"><div class="prop-label" style="margin-bottom:6px">Consolidé (avec sous-tâches)</div>' + Object.keys(chargeConsol).map(function(tid){ return '<div class="charge-row"><span class="an">' + escapeHtml(getTeamMemberName(Number(tid))) + '</span><span style="font-weight:600;font-size:0.82rem">' + chargeConsol[tid] + ' h</span></div>'; }).join('') + '<div style="margin-top:6px;font-size:0.78rem;color:var(--text-muted)">Total consolidé : <strong>' + Object.values(chargeConsol).reduce(function(s,h){ return s + h; }, 0) + '</strong> h</div></div>') : '';
+            const chargeConsolHtml = (chargeConsol && Object.keys(chargeConsol).length) ? ('<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border)"><div class="prop-label" style="margin-bottom:6px">Consolidé (avec sous-tâches)</div>' + Object.keys(chargeConsol).map(function(tid){ return '<div class="charge-row"><span class="an">' + escapeHtml(getTeamMemberName(Number(tid))) + '</span><span style="font-weight:600;font-size:0.82rem">' + formatPanelDuration(chargeConsol[tid]) + '</span></div>'; }).join('') + '<div style="margin-top:6px;font-size:0.78rem;color:var(--text-muted)">Total consolidé : <strong>' + formatPanelDuration(Object.values(chargeConsol).reduce(function(s,h){ return s + h; }, 0)) + '</strong></div></div>') : '';
             const depsChips = data.dependDe.map(id => {
                 const d = tasks.find(t => t.id === id);
                 return d ? '<span class="multi-select-chip">' + escapeHtml(d.titre) + '<span class="remove" data-panel-action="remove-dependency" data-task-id="' + safeRecordId(id) + '">×</span></span>' : '';
@@ -10593,6 +10798,8 @@ if (typeof globalThis !== 'undefined') {
             ).join('');
             const estim = data.estimationH || 0;
             const passe = data.tempsPasse || 0;
+            const estimDisplay = GanttTaskPanelRules.hoursToDisplayValue(estim, timeUnit);
+            const passeDisplay = GanttTaskPanelRules.hoursToDisplayValue(passe, timeUnit);
             const timePercent = estim > 0 ? Math.min((passe / estim) * 100, 100) : 0;
             const timeOver = passe > estim && estim > 0;
 
@@ -10631,10 +10838,6 @@ if (typeof globalThis !== 'undefined') {
                             '<div class="dates-inline"><input type="date" value="' + formatDateISO(s) + '" onchange="updateField(\'dateDebut\', this.value)"><span class="dates-arrow">→</span><input type="date" value="' + formatDateISO(e) + '" onchange="updateField(\'dateEcheance\', this.value)"><button class="today-btn" onclick="setTodayDate()">Auj.</button></div>') +
                     '</div></div>' +
                     '<div class="prop-row" data-panel-field="project"><span class="prop-label">Projet</span><div class="prop-value"><div class="project-select-wrap">' +
-                        (currentProject
-                            ? '<span class="project-color-dot" style="background:' + projectColor + '" title="Changer la couleur du projet" data-panel-action="toggle-project-color"></span>' +
-                              '<div class="color-picker-pop">' + COLOR_PRESETS.map(c => '<span class="color-swatch" style="background:' + c + '" data-panel-action="set-project-color" data-project-id="' + safeRecordId(currentProject.id) + '" data-color="' + c + '"></span>').join('') + '</div>'
-                            : '<span class="project-color-dot" style="background:' + projectColor + '"></span>') +
                         '<select class="form-select" onchange="updateField(\'projet\', parseInt(this.value) || null)">' +
                             (panelState.isNew ? '' : '<option value="">Aucun projet</option>') + projectOptions +
                         '</select>' +
@@ -10662,17 +10865,18 @@ if (typeof globalThis !== 'undefined') {
                     '</div></div>' +
                     (data.type === 'tache' ?
                         '<div class="prop-row" data-panel-field="time"><span class="prop-label">Temps prévu</span><div class="prop-value">' +
+                            '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:7px"><span style="font-size:0.74rem;color:var(--text-muted)">Unité · 1 j = 7 h</span><select aria-label="Unité du temps prévu" title="1 jour = 7 heures" onchange="updateTaskTimeUnit(this.value)" style="width:auto;font-size:0.78rem"><option value="j" ' + (timeUnit === 'j' ? 'selected' : '') + '>Jours (j)</option><option value="h" ' + (timeUnit === 'h' ? 'selected' : '') + '>Heures (h)</option></select></div>' +
                             '<div class="tc-grid">' +
-                                '<div class="tc-box"><div class="tcl">Estimé</div><div class="tcv"><input type="number" min="0" step="0.5" value="' + (estim || '') + '" placeholder="0" onchange="updateField(\'estimationH\', parseFloat(this.value) || null)"><small>h</small></div></div>' +
-                                '<div class="tc-box"><div class="tcl">Passé</div><div class="tcv"><input type="number" min="0" step="0.5" value="' + (passe || '') + '" placeholder="0" ' + (CRA_ACTIVE ? 'readonly title="Saisi via la Feuille de temps" ' : '') + 'onchange="updateField(\'tempsPasse\', parseFloat(this.value) || null)"><small>h</small></div></div>' +
+                                '<div class="tc-box"><div class="tcl">Estimé</div><div class="tcv"><input type="number" min="0" step="0.5" value="' + (estimDisplay || '') + '" placeholder="0" onchange="updateTaskTimeField(\'estimationH\', this.value)"><small>' + timeUnit + '</small></div></div>' +
+                                '<div class="tc-box"><div class="tcl">Passé</div><div class="tcv"><input type="number" min="0" step="0.5" value="' + (passeDisplay || '') + '" placeholder="0" ' + (CRA_ACTIVE ? 'readonly title="Saisi via la Feuille de temps" ' : '') + 'onchange="updateTaskTimeField(\'tempsPasse\', this.value)"><small>' + timeUnit + '</small></div></div>' +
                             '</div>' +
-                            (estim > 0 ? '<div class="tc-bar"><i class="' + (timeOver ? 'over' : '') + '" style="width:' + timePercent + '%"></i></div><div class="tc-foot"><span>' + Math.round((passe/estim)*100) + '% consommé</span><span>reste ' + Math.max(estim-passe,0) + ' h</span></div>' : '') +
+                            (estim > 0 ? '<div class="tc-bar"><i class="' + (timeOver ? 'over' : '') + '" style="width:' + timePercent + '%"></i></div><div class="tc-foot"><span>' + Math.round((passe/estim)*100) + '% consommé</span><span>reste ' + formatPanelDuration(Math.max(estim-passe,0)) + '</span></div>' : '') +
                             ((data.assignees.length && TASK_COLS.has('charges')) ? '<div style="margin-top:13px"><div class="prop-label" style="margin-bottom:6px">Charge par personne</div>' + data.assignees.map(function(id){ 
                                 var mode = panelState.assignmentModes && panelState.assignmentModes[id] ? panelState.assignmentModes[id] : 'uniforme';
                                 var unit = chargeUnitOf(id);
                                 var displayValue = chargeDisplayOf(id);
                                 return '<div class="charge-row" style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><span class="an" style="flex:0 0 120px">'+escapeHtml(getTeamMemberName(id))+'</span><input type="number" min="0" step="0.5" value="'+(displayValue || '')+'" placeholder="0" data-panel-change="update-charge" data-member-id="'+safeRecordId(id)+'" style="width:70px"><select aria-label="Unité de charge pour '+escapeHtml(getTeamMemberName(id))+'" title="1 jour = 7 heures" data-panel-change="update-charge-unit" data-member-id="'+safeRecordId(id)+'" style="flex:0 0 52px;font-size:0.78rem"><option value="j" '+(unit==='j'?'selected':'')+'>j</option><option value="h" '+(unit==='h'?'selected':'')+'>h</option></select><select data-panel-change="update-assignment-mode" data-member-id="'+safeRecordId(id)+'" style="flex:0 0 140px;font-size:0.78rem"><option value="uniforme" '+(mode==='uniforme'?'selected':'')+'>Régulier</option><option value="ponctuel" '+(mode==='ponctuel'?'selected':'')+'>Ponctuel</option></select></div>';
-                            }).join('') + chargeValidationHtml + '<div style="margin-top:6px;font-size:0.78rem;color:var(--text-muted)">Total : <strong>' + chargeTotalH + '</strong> h (' + GanttTaskPanelRules.hoursToDisplayValue(chargeTotalH, 'j') + ' j)</div></div>' : '') + chargeConsolHtml +
+                            }).join('') + chargeValidationHtml + '<div style="margin-top:6px;font-size:0.78rem;color:var(--text-muted)">Total : <strong>' + formatPanelDuration(chargeTotalH) + '</strong></div></div>' : '') + chargeConsolHtml +
                         '</div></div>' : '') +
                     (data.type === 'tache' ?
                         '<div class="prop-row pr-prog" data-panel-field="progress"><span class="prop-label">Progression</span><div class="prop-value">' +
@@ -10798,6 +11002,23 @@ if (typeof globalThis !== 'undefined') {
             if (!panelState.chargeUnits) panelState.chargeUnits = {};
             panelState.chargeUnits[memberId] = GanttTaskPanelRules.normalizeUnit(value);
             renderPanel();
+        }
+        function updateTaskTimeUnit(value) {
+            const unit = GanttTaskPanelRules.normalizeUnit(value);
+            panelState.timeUnit = unit;
+            // Le sélecteur global aligne l'unité des affectations existantes ;
+            // une affectation peut ensuite être ajustée individuellement.
+            if (!panelState.chargeUnits) panelState.chargeUnits = {};
+            (panelState.editData?.assignees || []).forEach(function(memberId) {
+                panelState.chargeUnits[memberId] = unit;
+            });
+            renderPanel();
+        }
+        function updateTaskTimeField(field, value) {
+            const hours = value === '' || value == null
+                ? null
+                : GanttTaskPanelRules.displayValueToHours(value, panelState.timeUnit);
+            updateField(field, hours);
         }
         function updateCharge(memberId, value) {
             const data = panelState.editData; if (!data) return;
@@ -11063,10 +11284,8 @@ if (typeof globalThis !== 'undefined') {
 
                 const memberIdValue = safeRecordId(control.dataset.memberId);
                 const taskIdValue = safeRecordId(control.dataset.taskId);
-                const projectIdValue = safeRecordId(control.dataset.projectId);
                 const memberId = memberIdValue ? Number(memberIdValue) : null;
                 const taskId = taskIdValue ? Number(taskIdValue) : null;
-                const projectId = projectIdValue ? Number(projectIdValue) : null;
 
                 if (action === 'remove-assignee' && memberId) removeAssignee(memberId);
                 else if (action === 'toggle-assignee' && memberId) toggleAssignee(memberId);
@@ -11075,8 +11294,6 @@ if (typeof globalThis !== 'undefined') {
                 else if (action === 'toggle-dependency' && taskId) toggleDependency(taskId);
                 else if (action === 'open-task' && taskId) openTaskPanel(taskId);
                 else if (action === 'create-subtask' && taskId) openCreateTaskWithParent(taskId);
-                else if (action === 'toggle-project-color') control.nextElementSibling?.classList.toggle('open');
-                else if (action === 'set-project-color' && projectId) setProjectColor(projectId, safeColor(control.dataset.color));
             };
             const changeHandler = function(event) {
                 const origin = event.target instanceof Element ? event.target : event.target?.parentElement;
@@ -11810,9 +12027,7 @@ if (typeof globalThis !== 'undefined') {
             const task = tasks.find(t => t.id === id);
             if (!task || isJalon(task)) return;
 
-            // WBS-02: parent autorisé uniquement pour 'move' (resize bloqué car ajusté auto)
             const isParent = hasChildren(task);
-            if (isParent && type !== 'move') return;
 
             e.preventDefault();
             e.stopPropagation();
@@ -12556,9 +12771,9 @@ if (typeof globalThis !== 'undefined') {
             if (!e.target.closest('.multi-select')) {
                 document.querySelectorAll('.multi-select').forEach(s => s.classList.remove('open'));
             }
-            // Fermer les pickers couleur (Projects / Team) si clic extérieur
-            if (!e.target.closest('.color-picker-pop, .project-color-dot, .member-color-picker, .member-color-dot')) {
-                document.querySelectorAll('.color-picker-pop, .member-color-picker').forEach(p => p.classList.remove('open'));
+            // Fermer les pickers de couleur d'équipe si clic extérieur
+            if (!e.target.closest('.member-color-picker, .member-color-dot')) {
+                document.querySelectorAll('.member-color-picker').forEach(p => p.classList.remove('open'));
             }
             // GEN-01: Désélection si clic en dehors d'une barre, du panel ou des contrôles
             if (!e.target.closest('.gantt-bar, .gantt-milestone, .gantt-project-span, .project-row, .panel, .panel-overlay, .task-row, .toolbar, .filter-dropdown, .time-view-controls')) {
@@ -12589,12 +12804,74 @@ if (typeof globalThis !== 'undefined') {
         // ═══════════════════════════════════════════════════════════════════════
         // INIT
         // ═══════════════════════════════════════════════════════════════════════
+        function setupTaskListResizer() {
+            const resizer = document.getElementById('taskListResizer');
+            const wrapper = document.getElementById('ganttWrapper');
+            if (!resizer || !wrapper) return;
+
+            const storageKey = 'taskflow_gantt_task_list_width';
+            const initialWidth = Math.round(parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--task-list-width')) || 260);
+            let minimumWidth = initialWidth;
+            let active = false;
+
+            function bounds() {
+                const available = wrapper.getBoundingClientRect().width;
+                return {
+                    min: minimumWidth,
+                    max: Math.max(minimumWidth, Math.min(available - 320, available * 0.65))
+                };
+            }
+
+            function setWidth(value, persist) {
+                if (window.innerWidth <= 700) return;
+                const limit = bounds();
+                const width = Math.round(Math.max(limit.min, Math.min(limit.max, value)));
+                document.documentElement.style.setProperty('--task-list-width', width + 'px');
+                if (persist) localStorage.setItem(storageKey, String(width));
+            }
+
+            const storedWidth = Number(localStorage.getItem(storageKey));
+            if (Number.isFinite(storedWidth) && storedWidth >= minimumWidth) setWidth(storedWidth, false);
+
+            function stopResize() {
+                if (!active) return;
+                active = false;
+                resizer.classList.remove('dragging');
+                document.body.style.cursor = '';
+                const current = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--task-list-width'));
+                if (Number.isFinite(current)) localStorage.setItem(storageKey, String(Math.round(current)));
+                window.removeEventListener('mousemove', moveResize);
+                window.removeEventListener('mouseup', stopResize);
+            }
+
+            function moveResize(event) {
+                if (!active) return;
+                const left = wrapper.getBoundingClientRect().left;
+                setWidth(event.clientX - left, false);
+            }
+
+            resizer.addEventListener('mousedown', function(event) {
+                if (window.innerWidth <= 700 || event.button !== 0) return;
+                event.preventDefault();
+                event.stopPropagation();
+                active = true;
+                resizer.classList.add('dragging');
+                document.body.style.cursor = 'col-resize';
+                window.addEventListener('mousemove', moveResize);
+                window.addEventListener('mouseup', stopResize);
+            });
+
+            resizer.addEventListener('keydown', function(event) {
+                if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+                event.preventDefault();
+                const current = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--task-list-width')) || minimumWidth;
+                setWidth(current + (event.key === 'ArrowRight' ? 24 : -24), true);
+            });
+        }
+
         document.documentElement.style.setProperty('--cell-width', VIEW_CONFIG[currentView].cellWidth + 'px');
         renderTimeViewSelector();
-        // Synchroniser le <select> de tri avec sortMode restauré depuis localStorage
-        { const s = document.getElementById('sortSelect'); if (s) s.value = sortMode; }
-        // Idem pour le <select> de couleur
-        { const s = document.getElementById('colorSelect'); if (s) s.value = colorMode; }
+        setupTaskListResizer();
         // Relancer le rendu quand le widget est redimensionné (ex: panel ouvert/fermé, fenêtre)
         new ResizeObserver(() => render()).observe(document.getElementById('timelineScroll'));
         // Décorateur panneau (look « Propriétés / B ») : icône devant chaque libellé, sans toucher au rendu

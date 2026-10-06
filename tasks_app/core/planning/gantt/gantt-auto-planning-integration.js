@@ -245,6 +245,8 @@
                             status: 'blocked',
                             code: preview.code,
                             diagnostics: preview.diagnostics || [],
+                            unplannedHours: Number(preview.totals && preview.totals.totalUnplannedHours) || 0,
+                            historyCutoffDate: preview.historyCutoffDate || null,
                             actionCount: 0
                         });
                         blockedMemberIds.push(memberId);
