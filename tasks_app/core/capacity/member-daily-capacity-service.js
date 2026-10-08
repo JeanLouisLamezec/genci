@@ -9,6 +9,7 @@
 
 const { parseDateUTC, formatDateUTC, addDaysUTC, compareDates, toCentiHours, toHours, validateNumber, isWeekdayIso } = require('../planning/planning-engine.js');
 const { getDocApi } = require('../grist/grist-api-helper.js');
+const { ensureMemberCapacityCoverage } = require('./member-capacity-coverage-service.js');
 
 // ============================================================================
 // CONSTANTES
@@ -16,6 +17,23 @@ const { getDocApi } = require('../grist/grist-api-helper.js');
 
 const DEFAULT_WEEKLY_CAPACITY = 35;
 const DAYS_PER_WEEK = 5;
+const formulaDrivenDocApis = new WeakSet();
+
+async function usesFormulaDrivenCapacity(docApi) {
+  if (formulaDrivenDocApis.has(docApi)) return true;
+
+  try {
+    const rows = columnarToRows(await docApi.fetchTable('TaskFlow_Meta'));
+    const version = rows.length ? Number(rows[0].schemaVersion) : 0;
+    if (version >= 11) {
+      formulaDrivenDocApis.add(docApi);
+      return true;
+    }
+  } catch (error) {
+    // Les documents pré-TaskFlow_Meta conservent le chemin historique v10.
+  }
+  return false;
+}
 
 // ============================================================================
 // HELPERS DE NORMALISATION
@@ -545,6 +563,20 @@ function reconcileMemberDailyCapacities(existingRows, desiredRows, options = {})
  */
 async function ensureMemberDailyCapacities(grist, memberId, startDate, endDate, options = {}) {
   const docApi = getDocApi(grist);
+
+  // v11 : les quatre valeurs de capacité sont des formules Grist. Il ne faut
+  // donc plus les écrire depuis un widget ; seules les lignes date+membre et
+  // leur index de couverture doivent être matérialisés.
+  if (await usesFormulaDrivenCapacity(docApi)) {
+    const coverage = await ensureMemberCapacityCoverage(grist, memberId, startDate, endDate, options);
+    return Object.assign({}, coverage, {
+      formulaDriven: true,
+      diagnostics: [{
+        code: 'FORMULA_DRIVEN_CAPACITY_V11',
+        message: 'Capacités calculées par les formules Grist ; seule la couverture a été matérialisée.'
+      }]
+    });
+  }
   
   const {
     weeklyCapacity,

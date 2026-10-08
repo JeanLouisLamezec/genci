@@ -16,6 +16,8 @@
  * Version 7: Filtres personnels persistants
  * Version 8: Sonde serveur pour l'association automatique des comptes Grist
  * Version 9: Horodatage de création des feuilles hebdomadaires
+ * Version 10: Faits journaliers d'indisponibilité et index de couverture
+ * Version 11: Projection formulée des capacités quotidiennes
  * ============================================================================ */
 
 (function (global) {
@@ -917,6 +919,189 @@
     }
 
     // ========================================================================
+    // MIGRATION V9 → V10 — Indisponibilités journalières et couverture
+    // ========================================================================
+
+    async function migrateToV10(grist, metadata) {
+        log('Migration v9 → v10: daily-indisponibilites-capacity-coverage-v10');
+
+        var docApi = getDocApi(grist);
+        var existingTables = metadata.tablesByName || {};
+        var existingColumns = metadata.columnsByKey || {};
+        var actions = [];
+
+        if (!existingTables.Disponibilites) {
+            throw new Error('DAILY_UNAVAILABILITY_TABLE_MISSING: La table Disponibilites est requise');
+        }
+
+        // Migration additive : les colonnes de plages historiques restent intactes.
+        // Les intégrations écrivent désormais une ligne par membre et par jour.
+        var availabilityColumns = [
+            { id: 'date', type: 'Date' },
+            { id: 'origine', type: 'Choice' },
+            { id: 'integration', type: 'Text' },
+            { id: 'externalKey', type: 'Text' },
+            { id: 'externalRefs', type: 'Text' },
+            { id: 'actif', type: 'Bool' },
+            { id: 'sourceUpdatedAt', type: 'DateTime' }
+        ];
+
+        for (var i = 0; i < availabilityColumns.length; i++) {
+            var availabilityColumn = availabilityColumns[i];
+            var availabilityKey = 'Disponibilites.' + availabilityColumn.id;
+            if (!existingColumns[availabilityKey]) {
+                actions.push(['AddColumn', 'Disponibilites', availabilityColumn.id, {
+                    type: availabilityColumn.type,
+                    isFormula: false
+                }]);
+                existingColumns[availabilityKey] = { type: availabilityColumn.type };
+            }
+        }
+
+        var coverageColumns = [
+            { id: 'membre', type: 'Ref:Team' },
+            { id: 'dateDebut', type: 'Date' },
+            { id: 'dateFin', type: 'Date' },
+            { id: 'createdAt', type: 'DateTime' },
+            { id: 'updatedAt', type: 'DateTime' }
+        ];
+
+        if (!existingTables.MemberCapacityCoverage) {
+            actions.push(['AddTable', 'MemberCapacityCoverage', coverageColumns.map(function(column) {
+                return { id: column.id, type: column.type, isFormula: false };
+            })]);
+        } else {
+            for (var j = 0; j < coverageColumns.length; j++) {
+                var coverageColumn = coverageColumns[j];
+                var coverageKey = 'MemberCapacityCoverage.' + coverageColumn.id;
+                if (!existingColumns[coverageKey]) {
+                    actions.push(['AddColumn', 'MemberCapacityCoverage', coverageColumn.id, {
+                        type: coverageColumn.type,
+                        isFormula: false
+                    }]);
+                    existingColumns[coverageKey] = { type: coverageColumn.type };
+                }
+            }
+        }
+
+        if (actions.length > 0) await docApi.applyUserActions(actions);
+
+        return {
+            success: true,
+            message: 'Migration v10 appliquée',
+            actionsExecuted: actions.length,
+            metadata: actions.length ? await loadMigrationMetadata(grist) : metadata
+        };
+    }
+
+    // ========================================================================
+    // MIGRATION V10 → V11 — Projection formulée des capacités quotidiennes
+    // ========================================================================
+
+    async function migrateToV11(grist, metadata) {
+        log('Migration v10 → v11: formula-driven-member-daily-capacities-v11');
+
+        var docApi = getDocApi(grist);
+        var existingTables = metadata.tablesByName || {};
+        var existingColumns = metadata.columnsByKey || {};
+        var capacityFormulas = SCHEMA && SCHEMA.formulas && SCHEMA.formulas.MemberDailyCapacities;
+
+        if (!existingTables.Disponibilites) {
+            throw new Error('FORMULA_CAPACITY_TABLE_MISSING: Disponibilites est requise');
+        }
+        if (!capacityFormulas) {
+            throw new Error('FORMULA_CAPACITY_SCHEMA_MISSING: Les formules v11 sont absentes du schéma');
+        }
+
+        // Les formules v11 ne lisent volontairement que les faits quotidiens
+        // (date). Continuer en présence d'une plage historique active ferait
+        // disparaître son effet du calcul sans avertissement : on bloque donc
+        // la bascule jusqu'à sa conversion explicite et bornée.
+        var availabilityRows = columnarToRows(await docApi.fetchTable('Disponibilites'));
+        var legacyRangeIds = availabilityRows.filter(function(row) {
+            var active = row.actif !== false && row.actif !== 0 && row.actif !== '0' && row.actif !== 'false';
+            var hasDailyDate = row.date !== null && row.date !== undefined && row.date !== '';
+            var hasRangeDate = (row.dateDebut !== null && row.dateDebut !== undefined && row.dateDebut !== '') ||
+                (row.dateFin !== null && row.dateFin !== undefined && row.dateFin !== '');
+            return active && !hasDailyDate && hasRangeDate;
+        }).map(function(row) { return row.id; });
+        if (legacyRangeIds.length) {
+            throw new Error(
+                'FORMULA_CAPACITY_LEGACY_UNAVAILABILITIES: convertir explicitement les plages actives avant v11 (ids: ' +
+                legacyRangeIds.join(', ') + ')'
+            );
+        }
+
+        var formulaColumns = [
+            { id: 'capaciteTheorique', type: 'Numeric' },
+            { id: 'disponibiliteRatio', type: 'Numeric' },
+            { id: 'capaciteDisponible', type: 'Numeric' },
+            { id: 'absenceHeures', type: 'Numeric' },
+            { id: 'motifIndisponibilite', type: 'Text' }
+        ];
+        var actions = [];
+
+        // Un document ancien ou partiellement migré peut déclarer v10 sans
+        // disposer de sa table v3. On la répare directement avec la projection
+        // v11 plutôt que de laisser le document dans un état inutilisable.
+        if (!existingTables.MemberDailyCapacities) {
+            actions.push(['AddTable', 'MemberDailyCapacities', [
+                { id: 'membre', type: 'Ref:Team', isFormula: false },
+                { id: 'date', type: 'Date', isFormula: false },
+                { id: 'capaciteTheorique', type: 'Numeric', isFormula: true, formula: capacityFormulas.capaciteTheorique },
+                { id: 'disponibiliteRatio', type: 'Numeric', isFormula: true, formula: capacityFormulas.disponibiliteRatio },
+                { id: 'capaciteDisponible', type: 'Numeric', isFormula: true, formula: capacityFormulas.capaciteDisponible },
+                { id: 'absenceHeures', type: 'Numeric', isFormula: true, formula: capacityFormulas.absenceHeures },
+                { id: 'motifIndisponibilite', type: 'Text', isFormula: true, formula: capacityFormulas.motifIndisponibilite },
+                { id: 'source', type: 'Choice', isFormula: false },
+                { id: 'revision', type: 'Int', isFormula: false },
+                { id: 'sourceUpdatedAt', type: 'DateTime', isFormula: false },
+                { id: 'commentaire', type: 'Text', isFormula: false }
+            ]]);
+        }
+
+        for (var i = 0; existingTables.MemberDailyCapacities && i < formulaColumns.length; i++) {
+            var definition = formulaColumns[i];
+            var key = 'MemberDailyCapacities.' + definition.id;
+            var existing = existingColumns[key];
+            var formula = capacityFormulas[definition.id];
+
+            if (!existing) {
+                actions.push(['AddColumn', 'MemberDailyCapacities', definition.id, {
+                    type: definition.type,
+                    isFormula: true,
+                    formula: formula
+                }]);
+                continue;
+            }
+
+            if (existing.type && existing.type !== 'Any' && existing.type !== definition.type) {
+                throw new Error('FORMULA_CAPACITY_TYPE_MISMATCH: ' + key + ' doit être de type ' + definition.type);
+            }
+
+            // Ces colonnes sont une projection système : une formule locale
+            // différente doit être remplacée, sinon les widgets ne disposent
+            // plus d'une source de capacité cohérente.
+            if (!existing.isFormula || existing.formula !== formula) {
+                actions.push(['ModifyColumn', 'MemberDailyCapacities', definition.id, {
+                    type: definition.type,
+                    isFormula: true,
+                    formula: formula
+                }]);
+            }
+        }
+
+        if (actions.length > 0) await docApi.applyUserActions(actions);
+
+        return {
+            success: true,
+            message: 'Migration v11 appliquée',
+            actionsExecuted: actions.length,
+            metadata: actions.length ? await loadMigrationMetadata(grist) : metadata
+        };
+    }
+
+    // ========================================================================
     // LISTE DES MIGRATIONS
     // ========================================================================
     
@@ -968,6 +1153,18 @@
             name: 'weekly-sheet-created-at-v9',
             description: 'Ajout de Feuilles.createdAt pour diagnostiquer les créations concurrentes',
             run: migrateToV9
+        },
+        {
+            version: 10,
+            name: 'daily-indisponibilites-capacity-coverage-v10',
+            description: 'Ajout des faits journaliers d’indisponibilité et de l’index de couverture',
+            run: migrateToV10
+        },
+        {
+            version: 11,
+            name: 'formula-driven-member-daily-capacities-v11',
+            description: 'Bascule des capacités quotidiennes vers les formules Grist',
+            run: migrateToV11
         }
     ];
 

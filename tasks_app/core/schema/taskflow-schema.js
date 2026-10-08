@@ -37,7 +37,18 @@
     }
 
     // Version courante du schéma
-    var SCHEMA_VERSION = 9;
+    var SCHEMA_VERSION = 11;
+
+    // Projection quotidienne v11. Ces formules ne consultent que les faits
+    // d'indisponibilité actifs du membre pour la date de la ligne : aucune
+    // itération sur la table complète n'est autorisée dans cette projection.
+    var MEMBER_DAILY_CAPACITY_FORMULAS = {
+        capaciteTheorique: 'weekly = $membre.capaciteHebdo if $membre and $membre.capaciteHebdo is not None else 35\nweekly / 5 if $date and $date.weekday() < 5 else 0',
+        disponibiliteRatio: 'facts = Disponibilites.lookupRecords(membre=$membre, date=$date, actif=True)\nratios = [fact.dispo for fact in facts if fact.dispo is not None]\nmin(ratios) if ratios else 1',
+        capaciteDisponible: 'round(($capaciteTheorique or 0) * ($disponibiliteRatio if $disponibiliteRatio is not None else 1), 2)',
+        absenceHeures: 'round(max(0, ($capaciteTheorique or 0) - ($capaciteDisponible or 0)), 2)',
+        motifIndisponibilite: 'facts = Disponibilites.lookupRecords(membre=$membre, date=$date, actif=True)\n", ".join(sorted(set(fact.type for fact in facts if fact.type)))'
+    };
 
     // Ordre de création des tables (important pour les dépendances)
     var TABLE_ORDER = [
@@ -51,6 +62,7 @@
         'Actions',
         'KanbanSteps',
         'Disponibilites',
+        'MemberCapacityCoverage',
         'MemberDailyCapacities',
         'Feuilles',
         'TimeEntries',
@@ -244,7 +256,31 @@
                 { id: 'dateDebut',        opts: dataColumn('Date') },
                 { id: 'dateFin',          opts: dataColumn('Date') },
                 { id: 'dispo',            opts: dataColumn('Numeric') },
-                { id: 'commentaire',      opts: dataColumn('Text') }
+                { id: 'commentaire',      opts: dataColumn('Text') },
+                // v10 : fait journalier canonique et provenance normalisée.
+                // Les dates de plage restent présentes pour la compatibilité
+                // des documents existants ; les nouveaux flux utilisent date.
+                { id: 'date',             opts: dataColumn('Date') },
+                { id: 'origine',          opts: dataColumn('Choice') },
+                { id: 'integration',      opts: dataColumn('Text') },
+                { id: 'externalKey',      opts: dataColumn('Text') },
+                { id: 'externalRefs',     opts: dataColumn('Text') },
+                { id: 'actif',            opts: dataColumn('Bool') },
+                { id: 'sourceUpdatedAt',  opts: dataColumn('DateTime') }
+            ]
+        },
+
+        // =========================================================================
+        // MemberCapacityCoverage — Index des périodes de calendrier matérialisées
+        // =========================================================================
+        MemberCapacityCoverage: {
+            label: 'Couverture des capacités',
+            columns: [
+                { id: 'membre',      opts: refColumn('Team') },
+                { id: 'dateDebut',   opts: dataColumn('Date') },
+                { id: 'dateFin',     opts: dataColumn('Date') },
+                { id: 'createdAt',   opts: dataColumn('DateTime') },
+                { id: 'updatedAt',   opts: dataColumn('DateTime') }
             ]
         },
 
@@ -256,10 +292,11 @@
             columns: [
                 { id: 'membre',             opts: refColumn('Team') },
                 { id: 'date',               opts: dataColumn('Date') },
-                { id: 'capaciteTheorique',  opts: dataColumn('Numeric') },
-                { id: 'disponibiliteRatio', opts: dataColumn('Numeric') },
-                { id: 'capaciteDisponible', opts: dataColumn('Numeric') },
-                { id: 'absenceHeures',      opts: dataColumn('Numeric') },
+                { id: 'capaciteTheorique',  opts: { type: 'Numeric', isFormula: true, formula: MEMBER_DAILY_CAPACITY_FORMULAS.capaciteTheorique } },
+                { id: 'disponibiliteRatio', opts: { type: 'Numeric', isFormula: true, formula: MEMBER_DAILY_CAPACITY_FORMULAS.disponibiliteRatio } },
+                { id: 'capaciteDisponible', opts: { type: 'Numeric', isFormula: true, formula: MEMBER_DAILY_CAPACITY_FORMULAS.capaciteDisponible } },
+                { id: 'absenceHeures',      opts: { type: 'Numeric', isFormula: true, formula: MEMBER_DAILY_CAPACITY_FORMULAS.absenceHeures } },
+                { id: 'motifIndisponibilite', opts: { type: 'Text', isFormula: true, formula: MEMBER_DAILY_CAPACITY_FORMULAS.motifIndisponibilite } },
                 { id: 'source',             opts: dataColumn('Choice') },
                 { id: 'revision',           opts: dataColumn('Int') },
                 { id: 'sourceUpdatedAt',    opts: dataColumn('DateTime') },
@@ -434,7 +471,10 @@
         { table: 'Disponibilites', column: 'membre', targetTable: 'Team', visibleColumn: 'nom' },
         
         // MemberDailyCapacities refs
-        { table: 'MemberDailyCapacities', column: 'membre', targetTable: 'Team', visibleColumn: 'nom' }
+        { table: 'MemberDailyCapacities', column: 'membre', targetTable: 'Team', visibleColumn: 'nom' },
+
+        // MemberCapacityCoverage refs
+        { table: 'MemberCapacityCoverage', column: 'membre', targetTable: 'Team', visibleColumn: 'nom' }
     ];
 
     // Statuts par défaut pour les colonnes Choice
@@ -474,6 +514,7 @@
         Tasks: {
             editorsEmails: "emails = set()\nfor a in $assignees:\n    emails.add(a.email)\nif $projet and $projet.responsable:\n    emails.add($projet.responsable.email)\n    for c in $projet.responsable.chaine_chefs:\n        emails.add(c.email)\n',' + ','.join(sorted(e for e in emails if e)) + ','"
         },
+        MemberDailyCapacities: MEMBER_DAILY_CAPACITY_FORMULAS,
         TimeEntries: {
             statutFeuille: '$feuille.statut if $feuille else ""',
             responsableValidation: '$feuille.responsableValidation if $feuille else None',
@@ -489,6 +530,7 @@
         'Team.role': ['membre', 'chef', 'chef_de_projet'],
         'Feuilles.statut': ['brouillon', 'soumis', 'valide', 'rejete', 'correction_manager'],
         'Disponibilites.type': ['conge', 'maladie', 'ferie', 'formation', 'temps_partiel', 'autre'],
+        'Disponibilites.origine': ['manuel', 'logiciel_metier'],
         'Competences.categorie': ['technique', 'fonctionnel', 'transverse']
     };
 

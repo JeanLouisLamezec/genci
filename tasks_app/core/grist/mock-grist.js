@@ -160,13 +160,14 @@ function createMockGrist(options = {}) {
       }
       
       if (tableId === '_grist_Tables_column') {
-        const result = { id: [], parentId: [], colId: [], type: [], isFormula: [] };
+        const result = { id: [], parentId: [], colId: [], type: [], isFormula: [], formula: [] };
         for (const c of gristTablesColumn) {
           result.id.push(c.id);
           result.parentId.push(c.parentId);
           result.colId.push(c.colId);
           result.type.push(c.type);
           result.isFormula.push(c.isFormula);
+          result.formula.push(c.formula || '');
         }
         return result;
       }
@@ -434,7 +435,8 @@ function createMockGrist(options = {}) {
         parentId: tableMetaId,
         colId: col.id,
         type: col.type || 'Any',
-        isFormula: col.isFormula || false
+        isFormula: col.isFormula || false,
+        formula: col.formula || ''
       });
     }
     
@@ -468,7 +470,8 @@ function createMockGrist(options = {}) {
         parentId: tableMeta.id,
         colId,
         type: (options && options.type) || 'Any',
-        isFormula: (options && options.isFormula) || false
+        isFormula: (options && options.isFormula) || false,
+        formula: (options && options.formula) || ''
       });
     }
     
@@ -641,6 +644,9 @@ function createMockGrist(options = {}) {
         }
         if (options && options.isFormula !== undefined) {
           colMeta.isFormula = options.isFormula;
+        }
+        if (options && options.formula !== undefined) {
+          colMeta.formula = options.formula;
         }
       }
     }

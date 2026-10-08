@@ -67,9 +67,14 @@
 
 .filter-section-header {
   display: flex;
+  width: 100%;
   align-items: center;
   gap: 8px;
   padding: 8px 10px;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  font-family: inherit;
   cursor: pointer;
   border-radius: 6px;
   transition: background-color 0.2s ease;

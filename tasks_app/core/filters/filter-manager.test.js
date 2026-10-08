@@ -51,7 +51,7 @@ function createFilterManager(overrides = {}) {
 }
 
 // Import FilterManager (doit être après la définition de mockData et createFilterManager)
-const { FilterManager } = require('./filter-manager.js');
+const { FilterManager, initFilterDropdown } = require('./filter-manager.js');
 
 // Suite de tests
 describe('FilterManager - Filtre Programme', () => {
@@ -373,6 +373,75 @@ describe('FilterManager - Synchronisation UI', () => {
       containers.project,
       containers.task
     ]);
+  });
+
+  test('laisse le panneau ouvert lors d’un clic sur une icône du bouton Filtres', () => {
+    const fm = createFilterManager();
+    const dropdown = document.createElement('div');
+    dropdown.className = 'filter-dropdown';
+    const button = document.createElement('button');
+    button.className = 'filter-btn';
+    const icon = document.createElement('svg');
+    button.appendChild(icon);
+    const panel = document.createElement('div');
+    const containers = {
+      assignee: document.createElement('div'),
+      team: document.createElement('div'),
+      project: document.createElement('div'),
+      programme: document.createElement('div'),
+      task: document.createElement('div')
+    };
+
+    Object.values(containers).forEach(container => panel.appendChild(container));
+    dropdown.append(button, panel);
+    document.body.appendChild(dropdown);
+    fm.initUI(containers, panel);
+    panel.style.display = 'none';
+
+    icon.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(panel.classList.contains('open')).toBe(true);
+    expect(panel.style.display).toBe('');
+    expect(button.getAttribute('aria-expanded')).toBe('true');
+
+    fm.ui.programme.header.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(fm.ui.programme.checkboxContainer.classList.contains('open')).toBe(true);
+    dropdown.remove();
+  });
+
+  test('réutilise le contrôleur posé avant les données sans double bascule', () => {
+    const fm = createFilterManager();
+    const dropdown = document.createElement('div');
+    dropdown.className = 'filter-dropdown';
+    const button = document.createElement('button');
+    button.className = 'filter-btn';
+    const panel = document.createElement('div');
+    const containers = {
+      assignee: document.createElement('div'),
+      team: document.createElement('div'),
+      project: document.createElement('div'),
+      programme: document.createElement('div'),
+      task: document.createElement('div')
+    };
+
+    Object.values(containers).forEach(container => panel.appendChild(container));
+    dropdown.append(button, panel);
+    document.body.appendChild(dropdown);
+
+    // Simulation du clic disponible dès l'affichage du header CRA.
+    initFilterDropdown(button, panel);
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(panel.classList.contains('open')).toBe(true);
+
+    // L'arrivée des données initialise les sections, sans dupliquer le listener.
+    fm.initUI(containers, panel);
+    expect(panel.classList.contains('open')).toBe(true);
+
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(panel.classList.contains('open')).toBe(false);
+    expect(button.getAttribute('aria-expanded')).toBe('false');
+
+    dropdown.remove();
   });
 
   test('doit mettre à jour le compteur de filtres', () => {

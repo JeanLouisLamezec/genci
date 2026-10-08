@@ -29,6 +29,8 @@ const MODULES = [
   { path: path.join(CORE_DIR, 'planning', 'planning-engine.js') },
   { path: path.join(CORE_DIR, 'planning', 'reconciliation', 'planning-reconciliation.js') },
   { path: path.join(CORE_DIR, 'grist', 'grist-api-helper.js') },
+  { path: path.join(CORE_DIR, 'capacity', 'daily-unavailability-normalizer.js') },
+  { path: path.join(CORE_DIR, 'capacity', 'member-capacity-coverage-service.js') },
   { path: path.join(CORE_DIR, 'capacity', 'member-daily-capacity-service.js') },
   { path: path.join(CORE_DIR, 'grist', 'grist-planning-adapter.js') },
   { path: path.join(CORE_DIR, 'planning', 'member', 'member-planning-orchestrator.js') },

@@ -7,14 +7,14 @@
  * 3. Ne pas signaler les colonnes légitimes finissant par un chiffre
  */
 
-describe('TaskFlow Schema v9', () => {
+describe('TaskFlow Schema v11', () => {
     
     // Charger le schéma
     require('./taskflow-schema.js');
     const SCHEMA = global.TASKFLOW_SCHEMA;
     
-    test('TASKFLOW_SCHEMA.version === 9 et les tables techniques sont déclarées', () => {
-        expect(SCHEMA.version).toBe(9);
+    test('TASKFLOW_SCHEMA.version === 11 et les tables techniques sont déclarées', () => {
+        expect(SCHEMA.version).toBe(11);
         const teamColumns = SCHEMA.tables.Team.columns;
         const adminColumn = teamColumns.find(column => column.id === 'estAdmin');
         expect(adminColumn).toBeDefined();
@@ -34,6 +34,14 @@ describe('TaskFlow Schema v9', () => {
             type: 'Ref:Team', isFormula: false, recalcWhen: 2
         });
         expect(candidateColumn.opts.formula).toContain('user.Email');
+        expect(SCHEMA.tableOrder).toContain('MemberCapacityCoverage');
+        expect(SCHEMA.tables.MemberCapacityCoverage.columns.map(column => column.id)).toEqual([
+            'membre', 'dateDebut', 'dateFin', 'createdAt', 'updatedAt'
+        ]);
+        expect(SCHEMA.tables.Disponibilites.columns.map(column => column.id)).toEqual(expect.arrayContaining([
+            'date', 'origine', 'integration', 'externalKey', 'externalRefs', 'actif', 'sourceUpdatedAt'
+        ]));
+        expect(SCHEMA.tables.MemberDailyCapacities.columns.map(column => column.id)).toContain('motifIndisponibilite');
     });
     
     test('Feuilles a les nouvelles colonnes v4', () => {
@@ -109,11 +117,32 @@ describe('TaskFlow Schema v9', () => {
         
         expect(SCHEMA.formulas.Tasks).toBeDefined();
         expect(SCHEMA.formulas.Tasks.editorsEmails).toBeDefined();
+
+        expect(SCHEMA.formulas.MemberDailyCapacities).toBeDefined();
+        expect(SCHEMA.formulas.MemberDailyCapacities.disponibiliteRatio)
+            .toContain('Disponibilites.lookupRecords(membre=$membre, date=$date, actif=True)');
+        expect(SCHEMA.formulas.MemberDailyCapacities.disponibiliteRatio)
+            .not.toContain('Disponibilites.all');
         
         expect(SCHEMA.formulas.TimeEntries).toBeDefined();
         expect(SCHEMA.formulas.TimeEntries.statutFeuille).toBeDefined();
         expect(SCHEMA.formulas.TimeEntries.responsableValidation).toBeDefined();
         expect(SCHEMA.formulas.TimeEntries.semaineFeuille).toBeDefined();
+    });
+
+    test('MemberDailyCapacities porte une projection formulée v11', () => {
+        const capacityTable = SCHEMA.tables.MemberDailyCapacities;
+        const expectedColumns = [
+            'capaciteTheorique', 'disponibiliteRatio', 'capaciteDisponible',
+            'absenceHeures', 'motifIndisponibilite'
+        ];
+
+        expectedColumns.forEach(columnId => {
+            const column = capacityTable.columns.find(c => c.id === columnId);
+            expect(column).toBeDefined();
+            expect(column.opts.isFormula).toBe(true);
+            expect(column.opts.formula).toBe(SCHEMA.formulas.MemberDailyCapacities[columnId]);
+        });
     });
     
     test('TASKFLOW_SCHEMA.defaultChoices contient les choix centralisés', () => {
@@ -122,6 +151,7 @@ describe('TaskFlow Schema v9', () => {
         expect(SCHEMA.defaultChoices['Team.role']).toBeDefined();
         expect(SCHEMA.defaultChoices['Feuilles.statut']).toBeDefined();
         expect(SCHEMA.defaultChoices['Disponibilites.type']).toBeDefined();
+        expect(SCHEMA.defaultChoices['Disponibilites.origine']).toEqual(['manuel', 'logiciel_metier']);
         expect(SCHEMA.defaultChoices['Competences.categorie']).toBeDefined();
         
         // Vérifier que correction_manager est dans Feuilles.statut

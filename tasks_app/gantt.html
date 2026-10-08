@@ -578,6 +578,21 @@
     <div class="header">
         <div class="header-left">
             <h1><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/><rect x="3" y="4" width="8" height="4" rx="1" fill="currentColor" stroke="none"/><rect x="8" y="10" width="10" height="4" rx="1" fill="currentColor" stroke="none"/><rect x="5" y="16" width="6" height="4" rx="1" fill="currentColor" stroke="none"/></svg> Gantt</h1>
+            <div class="filter-dropdown">
+              <button class="filter-btn" id="btnFilterToggle"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon></svg> Filtres <span class="filter-count" style="display:none"></span>▾</button>
+              <div class="filter-panel" id="filterPanel">
+                  <div class="filter-sections">
+                  <div id="filterTeamContainer"></div>
+                  <div id="filterPersonContainer"></div>
+                  <div id="filterProgramContainer"></div>
+                  <div id="filterProjectContainer"></div>
+                  <div id="filterTaskContainer"></div>
+                </div>
+                <div class="filter-actions">
+                  <button class="btn ghost" id="btnClearFilters">× Effacer tout</button>
+                </div>
+              </div>
+            </div>
         </div>
         <div class="header-center">
             <div class="header-period-controls" aria-label="Navigation et période">
@@ -587,23 +602,6 @@
                 <button class="btn btn-nav" onclick="navigate(1)">▶</button>
                 <span class="current-period" id="currentPeriod"></span>
                 <div class="time-view-controls" id="timeViewSelector" aria-label="Granularité temporelle"></div>
-            </div>
-            <div class="header-filter-controls">
-              <div class="filter-dropdown">
-                <button class="filter-btn" id="btnFilterToggle"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon></svg> Filtres <span class="filter-count" style="display:none"></span>▾</button>
-                <div class="filter-panel" id="filterPanel">
-                    <div class="filter-sections">
-                    <div id="filterTeamContainer"></div>
-                    <div id="filterPersonContainer"></div>
-                    <div id="filterProgramContainer"></div>
-                    <div id="filterProjectContainer"></div>
-                    <div id="filterTaskContainer"></div>
-                  </div>
-                  <div class="filter-actions">
-                    <button class="btn ghost" id="btnClearFilters">× Effacer tout</button>
-                  </div>
-                </div>
-              </div>
             </div>
         </div>
         <div class="header-right">
@@ -4264,7 +4262,18 @@ if (typeof globalThis !== 'undefined') {
     }
 
     // Version courante du schéma
-    var SCHEMA_VERSION = 9;
+    var SCHEMA_VERSION = 11;
+
+    // Projection quotidienne v11. Ces formules ne consultent que les faits
+    // d'indisponibilité actifs du membre pour la date de la ligne : aucune
+    // itération sur la table complète n'est autorisée dans cette projection.
+    var MEMBER_DAILY_CAPACITY_FORMULAS = {
+        capaciteTheorique: 'weekly = $membre.capaciteHebdo if $membre and $membre.capaciteHebdo is not None else 35\nweekly / 5 if $date and $date.weekday() < 5 else 0',
+        disponibiliteRatio: 'facts = Disponibilites.lookupRecords(membre=$membre, date=$date, actif=True)\nratios = [fact.dispo for fact in facts if fact.dispo is not None]\nmin(ratios) if ratios else 1',
+        capaciteDisponible: 'round(($capaciteTheorique or 0) * ($disponibiliteRatio if $disponibiliteRatio is not None else 1), 2)',
+        absenceHeures: 'round(max(0, ($capaciteTheorique or 0) - ($capaciteDisponible or 0)), 2)',
+        motifIndisponibilite: 'facts = Disponibilites.lookupRecords(membre=$membre, date=$date, actif=True)\n", ".join(sorted(set(fact.type for fact in facts if fact.type)))'
+    };
 
     // Ordre de création des tables (important pour les dépendances)
     var TABLE_ORDER = [
@@ -4278,6 +4287,7 @@ if (typeof globalThis !== 'undefined') {
         'Actions',
         'KanbanSteps',
         'Disponibilites',
+        'MemberCapacityCoverage',
         'MemberDailyCapacities',
         'Feuilles',
         'TimeEntries',
@@ -4471,7 +4481,31 @@ if (typeof globalThis !== 'undefined') {
                 { id: 'dateDebut',        opts: dataColumn('Date') },
                 { id: 'dateFin',          opts: dataColumn('Date') },
                 { id: 'dispo',            opts: dataColumn('Numeric') },
-                { id: 'commentaire',      opts: dataColumn('Text') }
+                { id: 'commentaire',      opts: dataColumn('Text') },
+                // v10 : fait journalier canonique et provenance normalisée.
+                // Les dates de plage restent présentes pour la compatibilité
+                // des documents existants ; les nouveaux flux utilisent date.
+                { id: 'date',             opts: dataColumn('Date') },
+                { id: 'origine',          opts: dataColumn('Choice') },
+                { id: 'integration',      opts: dataColumn('Text') },
+                { id: 'externalKey',      opts: dataColumn('Text') },
+                { id: 'externalRefs',     opts: dataColumn('Text') },
+                { id: 'actif',            opts: dataColumn('Bool') },
+                { id: 'sourceUpdatedAt',  opts: dataColumn('DateTime') }
+            ]
+        },
+
+        // =========================================================================
+        // MemberCapacityCoverage — Index des périodes de calendrier matérialisées
+        // =========================================================================
+        MemberCapacityCoverage: {
+            label: 'Couverture des capacités',
+            columns: [
+                { id: 'membre',      opts: refColumn('Team') },
+                { id: 'dateDebut',   opts: dataColumn('Date') },
+                { id: 'dateFin',     opts: dataColumn('Date') },
+                { id: 'createdAt',   opts: dataColumn('DateTime') },
+                { id: 'updatedAt',   opts: dataColumn('DateTime') }
             ]
         },
 
@@ -4483,10 +4517,11 @@ if (typeof globalThis !== 'undefined') {
             columns: [
                 { id: 'membre',             opts: refColumn('Team') },
                 { id: 'date',               opts: dataColumn('Date') },
-                { id: 'capaciteTheorique',  opts: dataColumn('Numeric') },
-                { id: 'disponibiliteRatio', opts: dataColumn('Numeric') },
-                { id: 'capaciteDisponible', opts: dataColumn('Numeric') },
-                { id: 'absenceHeures',      opts: dataColumn('Numeric') },
+                { id: 'capaciteTheorique',  opts: { type: 'Numeric', isFormula: true, formula: MEMBER_DAILY_CAPACITY_FORMULAS.capaciteTheorique } },
+                { id: 'disponibiliteRatio', opts: { type: 'Numeric', isFormula: true, formula: MEMBER_DAILY_CAPACITY_FORMULAS.disponibiliteRatio } },
+                { id: 'capaciteDisponible', opts: { type: 'Numeric', isFormula: true, formula: MEMBER_DAILY_CAPACITY_FORMULAS.capaciteDisponible } },
+                { id: 'absenceHeures',      opts: { type: 'Numeric', isFormula: true, formula: MEMBER_DAILY_CAPACITY_FORMULAS.absenceHeures } },
+                { id: 'motifIndisponibilite', opts: { type: 'Text', isFormula: true, formula: MEMBER_DAILY_CAPACITY_FORMULAS.motifIndisponibilite } },
                 { id: 'source',             opts: dataColumn('Choice') },
                 { id: 'revision',           opts: dataColumn('Int') },
                 { id: 'sourceUpdatedAt',    opts: dataColumn('DateTime') },
@@ -4661,7 +4696,10 @@ if (typeof globalThis !== 'undefined') {
         { table: 'Disponibilites', column: 'membre', targetTable: 'Team', visibleColumn: 'nom' },
         
         // MemberDailyCapacities refs
-        { table: 'MemberDailyCapacities', column: 'membre', targetTable: 'Team', visibleColumn: 'nom' }
+        { table: 'MemberDailyCapacities', column: 'membre', targetTable: 'Team', visibleColumn: 'nom' },
+
+        // MemberCapacityCoverage refs
+        { table: 'MemberCapacityCoverage', column: 'membre', targetTable: 'Team', visibleColumn: 'nom' }
     ];
 
     // Statuts par défaut pour les colonnes Choice
@@ -4701,6 +4739,7 @@ if (typeof globalThis !== 'undefined') {
         Tasks: {
             editorsEmails: "emails = set()\nfor a in $assignees:\n    emails.add(a.email)\nif $projet and $projet.responsable:\n    emails.add($projet.responsable.email)\n    for c in $projet.responsable.chaine_chefs:\n        emails.add(c.email)\n',' + ','.join(sorted(e for e in emails if e)) + ','"
         },
+        MemberDailyCapacities: MEMBER_DAILY_CAPACITY_FORMULAS,
         TimeEntries: {
             statutFeuille: '$feuille.statut if $feuille else ""',
             responsableValidation: '$feuille.responsableValidation if $feuille else None',
@@ -4716,6 +4755,7 @@ if (typeof globalThis !== 'undefined') {
         'Team.role': ['membre', 'chef', 'chef_de_projet'],
         'Feuilles.statut': ['brouillon', 'soumis', 'valide', 'rejete', 'correction_manager'],
         'Disponibilites.type': ['conge', 'maladie', 'ferie', 'formation', 'temps_partiel', 'autre'],
+        'Disponibilites.origine': ['manuel', 'logiciel_metier'],
         'Competences.categorie': ['technique', 'fonctionnel', 'transverse']
     };
 
@@ -5621,6 +5661,8 @@ if (typeof globalThis !== 'undefined') {
  * Version 7: Filtres personnels persistants
  * Version 8: Sonde serveur pour l'association automatique des comptes Grist
  * Version 9: Horodatage de création des feuilles hebdomadaires
+ * Version 10: Faits journaliers d'indisponibilité et index de couverture
+ * Version 11: Projection formulée des capacités quotidiennes
  * ============================================================================ */
 
 (function (global) {
@@ -6522,6 +6564,189 @@ if (typeof globalThis !== 'undefined') {
     }
 
     // ========================================================================
+    // MIGRATION V9 → V10 — Indisponibilités journalières et couverture
+    // ========================================================================
+
+    async function migrateToV10(grist, metadata) {
+        log('Migration v9 → v10: daily-indisponibilites-capacity-coverage-v10');
+
+        var docApi = getDocApi(grist);
+        var existingTables = metadata.tablesByName || {};
+        var existingColumns = metadata.columnsByKey || {};
+        var actions = [];
+
+        if (!existingTables.Disponibilites) {
+            throw new Error('DAILY_UNAVAILABILITY_TABLE_MISSING: La table Disponibilites est requise');
+        }
+
+        // Migration additive : les colonnes de plages historiques restent intactes.
+        // Les intégrations écrivent désormais une ligne par membre et par jour.
+        var availabilityColumns = [
+            { id: 'date', type: 'Date' },
+            { id: 'origine', type: 'Choice' },
+            { id: 'integration', type: 'Text' },
+            { id: 'externalKey', type: 'Text' },
+            { id: 'externalRefs', type: 'Text' },
+            { id: 'actif', type: 'Bool' },
+            { id: 'sourceUpdatedAt', type: 'DateTime' }
+        ];
+
+        for (var i = 0; i < availabilityColumns.length; i++) {
+            var availabilityColumn = availabilityColumns[i];
+            var availabilityKey = 'Disponibilites.' + availabilityColumn.id;
+            if (!existingColumns[availabilityKey]) {
+                actions.push(['AddColumn', 'Disponibilites', availabilityColumn.id, {
+                    type: availabilityColumn.type,
+                    isFormula: false
+                }]);
+                existingColumns[availabilityKey] = { type: availabilityColumn.type };
+            }
+        }
+
+        var coverageColumns = [
+            { id: 'membre', type: 'Ref:Team' },
+            { id: 'dateDebut', type: 'Date' },
+            { id: 'dateFin', type: 'Date' },
+            { id: 'createdAt', type: 'DateTime' },
+            { id: 'updatedAt', type: 'DateTime' }
+        ];
+
+        if (!existingTables.MemberCapacityCoverage) {
+            actions.push(['AddTable', 'MemberCapacityCoverage', coverageColumns.map(function(column) {
+                return { id: column.id, type: column.type, isFormula: false };
+            })]);
+        } else {
+            for (var j = 0; j < coverageColumns.length; j++) {
+                var coverageColumn = coverageColumns[j];
+                var coverageKey = 'MemberCapacityCoverage.' + coverageColumn.id;
+                if (!existingColumns[coverageKey]) {
+                    actions.push(['AddColumn', 'MemberCapacityCoverage', coverageColumn.id, {
+                        type: coverageColumn.type,
+                        isFormula: false
+                    }]);
+                    existingColumns[coverageKey] = { type: coverageColumn.type };
+                }
+            }
+        }
+
+        if (actions.length > 0) await docApi.applyUserActions(actions);
+
+        return {
+            success: true,
+            message: 'Migration v10 appliquée',
+            actionsExecuted: actions.length,
+            metadata: actions.length ? await loadMigrationMetadata(grist) : metadata
+        };
+    }
+
+    // ========================================================================
+    // MIGRATION V10 → V11 — Projection formulée des capacités quotidiennes
+    // ========================================================================
+
+    async function migrateToV11(grist, metadata) {
+        log('Migration v10 → v11: formula-driven-member-daily-capacities-v11');
+
+        var docApi = getDocApi(grist);
+        var existingTables = metadata.tablesByName || {};
+        var existingColumns = metadata.columnsByKey || {};
+        var capacityFormulas = SCHEMA && SCHEMA.formulas && SCHEMA.formulas.MemberDailyCapacities;
+
+        if (!existingTables.Disponibilites) {
+            throw new Error('FORMULA_CAPACITY_TABLE_MISSING: Disponibilites est requise');
+        }
+        if (!capacityFormulas) {
+            throw new Error('FORMULA_CAPACITY_SCHEMA_MISSING: Les formules v11 sont absentes du schéma');
+        }
+
+        // Les formules v11 ne lisent volontairement que les faits quotidiens
+        // (date). Continuer en présence d'une plage historique active ferait
+        // disparaître son effet du calcul sans avertissement : on bloque donc
+        // la bascule jusqu'à sa conversion explicite et bornée.
+        var availabilityRows = columnarToRows(await docApi.fetchTable('Disponibilites'));
+        var legacyRangeIds = availabilityRows.filter(function(row) {
+            var active = row.actif !== false && row.actif !== 0 && row.actif !== '0' && row.actif !== 'false';
+            var hasDailyDate = row.date !== null && row.date !== undefined && row.date !== '';
+            var hasRangeDate = (row.dateDebut !== null && row.dateDebut !== undefined && row.dateDebut !== '') ||
+                (row.dateFin !== null && row.dateFin !== undefined && row.dateFin !== '');
+            return active && !hasDailyDate && hasRangeDate;
+        }).map(function(row) { return row.id; });
+        if (legacyRangeIds.length) {
+            throw new Error(
+                'FORMULA_CAPACITY_LEGACY_UNAVAILABILITIES: convertir explicitement les plages actives avant v11 (ids: ' +
+                legacyRangeIds.join(', ') + ')'
+            );
+        }
+
+        var formulaColumns = [
+            { id: 'capaciteTheorique', type: 'Numeric' },
+            { id: 'disponibiliteRatio', type: 'Numeric' },
+            { id: 'capaciteDisponible', type: 'Numeric' },
+            { id: 'absenceHeures', type: 'Numeric' },
+            { id: 'motifIndisponibilite', type: 'Text' }
+        ];
+        var actions = [];
+
+        // Un document ancien ou partiellement migré peut déclarer v10 sans
+        // disposer de sa table v3. On la répare directement avec la projection
+        // v11 plutôt que de laisser le document dans un état inutilisable.
+        if (!existingTables.MemberDailyCapacities) {
+            actions.push(['AddTable', 'MemberDailyCapacities', [
+                { id: 'membre', type: 'Ref:Team', isFormula: false },
+                { id: 'date', type: 'Date', isFormula: false },
+                { id: 'capaciteTheorique', type: 'Numeric', isFormula: true, formula: capacityFormulas.capaciteTheorique },
+                { id: 'disponibiliteRatio', type: 'Numeric', isFormula: true, formula: capacityFormulas.disponibiliteRatio },
+                { id: 'capaciteDisponible', type: 'Numeric', isFormula: true, formula: capacityFormulas.capaciteDisponible },
+                { id: 'absenceHeures', type: 'Numeric', isFormula: true, formula: capacityFormulas.absenceHeures },
+                { id: 'motifIndisponibilite', type: 'Text', isFormula: true, formula: capacityFormulas.motifIndisponibilite },
+                { id: 'source', type: 'Choice', isFormula: false },
+                { id: 'revision', type: 'Int', isFormula: false },
+                { id: 'sourceUpdatedAt', type: 'DateTime', isFormula: false },
+                { id: 'commentaire', type: 'Text', isFormula: false }
+            ]]);
+        }
+
+        for (var i = 0; existingTables.MemberDailyCapacities && i < formulaColumns.length; i++) {
+            var definition = formulaColumns[i];
+            var key = 'MemberDailyCapacities.' + definition.id;
+            var existing = existingColumns[key];
+            var formula = capacityFormulas[definition.id];
+
+            if (!existing) {
+                actions.push(['AddColumn', 'MemberDailyCapacities', definition.id, {
+                    type: definition.type,
+                    isFormula: true,
+                    formula: formula
+                }]);
+                continue;
+            }
+
+            if (existing.type && existing.type !== 'Any' && existing.type !== definition.type) {
+                throw new Error('FORMULA_CAPACITY_TYPE_MISMATCH: ' + key + ' doit être de type ' + definition.type);
+            }
+
+            // Ces colonnes sont une projection système : une formule locale
+            // différente doit être remplacée, sinon les widgets ne disposent
+            // plus d'une source de capacité cohérente.
+            if (!existing.isFormula || existing.formula !== formula) {
+                actions.push(['ModifyColumn', 'MemberDailyCapacities', definition.id, {
+                    type: definition.type,
+                    isFormula: true,
+                    formula: formula
+                }]);
+            }
+        }
+
+        if (actions.length > 0) await docApi.applyUserActions(actions);
+
+        return {
+            success: true,
+            message: 'Migration v11 appliquée',
+            actionsExecuted: actions.length,
+            metadata: actions.length ? await loadMigrationMetadata(grist) : metadata
+        };
+    }
+
+    // ========================================================================
     // LISTE DES MIGRATIONS
     // ========================================================================
     
@@ -6573,6 +6798,18 @@ if (typeof globalThis !== 'undefined') {
             name: 'weekly-sheet-created-at-v9',
             description: 'Ajout de Feuilles.createdAt pour diagnostiquer les créations concurrentes',
             run: migrateToV9
+        },
+        {
+            version: 10,
+            name: 'daily-indisponibilites-capacity-coverage-v10',
+            description: 'Ajout des faits journaliers d’indisponibilité et de l’index de couverture',
+            run: migrateToV10
+        },
+        {
+            version: 11,
+            name: 'formula-driven-member-daily-capacities-v11',
+            description: 'Bascule des capacités quotidiennes vers les formules Grist',
+            run: migrateToV11
         }
     ];
 

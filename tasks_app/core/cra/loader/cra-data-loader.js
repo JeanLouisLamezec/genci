@@ -412,7 +412,10 @@ const CRA_TABLES = {
   disponibilites: {
     tableId: 'Disponibilites',
     required: false,
-    columns: ['id', 'membre', 'type', 'dateDebut', 'dateFin', 'dispo', 'commentaire']
+    columns: [
+      'id', 'membre', 'type', 'date', 'dateDebut', 'dateFin', 'dispo',
+      'commentaire', 'actif'
+    ]
   },
   
   assignments: {
@@ -424,7 +427,10 @@ const CRA_TABLES = {
   dailyCapacities: {
     tableId: 'MemberDailyCapacities',
     required: true,
-    columns: ['id', 'membre', 'date', 'capaciteTheorique', 'capaciteDisponible', 'revision']
+    columns: [
+      'id', 'membre', 'date', 'capaciteTheorique', 'capaciteDisponible',
+      'absenceHeures', 'motifIndisponibilite', 'revision'
+    ]
   }
 };
 
@@ -745,7 +751,11 @@ function normalizeCraSnapshot(raw, currentUser) {
     motifCorrection: r.motifCorrection || ''
   }));
   
-  const disponibilites = raw.disponibilites ? columnarToRows(raw.disponibilites) : [];
+  const disponibilites = raw.disponibilites ? columnarToRows(raw.disponibilites).map(r => ({
+    ...r,
+    membre: workflowNormalizeMemberId(r.membre),
+    actif: r.actif !== false && r.actif !== 0 && r.actif !== '0'
+  })) : [];
   
   const assignments = columnarToRows(raw.assignments).map(r => ({
     id: r.id,
@@ -765,6 +775,8 @@ function normalizeCraSnapshot(raw, currentUser) {
     date: r.date,
     capaciteTheorique: normalizeCapacityValue(r.capaciteTheorique),
     capaciteDisponible: normalizeCapacityValue(r.capaciteDisponible),
+    absenceHeures: normalizeCapacityValue(r.absenceHeures),
+    motifIndisponibilite: r.motifIndisponibilite || '',
     revision: Number(r.revision) || 0
   }));
   

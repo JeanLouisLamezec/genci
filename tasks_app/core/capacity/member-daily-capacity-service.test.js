@@ -1053,3 +1053,40 @@ describe('Member Daily Capacity Service - Tests complémentaires (spécification
   });
 });
 });
+
+describe('Member Daily Capacity Service - projection formulée v11', () => {
+  const { ensureMemberDailyCapacities } = require('./member-daily-capacity-service.js');
+  const { createMockGrist } = require('../grist/mock-grist.js');
+
+  test('matérialise seulement membre+date et ne réécrit pas les capacités', async () => {
+    const mockGrist = createMockGrist({
+      initialData: {
+        TaskFlow_Meta: [{ id: 1, schemaVersion: 11 }],
+        Team: [{ id: 1, nom: 'Alice', capaciteHebdo: 35 }],
+        Disponibilites: [],
+        MemberCapacityCoverage: [],
+        MemberDailyCapacities: [{
+          id: 1,
+          membre: 1,
+          date: 1783814400,
+          capaciteTheorique: 99,
+          disponibiliteRatio: 0.25,
+          capaciteDisponible: 24.75,
+          absenceHeures: 74.25
+        }]
+      }
+    });
+
+    const result = await ensureMemberDailyCapacities(mockGrist, 1, '2026-07-13', '2026-07-13');
+    const capacities = await mockGrist.fetchTable('MemberDailyCapacities');
+    const createdIndex = capacities.date.indexOf(1783900800);
+
+    expect(result.success).toBe(true);
+    expect(result.formulaDriven).toBe(true);
+    expect(capacities.capaciteTheorique[0]).toBe(99);
+    expect(createdIndex).toBeGreaterThanOrEqual(0);
+    expect(capacities.capaciteTheorique[createdIndex]).toBeNull();
+    expect(capacities.disponibiliteRatio[createdIndex]).toBeNull();
+    expect((await mockGrist.fetchTable('MemberCapacityCoverage')).id).toHaveLength(1);
+  });
+});

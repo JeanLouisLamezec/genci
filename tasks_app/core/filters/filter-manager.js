@@ -72,7 +72,7 @@ class FilterManager {
     this.teamById = options.teamById || (() => null);
     this.theme = options.theme || 'light'; // Déprécié, gardé pour compatibilité
     this.ui = null;
-    this.openSection = null;
+    this.openSectionType = null;
     this.postFilter = options.postFilter || null;
     this.widgetConfig = options.widgetConfig || {};
     this._isBroadcasting = false; // Indicateur interne pour éviter les boucles
@@ -135,7 +135,8 @@ class FilterManager {
     container.innerHTML = '';
     
     // Créer l'en-tête de section
-    const header = document.createElement('div');
+    const header = document.createElement('button');
+    header.type = 'button';
     header.className = 'filter-section-header';
     header.innerHTML = `
       <span class="filter-section-label">${label}</span>
@@ -148,6 +149,9 @@ class FilterManager {
     const checkboxContainer = document.createElement('div');
     checkboxContainer.className = 'filter-checkboxes';
     checkboxContainer.dataset.type = type;
+    checkboxContainer.id = 'filter-options-' + type;
+    header.setAttribute('aria-controls', checkboxContainer.id);
+    header.setAttribute('aria-expanded', 'false');
     
     // Créer les checkboxes pour chaque item
     items.forEach(item => {
@@ -188,17 +192,25 @@ class FilterManager {
    * @private
    */
   _setupAccordion() {
-    if (!this.ui) return;
-    
-    Object.keys(this.ui).forEach(type => {
-      const section = this.ui[type];
-      if (section && section.header) {
-        section.header.addEventListener('click', (e) => {
-          e.stopPropagation();
-          this._toggleSection(type);
-        });
-      }
-    });
+    if (!this.ui || !this.filterPanel) return;
+
+    // Délégation sur le panneau : les listes de cases sont reconstruites après
+    // chaque rechargement Grist. Un seul listener survit donc à ces mises à jour.
+    if (this._accordionPanel && this._accordionHandler) {
+      this._accordionPanel.removeEventListener('click', this._accordionHandler);
+    }
+    this._accordionPanel = this.filterPanel;
+    this._accordionHandler = (e) => {
+      const origin = e.target instanceof Element ? e.target : e.target?.parentElement;
+      const header = origin && origin.closest('.filter-section-header');
+      if (!header || !this.filterPanel.contains(header)) return;
+      const type = header.dataset.type;
+      if (!type || !this.ui[type]) return;
+      e.preventDefault();
+      e.stopPropagation();
+      this._toggleSection(type);
+    };
+    this.filterPanel.addEventListener('click', this._accordionHandler);
     
     // Fermer toutes les sections au chargement
     this._closeAllSections();
@@ -216,20 +228,10 @@ class FilterManager {
     const filterDropdown = this.filterPanel.closest('.filter-dropdown');
     const btnInDropdown = filterDropdown ? filterDropdown.querySelector('.filter-btn, #btnFilterToggle') : null;
     const btn = filterBtn || btnInDropdown || document.getElementById('btnFilterToggle');
-    
-    if (btn) {
-      btn.onclick = (e) => {
-        this.filterPanel.classList.toggle('open');
-        e.stopPropagation();
-      };
-    }
-    
-    // Fermer le panneau quand on clique à l'extérieur
-    document.addEventListener('click', (e) => {
-      if (this.filterPanel && !this.filterPanel.contains(e.target) && e.target !== btn) {
-        this.filterPanel.classList.remove('open');
-      }
-    });
+    // Le CRA peut lier le bouton avant la fin de son chargement Grist. Cette
+    // fonction est idempotente : l'initialisation complète réutilise ce même
+    // contrôleur au lieu d'ajouter un second listener qui inverserait l'état.
+    this._panelToggle = initFilterDropdown(btn, this.filterPanel);
     
     // Bouton Effacer tout
     const btnClear = this.filterPanel.querySelector('#btnClearFilters');
@@ -257,11 +259,12 @@ class FilterManager {
     // Ouvrir la section cliquée si elle était fermée
     if (!isOpen) {
       section.header.classList.add('open');
+      section.header.setAttribute('aria-expanded', 'true');
       section.checkboxContainer.classList.add('open');
       section.checkboxContainer.style.display = 'block';
-      this.openSection = type;
+      this.openSectionType = type;
     } else {
-      this.openSection = null;
+      this.openSectionType = null;
     }
   }
 
@@ -274,13 +277,14 @@ class FilterManager {
       const section = this.ui[type];
       if (section && section.header) {
         section.header.classList.remove('open');
+        section.header.setAttribute('aria-expanded', 'false');
         if (section.checkboxContainer) {
           section.checkboxContainer.classList.remove('open');
           section.checkboxContainer.style.display = 'none';
         }
       }
     });
-    this.openSection = null;
+    this.openSectionType = null;
   }
 
   /**
@@ -292,9 +296,10 @@ class FilterManager {
       this._closeAllSections();
       const section = this.ui[type];
       section.header.classList.add('open');
+      section.header.setAttribute('aria-expanded', 'true');
       section.checkboxContainer.classList.add('open');
       section.checkboxContainer.style.display = 'block';
-      this.openSection = type;
+      this.openSectionType = type;
     }
   }
 
@@ -708,25 +713,61 @@ function createFilterPanel() {
  * @param {HTMLElement} panel - Le panneau de filtres
  */
 function initFilterDropdown(button, panel) {
-  button.addEventListener('click', (e) => {
-    e.stopPropagation();
-    panel.classList.toggle('open');
-  });
+  if (!button || !panel) return null;
 
-  // Fermer le panneau quand on clique à l'extérieur
-  document.addEventListener('click', (e) => {
-    if (!panel.contains(e.target) && e.target !== button) {
-      panel.classList.remove('open');
-    }
-  });
-
-  // Fermer le panneau quand on clique sur le bouton Effacer
-  const clearBtn = panel.querySelector('.clear-filters-btn');
-  if (clearBtn) {
-    clearBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-    });
+  // Un widget peut démarrer l'écoute avant ses données, puis FilterManager
+  // initialise les sections plus tard. Conserver un contrôleur par panneau
+  // garantit un seul couple d'écouteurs pendant toute la vie de l'iframe.
+  const existing = panel.__taskflowFilterDropdown;
+  if (existing && existing.button === button) {
+    existing.sync();
+    return existing;
   }
+  if (existing) existing.destroy();
+
+  const setOpen = (open) => {
+    // Répare les anciennes versions qui pouvaient avoir laissé une règle
+    // inline display:none/block, prioritaire sur .filter-panel.open.
+    panel.style.removeProperty('display');
+    panel.classList.toggle('open', Boolean(open));
+    button.setAttribute('aria-expanded', String(Boolean(open)));
+  };
+
+  const onButtonClick = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setOpen(!panel.classList.contains('open'));
+  };
+
+  const onDocumentClick = (e) => {
+    if (!panel.contains(e.target) && !button.contains(e.target)) {
+      setOpen(false);
+    }
+  };
+
+  button.addEventListener('click', onButtonClick);
+  document.addEventListener('click', onDocumentClick);
+
+  const controller = {
+    button,
+    panel,
+    setOpen,
+    sync: () => {
+      panel.style.removeProperty('display');
+      button.setAttribute('aria-expanded', String(panel.classList.contains('open')));
+    },
+    destroy: () => {
+      button.removeEventListener('click', onButtonClick);
+      document.removeEventListener('click', onDocumentClick);
+      if (panel.__taskflowFilterDropdown === controller) {
+        delete panel.__taskflowFilterDropdown;
+      }
+    }
+  };
+  panel.__taskflowFilterDropdown = controller;
+  controller.sync();
+
+  return controller;
 }
 
 // Exporter pour une utilisation dans les modules

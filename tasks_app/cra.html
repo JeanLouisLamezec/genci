@@ -5,11 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>TaskFlow - Feuille de temps</title>
 <script src="https://docs.getgrist.com/grist-plugin-api.js"></script>
-<script src="core/filters/filter-manager.js"></script>
+<script src="core/filters/filter-manager.js?v=20261008-cra-filter-toggle-v4"></script>
 <script src="core/cra/ui/cra-person-filter.js?v=20260830-filter-v2"></script>
 <script src="core/cra/ui/cra-filter-adapter.js?v=20261006-no-milestones"></script>
 <script src="core/cra/controller/cra-time-entry-controller.js?v=20261006-minimum-hours-v2"></script>
-<script src="core/cra/loader/cra-data-loader.js"></script>
+<script src="core/cra/loader/cra-data-loader.js?v=20261008-availability-badges-v2"></script>
 <script src="core/generated/taskflow-planning-browser.js?v=20260827-retro"></script>
 
 <script src="core/generated/taskflow-cra-browser.js?v=20261006-minimum-hours-v2"></script>
@@ -19,7 +19,7 @@
 <script src="core/cra/export/cra-export-csv.js"></script>
 <script src="core/cra/export/cra-export-orchestrator.js"></script>
 <link rel="stylesheet" href="core/theme/taskflow-theme.css">
-<link rel="stylesheet" href="core/filters/filter-styles.css">
+<link rel="stylesheet" href="core/filters/filter-styles.css?v=20261008-cra-filter-toggle-v4">
 <style>
 :root {
   /* Couleurs sémantiques spécifiques au CRA */
@@ -65,6 +65,11 @@ td.day.indispo-cell { background: var(--bg); }
 td.day.indispo-cell div { background: repeating-linear-gradient(45deg, var(--bg), var(--bg) 10px, color-mix(in srgb, var(--border) 30%, var(--bg)) 10px, color-mix(in srgb, var(--border) 30%, var(--bg)) 20px); }
 td.today { background: color-mix(in srgb, var(--primary) 7%, transparent); }
 th.indispo { background: color-mix(in srgb, var(--warn) 15%, var(--card-bg)); color: var(--warn); }
+th.capacity-reduced { background: color-mix(in srgb, var(--warn) 12%, var(--card-bg)); color: var(--text); }
+.availability-badge { display: block; margin: 4px auto 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border-radius: 999px; padding: 2px 6px; font-size: .65rem; font-weight: 750; line-height: 1.25; color: #9a6700; background: color-mix(in srgb, var(--warn) 20%, var(--card-bg)); }
+th.indispo .availability-badge { color: #9a6700; background: color-mix(in srgb, var(--warn) 28%, var(--card-bg)); }
+td.capacity-reduced .capacity-value { color: #9a6700; font-weight: 800; }
+td.capacity-reduced .availability-note { display: block; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .66rem; font-weight: 700; color: #9a6700; }
 td.total, th.total { text-align: center; font-weight: 700; background: var(--card-bg); padding: 8px 10px; }
 tfoot td { background: var(--card-bg); font-weight: 700; text-align: center; padding: 9px 10px; }
 tfoot td.left { text-align: left; color: var(--text-muted); font-weight: 600; }
@@ -148,7 +153,7 @@ tfoot td.left { text-align: left; color: var(--text-muted); font-weight: 600; }
 <div class="topbar">
   <h1>Feuille de temps</h1>
   <div class="filter-dropdown">
-    <button class="filter-btn" id="btnFilterToggle" title="Filtres"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon></svg> Filtres <span class="filter-count" style="display:none"></span>▾</button>
+    <button type="button" class="filter-btn" id="btnFilterToggle" title="Filtres" aria-controls="filterPanel" aria-expanded="false"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon></svg> Filtres <span class="filter-count" style="display:none"></span>▾</button>
     <div class="filter-panel" id="filterPanel">
       <div class="filter-sections">
         <div id="filterTeamContainer"></div>
@@ -161,6 +166,17 @@ tfoot td.left { text-align: left; color: var(--text-muted); font-weight: 600; }
       </div>
     </div>
   </div>
+  <script>
+    // Le bouton doit fonctionner avant le premier fetch Grist. FilterManager
+    // réutilise ce contrôleur dès que les sections deviennent disponibles.
+    (function() {
+      const button = document.getElementById('btnFilterToggle');
+      const panel = document.getElementById('filterPanel');
+      if (button && panel && typeof initFilterDropdown === 'function') {
+        initFilterDropdown(button, panel);
+      }
+    }());
+  </script>
   <div class="seg" id="tabSeg">
     <button data-t="saisie" class="active">Ma semaine</button>
     <button data-t="valider" id="tabValider">A valider</button>
@@ -3815,7 +3831,18 @@ if (typeof globalThis !== 'undefined') {
     }
 
     // Version courante du schéma
-    var SCHEMA_VERSION = 9;
+    var SCHEMA_VERSION = 11;
+
+    // Projection quotidienne v11. Ces formules ne consultent que les faits
+    // d'indisponibilité actifs du membre pour la date de la ligne : aucune
+    // itération sur la table complète n'est autorisée dans cette projection.
+    var MEMBER_DAILY_CAPACITY_FORMULAS = {
+        capaciteTheorique: 'weekly = $membre.capaciteHebdo if $membre and $membre.capaciteHebdo is not None else 35\nweekly / 5 if $date and $date.weekday() < 5 else 0',
+        disponibiliteRatio: 'facts = Disponibilites.lookupRecords(membre=$membre, date=$date, actif=True)\nratios = [fact.dispo for fact in facts if fact.dispo is not None]\nmin(ratios) if ratios else 1',
+        capaciteDisponible: 'round(($capaciteTheorique or 0) * ($disponibiliteRatio if $disponibiliteRatio is not None else 1), 2)',
+        absenceHeures: 'round(max(0, ($capaciteTheorique or 0) - ($capaciteDisponible or 0)), 2)',
+        motifIndisponibilite: 'facts = Disponibilites.lookupRecords(membre=$membre, date=$date, actif=True)\n", ".join(sorted(set(fact.type for fact in facts if fact.type)))'
+    };
 
     // Ordre de création des tables (important pour les dépendances)
     var TABLE_ORDER = [
@@ -3829,6 +3856,7 @@ if (typeof globalThis !== 'undefined') {
         'Actions',
         'KanbanSteps',
         'Disponibilites',
+        'MemberCapacityCoverage',
         'MemberDailyCapacities',
         'Feuilles',
         'TimeEntries',
@@ -4022,7 +4050,31 @@ if (typeof globalThis !== 'undefined') {
                 { id: 'dateDebut',        opts: dataColumn('Date') },
                 { id: 'dateFin',          opts: dataColumn('Date') },
                 { id: 'dispo',            opts: dataColumn('Numeric') },
-                { id: 'commentaire',      opts: dataColumn('Text') }
+                { id: 'commentaire',      opts: dataColumn('Text') },
+                // v10 : fait journalier canonique et provenance normalisée.
+                // Les dates de plage restent présentes pour la compatibilité
+                // des documents existants ; les nouveaux flux utilisent date.
+                { id: 'date',             opts: dataColumn('Date') },
+                { id: 'origine',          opts: dataColumn('Choice') },
+                { id: 'integration',      opts: dataColumn('Text') },
+                { id: 'externalKey',      opts: dataColumn('Text') },
+                { id: 'externalRefs',     opts: dataColumn('Text') },
+                { id: 'actif',            opts: dataColumn('Bool') },
+                { id: 'sourceUpdatedAt',  opts: dataColumn('DateTime') }
+            ]
+        },
+
+        // =========================================================================
+        // MemberCapacityCoverage — Index des périodes de calendrier matérialisées
+        // =========================================================================
+        MemberCapacityCoverage: {
+            label: 'Couverture des capacités',
+            columns: [
+                { id: 'membre',      opts: refColumn('Team') },
+                { id: 'dateDebut',   opts: dataColumn('Date') },
+                { id: 'dateFin',     opts: dataColumn('Date') },
+                { id: 'createdAt',   opts: dataColumn('DateTime') },
+                { id: 'updatedAt',   opts: dataColumn('DateTime') }
             ]
         },
 
@@ -4034,10 +4086,11 @@ if (typeof globalThis !== 'undefined') {
             columns: [
                 { id: 'membre',             opts: refColumn('Team') },
                 { id: 'date',               opts: dataColumn('Date') },
-                { id: 'capaciteTheorique',  opts: dataColumn('Numeric') },
-                { id: 'disponibiliteRatio', opts: dataColumn('Numeric') },
-                { id: 'capaciteDisponible', opts: dataColumn('Numeric') },
-                { id: 'absenceHeures',      opts: dataColumn('Numeric') },
+                { id: 'capaciteTheorique',  opts: { type: 'Numeric', isFormula: true, formula: MEMBER_DAILY_CAPACITY_FORMULAS.capaciteTheorique } },
+                { id: 'disponibiliteRatio', opts: { type: 'Numeric', isFormula: true, formula: MEMBER_DAILY_CAPACITY_FORMULAS.disponibiliteRatio } },
+                { id: 'capaciteDisponible', opts: { type: 'Numeric', isFormula: true, formula: MEMBER_DAILY_CAPACITY_FORMULAS.capaciteDisponible } },
+                { id: 'absenceHeures',      opts: { type: 'Numeric', isFormula: true, formula: MEMBER_DAILY_CAPACITY_FORMULAS.absenceHeures } },
+                { id: 'motifIndisponibilite', opts: { type: 'Text', isFormula: true, formula: MEMBER_DAILY_CAPACITY_FORMULAS.motifIndisponibilite } },
                 { id: 'source',             opts: dataColumn('Choice') },
                 { id: 'revision',           opts: dataColumn('Int') },
                 { id: 'sourceUpdatedAt',    opts: dataColumn('DateTime') },
@@ -4212,7 +4265,10 @@ if (typeof globalThis !== 'undefined') {
         { table: 'Disponibilites', column: 'membre', targetTable: 'Team', visibleColumn: 'nom' },
         
         // MemberDailyCapacities refs
-        { table: 'MemberDailyCapacities', column: 'membre', targetTable: 'Team', visibleColumn: 'nom' }
+        { table: 'MemberDailyCapacities', column: 'membre', targetTable: 'Team', visibleColumn: 'nom' },
+
+        // MemberCapacityCoverage refs
+        { table: 'MemberCapacityCoverage', column: 'membre', targetTable: 'Team', visibleColumn: 'nom' }
     ];
 
     // Statuts par défaut pour les colonnes Choice
@@ -4252,6 +4308,7 @@ if (typeof globalThis !== 'undefined') {
         Tasks: {
             editorsEmails: "emails = set()\nfor a in $assignees:\n    emails.add(a.email)\nif $projet and $projet.responsable:\n    emails.add($projet.responsable.email)\n    for c in $projet.responsable.chaine_chefs:\n        emails.add(c.email)\n',' + ','.join(sorted(e for e in emails if e)) + ','"
         },
+        MemberDailyCapacities: MEMBER_DAILY_CAPACITY_FORMULAS,
         TimeEntries: {
             statutFeuille: '$feuille.statut if $feuille else ""',
             responsableValidation: '$feuille.responsableValidation if $feuille else None',
@@ -4267,6 +4324,7 @@ if (typeof globalThis !== 'undefined') {
         'Team.role': ['membre', 'chef', 'chef_de_projet'],
         'Feuilles.statut': ['brouillon', 'soumis', 'valide', 'rejete', 'correction_manager'],
         'Disponibilites.type': ['conge', 'maladie', 'ferie', 'formation', 'temps_partiel', 'autre'],
+        'Disponibilites.origine': ['manuel', 'logiciel_metier'],
         'Competences.categorie': ['technique', 'fonctionnel', 'transverse']
     };
 
@@ -5172,6 +5230,8 @@ if (typeof globalThis !== 'undefined') {
  * Version 7: Filtres personnels persistants
  * Version 8: Sonde serveur pour l'association automatique des comptes Grist
  * Version 9: Horodatage de création des feuilles hebdomadaires
+ * Version 10: Faits journaliers d'indisponibilité et index de couverture
+ * Version 11: Projection formulée des capacités quotidiennes
  * ============================================================================ */
 
 (function (global) {
@@ -6073,6 +6133,189 @@ if (typeof globalThis !== 'undefined') {
     }
 
     // ========================================================================
+    // MIGRATION V9 → V10 — Indisponibilités journalières et couverture
+    // ========================================================================
+
+    async function migrateToV10(grist, metadata) {
+        log('Migration v9 → v10: daily-indisponibilites-capacity-coverage-v10');
+
+        var docApi = getDocApi(grist);
+        var existingTables = metadata.tablesByName || {};
+        var existingColumns = metadata.columnsByKey || {};
+        var actions = [];
+
+        if (!existingTables.Disponibilites) {
+            throw new Error('DAILY_UNAVAILABILITY_TABLE_MISSING: La table Disponibilites est requise');
+        }
+
+        // Migration additive : les colonnes de plages historiques restent intactes.
+        // Les intégrations écrivent désormais une ligne par membre et par jour.
+        var availabilityColumns = [
+            { id: 'date', type: 'Date' },
+            { id: 'origine', type: 'Choice' },
+            { id: 'integration', type: 'Text' },
+            { id: 'externalKey', type: 'Text' },
+            { id: 'externalRefs', type: 'Text' },
+            { id: 'actif', type: 'Bool' },
+            { id: 'sourceUpdatedAt', type: 'DateTime' }
+        ];
+
+        for (var i = 0; i < availabilityColumns.length; i++) {
+            var availabilityColumn = availabilityColumns[i];
+            var availabilityKey = 'Disponibilites.' + availabilityColumn.id;
+            if (!existingColumns[availabilityKey]) {
+                actions.push(['AddColumn', 'Disponibilites', availabilityColumn.id, {
+                    type: availabilityColumn.type,
+                    isFormula: false
+                }]);
+                existingColumns[availabilityKey] = { type: availabilityColumn.type };
+            }
+        }
+
+        var coverageColumns = [
+            { id: 'membre', type: 'Ref:Team' },
+            { id: 'dateDebut', type: 'Date' },
+            { id: 'dateFin', type: 'Date' },
+            { id: 'createdAt', type: 'DateTime' },
+            { id: 'updatedAt', type: 'DateTime' }
+        ];
+
+        if (!existingTables.MemberCapacityCoverage) {
+            actions.push(['AddTable', 'MemberCapacityCoverage', coverageColumns.map(function(column) {
+                return { id: column.id, type: column.type, isFormula: false };
+            })]);
+        } else {
+            for (var j = 0; j < coverageColumns.length; j++) {
+                var coverageColumn = coverageColumns[j];
+                var coverageKey = 'MemberCapacityCoverage.' + coverageColumn.id;
+                if (!existingColumns[coverageKey]) {
+                    actions.push(['AddColumn', 'MemberCapacityCoverage', coverageColumn.id, {
+                        type: coverageColumn.type,
+                        isFormula: false
+                    }]);
+                    existingColumns[coverageKey] = { type: coverageColumn.type };
+                }
+            }
+        }
+
+        if (actions.length > 0) await docApi.applyUserActions(actions);
+
+        return {
+            success: true,
+            message: 'Migration v10 appliquée',
+            actionsExecuted: actions.length,
+            metadata: actions.length ? await loadMigrationMetadata(grist) : metadata
+        };
+    }
+
+    // ========================================================================
+    // MIGRATION V10 → V11 — Projection formulée des capacités quotidiennes
+    // ========================================================================
+
+    async function migrateToV11(grist, metadata) {
+        log('Migration v10 → v11: formula-driven-member-daily-capacities-v11');
+
+        var docApi = getDocApi(grist);
+        var existingTables = metadata.tablesByName || {};
+        var existingColumns = metadata.columnsByKey || {};
+        var capacityFormulas = SCHEMA && SCHEMA.formulas && SCHEMA.formulas.MemberDailyCapacities;
+
+        if (!existingTables.Disponibilites) {
+            throw new Error('FORMULA_CAPACITY_TABLE_MISSING: Disponibilites est requise');
+        }
+        if (!capacityFormulas) {
+            throw new Error('FORMULA_CAPACITY_SCHEMA_MISSING: Les formules v11 sont absentes du schéma');
+        }
+
+        // Les formules v11 ne lisent volontairement que les faits quotidiens
+        // (date). Continuer en présence d'une plage historique active ferait
+        // disparaître son effet du calcul sans avertissement : on bloque donc
+        // la bascule jusqu'à sa conversion explicite et bornée.
+        var availabilityRows = columnarToRows(await docApi.fetchTable('Disponibilites'));
+        var legacyRangeIds = availabilityRows.filter(function(row) {
+            var active = row.actif !== false && row.actif !== 0 && row.actif !== '0' && row.actif !== 'false';
+            var hasDailyDate = row.date !== null && row.date !== undefined && row.date !== '';
+            var hasRangeDate = (row.dateDebut !== null && row.dateDebut !== undefined && row.dateDebut !== '') ||
+                (row.dateFin !== null && row.dateFin !== undefined && row.dateFin !== '');
+            return active && !hasDailyDate && hasRangeDate;
+        }).map(function(row) { return row.id; });
+        if (legacyRangeIds.length) {
+            throw new Error(
+                'FORMULA_CAPACITY_LEGACY_UNAVAILABILITIES: convertir explicitement les plages actives avant v11 (ids: ' +
+                legacyRangeIds.join(', ') + ')'
+            );
+        }
+
+        var formulaColumns = [
+            { id: 'capaciteTheorique', type: 'Numeric' },
+            { id: 'disponibiliteRatio', type: 'Numeric' },
+            { id: 'capaciteDisponible', type: 'Numeric' },
+            { id: 'absenceHeures', type: 'Numeric' },
+            { id: 'motifIndisponibilite', type: 'Text' }
+        ];
+        var actions = [];
+
+        // Un document ancien ou partiellement migré peut déclarer v10 sans
+        // disposer de sa table v3. On la répare directement avec la projection
+        // v11 plutôt que de laisser le document dans un état inutilisable.
+        if (!existingTables.MemberDailyCapacities) {
+            actions.push(['AddTable', 'MemberDailyCapacities', [
+                { id: 'membre', type: 'Ref:Team', isFormula: false },
+                { id: 'date', type: 'Date', isFormula: false },
+                { id: 'capaciteTheorique', type: 'Numeric', isFormula: true, formula: capacityFormulas.capaciteTheorique },
+                { id: 'disponibiliteRatio', type: 'Numeric', isFormula: true, formula: capacityFormulas.disponibiliteRatio },
+                { id: 'capaciteDisponible', type: 'Numeric', isFormula: true, formula: capacityFormulas.capaciteDisponible },
+                { id: 'absenceHeures', type: 'Numeric', isFormula: true, formula: capacityFormulas.absenceHeures },
+                { id: 'motifIndisponibilite', type: 'Text', isFormula: true, formula: capacityFormulas.motifIndisponibilite },
+                { id: 'source', type: 'Choice', isFormula: false },
+                { id: 'revision', type: 'Int', isFormula: false },
+                { id: 'sourceUpdatedAt', type: 'DateTime', isFormula: false },
+                { id: 'commentaire', type: 'Text', isFormula: false }
+            ]]);
+        }
+
+        for (var i = 0; existingTables.MemberDailyCapacities && i < formulaColumns.length; i++) {
+            var definition = formulaColumns[i];
+            var key = 'MemberDailyCapacities.' + definition.id;
+            var existing = existingColumns[key];
+            var formula = capacityFormulas[definition.id];
+
+            if (!existing) {
+                actions.push(['AddColumn', 'MemberDailyCapacities', definition.id, {
+                    type: definition.type,
+                    isFormula: true,
+                    formula: formula
+                }]);
+                continue;
+            }
+
+            if (existing.type && existing.type !== 'Any' && existing.type !== definition.type) {
+                throw new Error('FORMULA_CAPACITY_TYPE_MISMATCH: ' + key + ' doit être de type ' + definition.type);
+            }
+
+            // Ces colonnes sont une projection système : une formule locale
+            // différente doit être remplacée, sinon les widgets ne disposent
+            // plus d'une source de capacité cohérente.
+            if (!existing.isFormula || existing.formula !== formula) {
+                actions.push(['ModifyColumn', 'MemberDailyCapacities', definition.id, {
+                    type: definition.type,
+                    isFormula: true,
+                    formula: formula
+                }]);
+            }
+        }
+
+        if (actions.length > 0) await docApi.applyUserActions(actions);
+
+        return {
+            success: true,
+            message: 'Migration v11 appliquée',
+            actionsExecuted: actions.length,
+            metadata: actions.length ? await loadMigrationMetadata(grist) : metadata
+        };
+    }
+
+    // ========================================================================
     // LISTE DES MIGRATIONS
     // ========================================================================
     
@@ -6124,6 +6367,18 @@ if (typeof globalThis !== 'undefined') {
             name: 'weekly-sheet-created-at-v9',
             description: 'Ajout de Feuilles.createdAt pour diagnostiquer les créations concurrentes',
             run: migrateToV9
+        },
+        {
+            version: 10,
+            name: 'daily-indisponibilites-capacity-coverage-v10',
+            description: 'Ajout des faits journaliers d’indisponibilité et de l’index de couverture',
+            run: migrateToV10
+        },
+        {
+            version: 11,
+            name: 'formula-driven-member-daily-capacities-v11',
+            description: 'Bascule des capacités quotidiennes vers les formules Grist',
+            run: migrateToV11
         }
     ];
 
@@ -8846,10 +9101,11 @@ function parseIndisposFor(personId) {
   }
   // Depuis Disponibilites table
   for (const d of S.disponibilites) {
-    if (d.membre === personId) {
+    if (d.membre === personId && d.actif !== false && d.actif !== 0 && d.actif !== '0') {
+      const dailyDate = d.date ? gristToMs(d.date) : 0;
       indispos.push({
-        start: gristToMs(d.dateDebut),
-        end: gristToMs(d.dateFin),
+        start: dailyDate || gristToMs(d.dateDebut),
+        end: dailyDate || gristToMs(d.dateFin),
         type: d.type || 'autre',
         dispo: d.dispo != null ? d.dispo : 0,  // % de dispo (0 = indispo totale)
         label: d.commentaire || d.type
@@ -8875,6 +9131,33 @@ function isIndispo(dayMs, indispos) {
     }
   }
   return { isIndispo: false };
+}
+
+function shortAvailabilityLabel(value) {
+  const label = String(value || '').replace(/\s+\d{4}\/\d{4}\b/g, '').trim();
+  return label || 'Indisponibilité';
+}
+
+/**
+ * Restitution visuelle d'une indisponibilité, indexée au chargement du CRA.
+ * La capacité reste la source de vérité ; le fait Disponibilites apporte le
+ * motif lisible. Cela évite de rescanner les deux tables pour chaque cellule.
+ */
+function dayAvailabilityInfo(dayMs, personId) {
+  const key = Number(personId) + '|' + localDateIso(dayMs);
+  const indexed = S.indexes && S.indexes.availabilityByPersonDate
+    ? S.indexes.availabilityByPersonDate.get(key)
+    : null;
+  if (indexed) return indexed;
+
+  const legacy = isIndispo(dayMs, parseIndisposFor(personId));
+  if (!legacy.isIndispo) return { isIndispo: false, isFullDay: false, isReduced: false, label: '' };
+  return {
+    isIndispo: true,
+    isFullDay: !legacy.dispo || Number(legacy.dispo) === 0,
+    isReduced: true,
+    label: legacy.label || legacy.type || 'Indisponibilité'
+  };
 }
 
 // Capacité par jour (en heures) pour une personne donnée
@@ -9190,11 +9473,17 @@ function renderSaisie() {
     html += '<table class="grid" style="table-layout:fixed;width:100%"><thead><tr><th class="left" style="width:25%;min-width:120px">Tâche / Projet</th>';
     weekDaysArr.forEach((d, i) => {
       const dt = new Date(d);
-      const cap = dayCapacityForPerson(d, personId);
-      const ind = isIndispo(d, indispos);
+      const availability = dayAvailabilityInfo(d, personId);
       let thClass = 'day' + (sameDay(d, todayMs) ? ' today' : '');
-      if (ind.isIndispo && (!ind.dispo || ind.dispo === 0)) thClass += ' indispo';
-      html += '<th class="' + thClass + '" style="width:15%">' + JOURS[i] + '<br><small>' + dt.getDate() + '/' + (dt.getMonth() + 1) + '</small></th>';
+      if (availability.isFullDay) thClass += ' indispo';
+      else if (availability.isReduced) thClass += ' capacity-reduced';
+      const availabilityBadge = availability.isIndispo
+        ? '<span class="availability-badge" title="' + esc(availability.label || 'Indisponibilité') + '">'
+          + esc(shortAvailabilityLabel(availability.label))
+          + (availability.isFullDay ? ' · absent' : availability.isHalfDay ? ' · ½ j' : ' · réduit')
+          + '</span>'
+        : '';
+      html += '<th class="' + thClass + '" style="width:15%">' + JOURS[i] + '<br><small>' + dt.getDate() + '/' + (dt.getMonth() + 1) + '</small>' + availabilityBadge + '</th>';
     });
     html += '<th class="total" style="width:10%;text-align:right">Total</th></tr></thead><tbody>';
     
@@ -9210,8 +9499,8 @@ function renderSaisie() {
           const displayedH = cellState.displayedHours;
           const plannedH = cellState.plannedHours;
           const cap = dayCapacityForPerson(d, personId);
-          const ind = isIndispo(d, indispos);
-          const isDayIndispo = ind.isIndispo && (!ind.dispo || ind.dispo === 0);
+          const availability = dayAvailabilityInfo(d, personId);
+          const isDayIndispo = availability.isFullDay;
           
           let tdClass = 'day';
           if (cellState.hasDisplayValue) tdClass += ' filled';
@@ -9222,7 +9511,7 @@ function renderSaisie() {
           let cellHtml = '<td class="' + tdClass + '">';
           if (isDayIndispo) {
             cellHtml += '<div style="height:38px;display:flex;align-items:center;justify-content:center;background:var(--bg);color:var(--text-muted);font-size:.75rem">' 
-              + esc(ind.label || 'Indispo') + '</div>';
+              + esc(shortAvailabilityLabel(availability.label)) + '</div>';
           } else {
             // PHASE 5 : Utiliser displayedHours et fmtInputQty
             cellHtml += '<input type="number" min="0" step="0.5" value="' + fmtInputQty(displayedH, cellState.hasDisplayValue) + '"' 
@@ -9252,9 +9541,10 @@ function renderSaisie() {
       const displayed = dayDisplayedHours(d, personId);
       const planned = dayPlannedHours(d, personId);
       const cap = dayCapacityForPerson(d, personId);
-      html += '<td style="text-align:center;font-weight:600;padding:8px">' + (fmtQty(displayed) || '0')
+      const availability = dayAvailabilityInfo(d, personId);
+      html += '<td class="' + (availability.isReduced ? 'capacity-reduced' : '') + '" style="text-align:center;font-weight:600;padding:8px">' + (fmtQty(displayed) || '0')
         + (planned > 0 ? '<br><small style="color:var(--text-muted);font-size:.7rem;font-weight:400">' + fmtQty(planned) + ' prevu</small>' : '')
-        + '<br><small style="color:var(--text-muted);font-size:.75rem">Cap: ' + cap.toFixed(1) + 'h</small>'
+        + '<br><small class="capacity-value" style="font-size:.75rem">Cap: ' + cap.toFixed(1) + 'h</small>'
         + '</td>';
     });
     const weekCap = weekDaysArr.reduce((s,d) => s + dayCapacityForPerson(d, personId), 0);
@@ -10147,8 +10437,11 @@ function openCraExportModal() {
   overlay.classList.add('open');
   
   const filterPanel = document.getElementById('filterPanel');
-  if (filterPanel && filterPanel.style.display === 'block') {
-    filterPanel.style.display = 'none';
+  if (filterPanel?.__taskflowFilterDropdown) {
+    filterPanel.__taskflowFilterDropdown.setOpen(false);
+  } else if (filterPanel) {
+    filterPanel.style.removeProperty('display');
+    filterPanel.classList.remove('open');
   }
   
   const firstRadio = document.querySelector('input[name="craExportFormat"]');
@@ -10691,6 +10984,7 @@ function buildCraIndexes() {
     assignmentById: new Map(),
     assignmentsByPersonTask: new Map(),
     dailyCapacityByPersonDate: new Map(),
+    availabilityByPersonDate: new Map(),
     feuillesByPersonWeek: new Map()
   };
   
@@ -10740,6 +11034,86 @@ function buildCraIndexes() {
       const capKey = personId + '|' + e.date;
       S.indexes.dailyCapacityByPersonDate.set(capKey, e.capaciteJour);
     }
+  }
+
+  // Index de restitution des indisponibilités pour la semaine affichée.
+  // MemberDailyCapacities fournit la capacité effectivement disponible ;
+  // Disponibilites fournit le motif intelligible (congé, RTT, etc.).
+  const visibleDays = weekDays();
+  const visibleDayByKey = new Map(visibleDays.map(dayMs => [localDateIso(dayMs), dayMs]));
+  const availabilityByPersonDate = S.indexes.availabilityByPersonDate;
+  const ensureAvailability = (memberId, dateKey) => {
+    const key = Number(memberId) + '|' + dateKey;
+    if (!availabilityByPersonDate.has(key)) {
+      availabilityByPersonDate.set(key, {
+        memberId: Number(memberId),
+        dateKey,
+        revision: -1,
+        theoreticalCapacity: null,
+        availableCapacity: null,
+        absenceHours: null,
+        motif: '',
+        labels: [],
+        factAvailabilityRatio: null
+      });
+    }
+    return availabilityByPersonDate.get(key);
+  };
+
+  for (const capacity of (S.dailyCapacities || [])) {
+    const dateKey = localDateIso(gristToMs(capacity.date));
+    if (!visibleDayByKey.has(dateKey)) continue;
+    const info = ensureAvailability(capacity.membre, dateKey);
+    const revision = Number(capacity.revision) || 0;
+    if (revision < info.revision) continue;
+    info.revision = revision;
+    info.theoreticalCapacity = capacity.capaciteTheorique;
+    info.availableCapacity = capacity.capaciteDisponible;
+    info.absenceHours = capacity.absenceHeures;
+    info.motif = String(capacity.motifIndisponibilite || '');
+  }
+
+  for (const availability of (S.disponibilites || [])) {
+    if (availability.actif === false || availability.actif === 0 || availability.actif === '0') continue;
+    for (const [dateKey, dayMs] of visibleDayByKey.entries()) {
+      const isDailyFact = availability.date && localDateIso(gristToMs(availability.date)) === dateKey;
+      const starts = gristToMs(availability.dateDebut);
+      const ends = gristToMs(availability.dateFin);
+      const isLegacyRange = starts && ends && dayMs >= starts && dayMs <= ends;
+      if (!isDailyFact && !isLegacyRange) continue;
+
+      const info = ensureAvailability(availability.membre, dateKey);
+      const rawRatio = Number(availability.dispo);
+      const ratio = Number.isFinite(rawRatio) ? (rawRatio > 1 ? rawRatio / 100 : rawRatio) : 0;
+      info.factAvailabilityRatio = info.factAvailabilityRatio === null
+        ? ratio
+        : Math.min(info.factAvailabilityRatio, ratio);
+      const label = String(availability.commentaire || availability.type || '').trim();
+      if (label && !info.labels.includes(label)) info.labels.push(label);
+    }
+  }
+
+  for (const info of availabilityByPersonDate.values()) {
+    const member = S.indexes.teamById.get(info.memberId);
+    const fallbackTheoretical = member ? (Number(member.capaciteHebdo) || 35) / 5 : 0;
+    const theoretical = info.theoreticalCapacity !== null && info.theoreticalCapacity !== undefined
+      ? Number(info.theoreticalCapacity)
+      : fallbackTheoretical;
+    const available = info.availableCapacity !== null && info.availableCapacity !== undefined
+      ? Number(info.availableCapacity)
+      : (info.factAvailabilityRatio === null ? theoretical : theoretical * info.factAvailabilityRatio);
+    const reducedByCapacity = theoretical > 0 && available < theoretical - 0.001;
+    const hasMotif = info.labels.length > 0 || Boolean(info.motif);
+    // Même sur un document antérieur aux formules v11, une capacité réduite
+    // doit rester visible. Le motif précis sera enrichi dès qu'un fait
+    // Disponibilites est disponible.
+    info.isIndispo = hasMotif || Number(info.absenceHours) > 0 ||
+      reducedByCapacity || info.factAvailabilityRatio !== null && info.factAvailabilityRatio < 1;
+    info.isFullDay = info.isIndispo && available <= 0.001;
+    info.isReduced = info.isIndispo && (reducedByCapacity || info.factAvailabilityRatio !== null && info.factAvailabilityRatio < 1);
+    info.isHalfDay = info.isReduced && theoretical > 0 && Math.abs((available / theoretical) - 0.5) < 0.01;
+    info.label = info.labels.join(' · ') || info.motif ||
+      (info.isIndispo ? 'Indisponibilité' : '');
   }
   
   // Index feuilles par personne + semaine

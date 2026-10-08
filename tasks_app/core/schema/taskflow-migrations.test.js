@@ -149,10 +149,10 @@ describe('TaskFlow Migrations - v1 → v2', () => {
     }
   });
   
-  test("Les migrations v5 à v9 restent en attente depuis v4", () => {
+  test("Les migrations v5 à v11 restent en attente depuis v4", () => {
     const currentVersion = 4;
     const pending = TaskFlowMigrations.getPendingMigrations(currentVersion);
-    expect(pending.map(migration => migration.version)).toEqual([5, 6, 7, 8, 9]);
+    expect(pending.map(migration => migration.version)).toEqual([5, 6, 7, 8, 9, 10, 11]);
   });
   
   test('Aucune donnée existante n\'est supprimée', async () => {
@@ -175,21 +175,23 @@ describe('TaskFlow Migrations - Runner', () => {
   
   test('getPendingMigrations respecte la version cible', () => {
     expect(TaskFlowMigrations.getPendingMigrations(1).map(migration => migration.version))
-      .toEqual([2, 3, 4, 5, 6, 7, 8, 9]);
+      .toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
     expect(TaskFlowMigrations.getPendingMigrations(2).map(migration => migration.version))
-      .toEqual([3, 4, 5, 6, 7, 8, 9]);
+      .toEqual([3, 4, 5, 6, 7, 8, 9, 10, 11]);
     expect(TaskFlowMigrations.getPendingMigrations(3).map(migration => migration.version))
-      .toEqual([4, 5, 6, 7, 8, 9]);
+      .toEqual([4, 5, 6, 7, 8, 9, 10, 11]);
     expect(TaskFlowMigrations.getPendingMigrations(4).map(migration => migration.version))
-      .toEqual([5, 6, 7, 8, 9]);
+      .toEqual([5, 6, 7, 8, 9, 10, 11]);
     expect(TaskFlowMigrations.getPendingMigrations(5).map(migration => migration.version))
-      .toEqual([6, 7, 8, 9]);
+      .toEqual([6, 7, 8, 9, 10, 11]);
     expect(TaskFlowMigrations.getPendingMigrations(6).map(migration => migration.version))
-      .toEqual([7, 8, 9]);
+      .toEqual([7, 8, 9, 10, 11]);
     expect(TaskFlowMigrations.getPendingMigrations(7).map(migration => migration.version))
-      .toEqual([8, 9]);
-    expect(TaskFlowMigrations.getPendingMigrations(8).map(migration => migration.version)).toEqual([9]);
-    expect(TaskFlowMigrations.getPendingMigrations(9)).toEqual([]);
+      .toEqual([8, 9, 10, 11]);
+    expect(TaskFlowMigrations.getPendingMigrations(8).map(migration => migration.version)).toEqual([9, 10, 11]);
+    expect(TaskFlowMigrations.getPendingMigrations(9).map(migration => migration.version)).toEqual([10, 11]);
+    expect(TaskFlowMigrations.getPendingMigrations(10).map(migration => migration.version)).toEqual([11]);
+    expect(TaskFlowMigrations.getPendingMigrations(11)).toEqual([]);
   });
   
   test('runMigrations met à jour la version après chaque migration réussie', async () => {
@@ -207,14 +209,138 @@ describe('TaskFlow Migrations - Runner', () => {
     const result = await TaskFlowMigrations.runMigrations(mockGrist, 1);
     
     expect(result.success).toBe(true);
-    expect(result.finalVersion).toBe(9);
+    expect(result.finalVersion).toBe(11);
     
     const meta = await mockGrist.fetchTable('TaskFlow_Meta');
-    expect(meta.schemaVersion[0]).toBe(9);
-    expect(meta.lastMigration[0]).toBe('weekly-sheet-created-at-v9');
+    expect(meta.schemaVersion[0]).toBe(11);
+    expect(meta.lastMigration[0]).toBe('formula-driven-member-daily-capacities-v11');
     expect(mockGrist.hasColumn('Team', 'estAdmin')).toBe(true);
     expect(mockGrist.hasTable('UserFilters')).toBe(true);
     expect(mockGrist.hasTable('TaskFlowIdentityProbe')).toBe(true);
+    expect(mockGrist.hasTable('MemberCapacityCoverage')).toBe(true);
+  });
+
+  test('La migration v10 ajoute les fondations quotidiennes sans toucher aux plages historiques', async () => {
+    const mockGrist = createMockGrist({
+      initialData: {
+        TaskFlow_Meta: [{ id: 1, schemaVersion: 9 }],
+        Team: [{ id: 1, nom: 'Alice' }],
+        Disponibilites: [{
+          id: 1,
+          membre: 1,
+          type: 'conge',
+          dateDebut: 1790899200,
+          dateFin: 1790985600,
+          dispo: 0,
+          commentaire: 'Historique à conserver'
+        }]
+      }
+    });
+
+    const metadata = await TaskFlowMigrations.loadMigrationMetadata(mockGrist);
+    const result = await TaskFlowMigrations.MIGRATIONS[8].run(mockGrist, metadata);
+
+    expect(result.success).toBe(true);
+    expect(result.actionsExecuted).toBe(8);
+    expect(mockGrist.hasTable('MemberCapacityCoverage')).toBe(true);
+    expect(mockGrist.getColumns('MemberCapacityCoverage')).toEqual(expect.arrayContaining([
+      'membre', 'dateDebut', 'dateFin', 'createdAt', 'updatedAt'
+    ]));
+    expect(mockGrist.getColumns('Disponibilites')).toEqual(expect.arrayContaining([
+      'date', 'origine', 'integration', 'externalKey', 'externalRefs', 'actif', 'sourceUpdatedAt'
+    ]));
+
+    const availabilities = await mockGrist.fetchTable('Disponibilites');
+    expect(availabilities.dateDebut[0]).toBe(1790899200);
+    expect(availabilities.dateFin[0]).toBe(1790985600);
+    expect(availabilities.commentaire[0]).toBe('Historique à conserver');
+
+    const rerunMetadata = await TaskFlowMigrations.loadMigrationMetadata(mockGrist);
+    const rerun = await TaskFlowMigrations.MIGRATIONS[8].run(mockGrist, rerunMetadata);
+    expect(rerun.actionsExecuted).toBe(0);
+  });
+
+  test('La migration v10 complète une table de couverture partielle', async () => {
+    const mockGrist = createMockGrist({
+      initialData: {
+        TaskFlow_Meta: [{ id: 1, schemaVersion: 9 }],
+        Team: [{ id: 1, nom: 'Alice' }],
+        Disponibilites: [{ id: 1, membre: 1, type: 'conge' }],
+        MemberCapacityCoverage: [{ id: 1, membre: 1 }]
+      }
+    });
+
+    const metadata = await TaskFlowMigrations.loadMigrationMetadata(mockGrist);
+    const result = await TaskFlowMigrations.MIGRATIONS[8].run(mockGrist, metadata);
+
+    expect(result.success).toBe(true);
+    expect(result.actionsExecuted).toBe(11);
+    expect(mockGrist.getColumns('MemberCapacityCoverage')).toEqual(expect.arrayContaining([
+      'membre', 'dateDebut', 'dateFin', 'createdAt', 'updatedAt'
+    ]));
+  });
+
+  test('La migration v11 transforme la projection en formules et ajoute le motif', async () => {
+    const mockGrist = createMockGrist({
+      initialData: {
+        TaskFlow_Meta: [{ id: 1, schemaVersion: 10 }],
+        Team: [{ id: 1, nom: 'Alice', capaciteHebdo: 35 }],
+        Disponibilites: [],
+        MemberDailyCapacities: [{
+          id: 1,
+          membre: 1,
+          date: 1791849600,
+          capaciteTheorique: 7,
+          disponibiliteRatio: 1,
+          capaciteDisponible: 7,
+          absenceHeures: 0
+        }]
+      }
+    });
+
+    const metadata = await TaskFlowMigrations.loadMigrationMetadata(mockGrist);
+    const result = await TaskFlowMigrations.MIGRATIONS[9].run(mockGrist, metadata);
+    const refreshed = await TaskFlowMigrations.loadMigrationMetadata(mockGrist);
+    const formulas = global.TASKFLOW_SCHEMA.formulas.MemberDailyCapacities;
+
+    expect(result.success).toBe(true);
+    expect(result.actionsExecuted).toBe(5);
+    expect(mockGrist.hasColumn('MemberDailyCapacities', 'motifIndisponibilite')).toBe(true);
+    ['capaciteTheorique', 'disponibiliteRatio', 'capaciteDisponible', 'absenceHeures', 'motifIndisponibilite']
+      .forEach(column => {
+        const metadataColumn = refreshed.columnsByKey['MemberDailyCapacities.' + column];
+        expect(metadataColumn.isFormula).toBe(true);
+        expect(metadataColumn.formula).toBe(formulas[column]);
+      });
+
+    const rerun = await TaskFlowMigrations.MIGRATIONS[9].run(
+      mockGrist,
+      await TaskFlowMigrations.loadMigrationMetadata(mockGrist)
+    );
+    expect(rerun.actionsExecuted).toBe(0);
+  });
+
+  test('La migration v11 bloque les plages actives non converties', async () => {
+    const mockGrist = createMockGrist({
+      initialData: {
+        TaskFlow_Meta: [{ id: 1, schemaVersion: 10 }],
+        Team: [{ id: 1, nom: 'Alice' }],
+        Disponibilites: [{
+          id: 7,
+          membre: 1,
+          dateDebut: 1790899200,
+          dateFin: 1790985600,
+          dispo: 0.5
+        }],
+        MemberDailyCapacities: []
+      }
+    });
+
+    await expect(TaskFlowMigrations.MIGRATIONS[9].run(
+      mockGrist,
+      await TaskFlowMigrations.loadMigrationMetadata(mockGrist)
+    )).rejects.toThrow('FORMULA_CAPACITY_LEGACY_UNAVAILABILITIES');
+    expect(mockGrist.hasColumn('MemberDailyCapacities', 'motifIndisponibilite')).toBe(false);
   });
   
   test('getCurrentVersion lit la version dans TaskFlow_Meta', async () => {
@@ -432,9 +558,9 @@ describe('TaskFlow Migrations - v3 → v4', () => {
     expect(result2.actionsExecuted).toBe(0);
   });
   
-  test('getPendingMigrations retourne v4 à v9 depuis v3', () => {
+  test('getPendingMigrations retourne v4 à v11 depuis v3', () => {
     const pending = TaskFlowMigrations.getPendingMigrations(3);
-    expect(pending.length).toBe(6);
+    expect(pending.length).toBe(8);
     expect(pending[0].version).toBe(4);
     expect(pending[0].name).toBe('timesheet-validation-foundation-v4');
     expect(pending[1].version).toBe(5);
@@ -447,16 +573,20 @@ describe('TaskFlow Migrations - v3 → v4', () => {
     expect(pending[4].name).toBe('identity-probe-v8');
     expect(pending[5].version).toBe(9);
     expect(pending[5].name).toBe('weekly-sheet-created-at-v9');
+    expect(pending[6].version).toBe(10);
+    expect(pending[6].name).toBe('daily-indisponibilites-capacity-coverage-v10');
+    expect(pending[7].version).toBe(11);
+    expect(pending[7].name).toBe('formula-driven-member-daily-capacities-v11');
   });
   
-  test('getPendingMigrations retourne v3 à v9 depuis v2', () => {
+  test('getPendingMigrations retourne v3 à v11 depuis v2', () => {
     const pending = TaskFlowMigrations.getPendingMigrations(2);
-    expect(pending.map(migration => migration.version)).toEqual([3, 4, 5, 6, 7, 8, 9]);
+    expect(pending.map(migration => migration.version)).toEqual([3, 4, 5, 6, 7, 8, 9, 10, 11]);
   });
   
-  test('getPendingMigrations retourne v5 à v9 depuis v4', () => {
+  test('getPendingMigrations retourne v5 à v11 depuis v4', () => {
     const pending = TaskFlowMigrations.getPendingMigrations(4);
-    expect(pending.length).toBe(5);
+    expect(pending.length).toBe(7);
     expect(pending[0].version).toBe(5);
     expect(pending[0].name).toBe('timesheet-sheet-link-backfill-v5');
     expect(pending[1].version).toBe(6);
@@ -467,14 +597,18 @@ describe('TaskFlow Migrations - v3 → v4', () => {
     expect(pending[3].name).toBe('identity-probe-v8');
     expect(pending[4].version).toBe(9);
     expect(pending[4].name).toBe('weekly-sheet-created-at-v9');
+    expect(pending[5].version).toBe(10);
+    expect(pending[5].name).toBe('daily-indisponibilites-capacity-coverage-v10');
+    expect(pending[6].version).toBe(11);
+    expect(pending[6].name).toBe('formula-driven-member-daily-capacities-v11');
   });
   
-  test('getPendingMigrations retourne v6 à v9 depuis v5', () => {
+  test('getPendingMigrations retourne v6 à v11 depuis v5', () => {
     const pending = TaskFlowMigrations.getPendingMigrations(5);
-    expect(pending.map(migration => migration.version)).toEqual([6, 7, 8, 9]);
+    expect(pending.map(migration => migration.version)).toEqual([6, 7, 8, 9, 10, 11]);
   });
   
-  test('runMigrations termine en version 9 depuis v4', async () => {
+  test('runMigrations termine en version 11 depuis v4', async () => {
     const mockGrist = createMockGrist({
       initialData: {
         TaskFlow_Meta: [{ id: 1, schemaVersion: 4, lastMigration: 'timesheet-validation-foundation-v4' }],
@@ -489,14 +623,15 @@ describe('TaskFlow Migrations - v3 → v4', () => {
     const result = await TaskFlowMigrations.runMigrations(mockGrist, 4);
     
     expect(result.success).toBe(true);
-    expect(result.finalVersion).toBe(9);
+    expect(result.finalVersion).toBe(11);
     
     const meta = await mockGrist.fetchTable('TaskFlow_Meta');
-    expect(meta.schemaVersion[0]).toBe(9);
-    expect(meta.lastMigration[0]).toBe('weekly-sheet-created-at-v9');
+    expect(meta.schemaVersion[0]).toBe(11);
+    expect(meta.lastMigration[0]).toBe('formula-driven-member-daily-capacities-v11');
     expect(mockGrist.hasColumn('Team', 'estAdmin')).toBe(true);
     expect(mockGrist.hasTable('UserFilters')).toBe(true);
     expect(mockGrist.hasTable('TaskFlowIdentityProbe')).toBe(true);
+    expect(mockGrist.hasTable('MemberCapacityCoverage')).toBe(true);
   });
   
   test('Aucune suppression de colonnes existantes', async () => {
