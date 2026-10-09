@@ -441,7 +441,8 @@ function buildReport(request, dependencies) {
     team: request.data.team,
     tasks: request.data.tasks,
     projects: request.data.projects,
-    programmes: request.data.programmes
+    programmes: request.data.programmes,
+    projectColumns: request.projectColumns
   });
 }
 

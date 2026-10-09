@@ -32,8 +32,10 @@
         'TaskAssignments',
         'Disponibilites',
         'MemberDailyCapacities',
+        'CRAExportSettings',
         'TaskFlow_Meta',
         'TaskFlowIdentityProbe',
+        'CRAExportSettings',
         'Competences'
     ];
 
@@ -164,6 +166,7 @@
                 UserFilters: (data.UserFilters || data.userFilters || []).slice(),
                 Disponibilites: (data.Disponibilites || data.disponibilites || []).slice(),
                 MemberDailyCapacities: (data.MemberDailyCapacities || data.memberDailyCapacities || []).slice(),
+                CRAExportSettings: (data.CRAExportSettings || data.craExportSettings || []).slice(),
                 TaskFlow_Meta: (data.TaskFlow_Meta || data.taskFlowMeta || []).slice(),
                 TaskFlowIdentityProbe: (data.TaskFlowIdentityProbe || data.taskFlowIdentityProbe || []).slice(),
                 Competences: (data.Competences || data.competences || []).slice()
@@ -878,7 +881,7 @@
         var proposed = mutation.proposed || {};
 
         if (table === 'Team' || table === 'Entites' || table === 'Programmes' || table === 'KanbanSteps' ||
-            table === 'TaskFlow_Meta' || table === 'Competences') {
+            table === 'CRAExportSettings' || table === 'TaskFlow_Meta' || table === 'Competences') {
             return actorIsAdmin(snapshot)
                 ? allow('ADMIN')
                 : deny('ADMIN_REQUIRED', 'Cette operation est reservee aux administrateurs.');

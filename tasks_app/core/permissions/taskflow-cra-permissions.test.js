@@ -119,6 +119,19 @@ describe('permissions communes CRA', () => {
     expect(result.allowed).toBe(true);
   });
 
+  test('les paramètres d’export CRA sont réservés aux administrateurs fonctionnels', () => {
+    const fields = { projectColumns: '["Code_Analytique"]', logoPosition: 'bottom-right' };
+    const denied = permissions.authorizeMutationBatch(snapshot(2, false), [[
+      'AddRecord', 'CRAExportSettings', null, fields
+    ]]);
+    const accepted = permissions.authorizeMutationBatch(snapshot(1, true), [[
+      'AddRecord', 'CRAExportSettings', null, fields
+    ]]);
+
+    expect(denied).toMatchObject({ allowed: false, code: 'ADMIN_REQUIRED' });
+    expect(accepted).toMatchObject({ allowed: true, code: 'BATCH_ALLOWED' });
+  });
+
   test('un responsable projet peut recalculer uniquement le prévisionnel de ses affectations', () => {
     const planningSnapshot = permissions.createSnapshot({
       Team: [

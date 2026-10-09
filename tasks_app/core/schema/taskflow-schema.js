@@ -37,7 +37,7 @@
     }
 
     // Version courante du schéma
-    var SCHEMA_VERSION = 11;
+    var SCHEMA_VERSION = 12;
 
     // Projection quotidienne v11. Ces formules ne consultent que les faits
     // d'indisponibilité actifs du membre pour la date de la ligne : aucune
@@ -68,6 +68,7 @@
         'TimeEntries',
         'TaskFlowIdentityProbe',
         'UserFilters',
+        'CRAExportSettings',
         'TaskFlow_Meta'
     ];
 
@@ -393,6 +394,21 @@
                 { id: 'filters',          opts: dataColumn('Text') },
                 { id: 'updatedAt',        opts: dataColumn('DateTime') },
                 { id: 'sourceWidget',     opts: dataColumn('Text') }
+            ]
+        },
+
+        // =========================================================================
+        // CRAExportSettings — Configuration documentaire optionnelle des exports CRA
+        // =========================================================================
+        CRAExportSettings: {
+            label: 'Configuration exports CRA',
+            columns: [
+                // JSON d'identifiants de colonnes Projects (max. trois, validé par le widget)
+                { id: 'projectColumns',   opts: dataColumn('Text') },
+                // Une seule image PNG/JPEG est utilisée par le widget
+                { id: 'logo',             opts: dataColumn('Attachments') },
+                { id: 'logoPosition',     opts: dataColumn('Choice') },
+                { id: 'updatedAt',        opts: dataColumn('DateTime') }
             ]
         },
 

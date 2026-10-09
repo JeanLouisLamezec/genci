@@ -705,7 +705,11 @@ function normalizeCraSnapshot(raw, currentUser) {
     dateEcheance: r.dateEcheance
   }));
   
+  // Les exports CRA peuvent inclure des colonnes Projects configurées au niveau
+  // du document (ex. Code_Analytique). Conserver ces données brutes plutôt que
+  // de limiter le projet aux seuls champs nécessaires à l'interface CRA.
   const projects = columnarToRows(raw.projects).map(r => ({
+    ...r,
     id: r.id,
     nom: r.nom,
     programme: Number(r.programme) || null,

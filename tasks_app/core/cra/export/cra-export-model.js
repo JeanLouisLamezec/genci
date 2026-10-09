@@ -155,6 +155,41 @@ function normalizeScope(scope) {
   return result;
 }
 
+/**
+ * Normalise les colonnes Projects facultatives choisies pour l'export.
+ * Les réglages sont des données de document : ne jamais accepter un identifiant
+ * arbitraire ou un nombre illimité de colonnes depuis l'interface.
+ */
+function normalizeProjectColumns(value) {
+  const source = Array.isArray(value) ? value : [];
+  const seen = new Set();
+  const result = [];
+  for (const item of source) {
+    const id = String(item && item.id || '').trim();
+    if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(id) || id === 'id' || id === 'nom' || seen.has(id)) {
+      continue;
+    }
+    seen.add(id);
+    result.push({
+      id,
+      label: String(item && item.label || id).trim() || id
+    });
+    if (result.length === 3) break;
+  }
+  return result;
+}
+
+function formatProjectFieldValue(value) {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'boolean') return value ? 'Oui' : 'Non';
+  if (Array.isArray(value)) {
+    const items = value[0] === 'L' ? value.slice(1) : value;
+    return items.map(formatProjectFieldValue).filter(Boolean).join(', ');
+  }
+  if (typeof value === 'object') return '';
+  return String(value);
+}
+
 // ============================================================================
 // VALIDATION DES DATES
 // ============================================================================
@@ -601,7 +636,8 @@ function buildReport(options) {
     team,
     tasks,
     projects,
-    programmes
+    programmes,
+    projectColumns
   } = options;
   
   // Valider les dates
@@ -618,6 +654,7 @@ function buildReport(options) {
   // ============================================================================
   
   const normalizedScope = normalizeScope(scope || {});
+  const normalizedProjectColumns = normalizeProjectColumns(projectColumns);
   
   // Règle de sécurité : personIds vide = aucune personne
   if (normalizedScope.personIds.length === 0) {
@@ -627,6 +664,7 @@ function buildReport(options) {
         endDateIso
       },
       scope: normalizedScope,
+      projectColumns: normalizedProjectColumns,
       persons: [],
       totals: {
         selectedPersonCount: 0,
@@ -781,6 +819,10 @@ function buildReport(options) {
       programmeId: programme.id,
       programmeName: programme.name
     };
+    row.projectFields = {};
+    normalizedProjectColumns.forEach(function(column) {
+      row.projectFields[column.id] = project ? formatProjectFieldValue(project[column.id]) : '';
+    });
     
     // Ajouter aux données de la personne
     if (!personData.has(personId)) {
@@ -835,6 +877,7 @@ function buildReport(options) {
       endDateIso
     },
     scope: normalizedScope,
+    projectColumns: normalizedProjectColumns,
     persons,
     totals: {
       selectedPersonCount: normalizedScope.personIds.length,
@@ -860,6 +903,8 @@ function buildReport(options) {
 const CraExportModel = {
   buildReport,
   normalizeScope,
+  normalizeProjectColumns,
+  formatProjectFieldValue,
   validateDateRange,
   isValidDateIso,
   hoursToMinutes,

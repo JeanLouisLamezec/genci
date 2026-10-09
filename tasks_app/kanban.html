@@ -1877,8 +1877,10 @@
         'TaskAssignments',
         'Disponibilites',
         'MemberDailyCapacities',
+        'CRAExportSettings',
         'TaskFlow_Meta',
         'TaskFlowIdentityProbe',
+        'CRAExportSettings',
         'Competences'
     ];
 
@@ -2009,6 +2011,7 @@
                 UserFilters: (data.UserFilters || data.userFilters || []).slice(),
                 Disponibilites: (data.Disponibilites || data.disponibilites || []).slice(),
                 MemberDailyCapacities: (data.MemberDailyCapacities || data.memberDailyCapacities || []).slice(),
+                CRAExportSettings: (data.CRAExportSettings || data.craExportSettings || []).slice(),
                 TaskFlow_Meta: (data.TaskFlow_Meta || data.taskFlowMeta || []).slice(),
                 TaskFlowIdentityProbe: (data.TaskFlowIdentityProbe || data.taskFlowIdentityProbe || []).slice(),
                 Competences: (data.Competences || data.competences || []).slice()
@@ -2723,7 +2726,7 @@
         var proposed = mutation.proposed || {};
 
         if (table === 'Team' || table === 'Entites' || table === 'Programmes' || table === 'KanbanSteps' ||
-            table === 'TaskFlow_Meta' || table === 'Competences') {
+            table === 'CRAExportSettings' || table === 'TaskFlow_Meta' || table === 'Competences') {
             return actorIsAdmin(snapshot)
                 ? allow('ADMIN')
                 : deny('ADMIN_REQUIRED', 'Cette operation est reservee aux administrateurs.');
@@ -4259,7 +4262,7 @@ if (typeof globalThis !== 'undefined') {
     }
 
     // Version courante du schéma
-    var SCHEMA_VERSION = 11;
+    var SCHEMA_VERSION = 12;
 
     // Projection quotidienne v11. Ces formules ne consultent que les faits
     // d'indisponibilité actifs du membre pour la date de la ligne : aucune
@@ -4290,6 +4293,7 @@ if (typeof globalThis !== 'undefined') {
         'TimeEntries',
         'TaskFlowIdentityProbe',
         'UserFilters',
+        'CRAExportSettings',
         'TaskFlow_Meta'
     ];
 
@@ -4615,6 +4619,21 @@ if (typeof globalThis !== 'undefined') {
                 { id: 'filters',          opts: dataColumn('Text') },
                 { id: 'updatedAt',        opts: dataColumn('DateTime') },
                 { id: 'sourceWidget',     opts: dataColumn('Text') }
+            ]
+        },
+
+        // =========================================================================
+        // CRAExportSettings — Configuration documentaire optionnelle des exports CRA
+        // =========================================================================
+        CRAExportSettings: {
+            label: 'Configuration exports CRA',
+            columns: [
+                // JSON d'identifiants de colonnes Projects (max. trois, validé par le widget)
+                { id: 'projectColumns',   opts: dataColumn('Text') },
+                // Une seule image PNG/JPEG est utilisée par le widget
+                { id: 'logo',             opts: dataColumn('Attachments') },
+                { id: 'logoPosition',     opts: dataColumn('Choice') },
+                { id: 'updatedAt',        opts: dataColumn('DateTime') }
             ]
         },
 
@@ -5660,6 +5679,7 @@ if (typeof globalThis !== 'undefined') {
  * Version 9: Horodatage de création des feuilles hebdomadaires
  * Version 10: Faits journaliers d'indisponibilité et index de couverture
  * Version 11: Projection formulée des capacités quotidiennes
+ * Version 12: Configuration documentaire des exports CRA
  * ============================================================================ */
 
 (function (global) {
@@ -6744,6 +6764,48 @@ if (typeof globalThis !== 'undefined') {
     }
 
     // ========================================================================
+    // MIGRATION V11 → V12 — Configuration documentaire des exports CRA
+    // ========================================================================
+
+    async function migrateToV12(grist, metadata) {
+        log('Migration v11 → v12: cra-export-settings-v12');
+
+        var docApi = getDocApi(grist);
+        var existingTables = metadata.tablesByName || {};
+        var existingColumns = metadata.columnsByKey || {};
+        var columns = [
+            { id: 'projectColumns', type: 'Text', isFormula: false },
+            { id: 'logo', type: 'Attachments', isFormula: false },
+            { id: 'logoPosition', type: 'Choice', isFormula: false },
+            { id: 'updatedAt', type: 'DateTime', isFormula: false }
+        ];
+        var actions = [];
+
+        if (!existingTables.CRAExportSettings) {
+            actions.push(['AddTable', 'CRAExportSettings', columns]);
+        } else {
+            for (var index = 0; index < columns.length; index++) {
+                var column = columns[index];
+                if (!existingColumns['CRAExportSettings.' + column.id]) {
+                    actions.push(['AddColumn', 'CRAExportSettings', column.id, {
+                        type: column.type,
+                        isFormula: false
+                    }]);
+                }
+            }
+        }
+
+        if (actions.length > 0) await docApi.applyUserActions(actions);
+
+        return {
+            success: true,
+            message: 'Migration v12 appliquée',
+            actionsExecuted: actions.length,
+            metadata: actions.length ? await loadMigrationMetadata(grist) : metadata
+        };
+    }
+
+    // ========================================================================
     // LISTE DES MIGRATIONS
     // ========================================================================
     
@@ -6807,6 +6869,12 @@ if (typeof globalThis !== 'undefined') {
             name: 'formula-driven-member-daily-capacities-v11',
             description: 'Bascule des capacités quotidiennes vers les formules Grist',
             run: migrateToV11
+        },
+        {
+            version: 12,
+            name: 'cra-export-settings-v12',
+            description: 'Ajout de la configuration documentaire des exports CRA',
+            run: migrateToV12
         }
     ];
 

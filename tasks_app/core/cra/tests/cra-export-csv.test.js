@@ -796,6 +796,15 @@ describe('escapeCsvField', () => {
 
 describe('createRows', () => {
 
+  test('ajoute les champs Projects configurés au CSV', () => {
+    const report = makeReport();
+    report.projectColumns = [{ id: 'Code_Analytique', label: 'Code analytique' }];
+    report.persons[0].rows[0].projectFields = { Code_Analytique: 'GENCI-42' };
+    const rows = createRows(report);
+    expect(rows[0]).toEqual(['Déclarant', 'Date', 'Durée', 'Projet', 'Tâche', 'Code analytique']);
+    expect(rows[1][5]).toBe('GENCI-42');
+  });
+
   test('en-tête exact', () => {
     const rows = createRows(makeReport());
     expect(rows[0]).toEqual(['Déclarant', 'Date', 'Durée', 'Projet', 'Tâche']);

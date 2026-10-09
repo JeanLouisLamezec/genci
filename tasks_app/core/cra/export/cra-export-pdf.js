@@ -180,6 +180,23 @@ function validateReport(report) {
   };
 }
 
+function getProjectColumns(report) {
+  if (!Array.isArray(report && report.projectColumns)) return [];
+  return report.projectColumns
+    .filter(column => column && /^[A-Za-z][A-Za-z0-9_]*$/.test(String(column.id || '')))
+    .slice(0, 3)
+    .map(column => ({
+      id: String(column.id),
+      label: String(column.label || column.id)
+    }));
+}
+
+function isSupportedLogoDataUrl(value) {
+  return typeof value === 'string' &&
+    /^data:image\/(png|jpeg);base64,/i.test(value) &&
+    value.length <= 2800000;
+}
+
 // ============================================================================
 // FORMATAGE DES DATES ET DURÉES
 // ============================================================================
@@ -331,6 +348,9 @@ function resolvePdfMake(candidate) {
  */
 function createDocumentDefinition(report, options) {
   const opts = options || {};
+  const projectColumns = getProjectColumns(report);
+  const logoDataUrl = isSupportedLogoDataUrl(opts.logoDataUrl) ? opts.logoDataUrl : null;
+  const logoPosition = opts.logoPosition === 'top-left' ? 'top-left' : 'bottom-center';
   
   // Valider le rapport
   const validation = validateReport(report);
@@ -377,9 +397,10 @@ function createDocumentDefinition(report, options) {
     const tableBody = [];
     
     // Ligne d'en-tête 1 : informations fusionnées
+    const totalColumnCount = 4 + projectColumns.length;
     const headerRow1 = [
       {
-        colSpan: 4,
+        colSpan: totalColumnCount,
         columns: [
           {
             width: '*',
@@ -416,9 +437,7 @@ function createDocumentDefinition(report, options) {
         fillColor: '#1e3a5f',
         color: '#ffffff'
       },
-      {},
-      {},
-      {}
+      ...Array.from({ length: totalColumnCount - 1 }, () => ({}))
     ];
     tableBody.push(headerRow1);
     
@@ -438,13 +457,18 @@ function createDocumentDefinition(report, options) {
         text: 'Projet',
         style: 'columnHeader',
         fillColor: '#e5e7eb'
-      },
-      {
+      }
+    ]
+      .concat(projectColumns.map(column => ({
+        text: column.label,
+        style: 'columnHeader',
+        fillColor: '#e5e7eb'
+      })))
+      .concat([{
         text: 'Tâche',
         style: 'columnHeader',
         fillColor: '#e5e7eb'
-      }
-    ];
+      }]);
     tableBody.push(headerRow2);
     
     // Lignes d'activité
@@ -473,13 +497,18 @@ function createDocumentDefinition(report, options) {
           text: row.projectName || '',
           style: 'cellText',
           margin: [4, 4, 4, 4]
-        },
-        {
+        }
+      ]
+        .concat(projectColumns.map(column => ({
+          text: row.projectFields && row.projectFields[column.id] || '',
+          style: 'cellText',
+          margin: [4, 4, 4, 4]
+        })))
+        .concat([{
           text: row.taskName || '',
           style: 'cellText',
           margin: [4, 4, 4, 4]
-        }
-      ];
+        }]);
       
       // Bordure supérieure plus marquée pour nouvelle date
       if (isNewDate && j > 0) {
@@ -487,10 +516,16 @@ function createDocumentDefinition(report, options) {
         tableRow[1].border = { top: true, bottom: true, left: true, right: true };
         tableRow[2].border = { top: true, bottom: true, left: true, right: true };
         tableRow[3].border = { top: true, bottom: true, left: true, right: true };
+        for (let cellIndex = 4; cellIndex < tableRow.length; cellIndex++) {
+          tableRow[cellIndex].border = { top: true, bottom: true, left: true, right: true };
+        }
         tableRow[0].fillColor = '#f9fafb';
         tableRow[1].fillColor = '#f9fafb';
         tableRow[2].fillColor = '#f9fafb';
         tableRow[3].fillColor = '#f9fafb';
+        for (let cellIndex = 4; cellIndex < tableRow.length; cellIndex++) {
+          tableRow[cellIndex].fillColor = '#f9fafb';
+        }
       }
       
       tableBody.push(tableRow);
@@ -502,7 +537,9 @@ function createDocumentDefinition(report, options) {
     const personTable = {
       table: {
         headerRows: 2,
-        widths: [74, 52, '35%', '*'],
+        widths: projectColumns.length
+          ? [64, 48, '22%'].concat(projectColumns.map(() => '18%'), ['*'])
+          : [74, 52, '35%', '*'],
         body: tableBody
       },
       layout: {
@@ -541,8 +578,8 @@ function createDocumentDefinition(report, options) {
   // Définition complète du document
   const definition = {
     pageSize: 'A4',
-    pageOrientation: 'portrait',
-    pageMargins: [32, 32, 32, 42],
+    pageOrientation: projectColumns.length > 1 ? 'landscape' : 'portrait',
+    pageMargins: [32, logoDataUrl && logoPosition === 'top-left' ? 58 : 32, 32, logoDataUrl && logoPosition === 'bottom-center' ? 59 : 42],
     
     content: content,
     
@@ -588,24 +625,39 @@ function createDocumentDefinition(report, options) {
       }
     },
     
-    footer: function(currentPage, pageCount) {
+    header: logoDataUrl && logoPosition === 'top-left' ? function() {
       return {
-        columns: [
-          {
-            text: 'Généré depuis Grist',
-            alignment: 'left',
-            fontSize: 8,
-            color: '#64748b',
-            margin: [32, 0, 0, 0]
-          },
-          {
-            text: 'Page ' + currentPage + ' / ' + pageCount,
-            alignment: 'right',
-            fontSize: 8,
-            color: '#64748b',
-            margin: [0, 0, 32, 0]
-          }
-        ],
+        image: logoDataUrl,
+        fit: [90, 35],
+        alignment: 'left',
+        margin: [32, 12, 0, 0]
+      };
+    } : undefined,
+
+    footer: function(currentPage, pageCount) {
+      const left = {
+        text: 'Généré depuis Grist',
+        alignment: 'left',
+        fontSize: 8,
+        color: '#64748b',
+        margin: [32, 0, 0, 0]
+      };
+      const right = {
+        text: 'Page ' + currentPage + ' / ' + pageCount,
+        alignment: 'right',
+        fontSize: 8,
+        color: '#64748b',
+        margin: [0, 0, 32, 0]
+      };
+      const columns = logoDataUrl && logoPosition === 'bottom-center'
+        ? [
+            Object.assign({ width: '*' }, left),
+            { width: 'auto', image: logoDataUrl, fit: [90, 35], alignment: 'center', margin: [0, -8, 0, 0] },
+            Object.assign({ width: '*' }, right)
+          ]
+        : [left, right];
+      return {
+        columns: columns,
         margin: [0, 8, 0, 16]
       };
     },
@@ -695,6 +747,8 @@ function download(report, options) {
 
 const CraExportPdf = {
   createDocumentDefinition,
+  getProjectColumns,
+  isSupportedLogoDataUrl,
   createPdf,
   download,
   buildFilename,

@@ -318,13 +318,14 @@ function createRows(report) {
   const rows = [];
   
   // En-tête
+  const projectColumns = Array.isArray(report.projectColumns) ? report.projectColumns : [];
   rows.push([
     'Déclarant',
     'Date',
     'Durée',
     'Projet',
     'Tâche'
-  ]);
+  ].concat(projectColumns.map(column => String(column.label || column.id || ''))));
   
   // Filtrer les personnes sans lignes (défensivement)
   const activePersons = [];
@@ -353,13 +354,16 @@ function createRows(report) {
       // Conserver la date ISO
       const date = row.dateIso;
       
+      const projectFields = row.projectFields && typeof row.projectFields === 'object'
+        ? row.projectFields
+        : {};
       rows.push([
         declarant,
         date,
         duree,
         projet,
         tache
-      ]);
+      ].concat(projectColumns.map(column => sanitizeSpreadsheetText(projectFields[column.id] || ''))));
     }
   }
   

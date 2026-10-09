@@ -578,6 +578,44 @@ describe('buildFilename', () => {
 
 describe('createDocumentDefinition', () => {
 
+  test('affiche les colonnes Projects configurées et bascule en paysage à partir de deux champs', () => {
+    const report = makeReport();
+    report.projectColumns = [
+      { id: 'Code_Analytique', label: 'Code analytique' },
+      { id: 'Centre', label: 'Centre de coût' }
+    ];
+    report.persons[0].rows[0].projectFields = { Code_Analytique: 'GENCI-42', Centre: 'IT' };
+    const definition = createDocumentDefinition(report);
+    expect(definition.pageOrientation).toBe('landscape');
+    expect(definition.content[0].table.body[1].map(cell => cell.text)).toEqual([
+      'Date', 'Durée', 'Projet', 'Code analytique', 'Centre de coût', 'Tâche'
+    ]);
+    expect(definition.content[0].table.body[2].map(cell => cell.text)).toEqual([
+      '05/01/2026', '7h', 'Projet Alpha', 'GENCI-42', 'IT', 'Pilotage'
+    ]);
+  });
+
+  test('place un logo PDF centré en bas avec une taille agrandie', () => {
+    const definition = createDocumentDefinition(makeReport(), {
+      logoDataUrl: 'data:image/png;base64,AAAA',
+      logoPosition: 'bottom-center'
+    });
+    const footer = definition.footer(1, 1);
+    const logo = footer.columns[1];
+    expect(logo.fit).toEqual([90, 35]);
+    expect(logo.alignment).toBe('center');
+  });
+
+  test('place un logo PDF en haut à gauche avec une taille agrandie', () => {
+    const definition = createDocumentDefinition(makeReport(), {
+      logoDataUrl: 'data:image/png;base64,AAAA',
+      logoPosition: 'top-left'
+    });
+    const header = definition.header(1, 1);
+    expect(header.fit).toEqual([90, 35]);
+    expect(header.alignment).toBe('left');
+  });
+
   test('configuration générale', () => {
     const report = makeReport();
     const definition = createDocumentDefinition(report);

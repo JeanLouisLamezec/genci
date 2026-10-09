@@ -7,14 +7,14 @@
  * 3. Ne pas signaler les colonnes légitimes finissant par un chiffre
  */
 
-describe('TaskFlow Schema v11', () => {
+describe('TaskFlow Schema v12', () => {
     
     // Charger le schéma
     require('./taskflow-schema.js');
     const SCHEMA = global.TASKFLOW_SCHEMA;
     
-    test('TASKFLOW_SCHEMA.version === 11 et les tables techniques sont déclarées', () => {
-        expect(SCHEMA.version).toBe(11);
+    test('TASKFLOW_SCHEMA.version === 12 et les tables techniques sont déclarées', () => {
+        expect(SCHEMA.version).toBe(12);
         const teamColumns = SCHEMA.tables.Team.columns;
         const adminColumn = teamColumns.find(column => column.id === 'estAdmin');
         expect(adminColumn).toBeDefined();
@@ -23,6 +23,10 @@ describe('TaskFlow Schema v11', () => {
         expect(SCHEMA.tableOrder).toContain('UserFilters');
         expect(SCHEMA.tables.UserFilters.columns.map(column => column.id)).toEqual([
             'gristUserId', 'filters', 'updatedAt', 'sourceWidget'
+        ]);
+        expect(SCHEMA.tableOrder).toContain('CRAExportSettings');
+        expect(SCHEMA.tables.CRAExportSettings.columns.map(column => column.id)).toEqual([
+            'projectColumns', 'logo', 'logoPosition', 'updatedAt'
         ]);
         expect(SCHEMA.tableOrder).toContain('TaskFlowIdentityProbe');
         expect(SCHEMA.tables.TaskFlowIdentityProbe.columns.map(column => column.id)).toEqual([

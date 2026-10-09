@@ -18,6 +18,7 @@
  * Version 9: Horodatage de création des feuilles hebdomadaires
  * Version 10: Faits journaliers d'indisponibilité et index de couverture
  * Version 11: Projection formulée des capacités quotidiennes
+ * Version 12: Configuration documentaire des exports CRA
  * ============================================================================ */
 
 (function (global) {
@@ -1102,6 +1103,48 @@
     }
 
     // ========================================================================
+    // MIGRATION V11 → V12 — Configuration documentaire des exports CRA
+    // ========================================================================
+
+    async function migrateToV12(grist, metadata) {
+        log('Migration v11 → v12: cra-export-settings-v12');
+
+        var docApi = getDocApi(grist);
+        var existingTables = metadata.tablesByName || {};
+        var existingColumns = metadata.columnsByKey || {};
+        var columns = [
+            { id: 'projectColumns', type: 'Text', isFormula: false },
+            { id: 'logo', type: 'Attachments', isFormula: false },
+            { id: 'logoPosition', type: 'Choice', isFormula: false },
+            { id: 'updatedAt', type: 'DateTime', isFormula: false }
+        ];
+        var actions = [];
+
+        if (!existingTables.CRAExportSettings) {
+            actions.push(['AddTable', 'CRAExportSettings', columns]);
+        } else {
+            for (var index = 0; index < columns.length; index++) {
+                var column = columns[index];
+                if (!existingColumns['CRAExportSettings.' + column.id]) {
+                    actions.push(['AddColumn', 'CRAExportSettings', column.id, {
+                        type: column.type,
+                        isFormula: false
+                    }]);
+                }
+            }
+        }
+
+        if (actions.length > 0) await docApi.applyUserActions(actions);
+
+        return {
+            success: true,
+            message: 'Migration v12 appliquée',
+            actionsExecuted: actions.length,
+            metadata: actions.length ? await loadMigrationMetadata(grist) : metadata
+        };
+    }
+
+    // ========================================================================
     // LISTE DES MIGRATIONS
     // ========================================================================
     
@@ -1165,6 +1208,12 @@
             name: 'formula-driven-member-daily-capacities-v11',
             description: 'Bascule des capacités quotidiennes vers les formules Grist',
             run: migrateToV11
+        },
+        {
+            version: 12,
+            name: 'cra-export-settings-v12',
+            description: 'Ajout de la configuration documentaire des exports CRA',
+            run: migrateToV12
         }
     ];
 

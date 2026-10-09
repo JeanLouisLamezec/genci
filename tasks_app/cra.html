@@ -9,15 +9,16 @@
 <script src="core/cra/ui/cra-person-filter.js?v=20260830-filter-v2"></script>
 <script src="core/cra/ui/cra-filter-adapter.js?v=20261006-no-milestones"></script>
 <script src="core/cra/controller/cra-time-entry-controller.js?v=20261006-minimum-hours-v2"></script>
-<script src="core/cra/loader/cra-data-loader.js?v=20261008-availability-badges-v2"></script>
+<script src="core/cra/loader/cra-data-loader.js?v=20261009-cra-project-export-fields-v1"></script>
 <script src="core/generated/taskflow-planning-browser.js?v=20260827-retro"></script>
 
-<script src="core/generated/taskflow-cra-browser.js?v=20261006-minimum-hours-v2"></script>
+<script src="core/generated/taskflow-cra-browser.js?v=20261009-cra-export-settings-v1"></script>
 <script src="core/cra/workflow/cra-workflow-integration.js?v=20261005-submit-batching"></script>
-<script src="core/cra/export/cra-export-model.js"></script>
-<script src="core/cra/export/cra-export-pdf.js"></script>
-<script src="core/cra/export/cra-export-csv.js"></script>
-<script src="core/cra/export/cra-export-orchestrator.js"></script>
+<script src="core/cra/export/cra-export-model.js?v=20261009-cra-export-settings-v1"></script>
+<script src="core/cra/export/cra-export-settings.js?v=20261009-cra-export-settings-v2"></script>
+<script src="core/cra/export/cra-export-pdf.js?v=20261009-cra-export-settings-v3"></script>
+<script src="core/cra/export/cra-export-csv.js?v=20261009-cra-export-settings-v1"></script>
+<script src="core/cra/export/cra-export-orchestrator.js?v=20261009-cra-export-settings-v1"></script>
 <link rel="stylesheet" href="core/theme/taskflow-theme.css">
 <link rel="stylesheet" href="core/filters/filter-styles.css?v=20261009-filter-button-reset-v1">
 <style>
@@ -141,6 +142,13 @@ tfoot td.left { text-align: left; color: var(--text-muted); font-weight: 600; }
 .cra-export-button.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
 .cra-export-button:disabled { opacity: .5; cursor: default; }
 .cra-export-button:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.cra-export-settings-list { display: grid; gap: 7px; max-height: 220px; overflow: auto; padding: 4px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
+.cra-export-settings-option { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: 6px; font-size: .8rem; cursor: pointer; }
+.cra-export-settings-option:hover { background: color-mix(in srgb, var(--primary) 7%, var(--bg)); }
+.cra-export-settings-option input { width: 16px; height: 16px; }
+.cra-export-settings-help { color: var(--text-muted); font-size: .72rem; line-height: 1.4; margin: 5px 0 10px; }
+.cra-export-settings-logo { display: grid; gap: 8px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
+.cra-export-settings-logo input[type="file"] { font-size: .76rem; max-width: 100%; }
 
 /* CRA Association Dialog */
 .cra-association-option { transition: background .15s, border-color .15s; }
@@ -194,6 +202,7 @@ tfoot td.left { text-align: left; color: var(--text-muted); font-weight: 600; }
     <button data-u="demi">&frac12;j</button>
   </div>
   <button class="btn" id="submitBtn">Soumettre la semaine</button>
+  <button class="btn ghost" id="exportSettingsBtn" title="Configurer les exports" style="display:none">⚙ Export</button>
   <button class="btn ghost" id="exportBtn" title="Exporter en PDF ou CSV">Export</button>
 </div>
 
@@ -239,6 +248,31 @@ tfoot td.left { text-align: left; color: var(--text-muted); font-weight: 600; }
     <div class="cra-export-actions">
       <button class="cra-export-button" id="craExportCancelBtn">Annuler</button>
       <button class="cra-export-button primary" id="craExportDownloadBtn" disabled>Télécharger</button>
+    </div>
+  </div>
+</div>
+
+<!-- CRA Export Settings Modal -->
+<div class="cra-export-overlay" id="craExportSettingsOverlay" role="dialog" aria-modal="true" aria-labelledby="craExportSettingsTitle" aria-hidden="true">
+  <div class="cra-export-dialog">
+    <h2 id="craExportSettingsTitle">Paramètres des exports CRA</h2>
+    <p class="cra-export-sub">Ces réglages sont enregistrés dans ce document Grist. Sans sélection, les exports conservent leur format standard.</p>
+    <h3 style="font-size:.85rem;margin:14px 0 0">Informations projet supplémentaires</h3>
+    <p class="cra-export-settings-help">Sélectionnez au plus trois colonnes de la table Projects. Elles seront ajoutées au CSV et au PDF.</p>
+    <div class="cra-export-settings-list" id="craExportSettingsColumns" aria-label="Colonnes Projects à exporter"></div>
+    <h3 style="font-size:.85rem;margin:16px 0 0">Logo PDF</h3>
+    <div class="cra-export-settings-logo">
+      <span class="cra-export-settings-help" id="craExportSettingsLogoCurrent">Aucun logo.</span>
+      <label class="cra-export-settings-option"><input type="checkbox" id="craExportSettingsRemoveLogo"> Retirer le logo actuel</label>
+      <input type="file" id="craExportSettingsLogoFile" accept="image/png,image/jpeg">
+      <div class="cra-export-settings-help">PNG ou JPEG, 2 Mo maximum. Le logo est limité à une petite taille dans le PDF.</div>
+      <label class="cra-export-settings-option"><input type="radio" name="craExportLogoPosition" value="bottom-center" checked> Centré en bas</label>
+      <label class="cra-export-settings-option"><input type="radio" name="craExportLogoPosition" value="top-left"> En haut à gauche</label>
+    </div>
+    <div class="cra-export-error" id="craExportSettingsError" role="alert" hidden></div>
+    <div class="cra-export-actions">
+      <button class="cra-export-button" id="craExportSettingsCancelBtn">Annuler</button>
+      <button class="cra-export-button primary" id="craExportSettingsSaveBtn">Enregistrer</button>
     </div>
   </div>
 </div>
@@ -1449,8 +1483,10 @@ tfoot td.left { text-align: left; color: var(--text-muted); font-weight: 600; }
         'TaskAssignments',
         'Disponibilites',
         'MemberDailyCapacities',
+        'CRAExportSettings',
         'TaskFlow_Meta',
         'TaskFlowIdentityProbe',
+        'CRAExportSettings',
         'Competences'
     ];
 
@@ -1581,6 +1617,7 @@ tfoot td.left { text-align: left; color: var(--text-muted); font-weight: 600; }
                 UserFilters: (data.UserFilters || data.userFilters || []).slice(),
                 Disponibilites: (data.Disponibilites || data.disponibilites || []).slice(),
                 MemberDailyCapacities: (data.MemberDailyCapacities || data.memberDailyCapacities || []).slice(),
+                CRAExportSettings: (data.CRAExportSettings || data.craExportSettings || []).slice(),
                 TaskFlow_Meta: (data.TaskFlow_Meta || data.taskFlowMeta || []).slice(),
                 TaskFlowIdentityProbe: (data.TaskFlowIdentityProbe || data.taskFlowIdentityProbe || []).slice(),
                 Competences: (data.Competences || data.competences || []).slice()
@@ -2295,7 +2332,7 @@ tfoot td.left { text-align: left; color: var(--text-muted); font-weight: 600; }
         var proposed = mutation.proposed || {};
 
         if (table === 'Team' || table === 'Entites' || table === 'Programmes' || table === 'KanbanSteps' ||
-            table === 'TaskFlow_Meta' || table === 'Competences') {
+            table === 'CRAExportSettings' || table === 'TaskFlow_Meta' || table === 'Competences') {
             return actorIsAdmin(snapshot)
                 ? allow('ADMIN')
                 : deny('ADMIN_REQUIRED', 'Cette operation est reservee aux administrateurs.');
@@ -3831,7 +3868,7 @@ if (typeof globalThis !== 'undefined') {
     }
 
     // Version courante du schéma
-    var SCHEMA_VERSION = 11;
+    var SCHEMA_VERSION = 12;
 
     // Projection quotidienne v11. Ces formules ne consultent que les faits
     // d'indisponibilité actifs du membre pour la date de la ligne : aucune
@@ -3862,6 +3899,7 @@ if (typeof globalThis !== 'undefined') {
         'TimeEntries',
         'TaskFlowIdentityProbe',
         'UserFilters',
+        'CRAExportSettings',
         'TaskFlow_Meta'
     ];
 
@@ -4187,6 +4225,21 @@ if (typeof globalThis !== 'undefined') {
                 { id: 'filters',          opts: dataColumn('Text') },
                 { id: 'updatedAt',        opts: dataColumn('DateTime') },
                 { id: 'sourceWidget',     opts: dataColumn('Text') }
+            ]
+        },
+
+        // =========================================================================
+        // CRAExportSettings — Configuration documentaire optionnelle des exports CRA
+        // =========================================================================
+        CRAExportSettings: {
+            label: 'Configuration exports CRA',
+            columns: [
+                // JSON d'identifiants de colonnes Projects (max. trois, validé par le widget)
+                { id: 'projectColumns',   opts: dataColumn('Text') },
+                // Une seule image PNG/JPEG est utilisée par le widget
+                { id: 'logo',             opts: dataColumn('Attachments') },
+                { id: 'logoPosition',     opts: dataColumn('Choice') },
+                { id: 'updatedAt',        opts: dataColumn('DateTime') }
             ]
         },
 
@@ -5232,6 +5285,7 @@ if (typeof globalThis !== 'undefined') {
  * Version 9: Horodatage de création des feuilles hebdomadaires
  * Version 10: Faits journaliers d'indisponibilité et index de couverture
  * Version 11: Projection formulée des capacités quotidiennes
+ * Version 12: Configuration documentaire des exports CRA
  * ============================================================================ */
 
 (function (global) {
@@ -6316,6 +6370,48 @@ if (typeof globalThis !== 'undefined') {
     }
 
     // ========================================================================
+    // MIGRATION V11 → V12 — Configuration documentaire des exports CRA
+    // ========================================================================
+
+    async function migrateToV12(grist, metadata) {
+        log('Migration v11 → v12: cra-export-settings-v12');
+
+        var docApi = getDocApi(grist);
+        var existingTables = metadata.tablesByName || {};
+        var existingColumns = metadata.columnsByKey || {};
+        var columns = [
+            { id: 'projectColumns', type: 'Text', isFormula: false },
+            { id: 'logo', type: 'Attachments', isFormula: false },
+            { id: 'logoPosition', type: 'Choice', isFormula: false },
+            { id: 'updatedAt', type: 'DateTime', isFormula: false }
+        ];
+        var actions = [];
+
+        if (!existingTables.CRAExportSettings) {
+            actions.push(['AddTable', 'CRAExportSettings', columns]);
+        } else {
+            for (var index = 0; index < columns.length; index++) {
+                var column = columns[index];
+                if (!existingColumns['CRAExportSettings.' + column.id]) {
+                    actions.push(['AddColumn', 'CRAExportSettings', column.id, {
+                        type: column.type,
+                        isFormula: false
+                    }]);
+                }
+            }
+        }
+
+        if (actions.length > 0) await docApi.applyUserActions(actions);
+
+        return {
+            success: true,
+            message: 'Migration v12 appliquée',
+            actionsExecuted: actions.length,
+            metadata: actions.length ? await loadMigrationMetadata(grist) : metadata
+        };
+    }
+
+    // ========================================================================
     // LISTE DES MIGRATIONS
     // ========================================================================
     
@@ -6379,6 +6475,12 @@ if (typeof globalThis !== 'undefined') {
             name: 'formula-driven-member-daily-capacities-v11',
             description: 'Bascule des capacités quotidiennes vers les formules Grist',
             run: migrateToV11
+        },
+        {
+            version: 12,
+            name: 'cra-export-settings-v12',
+            description: 'Ajout de la configuration documentaire des exports CRA',
+            run: migrateToV12
         }
     ];
 
@@ -10105,8 +10207,95 @@ const craExportUi = {
   busy: false,
   format: 'pdf',
   prepared: null,
+  settings: null,
+  projectColumns: [],
   lastFocusedElement: null
 };
+
+const craExportSettingsUi = {
+  open: false,
+  busy: false,
+  settings: null,
+  projectColumns: [],
+  lastFocusedElement: null
+};
+
+function getCraExportSettingsApi() {
+  if (!globalThis.CraExportSettings) {
+    throw new Error('Module de configuration des exports non chargé.');
+  }
+  return globalThis.CraExportSettings;
+}
+
+async function loadCraExportSettings() {
+  const api = getCraExportSettingsApi();
+  const values = await Promise.all([api.load(grist), api.listProjectColumns(grist)]);
+  craExportUi.settings = values[0];
+  craExportUi.projectColumns = values[1];
+  return {
+    settings: values[0],
+    projectColumns: values[1]
+  };
+}
+
+function resolvedCraExportProjectColumns() {
+  const api = getCraExportSettingsApi();
+  return api.resolveProjectColumns(craExportUi.settings, craExportUi.projectColumns);
+}
+
+function getCraExportLogoAttachmentId(settings) {
+  const ids = settings && Array.isArray(settings.logoAttachmentIds)
+    ? settings.logoAttachmentIds
+    : [];
+  return Number.isInteger(Number(ids[0])) ? Number(ids[0]) : null;
+}
+
+async function fetchCraExportLogoDataUrl(settings) {
+  const attachmentId = getCraExportLogoAttachmentId(settings);
+  if (!attachmentId) return null;
+
+  const token = await grist.docApi.getAccessToken({ readOnly: true });
+  const url = token.baseUrl + '/attachments/' + attachmentId + '/download?auth=' + encodeURIComponent(token.token);
+  const response = await fetch(url);
+  if (!response.ok) throw new Error('Logo indisponible (' + response.status + ').');
+  const type = String(response.headers.get('content-type') || '').toLowerCase().split(';')[0];
+  if (type !== 'image/png' && type !== 'image/jpeg') {
+    throw new Error('Le logo doit être une image PNG ou JPEG.');
+  }
+  const blob = await response.blob();
+  if (blob.size > 2 * 1024 * 1024) throw new Error('Le logo dépasse la limite de 2 Mo.');
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error('Lecture du logo impossible.'));
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function uploadCraExportLogo(file) {
+  if (!file) return null;
+  if (!['image/png', 'image/jpeg'].includes(file.type)) {
+    throw new Error('Choisissez une image PNG ou JPEG.');
+  }
+  if (file.size > 2 * 1024 * 1024) {
+    throw new Error('Le logo ne doit pas dépasser 2 Mo.');
+  }
+  const token = await grist.docApi.getAccessToken({ readOnly: false });
+  const formData = new FormData();
+  formData.append('upload', file, file.name);
+  const response = await fetch(token.baseUrl + '/attachments?auth=' + encodeURIComponent(token.token), {
+    method: 'POST',
+    headers: { 'X-Requested-With': 'XMLHttpRequest' },
+    body: formData
+  });
+  if (!response.ok) throw new Error('Téléversement du logo impossible (' + response.status + ').');
+  const ids = await response.json();
+  const attachmentId = Array.isArray(ids) ? Number(ids[0]) : NaN;
+  if (!Number.isInteger(attachmentId) || attachmentId < 1) {
+    throw new Error('Réponse Grist invalide après téléversement du logo.');
+  }
+  return attachmentId;
+}
 
 function craExportLocalIsoFromMs(ms) {
   const date = new Date(ms);
@@ -10333,6 +10522,7 @@ function buildCraExportRequest() {
     endDateIso: document.getElementById('craExportEndDate').value,
     personIds: personIds,
     filters: filters,
+    projectColumns: resolvedCraExportProjectColumns(),
     data: data
   };
 }
@@ -10364,11 +10554,24 @@ async function handleCraExportDownload() {
   errorEl.hidden = true;
   
   try {
+    // Relire la configuration juste avant l'export : elle peut avoir été
+    // modifiée dans un autre onglet depuis l'ouverture de la modale.
+    await loadCraExportSettings();
     const request = buildCraExportRequest();
     
     if (craExportUi.format === 'pdf') {
       const pdfMake = await ensureCraPdfMakeLoaded();
       request.pdfOptions = { pdfMake: pdfMake };
+      try {
+        const logoDataUrl = await fetchCraExportLogoDataUrl(craExportUi.settings);
+        if (logoDataUrl) {
+          request.pdfOptions.logoDataUrl = logoDataUrl;
+          request.pdfOptions.logoPosition = craExportUi.settings.logoPosition;
+        }
+      } catch (logoError) {
+        // Un logo invalide ne doit jamais empêcher l'export opérationnel.
+        toast('Logo ignoré : ' + (logoError.message || logoError), 'warning');
+      }
     } else {
       request.csvOptions = { includeBom: true };
     }
@@ -10396,7 +10599,7 @@ async function handleCraExportDownload() {
   closeCraExportModal();
 }
 
-function openCraExportModal() {
+async function openCraExportModal() {
   if (craExportUi.open || craExportUi.busy) {
     return;
   }
@@ -10419,9 +10622,19 @@ function openCraExportModal() {
   try {
     getCraExportOrchestrator();
     getCraExportDependencies();
+    await loadCraExportSettings();
   } catch (e) {
-    toast('Export indisponible : ' + (e.message || e));
-    return;
+    // La configuration est optionnelle : laisser l'export standard disponible.
+    console.warn('Configuration export indisponible, export standard conservé:', e);
+    craExportUi.settings = null;
+    craExportUi.projectColumns = [];
+    try {
+      getCraExportOrchestrator();
+      getCraExportDependencies();
+    } catch (moduleError) {
+      toast('Export indisponible : ' + (moduleError.message || moduleError));
+      return;
+    }
   }
   
   const overlay = document.getElementById('craExportOverlay');
@@ -10484,9 +10697,128 @@ function closeCraExportModal() {
   }
 }
 
+function updateCraExportSettingsButtonVisibility() {
+  const button = document.getElementById('exportSettingsBtn');
+  if (!button) return;
+  // Confort d'interface : l'ACL de CRAExportSettings reste l'autorité réelle.
+  button.style.display = S.currentUserActor && S.currentUserActor.isAdmin ? '' : 'none';
+}
+
+function renderCraExportSettingsColumns() {
+  const container = document.getElementById('craExportSettingsColumns');
+  const selected = new Set(craExportSettingsUi.settings?.projectColumnIds || []);
+  container.innerHTML = '';
+  if (!craExportSettingsUi.projectColumns.length) {
+    container.textContent = 'Aucune colonne Projects disponible.';
+    return;
+  }
+  craExportSettingsUi.projectColumns.forEach(column => {
+    const label = document.createElement('label');
+    label.className = 'cra-export-settings-option';
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.value = column.id;
+    checkbox.checked = selected.has(column.id);
+    checkbox.addEventListener('change', () => {
+      const checked = container.querySelectorAll('input[type="checkbox"]:checked');
+      if (checked.length > getCraExportSettingsApi().MAX_PROJECT_COLUMNS) {
+        checkbox.checked = false;
+        toast('Trois colonnes Projects au maximum.', 'warning');
+      }
+    });
+    const text = document.createElement('span');
+    text.textContent = column.label + ' (' + column.id + ')';
+    label.appendChild(checkbox);
+    label.appendChild(text);
+    container.appendChild(label);
+  });
+}
+
+function closeCraExportSettingsModal() {
+  if (craExportSettingsUi.busy) return;
+  const overlay = document.getElementById('craExportSettingsOverlay');
+  overlay.setAttribute('aria-hidden', 'true');
+  overlay.classList.remove('open');
+  craExportSettingsUi.open = false;
+  if (craExportSettingsUi.lastFocusedElement) {
+    craExportSettingsUi.lastFocusedElement.focus();
+    craExportSettingsUi.lastFocusedElement = null;
+  }
+}
+
+async function openCraExportSettingsModal() {
+  if (craExportSettingsUi.open || craExportSettingsUi.busy) return;
+  const error = document.getElementById('craExportSettingsError');
+  try {
+    const api = getCraExportSettingsApi();
+    const values = await Promise.all([api.load(grist), api.listProjectColumns(grist)]);
+    craExportSettingsUi.settings = values[0];
+    craExportSettingsUi.projectColumns = values[1];
+    craExportSettingsUi.lastFocusedElement = document.activeElement;
+    renderCraExportSettingsColumns();
+    document.getElementById('craExportSettingsLogoCurrent').textContent = values[0].logoAttachmentIds.length
+      ? 'Un logo est configuré pour les exports PDF.'
+      : 'Aucun logo configuré.';
+    document.getElementById('craExportSettingsRemoveLogo').checked = false;
+    document.getElementById('craExportSettingsLogoFile').value = '';
+    const position = values[0].logoPosition || 'bottom-center';
+    const radio = document.querySelector('input[name="craExportLogoPosition"][value="' + position + '"]');
+    if (radio) radio.checked = true;
+    error.textContent = '';
+    error.hidden = true;
+    const overlay = document.getElementById('craExportSettingsOverlay');
+    overlay.setAttribute('aria-hidden', 'false');
+    overlay.classList.add('open');
+    craExportSettingsUi.open = true;
+  } catch (loadError) {
+    toast('Paramètres d’export indisponibles : ' + (loadError.message || loadError), 'error');
+  }
+}
+
+async function saveCraExportSettings() {
+  if (craExportSettingsUi.busy) return;
+  const error = document.getElementById('craExportSettingsError');
+  const saveButton = document.getElementById('craExportSettingsSaveBtn');
+  const api = getCraExportSettingsApi();
+  craExportSettingsUi.busy = true;
+  saveButton.disabled = true;
+  saveButton.textContent = 'Enregistrement…';
+  error.hidden = true;
+  error.textContent = '';
+  try {
+    const checked = Array.from(document.querySelectorAll('#craExportSettingsColumns input[type="checkbox"]:checked'))
+      .map(input => input.value);
+    const removeLogo = document.getElementById('craExportSettingsRemoveLogo').checked;
+    const file = document.getElementById('craExportSettingsLogoFile').files[0];
+    let logoAttachmentIds = removeLogo ? [] : craExportSettingsUi.settings.logoAttachmentIds;
+    if (file) logoAttachmentIds = [await uploadCraExportLogo(file)];
+    const checkedPosition = document.querySelector('input[name="craExportLogoPosition"]:checked');
+    const saved = await api.save(grist, {
+      projectColumnIds: checked,
+      logoAttachmentIds: logoAttachmentIds,
+      logoPosition: checkedPosition ? checkedPosition.value : 'bottom-center'
+    });
+    craExportUi.settings = saved;
+    craExportUi.projectColumns = craExportSettingsUi.projectColumns.slice();
+    toast('Paramètres d’export enregistrés.', 'success');
+    closeCraExportSettingsModal();
+  } catch (saveError) {
+    console.error('CRA export settings save error:', saveError);
+    error.textContent = 'Enregistrement impossible : ' + (saveError.message || saveError);
+    error.hidden = false;
+  } finally {
+    craExportSettingsUi.busy = false;
+    saveButton.disabled = false;
+    saveButton.textContent = 'Enregistrer';
+  }
+}
+
 document.getElementById('exportBtn').onclick = openCraExportModal;
+document.getElementById('exportSettingsBtn').onclick = openCraExportSettingsModal;
 document.getElementById('craExportCancelBtn').onclick = closeCraExportModal;
 document.getElementById('craExportDownloadBtn').onclick = handleCraExportDownload;
+document.getElementById('craExportSettingsCancelBtn').onclick = closeCraExportSettingsModal;
+document.getElementById('craExportSettingsSaveBtn').onclick = saveCraExportSettings;
 
 document.getElementById('craExportFormats').addEventListener('click', (e) => {
   const formatDiv = e.target.closest('.cra-export-format');
@@ -10517,9 +10849,18 @@ document.getElementById('craExportOverlay').onclick = (e) => {
   }
 };
 
+document.getElementById('craExportSettingsOverlay').onclick = (e) => {
+  if (e.target.id === 'craExportSettingsOverlay' && !craExportSettingsUi.busy) {
+    closeCraExportSettingsModal();
+  }
+};
+
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && craExportUi.open && !craExportUi.busy) {
     closeCraExportModal();
+  }
+  if (e.key === 'Escape' && craExportSettingsUi.open && !craExportSettingsUi.busy) {
+    closeCraExportSettingsModal();
   }
 });
 
@@ -11401,6 +11742,7 @@ async function initGrist() {
         // Calculer "qui je gere" après chaque snapshot
         // Basé sur currentUserMemberId (identité réelle), pas selectedPersonId
         S.mesGeres = S.currentUserMemberId ? computeMesGeres(S.currentUserMemberId) : [];
+        updateCraExportSettingsButtonVisibility();
         
         // PHASE 3 : Reconstruire les index (utilise maintenant affectation+date)
         buildCraIndexes();

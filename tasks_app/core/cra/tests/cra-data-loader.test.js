@@ -207,7 +207,7 @@ describe('CRA Data Loader', () => {
       const raw = {
         team: { id: [1, 2], nom: ['Alice', 'Bob'], gristUserId: [100, 101], capaciteHebdo: [35, 35] },
         tasks: { id: [1], titre: ['Task 1'], projet: [1] },
-        projects: { id: [1], nom: ['Project 1'] },
+        projects: { id: [1], nom: ['Project 1'], Code_Analytique: ['GENCI-42'] },
         timeEntries: { id: [1], membre: [1], tache: [1], date: [1705276800], heures: [2], heuresPrevues: [3], affectation: [1], capaciteTheorique: [7], capaciteDisponible: [7], capaciteJour: [1], feuille: [1], revisionPlan: [1], imputation: [''], description: [''] },
         feuilles: { id: [1], membre: [1], semaine: [1705276800], statut: ['brouillon'] },
         assignments: { id: [1], tache: [1], membre: [1], actif: [true] },
@@ -222,6 +222,7 @@ describe('CRA Data Loader', () => {
       expect(result.me).toBe(1);
       expect(result.meName).toBe('Alice');
       expect(result.entries).toHaveLength(1);
+      expect(result.projects[0].Code_Analytique).toBe('GENCI-42');
       expect(result.gOk).toBe(true);
     });
   });

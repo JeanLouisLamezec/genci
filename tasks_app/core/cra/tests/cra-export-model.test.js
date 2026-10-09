@@ -29,6 +29,7 @@ const CraExportModel = require('../export/cra-export-model.js');
 const {
   buildReport,
   normalizeScope,
+  normalizeProjectColumns,
   validateDateRange,
   isValidDateIso,
   hoursToMinutes,
@@ -1043,6 +1044,32 @@ describe('buildReport - Libellés', () => {
     expect(row.projectName).toBe('Projet Alpha');
     expect(row.programmeId).toBe('10');
     expect(row.programmeName).toBe('Programme Alpha');
+  });
+
+  test('propage les champs Projects optionnels configurés', () => {
+    const entries = [{
+      id: 1,
+      membre: 1,
+      tache: 1000,
+      date: gristTimestamp(2026, 1, 5),
+      heures: 2
+    }];
+    const projects = baseProjects.map(project => project.id === 100
+      ? { ...project, Code_Analytique: 'GENCI-42' }
+      : project);
+
+    const report = buildReport(makeOptions({
+      entries,
+      projects,
+      projectColumns: [{ id: 'Code_Analytique', label: 'Code analytique' }]
+    }));
+
+    expect(report.projectColumns).toEqual([
+      { id: 'Code_Analytique', label: 'Code analytique' }
+    ]);
+    expect(report.persons[0].rows[0].projectFields).toEqual({
+      Code_Analytique: 'GENCI-42'
+    });
   });
   
   test('Tâche sans projet', () => {
