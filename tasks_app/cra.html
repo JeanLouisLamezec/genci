@@ -9750,7 +9750,64 @@ function createDemoGristAdapter() {
   };
 }
 
+// Les flèches d'un input[type=number] peuvent déclencher plusieurs événements
+// `change` avant le retour du premier RPC Grist. Une écriture par événement
+// créerait alors plusieurs TimeEntries à partir du même cache. On coalesce les
+// intentions par cellule et on les exécute séquentiellement ; seule la dernière
+// valeur stable est persistée pour une rafale de clics.
+const craCellWriteStates = new Map();
+const CRA_CELL_WRITE_DEBOUNCE_MS = 180;
+
+function craCellWriteKey(taskId, dayMs, personId) {
+  return [Number(personId), Number(taskId), Number(dayMs)].join(':');
+}
+
+function delayCraCellWrite() {
+  return new Promise(function(resolve) {
+    setTimeout(resolve, CRA_CELL_WRITE_DEBOUNCE_MS);
+  });
+}
+
 async function setCell(taskId, dayMs, personId, qtyStr) {
+  const key = craCellWriteKey(taskId, dayMs, personId);
+  let state = craCellWriteStates.get(key);
+  if (!state) {
+    state = { pending: null, revision: 0, promise: null };
+    craCellWriteStates.set(key, state);
+  }
+
+  state.pending = { taskId, dayMs, personId, qtyStr };
+  state.revision += 1;
+
+  if (!state.promise) {
+    state.promise = (async function() {
+      try {
+        while (state.pending) {
+          // Attendre une courte fenêtre calme. Les clics successifs 1,5 → 3
+          // deviennent ainsi une seule demande de sauvegarde à 3h.
+          const revisionBeforeDelay = state.revision;
+          await delayCraCellWrite();
+          if (state.revision !== revisionBeforeDelay) continue;
+
+          const request = state.pending;
+          state.pending = null;
+          await performCraCellChange(
+            request.taskId,
+            request.dayMs,
+            request.personId,
+            request.qtyStr
+          );
+        }
+      } finally {
+        craCellWriteStates.delete(key);
+      }
+    })();
+  }
+
+  return state.promise;
+}
+
+async function performCraCellChange(taskId, dayMs, personId, qtyStr) {
   // ROUTAGE MODE CORRECTION MANAGER
   if (S.managerCorrectionSheetId) {
     const correctionSheet = S.feuilles.find(f => f.id === S.managerCorrectionSheetId);
@@ -9855,12 +9912,25 @@ async function setCell(taskId, dayMs, personId, qtyStr) {
       toast('Aucune affectation autorisée pour cette date');
     } else if (result.code === 'DUPLICATE_TIME_ENTRY') {
       toast('Erreur : plusieurs entrées pour cette cellule');
+    } else if (result.code === 'CELL_WRITE_PENDING') {
+      // Normalement absorbé par la file de la vue. Cette branche protège les
+      // appels provenant d'une ancienne vue encore ouverte.
+      toast('Enregistrement de cette cellule déjà en cours');
     } else if (result.code === 'MISSING_WEEKLY_SHEET') {
       toast('Erreur : feuille introuvable pour cette semaine');
     } else if (result.code === 'WEEKLY_SHEET_REFRESH_FAILED') {
       toast('Impossible de vérifier la feuille de cette semaine');
-    } else if (result.code === 'WEEKLY_SHEET_CREATE_FAILED' || String(result.code || '').indexOf('WEEKLY_SHEET_') === 0) {
+    } else if (result.code === 'WEEKLY_SHEET_LOCKED') {
+      toast('Création de la feuille déjà en cours, veuillez patienter');
+    } else if (result.code === 'WEEKLY_SHEET_CREATE_FAILED') {
       toast('La feuille de cette semaine n’a pas pu être créée');
+      console.error('[CRA] Échec de création de feuille', {
+        personId,
+        weekStart: CRAController.localDayKeyFromMs(S.weekStart),
+        details: result.error || null
+      });
+    } else if (String(result.code || '').indexOf('WEEKLY_SHEET_') === 0) {
+      toast('Impossible de vérifier la feuille de cette semaine');
     } else if (result.code === 'INVALID_ENTRY_DATE') {
       toast('Date de saisie invalide');
     } else if (result.code === 'DUPLICATE_WEEKLY_SHEET') {

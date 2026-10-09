@@ -186,6 +186,26 @@ describe('ensureWeeklySheet', () => {
     expect(result.sheetId).toBe(100);
   });
 
+  test('mutualise les créations concurrentes de la même feuille', async () => {
+    const grist = createMockGrist({ sheets: [] });
+
+    const [first, second, third] = await Promise.all([
+      ensureWeeklySheet({ grist, memberId: 20, weekStartIso: '2025-07-21' }),
+      ensureWeeklySheet({ grist, memberId: 20, weekStartIso: '2025-07-21' }),
+      ensureWeeklySheet({ grist, memberId: 20, weekStartIso: '2025-07-21' })
+    ]);
+
+    expect(first.success).toBe(true);
+    expect(second.success).toBe(true);
+    expect(third.success).toBe(true);
+    expect(first.sheetId).toBe(second.sheetId);
+    expect(second.sheetId).toBe(third.sheetId);
+    expect(grist.state().sheets).toHaveLength(1);
+    expect(grist.state().appliedActions.filter(action =>
+      action[0] === 'AddRecord' && action[1] === 'Feuilles'
+    )).toHaveLength(1);
+  });
+
   // Test 4 : Double clic (verrouillage)
   test('devrait échouer si un appel est déjà en cours', async () => {
     const grist = createMockGrist({ sheets: [] });
@@ -226,6 +246,39 @@ describe('ensureWeeklySheet', () => {
     expect(result.error).toBe('ADD_RECORD_FAILED');
     expect(result.code).toBe(SERVICE_ERROR_CODES.WEEKLY_SHEET_CREATE_FAILED);
     expect(result.details).toBe('Permission denied');
+  });
+
+  test('récupère une feuille effectivement créée malgré une réponse AddRecord perdue', async () => {
+    const sheets = [];
+    const toColumnar = function(rows) {
+      const columns = new Set(['id', 'membre', 'semaine', 'statut', 'createdAt']);
+      const result = {};
+      columns.forEach(column => {
+        result[column] = rows.map(row => row[column]);
+      });
+      return result;
+    };
+    const grist = {
+      docApi: {
+        fetchTable: async table => table === 'Feuilles' ? toColumnar(sheets) : { id: [] },
+        applyUserActions: async actions => {
+          const fields = actions[0][3];
+          sheets.push({ id: 321, ...fields });
+          throw new Error('RPC response lost');
+        }
+      }
+    };
+
+    const result = await ensureWeeklySheet({
+      grist,
+      memberId: 20,
+      weekStartIso: '2025-07-21'
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.recoveredAfterWriteError).toBe(true);
+    expect(result.sheetId).toBe(321);
+    expect(sheets).toHaveLength(1);
   });
 
   // Test 6 : Erreur de relecture (simulée par doublon)

@@ -25,6 +25,21 @@
 
 'use strict';
 
+// Défense en profondeur : le widget coalesce les clics rapides, mais le
+// contrôleur reste le dernier rempart pour tout appel direct dans la même
+// iframe. Une opération concurrente sur la même cellule ne doit jamais créer
+// une seconde TimeEntry depuis le même snapshot.
+const pendingCellWrites = new Map();
+
+function cellWriteKey(input) {
+  if (!input) return null;
+  const taskId = Number(input.taskId);
+  const personId = Number(input.personId);
+  const dateIso = String(input.dateIso || '');
+  if (!Number.isFinite(taskId) || !Number.isFinite(personId) || !dateIso) return null;
+  return `${personId}:${taskId}:${dateIso}`;
+}
+
 /**
  * Résout l'affectation active pour une tâche et une personne données
  * 
@@ -1110,6 +1125,29 @@ function dailyCapacityForPersonAndDate(personId, dayMs, dailyCapacities, team, a
  * @returns {Promise<Object>} Résultat structuré
  */
 async function saveCraCellChange(input, dependencies) {
+  const key = cellWriteKey(input);
+  if (key && pendingCellWrites.has(key)) {
+    return {
+      ok: false,
+      action: 'blocked',
+      code: 'CELL_WRITE_PENDING'
+    };
+  }
+
+  const operation = saveCraCellChangeInternal(input, dependencies);
+  if (!key) return operation;
+
+  pendingCellWrites.set(key, operation);
+  try {
+    return await operation;
+  } finally {
+    if (pendingCellWrites.get(key) === operation) {
+      pendingCellWrites.delete(key);
+    }
+  }
+}
+
+async function saveCraCellChangeInternal(input, dependencies) {
   const { taskId, personId, dateIso, hours } = input;
   const {
     tasks,
@@ -1334,7 +1372,7 @@ async function saveCraCellChange(input, dependencies) {
         ok: false,
         action: 'blocked',
         code: (ensured && ensured.code) || 'WEEKLY_SHEET_CREATE_FAILED',
-        error: ensured && (ensured.error || ensured.reason)
+        error: ensured && (ensured.details || ensured.error || ensured.reason)
       };
     }
     currentSheet = ensured.sheet;

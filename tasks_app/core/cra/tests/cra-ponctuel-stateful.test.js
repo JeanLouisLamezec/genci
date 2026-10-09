@@ -743,6 +743,35 @@ describe('CRA — Mode ponctuel : saisie hors dates prévues (stateful)', () => 
       expect(timeEntriesTable.id.length).toBe(beforeCount);
       expect(result.entryId).toBe(firstEntryId);
     });
+
+    test('B3.2b — deux écritures concurrentes de la même cellule sont bloquées', async () => {
+      const dependencies = createDependencies();
+      const originalApply = mockGrist.docApi.applyUserActions;
+      mockGrist.docApi.applyUserActions = jest.fn(async function(actions) {
+        await new Promise(resolve => setTimeout(resolve, 5));
+        return originalApply(actions);
+      });
+
+      const [first, second] = await Promise.all([
+        saveCraCellChange({
+          taskId: TASK_ID,
+          personId: MEMBER_ID,
+          dateIso: REALISATION_DATE,
+          hours: 2
+        }, dependencies),
+        saveCraCellChange({
+          taskId: TASK_ID,
+          personId: MEMBER_ID,
+          dateIso: REALISATION_DATE,
+          hours: 2.5
+        }, dependencies)
+      ]);
+
+      expect([first.code, second.code]).toContain('CELL_WRITE_PENDING');
+      expect([first, second].filter(result => result.ok)).toHaveLength(1);
+      expect(timeEntriesTable.id).toHaveLength(1);
+      expect(appliedAddRecords).toHaveLength(1);
+    });
     
     test('B3.3 — modification de 4 h vers 5 h', async () => {
       const dependencies = createDependencies();

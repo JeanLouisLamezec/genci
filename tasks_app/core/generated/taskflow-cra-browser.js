@@ -4343,9 +4343,18 @@ const SERVICE_ERROR_CODES = {
 // ============================================================================
 
 const weeklySheetLocks = new Map();
+// Une même iframe peut recevoir plusieurs événements de saisie avant que Grist
+// ait répondu. Le verrou booléen ci-dessous protège l'écriture, mais un second
+// appel ne doit pas être traité comme un échec : il doit attendre le résultat
+// de la première création et réutiliser la feuille canonique.
+const weeklySheetInFlight = new Map();
+
+function weeklySheetLockKey(memberId, weekStartIso) {
+  return `${memberId}:${weekStartIso}`;
+}
 
 function acquireWeeklySheetLock(memberId, weekStartIso) {
-  const key = `${memberId}:${weekStartIso}`;
+  const key = weeklySheetLockKey(memberId, weekStartIso);
   if (weeklySheetLocks.has(key)) {
     return false;
   }
@@ -4354,12 +4363,13 @@ function acquireWeeklySheetLock(memberId, weekStartIso) {
 }
 
 function releaseWeeklySheetLock(memberId, weekStartIso) {
-  const key = `${memberId}:${weekStartIso}`;
+  const key = weeklySheetLockKey(memberId, weekStartIso);
   weeklySheetLocks.delete(key);
 }
 
 function clearWeeklySheetLocks() {
   weeklySheetLocks.clear();
+  weeklySheetInFlight.clear();
 }
 
 // ============================================================================
@@ -4573,6 +4583,34 @@ async function repairWeeklySheetDuplicates(params) {
  * @returns {Object} { success, created, sheet, sheetId, error, code }
  */
 async function ensureWeeklySheet(params) {
+  const normalizedMemberId = weeklySheet.normalizeMemberId(params && params.memberId);
+  const weekStartIso = params && params.weekStartIso;
+
+  // Les entrées invalides restent traitées par le validateur historique, afin
+  // de préserver ses codes d'erreur publics.
+  if (normalizedMemberId === null || !weekStartIso || !/^\d{4}-\d{2}-\d{2}$/.test(weekStartIso)) {
+    return ensureWeeklySheetInternal(params);
+  }
+
+  const key = weeklySheetLockKey(normalizedMemberId, weekStartIso);
+  const pending = weeklySheetInFlight.get(key);
+  if (pending) {
+    return pending;
+  }
+
+  const operation = ensureWeeklySheetInternal(params);
+  weeklySheetInFlight.set(key, operation);
+  try {
+    return await operation;
+  } finally {
+    // Ne jamais supprimer une opération plus récente par erreur.
+    if (weeklySheetInFlight.get(key) === operation) {
+      weeklySheetInFlight.delete(key);
+    }
+  }
+}
+
+async function ensureWeeklySheetInternal(params) {
   const {
     grist,
     memberId,
@@ -4748,6 +4786,47 @@ async function ensureWeeklySheet(params) {
       try {
         addResult = await grist.docApi.applyUserActions(creationActions);
       } catch (e) {
+        // Une erreur transport (timeout, iframe rechargée, réponse RPC perdue)
+        // n'implique pas nécessairement que Grist n'a rien écrit. Relire une
+        // seule fois évite de redemander une création qui produirait un doublon.
+        try {
+          const recoveredSheets = columnarToRows(await grist.docApi.fetchTable('Feuilles'));
+          const recovered = weeklySheet.resolveWeeklySheetState({
+            memberId: normalizedMemberId,
+            weekStartIso,
+            sheets: recoveredSheets
+          });
+          if (recovered.status === 'FOUND') {
+            return {
+              success: true,
+              created: false,
+              recoveredAfterWriteError: true,
+              sheet: recovered.sheet,
+              sheetId: recovered.sheetId,
+              error: null,
+              code: 'OK'
+            };
+          }
+          if (recovered.status === 'DUPLICATE_WEEKLY_SHEET') {
+            const repaired = await repairWeeklySheetDuplicates({
+              grist,
+              memberId: normalizedMemberId,
+              weekStartIso
+            });
+            if (repaired.success) {
+              return Object.assign({
+                success: true,
+                created: false,
+                recoveredAfterWriteError: true,
+                error: null,
+                code: 'OK'
+              }, repaired);
+            }
+          }
+        } catch (recoveryError) {
+          // Conserver l'erreur initiale : c'est elle qui explique l'échec de
+          // l'AddRecord. La relecture reste strictement une mesure de sûreté.
+        }
         return {
           success: false,
           created: false,
