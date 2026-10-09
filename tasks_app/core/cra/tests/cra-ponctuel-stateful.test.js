@@ -881,6 +881,8 @@ describe('CRA — Mode ponctuel : saisie hors dates prévues (stateful)', () => 
         expect(setCellBlock).not.toContain("['AddRecord', 'TimeEntries'");
         expect(setCellBlock).not.toContain("['UpdateRecord', 'TimeEntries'");
         expect(setCellBlock).not.toContain("['RemoveRecord', 'TimeEntries'");
+        expect(setCellBlock).not.toContain('await replanContinuousAssignmentAfterCraEdit(');
+        expect(setCellBlock).not.toContain("reloadCra('continuous-entry-replanned'");
       });
     });
     

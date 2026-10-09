@@ -22,6 +22,7 @@ var generateDateRange = PlanningEngine.generateDateRange;
 var reconcileDailyEntries = PlanningReconciliation.reconcileDailyEntries;
 var buildDesiredMemberDailyCapacities = CapacityService.buildDesiredMemberDailyCapacities;
 var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacities;
+var usesFormulaDrivenCapacity = CapacityService.usesFormulaDrivenCapacity;
   
   /**
    * Helper : convertit une valeur Grist en heures ou null
@@ -406,6 +407,51 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
     
     return effectiveCapacities;
   }
+
+  /**
+   * Les capacités v11 sont des projections Grist : elles sont lues depuis les
+   * lignes matérialisées, jamais écrites par le preview. Les jours manquants
+   * restent virtuels le temps du preview afin que le commit puisse ensuite les
+   * matérialiser via MemberCapacityCoverage, sans écrire de colonne formule.
+   */
+  function mergeFormulaDrivenPreviewCapacities(existingCapacities, desiredCapacities) {
+    var byKey = new Map();
+
+    (existingCapacities || []).forEach(function(capacity) {
+      byKey.set(capacity.membre + ':' + capacity.date, capacity);
+    });
+
+    (desiredCapacities || []).forEach(function(desired) {
+      var key = desired.memberId + ':' + desired.date;
+      if (byKey.has(key)) return;
+      byKey.set(key, {
+        id: null,
+        membre: desired.memberId,
+        date: desired.date,
+        capaciteTheorique: desired.capaciteTheorique || 0,
+        disponibiliteRatio: desired.disponibiliteRatio == null ? 1 : desired.disponibiliteRatio,
+        capaciteDisponible: desired.capaciteDisponible || 0,
+        absenceHeures: desired.absenceHeures || 0,
+        source: 'formule',
+        revision: 0
+      });
+    });
+
+    return Array.from(byKey.values()).sort(function(left, right) {
+      return left.date.localeCompare(right.date);
+    });
+  }
+
+  function formulaCapacityCoverageIsMissing(existingCapacities, desiredCapacities) {
+    var existingByKey = new Set((existingCapacities || []).map(function(capacity) {
+      return capacity.membre + ':' + capacity.date;
+    }));
+
+    return (desiredCapacities || []).some(function(desired) {
+      return desired.capaciteTheorique > 0 &&
+        !existingByKey.has(desired.memberId + ':' + desired.date);
+    });
+  }
   
   /**
    * Crée un registre de capacité pour un membre
@@ -561,7 +607,8 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
         grist.docApi.fetchTable('TimeEntries'),
         grist.docApi.fetchTable('Feuilles'),
         grist.docApi.fetchTable('Disponibilites'),
-        grist.docApi.fetchTable('MemberDailyCapacities')
+        grist.docApi.fetchTable('MemberDailyCapacities'),
+        usesFormulaDrivenCapacity(grist.docApi)
       ]);
       
       var teamTable = tables[0];
@@ -571,6 +618,7 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
       var feuillesTable = tables[4];
       var disponibilitesTable = tables[5];
       var capacitiesTable = tables[6];
+      var formulaDrivenCapacities = tables[7] === true;
       
       var member = null;
       if (teamTable.id) {
@@ -645,11 +693,11 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
             var feuilleId = timeEntriesTable.feuille[l];
             var feuille = feuilleId ? feuillesById[feuilleId] : null;
             var sheetStatus = feuille ? normalizeSheetStatus(feuille.statut) : null;
-            
+
             // PHASE 1 : Utiliser nullableHours pour préserver null
             var rawActualHours = timeEntriesTable.heures[l];
             var actualHours = nullableHours(rawActualHours);
-            
+
             // Normaliser au format domaine avec TOUS les champs nécessaires
             timeEntries.push({
               id: timeEntriesTable.id[l],
@@ -717,7 +765,8 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
         timeEntries: timeEntries,
         capacities: capacities,
         disponibilites: disponibilites,
-        feuilles: Object.keys(feuillesById).map(function(k) { return feuillesById[k]; })
+        feuilles: Object.keys(feuillesById).map(function(k) { return feuillesById[k]; }),
+        formulaDrivenCapacities: formulaDrivenCapacities
       };
     }
     
@@ -977,40 +1026,49 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
         // 5. Réconcilier avec les capacités existantes
         var capacityActions = [];
         var capacitiesToUse = [];
+        var formulaCapacityCoverageRequired = false;
         if (capacityResult && capacityResult.capacities) {
-          var nowUnixSeconds = Math.floor(Date.now() / 1000);
-          var capReconciliation = reconcileMemberDailyCapacities(
-            data.capacities,
-            capacityResult.capacities,
-            {
-              nowUnixSeconds: nowUnixSeconds,
-              todayIso: historyCutoffDate,
-              forceHistoricalRebuild: true
+          if (data.formulaDrivenCapacities) {
+            capacitiesToUse = mergeFormulaDrivenPreviewCapacities(data.capacities, capacityResult.capacities);
+            formulaCapacityCoverageRequired = formulaCapacityCoverageIsMissing(
+              data.capacities,
+              capacityResult.capacities
+            );
+          } else {
+            var nowUnixSeconds = Math.floor(Date.now() / 1000);
+            var capReconciliation = reconcileMemberDailyCapacities(
+              data.capacities,
+              capacityResult.capacities,
+              {
+                nowUnixSeconds: nowUnixSeconds,
+                todayIso: historyCutoffDate,
+                forceHistoricalRebuild: true
+              }
+            );
+
+            // Vérifier les conflits
+            if (capReconciliation.conflicts && capReconciliation.conflicts.length > 0) {
+              log('Conflits de capacité détectés: ' + capReconciliation.conflicts.length);
+              return {
+                success: false,
+                code: 'CAPACITY_CONFLICTS',
+                conflicts: capReconciliation.conflicts,
+                diagnostics: capacityResult.diagnostics || []
+              };
             }
-          );
-          
-          // Vérifier les conflits
-          if (capReconciliation.conflicts && capReconciliation.conflicts.length > 0) {
-            log('Conflits de capacité détectés: ' + capReconciliation.conflicts.length);
-            return {
-              success: false,
-              code: 'CAPACITY_CONFLICTS',
-              conflicts: capReconciliation.conflicts,
-              diagnostics: capacityResult.diagnostics || []
-            };
+
+            for (var capI = 0; capI < capReconciliation.creates.length; capI++) {
+              var capCreate = capReconciliation.creates[capI];
+              capacityActions.push(['AddRecord', 'MemberDailyCapacities', null, capCreate]);
+            }
+            for (var capJ = 0; capJ < capReconciliation.updates.length; capJ++) {
+              var capUpdate = capReconciliation.updates[capJ];
+              capacityActions.push(['UpdateRecord', 'MemberDailyCapacities', capUpdate.id, capUpdate.fields]);
+            }
+
+            // Utiliser le helper pour appliquer la réconciliation
+            capacitiesToUse = applyCapacityReconciliation(data.capacities, capReconciliation);
           }
-          
-          for (var capI = 0; capI < capReconciliation.creates.length; capI++) {
-            var capCreate = capReconciliation.creates[capI];
-            capacityActions.push(['AddRecord', 'MemberDailyCapacities', null, capCreate]);
-          }
-          for (var capJ = 0; capJ < capReconciliation.updates.length; capJ++) {
-            var capUpdate = capReconciliation.updates[capJ];
-            capacityActions.push(['UpdateRecord', 'MemberDailyCapacities', capUpdate.id, capUpdate.fields]);
-          }
-          
-          // Utiliser le helper pour appliquer la réconciliation
-          capacitiesToUse = applyCapacityReconciliation(data.capacities, capReconciliation);
         }
         
         // 6. Calculer les heures protégées par date selon le statut
@@ -1303,7 +1361,11 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
           code: hasAssignmentFailure ? 'ASSIGNMENT_PLANNING_FAILED' : (hasUnplanned ? 'INSUFFICIENT_SHARED_CAPACITY' : 'SUCCESS'),
           targetAssignmentIds: targetAssignmentIds,
           historyCutoffDate: historyCutoffDate,
-          capacityPeriod: period
+          capacityPeriod: period,
+          formulaDrivenCapacities: data.formulaDrivenCapacities,
+          formulaCapacityCoverageRequired: formulaCapacityCoverageRequired,
+          memberWeeklyCapacity: data.member.capaciteHebdo,
+          memberAvailabilities: data.disponibilites
         };
         
       } catch (e) {
@@ -1512,6 +1574,32 @@ var reconcileMemberDailyCapacities = CapacityService.reconcileMemberDailyCapacit
         // PHASE 1 : Upsert des capacités
         // =========================================================================
         log('PHASE 1 : Upsert des capacités (' + preview.capacityActions.length + ' actions)');
+
+        if (preview.formulaDrivenCapacities && preview.formulaCapacityCoverageRequired) {
+          var formulaCoverage = await CapacityService.ensureMemberDailyCapacities(
+            grist,
+            memberId,
+            preview.capacityPeriod.dateFrom,
+            preview.capacityPeriod.dateTo,
+            {
+              weeklyCapacity: preview.memberWeeklyCapacity,
+              availabilities: preview.memberAvailabilities || [],
+              defaultWeeklyCapacity: 35,
+              source: 'calcul',
+              forceHistoricalRebuild: true
+            }
+          );
+          if (!formulaCoverage.success) {
+            return {
+              success: false,
+              code: formulaCoverage.error && formulaCoverage.error.code || 'FORMULA_CAPACITY_COVERAGE_FAILED',
+              message: formulaCoverage.error && formulaCoverage.error.message || 'Impossible de matérialiser les capacités formulées.',
+              phases: phases
+            };
+          }
+          phases.capacityUpsert.actionsExecuted += formulaCoverage.actionsExecuted || 0;
+          log('Phase 1 formulée : ' + (formulaCoverage.actionsExecuted || 0) + ' lignes de couverture matérialisées');
+        }
         
         if (preview.capacityActions.length > 0) {
           var capacityResult = await grist.docApi.applyUserActions(preview.capacityActions);

@@ -18,7 +18,10 @@ describe('Member Planning Orchestrator - Commit et actions Grist', function() {
       'TimeEntries': ['id', 'affectation', 'tache', 'membre', 'date', 'heuresPrevues', 'heures', 'feuille', 'capaciteTheorique', 'capaciteDisponible', 'capaciteJour', 'revisionPlan'],
       'Feuilles': ['id', 'membre', 'semaine', 'statut'],
       'Disponibilites': ['id', 'membre', 'type', 'dateDebut', 'dateFin', 'dispo'],
-      'MemberDailyCapacities': ['id', 'membre', 'date', 'capaciteTheorique', 'disponibiliteRatio', 'capaciteDisponible', 'absenceHeures', 'source', 'revision']
+      'MemberDailyCapacities': ['id', 'membre', 'date', 'capaciteTheorique', 'disponibiliteRatio', 'capaciteDisponible', 'absenceHeures', 'source', 'revision'],
+      'TaskFlow_Meta': ['id', 'schemaVersion'],
+      '_grist_Tables': ['id', 'tableId'],
+      '_grist_Tables_column': ['id', 'parentId', 'colId', 'isFormula', 'formula']
     };
     
     var appliedActions = [];
@@ -142,6 +145,38 @@ describe('Member Planning Orchestrator - Commit et actions Grist', function() {
       expect(action[3].heuresPrevues).toBe(7);
       expect(action[3].affectation).toBe(1);
     }
+  });
+
+  it('ne génère jamais d écriture de colonne formule pour les capacités v11', async function() {
+    var monday = new Date(Date.UTC(2026, 6, 20)).getTime() / 1000;
+    var friday = new Date(Date.UTC(2026, 6, 24)).getTime() / 1000;
+    var mockGrist = createMockGristWithData({
+      'TaskFlow_Meta': [{ id: 1, schemaVersion: 10 }],
+      '_grist_Tables': [{ id: 7, tableId: 'MemberDailyCapacities' }],
+      '_grist_Tables_column': [
+        { id: 1, parentId: 7, colId: 'absenceHeures', isFormula: true, formula: '$capaciteTheorique - $capaciteDisponible' }
+      ],
+      'Team': [{ id: 1, nom: 'Alice', capaciteHebdo: 35 }],
+      'TaskAssignments': [{ id: 1, tache: 1, membre: 1, heuresAllouees: 7, dateDebut: monday, dateFin: friday, actif: true }],
+      'Tasks': [{ id: 1, titre: 'Tâche A' }],
+      'TimeEntries': [],
+      'Feuilles': [],
+      'Disponibilites': [],
+      'MemberDailyCapacities': [
+        { id: 1, membre: 1, date: monday, capaciteTheorique: 7, capaciteDisponible: 7 },
+        { id: 2, membre: 1, date: monday + 86400, capaciteTheorique: 7, capaciteDisponible: 7 },
+        { id: 3, membre: 1, date: monday + 2 * 86400, capaciteTheorique: 7, capaciteDisponible: 7 },
+        { id: 4, membre: 1, date: monday + 3 * 86400, capaciteTheorique: 7, capaciteDisponible: 7 },
+        { id: 5, membre: 1, date: friday, capaciteTheorique: 7, capaciteDisponible: 7 }
+      ]
+    });
+
+    var preview = await createMemberPlanningOrchestrator(mockGrist).previewMember(1, { todayIso: '2026-07-20' });
+
+    expect(preview.success).toBe(true);
+    expect(preview.formulaDrivenCapacities).toBe(true);
+    expect(preview.capacityActions).toEqual([]);
+    expect(preview.timeEntryActions.length).toBeGreaterThan(0);
   });
 
   it('réutilise les capacités fraîches du recalcul ciblé sans troisième lecture', async function() {

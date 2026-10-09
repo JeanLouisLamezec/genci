@@ -18,21 +18,91 @@ const { ensureMemberCapacityCoverage } = require('./member-capacity-coverage-ser
 const DEFAULT_WEEKLY_CAPACITY = 35;
 const DAYS_PER_WEEK = 5;
 const formulaDrivenDocApis = new WeakSet();
+const capacitySchemaProbeCache = new WeakMap();
+const CAPACITY_SCHEMA_PROBE_TTL_MS = 60 * 1000;
+const FORMULA_DRIVEN_CAPACITY_COLUMNS = new Set([
+  'capaciteTheorique',
+  'disponibiliteRatio',
+  'capaciteDisponible',
+  'absenceHeures',
+  'motifIndisponibilite'
+]);
+
+function unwrapMetadataRef(value) {
+  if (Array.isArray(value) && value.length >= 2) return unwrapMetadataRef(value[1]);
+  const id = Number(value);
+  return Number.isInteger(id) && id > 0 ? id : null;
+}
+
+function cacheCapacitySchemaProbe(docApi, formulaDriven) {
+  if (formulaDriven) {
+    formulaDrivenDocApis.add(docApi);
+    capacitySchemaProbeCache.delete(docApi);
+    return;
+  }
+  capacitySchemaProbeCache.set(docApi, { checkedAt: Date.now() });
+}
 
 async function usesFormulaDrivenCapacity(docApi) {
   if (formulaDrivenDocApis.has(docApi)) return true;
+
+  const cached = capacitySchemaProbeCache.get(docApi);
+  if (cached && Date.now() - cached.checkedAt < CAPACITY_SCHEMA_PROBE_TTL_MS) return false;
 
   try {
     const rows = columnarToRows(await docApi.fetchTable('TaskFlow_Meta'));
     const version = rows.length ? Number(rows[0].schemaVersion) : 0;
     if (version >= 11) {
-      formulaDrivenDocApis.add(docApi);
+      cacheCapacitySchemaProbe(docApi, true);
       return true;
     }
   } catch (error) {
     // Les documents pré-TaskFlow_Meta conservent le chemin historique v10.
   }
+
+  // Le marqueur de migration peut être temporairement en retard sur les
+  // colonnes (migration interrompue, document restauré, ou bascule manuelle).
+  // La métadonnée Grist est alors la source de vérité : dès qu'une projection
+  // de capacité est une formule, aucune valeur de capacité ne doit être écrite.
+  try {
+    const [tables, columns] = await Promise.all([
+      docApi.fetchTable('_grist_Tables'),
+      docApi.fetchTable('_grist_Tables_column')
+    ]);
+    const capacityTable = columnarToRows(tables)
+      .find(function(table) { return table.tableId === 'MemberDailyCapacities'; });
+    const capacityTableId = capacityTable && unwrapMetadataRef(capacityTable.id);
+    const hasFormulaProjection = capacityTableId && columnarToRows(columns).some(function(column) {
+      return unwrapMetadataRef(column.parentId) === capacityTableId &&
+        FORMULA_DRIVEN_CAPACITY_COLUMNS.has(column.colId) &&
+        (column.isFormula === true || (typeof column.formula === 'string' && column.formula.trim() !== ''));
+    });
+    if (hasFormulaProjection) {
+      cacheCapacitySchemaProbe(docApi, true);
+      return true;
+    }
+  } catch (error) {
+    // La compatibilité v10 reste disponible quand les métadonnées ne sont pas
+    // lisibles (ancien Grist ou permission de métadonnées restreinte).
+  }
+
+  cacheCapacitySchemaProbe(docApi, false);
   return false;
+}
+
+function isFormulaColumnWriteError(error) {
+  return /can't save value to formula column/i.test(String(error && error.message || error || ''));
+}
+
+async function ensureFormulaDrivenCapacityCoverage(grist, memberId, startDate, endDate, options = {}) {
+  const coverage = await ensureMemberCapacityCoverage(grist, memberId, startDate, endDate, options);
+  return Object.assign({}, coverage, {
+    formulaDriven: true,
+    diagnostics: [{
+      code: 'FORMULA_DRIVEN_CAPACITY_V11',
+      message: 'Capacités calculées par les formules Grist ; seule la couverture a été matérialisée.'
+    }]
+  });
 }
 
 // ============================================================================
@@ -568,14 +638,7 @@ async function ensureMemberDailyCapacities(grist, memberId, startDate, endDate, 
   // donc plus les écrire depuis un widget ; seules les lignes date+membre et
   // leur index de couverture doivent être matérialisés.
   if (await usesFormulaDrivenCapacity(docApi)) {
-    const coverage = await ensureMemberCapacityCoverage(grist, memberId, startDate, endDate, options);
-    return Object.assign({}, coverage, {
-      formulaDriven: true,
-      diagnostics: [{
-        code: 'FORMULA_DRIVEN_CAPACITY_V11',
-        message: 'Capacités calculées par les formules Grist ; seule la couverture a été matérialisée.'
-      }]
-    });
+    return ensureFormulaDrivenCapacityCoverage(grist, memberId, startDate, endDate, options);
   }
   
   const {
@@ -685,6 +748,13 @@ async function ensureMemberDailyCapacities(grist, memberId, startDate, endDate, 
       diagnostics: desiredResult.diagnostics
     };
   } catch (e) {
+    // Filet de sûreté pour les documents dont le marqueur de version ou les
+    // métadonnées n'étaient pas accessibles lors de la détection. Grist
+    // annule le lot en erreur : le repli ne laisse donc aucune demi-écriture.
+    if (isFormulaColumnWriteError(e)) {
+      cacheCapacitySchemaProbe(docApi, true);
+      return ensureFormulaDrivenCapacityCoverage(grist, memberId, startDate, endDate, options);
+    }
     return {
       success: false,
       error: {
@@ -731,6 +801,7 @@ module.exports = {
   
   // Assurance dans Grist
   ensureMemberDailyCapacities,
+  usesFormulaDrivenCapacity,
   
   // Validation
   validateCapacityInput,

@@ -9835,7 +9835,12 @@ async function performCraCellChange(taskId, dayMs, personId, qtyStr) {
       
       if (typeof CraWorkflowIntegration !== 'undefined' && CraWorkflowIntegration.updateManagerActual) {
         await CraWorkflowIntegration.updateManagerActual(S.managerCorrectionSheetId, existingEntry.id, parseResult.hours);
-        await replanContinuousAssignmentAfterCraEdit(personId, existingEntry.affectation);
+        // Une correction de réalisé ne modifie ni l'affectation ni le plan.
+        // Garder la mise à jour locale évite un rechargement complet du CRA
+        // entre deux clics sur les flèches.
+        existingEntry.heures = parseResult.hours;
+        buildCraIndexes();
+        render();
       } else {
         toast('Adaptateur non initialisé');
       }
@@ -10030,72 +10035,11 @@ async function performCraCellChange(taskId, dayMs, personId, qtyStr) {
   // PHASE 1.1.6 : SUPPRESSION écriture Tasks.tempsPasse
   // Cette écriture sort du contrat du CRA et sera gérée par une formule Grist ou un service dédié
 
-  // Une saisie continue devient immédiatement la nouvelle réalité. Recalculer
-  // le reliquat sur toutes les autres dates encore modifiables.
-  const replanning = await replanContinuousAssignmentAfterCraEdit(
-    personId,
-    result.assignmentId
-  );
-  if (replanning && replanning.reloaded) {
-    return;
-  }
-  
   // Reconstruire les index après modification locale
   buildCraIndexes();
   render();
 }
 window.setCell = setCell;
-
-async function replanContinuousAssignmentAfterCraEdit(personId, assignmentId) {
-  const assignment = (S.assignments || []).find(item =>
-    Number(item.id) === Number(assignmentId)
-  );
-  if (!assignment || (assignment.modeRepartition || 'uniforme') === 'ponctuel') {
-    return { skipped: true, reason: 'PUNCTUAL_OR_MISSING_ASSIGNMENT' };
-  }
-
-  const planningApi = globalThis.TaskFlowPlanning;
-  if (!planningApi || typeof planningApi.createMemberPlanningOrchestrator !== 'function') {
-    console.warn('[CRA planning] Orchestrateur indisponible');
-    return { skipped: true, reason: 'ORCHESTRATOR_UNAVAILABLE' };
-  }
-
-  try {
-    const orchestrator = planningApi.createMemberPlanningOrchestrator(grist, {
-      logEnabled: true
-    });
-    const preview = await orchestrator.previewMember(Number(personId), {
-      targetAssignmentIds: [Number(assignmentId)]
-    });
-
-    if (!preview.success || !preview.canCommit) {
-      console.warn('[CRA planning] Replanification non committable', {
-        personId,
-        assignmentId,
-        code: preview.code,
-        diagnostics: preview.diagnostics || []
-      });
-      toast('Saisie enregistrée, mais le reliquat n’a pas pu être recalculé');
-      return { success: false, code: preview.code };
-    }
-
-    const commit = await orchestrator.commitMember(Number(personId), preview, {
-      targetAssignmentIds: [Number(assignmentId)]
-    });
-    if (!commit.success) {
-      console.warn('[CRA planning] Commit échoué', commit);
-      toast('Saisie enregistrée, mais le reliquat n’a pas pu être appliqué');
-      return { success: false, code: commit.code };
-    }
-
-    await reloadCra('continuous-entry-replanned', { immediate: true });
-    return { success: true, reloaded: true };
-  } catch (error) {
-    console.error('[CRA planning] Erreur de replanification', error);
-    toast('Saisie enregistrée, replanification différée');
-    return { success: false, code: 'REPLAN_ERROR' };
-  }
-}
 
 // realise total d'une tache = somme des heures saisies (tous agents) = source de tempsPasse
 function taskRealizedHours(taskId) { 

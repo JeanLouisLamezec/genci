@@ -1089,4 +1089,47 @@ describe('Member Daily Capacity Service - projection formulée v11', () => {
     expect(capacities.disponibiliteRatio[createdIndex]).toBeNull();
     expect((await mockGrist.fetchTable('MemberCapacityCoverage')).id).toHaveLength(1);
   });
+
+  test('détecte les formules Grist même si schemaVersion est resté à v10', async () => {
+    let forbiddenCapacityWriteAttempts = 0;
+    const mockGrist = createMockGrist({
+      initialData: {
+        TaskFlow_Meta: [{ id: 1, schemaVersion: 10 }],
+        Team: [{ id: 1, nom: 'Alice', capaciteHebdo: 35 }],
+        Disponibilites: [],
+        MemberCapacityCoverage: [],
+        MemberDailyCapacities: [{
+          id: 1,
+          membre: 1,
+          date: 1783814400,
+          capaciteTheorique: 7,
+          disponibiliteRatio: 1,
+          capaciteDisponible: 7,
+          absenceHeures: 0
+        }]
+      },
+      shouldFailAction: function(action) {
+        const fields = action[3] || {};
+        const isCapacityWrite = action[1] === 'MemberDailyCapacities' &&
+          ['capaciteTheorique', 'disponibiliteRatio', 'capaciteDisponible', 'absenceHeures']
+            .some(function(column) { return Object.prototype.hasOwnProperty.call(fields, column); });
+        if (isCapacityWrite) forbiddenCapacityWriteAttempts += 1;
+        return isCapacityWrite;
+      }
+    });
+
+    await mockGrist.applyUserActions([
+      ['ModifyColumn', 'MemberDailyCapacities', 'capaciteTheorique', { isFormula: true, formula: '$membre.capaciteHebdo / 5' }],
+      ['ModifyColumn', 'MemberDailyCapacities', 'disponibiliteRatio', { isFormula: true, formula: '1' }],
+      ['ModifyColumn', 'MemberDailyCapacities', 'capaciteDisponible', { isFormula: true, formula: '$capaciteTheorique * $disponibiliteRatio' }],
+      ['ModifyColumn', 'MemberDailyCapacities', 'absenceHeures', { isFormula: true, formula: '$capaciteTheorique - $capaciteDisponible' }]
+    ]);
+
+    const result = await ensureMemberDailyCapacities(mockGrist, 1, '2026-07-13', '2026-07-13');
+
+    expect(result.success).toBe(true);
+    expect(result.formulaDriven).toBe(true);
+    expect(forbiddenCapacityWriteAttempts).toBe(0);
+    expect((await mockGrist.fetchTable('MemberCapacityCoverage')).id).toHaveLength(1);
+  });
 });
