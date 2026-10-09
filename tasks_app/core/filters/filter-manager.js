@@ -133,6 +133,7 @@ class FilterManager {
    */
   _createFilterSection(container, type, label, items) {
     container.innerHTML = '';
+    container.classList.add('filter-section');
     
     // Créer l'en-tête de section
     const header = document.createElement('button');

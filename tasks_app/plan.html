@@ -15,7 +15,7 @@
 <script src="core/generated/taskflow-planning-browser.js?v=20260827-retro"></script>
 <script src="core/planning/view/plan-canon-adapter.js?v=20260827-retro"></script>
 <link rel="stylesheet" href="core/theme/taskflow-theme.css">
-<link rel="stylesheet" href="core/filters/filter-styles.css">
+<link rel="stylesheet" href="core/filters/filter-styles.css?v=20261009-filter-button-reset-v1">
 <link rel="stylesheet" href="core/time/time-view-selector.css">
 <style>
 /* Couleurs spécifiques au Plan (états de charge) */
@@ -70,7 +70,8 @@ table.grid thead th.now{color:var(--primary)}
 thead th.colres{z-index:4}
 .res{display:flex;align-items:center;gap:8px;padding:7px 10px}
 .ava{width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:0.66rem;font-weight:700;color:#fff;flex-shrink:0}
-.res .nm{font-weight:600;white-space:nowrap}
+.res>span:last-child{min-width:0}
+.res .nm{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .res .cap{color:var(--text-muted);font-size:0.72rem}
 .cell{text-align:center;padding:0;cursor:pointer}
 .cell .v{display:block;padding:6px 4px;font-weight:600;font-size:0.78rem;color:#000;min-width:0}
@@ -267,7 +268,8 @@ body.panel-open #app { margin-right: min(380px, 92vw); }
 .grid tr.grp td { background: rgba(123,140,255,.07); }
 .grid .colres.ghead { font-weight: 700; }
 .grid .colres.ghead .gdot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; margin-right: 9px; flex: none; }
-.grid tr.grp .gval { font-weight: 700; color: var(--text-muted, #cbd5e1); font-variant-numeric: tabular-nums; }
+.grid tr.grp > td:not(.colres) { text-align: center; vertical-align: middle; }
+.grid tr.grp .gval { display: block; font-weight: 700; color: var(--text-muted, #cbd5e1); font-variant-numeric: tabular-nums; }
 .grid .colres.sub { padding-left: 30px; }
 .grid .colres.sub .ava { width: 20px; height: 20px; font-size: .56rem; }
 .tl-sec { font-size: .78rem; font-weight: 800; color: var(--text, #e6e9f2); padding: 11px 14px 3px; display: flex; align-items: center; gap: 8px; border-top: 1px solid var(--border, #2a3550); margin-top: 3px; }
@@ -8790,6 +8792,40 @@ function buildRows() {
   return filteredPersons.map(m => ({ key: String(m.id), label: m.nom, color: safeColor(m.couleur, '#6366f1'), cap: capOf(m), members: [m] }));
 }
 
+// En regroupement par tâche, le libellé principal est un titre de tâche et
+// peut être nettement plus long qu'un nom de personne. La largeur est donc
+// calculée sur les lignes visibles, tout en laissant de la place à la grille.
+let resourceColumnMeasureContext = null;
+function syncResourceColumnWidth(rows) {
+  const wrap = document.getElementById('gridwrap');
+  if (!wrap) return;
+
+  if (S.groupBy !== 'task') {
+    wrap.style.removeProperty('--res-col');
+    return;
+  }
+
+  if (!resourceColumnMeasureContext) {
+    resourceColumnMeasureContext = document.createElement('canvas').getContext('2d');
+  }
+
+  const context = resourceColumnMeasureContext;
+  context.font = '600 12.8px Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+  const widestLabel = rows.reduce((width, row) => {
+    const label = String(row.label || '');
+    const capacity = !row.isHeader && Number(row.cap) > 0 ? ' (' + Math.round(row.cap) + 'h)' : '';
+    return Math.max(width, context.measureText(label + capacity).width);
+  }, context.measureText('Ressource').width);
+
+  const min = 184;
+  const available = wrap.clientWidth || window.innerWidth || 760;
+  // Conserver au moins 320 px pour les périodes et leur total, sans laisser
+  // un intitulé très long transformer le plan en simple liste.
+  const max = Math.max(min, Math.min(420, Math.floor(available - 320)));
+  const width = Math.round(Math.max(min, Math.min(max, widestLabel + 58)));
+  wrap.style.setProperty('--res-col', width + 'px');
+}
+
 // Disponibilités : table datée Disponibilites [{membre, type, dateDebut, dateFin (Unix s), dispo 0..1}] -> capacité réduite par période.
 // Fallback historique : ancien JSON Team.indispos [{start,end,label}] (dates ISO) compté comme indispo totale.
 // NOTE LOT 3 : Ces fonctions legacy sont remplacées par PlanCanonAdapter.getCapacityForRow() et isRowCapacityReduced()
@@ -8880,6 +8916,7 @@ async function render() {
   
   const rows = buildRows();
   const wrap = document.getElementById('gridwrap');
+  syncResourceColumnWidth(rows);
 
   if (!S.team.length) { wrap.innerHTML = '<div class="empty"><div class="ic">▦</div><div>Aucun membre dans la table Team</div></div>'; renderAlerts(matrix, []); return; }
   const hasData = Object.keys(matrix).length > 0;
@@ -8895,8 +8932,8 @@ async function render() {
       // En-tête de groupe (projet/rôle) : somme des sous-lignes, sans heat (repère de section).
       const hc = {}; for (const gk of row.gkeys) { const mc = matrix[gk] || {}; for (const p in mc) hc[p] = (hc[p] || 0) + mc[p]; }
       let wtot = 0;
-      h += '<tr class="grp"><td class="colres ghead"><div class="res"><span class="gdot" style="background:' + row.color + '"></span><span class="nm">' + esc(row.label) + '</span></div></td>';
-      for (let pi = 0; pi < periods.length; pi++) { const p = periods[pi], hr = Number(hc[p]) || 0; wtot += hr; h += '<td class="' + (p === nowKey ? 'nowcol' : '') + '">' + (hr > 0 ? '<span class="gval">' + hoursText(hr) + '</span>' : '<span class="dot">·</span>') + '</td>'; }
+      h += '<tr class="grp"><td class="colres ghead"><div class="res"><span class="gdot" style="background:' + row.color + '"></span><span class="nm" title="' + esc(row.label) + '">' + esc(row.label) + '</span></div></td>';
+      for (let pi = 0; pi < periods.length; pi++) { const p = periods[pi], hr = Number(hc[p]) || 0; wtot += hr; h += '<td class="' + (p === nowKey ? 'nowcol' : '') + '">' + (hr > 0 ? '<span class="gval">' + hoursText(hr) + 'h</span>' : '<span class="dot">·</span>') + '</td>'; }
       h += '<td class="sum"><div class="sh">' + hoursText(wtot) + ' h</div></td></tr>';
       continue;
     }
@@ -8904,7 +8941,7 @@ async function render() {
     const ini = row.label.split(' ').filter(Boolean).map(w => w[0]).slice(0, 2).join('').toUpperCase();
     const resClk = row.isSub || S.groupBy === 'person';
     const resId = row.isSub ? row.teamId : row.key;
-    h += '<tr' + (row.isSub ? ' class="subr"' : '') + '><td class="colres' + (row.isSub ? ' sub' : '') + (resClk ? ' clk' : '') + '"' + (resClk ? ' data-res="' + esc(resId) + '" title="Capacité & indisponibilités"' : '') + '><div class="res"><span class="ava" style="background:' + row.color + '">' + esc(ini) + '</span><span><span class="nm">' + esc(row.label) + '</span>' + (row.cap > 0 ? ' <span class="cap">(' + Math.round(row.cap) + 'h)</span>' : '') + '</span></div></td>';
+    h += '<tr' + (row.isSub ? ' class="subr"' : '') + '><td class="colres' + (row.isSub ? ' sub' : '') + (resClk ? ' clk' : '') + '"' + (resClk ? ' data-res="' + esc(resId) + '" title="Capacité & indisponibilités"' : '') + '><div class="res"><span class="ava" style="background:' + row.color + '">' + esc(ini) + '</span><span><span class="nm" title="' + esc(row.label) + '">' + esc(row.label) + '</span>' + (row.cap > 0 ? ' <span class="cap">(' + Math.round(row.cap) + 'h)</span>' : '') + '</span></div></td>';
     let win = 0, peakR = 0;
     for (let pi = 0; pi < periods.length; pi++) {
       const p = periods[pi], hr = Number(cells[p]) || 0;
