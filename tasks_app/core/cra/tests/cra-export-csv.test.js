@@ -695,6 +695,11 @@ describe('sanitizeSpreadsheetText', () => {
     expect(sanitizeSpreadsheetText(0)).toBe('0');
   });
 
+  test('tabulations et retours à la ligne aplatis pour ne pas casser les colonnes', () => {
+    expect(sanitizeSpreadsheetText('1667\tProjet Alpha')).toBe('1667 Projet Alpha');
+    expect(sanitizeSpreadsheetText('Ligne 1\r\nLigne 2')).toBe('Ligne 1 Ligne 2');
+  });
+
   test('=FORMULE préfixé par apostrophe', () => {
     expect(sanitizeSpreadsheetText('=SUM(A1:A2)')).toBe("'=SUM(A1:A2)");
   });
@@ -801,8 +806,21 @@ describe('createRows', () => {
     report.projectColumns = [{ id: 'Code_Analytique', label: 'Code analytique' }];
     report.persons[0].rows[0].projectFields = { Code_Analytique: 'GENCI-42' };
     const rows = createRows(report);
-    expect(rows[0]).toEqual(['Déclarant', 'Date', 'Durée', 'Projet', 'Tâche', 'Code analytique']);
-    expect(rows[1][5]).toBe('GENCI-42');
+    expect(rows[0]).toEqual(['Déclarant', 'Date', 'Durée', 'Projet', 'Code analytique', 'Tâche']);
+    expect(rows[1][4]).toBe('GENCI-42');
+    expect(rows[1]).toHaveLength(rows[0].length);
+  });
+
+  test('un libellé contenant une tabulation reste dans une seule cellule', () => {
+    const report = makeReport();
+    report.projectColumns = [{ id: 'Code_Analytique', label: 'Code analytique' }];
+    report.persons[0].rows[0].projectName = '1667\tProjet Alpha';
+    report.persons[0].rows[0].projectFields = { Code_Analytique: 'ABCD' };
+    const rows = createRows(report);
+
+    expect(rows[1]).toHaveLength(rows[0].length);
+    expect(rows[1][3]).toBe('1667 Projet Alpha');
+    expect(rows[1].join('')).not.toContain('\t');
   });
 
   test('en-tête exact', () => {
@@ -1149,7 +1167,7 @@ describe('Sérialisation des cas d échappement', () => {
     expect(csv).toContain('"Recette ""finale"""');
   });
 
-  test('tâche avec retour à la ligne', () => {
+  test('tâche avec retour à la ligne aplatie pour préserver une ligne CSV', () => {
     const report = makeReport({
       persons: [{
         id: 1,
@@ -1169,7 +1187,8 @@ describe('Sérialisation des cas d échappement', () => {
       }]
     });
     const csv = serialize(report, { includeBom: false });
-    expect(csv).toContain('"Tâche\navec retour"');
+    expect(csv).toContain('Tâche avec retour');
+    expect(csv).not.toContain('Tâche\navec retour');
   });
 
   test('nom avec accent', () => {

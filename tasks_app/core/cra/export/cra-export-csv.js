@@ -250,7 +250,11 @@ function sanitizeSpreadsheetText(value) {
     return '';
   }
   
-  const str = String(value);
+  // Une tabulation (ou un retour à la ligne) fait apparaître une colonne ou
+  // une ligne supplémentaire dans certains tableurs, même dans un champ CSV.
+  // Les libellés Grist restent inchangés : seule leur représentation exportée
+  // est aplatie en texte lisible.
+  const str = String(value).replace(/[\t\r\n]+/g, ' ');
   const trimmed = str.trimStart();
   
   // Détecter les préfixes dangereux
@@ -323,9 +327,10 @@ function createRows(report) {
     'Déclarant',
     'Date',
     'Durée',
-    'Projet',
-    'Tâche'
-  ].concat(projectColumns.map(column => String(column.label || column.id || ''))));
+    'Projet'
+  ]
+    .concat(projectColumns.map(column => String(column.label || column.id || '')))
+    .concat(['Tâche']));
   
   // Filtrer les personnes sans lignes (défensivement)
   const activePersons = [];
@@ -361,9 +366,11 @@ function createRows(report) {
         declarant,
         date,
         duree,
-        projet,
-        tache
-      ].concat(projectColumns.map(column => sanitizeSpreadsheetText(projectFields[column.id] || ''))));
+        projet
+      ]
+        .concat(projectColumns.map(column => sanitizeSpreadsheetText(projectFields[column.id] || '')))
+        .concat([tache])
+      );
     }
   }
   
