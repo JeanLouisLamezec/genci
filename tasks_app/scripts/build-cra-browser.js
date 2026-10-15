@@ -23,6 +23,7 @@ const OUTPUT_FILE = path.join(OUTPUT_DIR, 'taskflow-cra-browser.js');
 
 // Modules à bundler (dans l'ordre de dépendance)
 const MODULES = [
+  { path: path.join(CORE_DIR, 'calendar', 'civil-date.js') },
   { path: path.join(CORE_DIR, 'planning', 'planning-engine.js') },
   { path: path.join(CORE_DIR, 'cra', 'workflow', 'cra-sheet-workflow.js') },
   { path: path.join(CORE_DIR, 'cra', 'workflow', 'cra-weekly-sheet.js') },
@@ -31,6 +32,12 @@ const MODULES = [
   { path: path.join(CORE_DIR, 'cra', 'ui', 'cra-sheet-ui-adapter.js') },
   { path: path.join(CORE_DIR, 'cra', 'manager', 'cra-manager-workspace.js') }
 ];
+
+// Dépendances externes disponibles sous forme d'UMD dans la page hôte. Elles
+// ne doivent jamais laisser un require() Node dans le bundle navigateur.
+const BROWSER_EXTERNALS = {
+  '@js-temporal/polyfill': '(global.Temporal ? { Temporal: global.Temporal } : (global.temporal || {}))'
+};
 
 // Générer les IDs à partir des chemins
 MODULES.forEach(mod => {
@@ -65,12 +72,15 @@ function readAndTransformModule(moduleId, filePath, baseDir = CORE_DIR) {
       const moduleKey = normalizedPath.replace(/\.js$/, '').replace(/^\//, '');
       return `__require('${moduleKey}')`;
     }
+    if (Object.prototype.hasOwnProperty.call(BROWSER_EXTERNALS, modulePath)) {
+      return BROWSER_EXTERNALS[modulePath];
+    }
     return match;
   }
   
   // Remplacer require() par des accès à la registry
   content = content.replace(
-    /require\(['"](\.[^'"]+)['"]\)/g,
+    /require\(['"]([^'"]+)['"]\)/g,
     (match, modulePath) => {
       const dir = path.dirname(filePath);
       return resolveRequire(match, modulePath, dir);
@@ -111,7 +121,7 @@ function compileModule(moduleId, filePath) {
       }
       return moduleCache.get(id);
     };
-    
+
     ${code}
   })`;
   
@@ -190,6 +200,7 @@ function build(options = {}) {
   
   // Exposer l'API publique
   var workflow = __require('cra/workflow/cra-sheet-workflow');
+  var calendar = __require('calendar/civil-date');
   var weeklySheet = __require('cra/workflow/cra-weekly-sheet');
   var validator = __require('timesheets/timesheet-validator');
   var service = __require('cra/workflow/cra-sheet-validation-service');
@@ -197,6 +208,7 @@ function build(options = {}) {
   var managerModule = __require('cra/manager/cra-manager-workspace');
   
   global.TaskFlowCra = {
+    calendar: calendar,
     service: {
       submitSheet: service.submitSheet,
       withdrawSheet: service.withdrawSheet,

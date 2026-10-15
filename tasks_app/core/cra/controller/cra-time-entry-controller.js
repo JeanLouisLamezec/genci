@@ -25,6 +25,27 @@
 
 'use strict';
 
+// Le contrôleur est aussi chargé directement par cra.html, avant le bundle.
+// En Node, il importe le module ; dans le navigateur, il le récupère une fois
+// que le bundle CRA a exposé TaskFlowCra.calendar. Les opérations de saisie
+// arrivent après ce chargement et ne dépendent donc jamais de Date.setDate().
+let civilDate = null;
+if (typeof module !== 'undefined' && module.exports) {
+  civilDate = require('../../calendar/civil-date');
+}
+
+function getCivilDate() {
+  if (civilDate) return civilDate;
+  if (
+    typeof globalThis !== 'undefined' &&
+    globalThis.TaskFlowCra &&
+    globalThis.TaskFlowCra.calendar
+  ) {
+    return globalThis.TaskFlowCra.calendar;
+  }
+  throw new Error('Calendrier civil CRA indisponible.');
+}
+
 // Défense en profondeur : le widget coalesce les clics rapides, mais le
 // contrôleur reste le dernier rempart pour tout appel direct dans la même
 // iframe. Une opération concurrente sur la même cellule ne doit jamais créer
@@ -161,8 +182,7 @@ function resolveActiveAssignment(taskId, personId, dateIso, assignments, context
     
     // MODE PONCTUEL SEULEMENT : Vérifier que ce n'est pas un week-end
     if (isPonctuel && !context.allowWeekends) {
-      const dayOfWeek = dateObj.getUTCDay();
-      if (dayOfWeek === 0 || dayOfWeek === 6) {
+      if (dateObj.dayOfWeek === 6 || dateObj.dayOfWeek === 7) {
         return false;
       }
     }
@@ -525,9 +545,18 @@ function isPersonWeekLocked(personId, weekStart, sheets) {
     };
   }
   
+  const canonicalWeekStart = weekStartIsoFromDateIso(weekStart);
+  if (!canonicalWeekStart) {
+    return {
+      locked: false,
+      sheet: null,
+      reason: 'INVALID_WEEK'
+    };
+  }
+
   const sheet = (sheets || []).find(s => {
-    const sheetDate = gristDateKey(s.semaine);
-    return s.membre === personId && sheetDate === weekStart;
+    const sheetDate = weekStartIsoFromDateIso(gristDateKey(s.semaine));
+    return s.membre === personId && sheetDate === canonicalWeekStart;
   });
   
   if (!sheet) {
@@ -570,46 +599,17 @@ function isPersonWeekLocked(personId, weekStart, sheets) {
  * @returns {string} Date ISO YYYY-MM-DD
  */
 function localDayKeyFromMs(ms) {
-  const d = new Date(ms);
-  return [
-    d.getFullYear(),
-    String(d.getMonth() + 1).padStart(2, '0'),
-    String(d.getDate()).padStart(2, '0')
-  ].join('-');
+  return getCivilDate().isoDateFromEpochMs(ms, getCivilDate().DEFAULT_TIME_ZONE);
 }
 
 /**
  * Parse une date ISO de manière stricte
  * Rejette les dates civiles invalides (2026-02-31, 2026-02-29 non bissextile, etc.)
  * @param {string} dateIso - Date ISO (YYYY-MM-DD)
- * @returns {Date|null} Date UTC ou null si invalide
+ * @returns {Temporal.PlainDate|null} Date civile ou null si invalide
  */
 function parseStrictIsoDate(dateIso) {
-  if (
-    typeof dateIso !== 'string' ||
-    !/^\d{4}-\d{2}-\d{2}$/.test(dateIso)
-  ) {
-    return null;
-  }
-
-  const parts = dateIso.split('-');
-  const year = Number(parts[0]);
-  const month = Number(parts[1]);
-  const day = Number(parts[2]);
-
-  const date = new Date(
-    Date.UTC(year, month - 1, day)
-  );
-
-  if (
-    date.getUTCFullYear() !== year ||
-    date.getUTCMonth() !== month - 1 ||
-    date.getUTCDate() !== day
-  ) {
-    return null;
-  }
-
-  return date;
+  return getCivilDate().parseIsoDate(dateIso);
 }
 
 /**
@@ -618,18 +618,7 @@ function parseStrictIsoDate(dateIso) {
  * @returns {string|null} Lundi de la semaine (YYYY-MM-DD) ou null si invalide
  */
 function weekStartIsoFromDateIso(dateIso) {
-  const date = parseStrictIsoDate(dateIso);
-  
-  if (!date) {
-    return null;
-  }
-
-  const day = date.getUTCDay();
-  const daysFromMonday = day === 0 ? 6 : day - 1;
-
-  date.setUTCDate(date.getUTCDate() - daysFromMonday);
-
-  return date.toISOString().slice(0, 10);
+  return getCivilDate().startOfIsoWeek(dateIso);
 }
 
 /**
@@ -638,13 +627,8 @@ function weekStartIsoFromDateIso(dateIso) {
  * @returns {number|null} Timestamp en secondes ou null si invalide
  */
 function gristDateFromIso(dateIso) {
-  const date = parseStrictIsoDate(dateIso);
-  
-  if (!date) {
-    return null;
-  }
-
-  return Math.floor(date.getTime() / 1000);
+  const epochMs = getCivilDate().epochMsAtUtcMidnight(dateIso);
+  return epochMs === null ? null : Math.floor(epochMs / 1000);
 }
 
 /**
@@ -736,25 +720,7 @@ function gristDateKey(value) {
     return null;
   }
   
-  if (typeof value === 'string') {
-    if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-      return value;
-    }
-    const date = new Date(value);
-    if (!isNaN(date.getTime())) {
-      return localDayKeyFromMs(date.getTime());
-    }
-  }
-  
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    return localDayKeyFromMs(value * 1000);
-  }
-  
-  if (value instanceof Date) {
-    return localDayKeyFromMs(value.getTime());
-  }
-  
-  return null;
+  return getCivilDate().isoDateFromGrist(value);
 }
 
 /**
@@ -1279,7 +1245,7 @@ async function saveCraCellChangeInternal(input, dependencies) {
   let matchingSheets = availableSheets.filter(function(sheet) {
     return (
       Number(sheet.membre) === Number(personId) &&
-      gristDateKey(sheet.semaine) === weekStartIso
+      weekStartIsoFromDateIso(gristDateKey(sheet.semaine)) === weekStartIso
     );
   });
   
@@ -1308,7 +1274,7 @@ async function saveCraCellChangeInternal(input, dependencies) {
         });
         matchingSheets = availableSheets.filter(function(sheet) {
           return Number(sheet.membre) === Number(personId) &&
-            gristDateKey(sheet.semaine) === weekStartIso;
+            weekStartIsoFromDateIso(gristDateKey(sheet.semaine)) === weekStartIso;
         });
       } catch (error) {
         return {
@@ -1331,7 +1297,7 @@ async function saveCraCellChangeInternal(input, dependencies) {
 
     if (
       Number(linkedSheet.membre) !== Number(personId) ||
-      gristDateKey(linkedSheet.semaine) !== weekStartIso
+        weekStartIsoFromDateIso(gristDateKey(linkedSheet.semaine)) !== weekStartIso
     ) {
       return {
         ok: false,
@@ -1495,7 +1461,14 @@ async function saveCraCellChangeInternal(input, dependencies) {
       };
     }
     
-    const dayMs = new Date(dateIso + 'T00:00:00Z').getTime();
+    const dayMs = getCivilDate().epochMsAtUtcMidnight(dateIso);
+    if (dayMs === null) {
+      return {
+        ok: false,
+        action: 'blocked',
+        code: 'INVALID_ENTRY_DATE'
+      };
+    }
     const capacityResult = dailyCapacityForPersonAndDate(
       personId,
       dayMs,

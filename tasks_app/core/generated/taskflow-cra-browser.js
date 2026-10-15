@@ -32,6 +32,160 @@
   }
 
 
+  // Module: calendar/civil-date
+  moduleFactories.set('calendar/civil-date', (function() {
+    var exports = {};
+    var __require = function(id) {
+      if (!moduleCache.has(id)) {
+        if (!moduleFactories.has(id)) {
+          throw new Error('Module non résolu: ' + id);
+        }
+        moduleCache.set(id, moduleFactories.get(id)());
+      }
+      return moduleCache.get(id);
+    };
+
+    /**
+ * Calendrier civil TaskFlow.
+ *
+ * Une date de feuille/CRA n'est jamais une durée de 24 heures : c'est un jour
+ * du calendrier grégorien. Temporal.PlainDate traite donc les transitions DST,
+ * les années bissextiles et les fins de mois sans dépendre de l'horloge.
+ */
+
+const DEFAULT_TIME_ZONE = 'Europe/Paris';
+
+function getTemporal() {
+  if (typeof globalThis !== 'undefined') {
+    if (globalThis.Temporal && globalThis.Temporal.PlainDate) return globalThis.Temporal;
+    if (globalThis.temporal && globalThis.temporal.Temporal) return globalThis.temporal.Temporal;
+  }
+
+  // Le bundle navigateur charge le fichier UMD avant ce module. En Node (tests
+  // et outils), on charge la même implémentation depuis la dépendance npm.
+  if (typeof require === 'function') {
+    // Le build navigateur remplace explicitement cet import par le global UMD
+    // chargé dans cra.html. Garder un import statique est important : Node et
+    // Jest utilisent exactement le même moteur que le navigateur.
+    const temporal = (global.Temporal ? { Temporal: global.Temporal } : (global.temporal || {})).Temporal;
+    if (temporal && temporal.PlainDate) return temporal;
+  }
+
+  throw new Error('Temporal indisponible : le polyfill calendrier n’a pas été chargé.');
+}
+
+function resolveTimeZone(timeZone) {
+  if (timeZone) return timeZone;
+  try {
+    const browserTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (browserTimeZone) return browserTimeZone;
+  } catch (error) {
+    // En environnement sans Intl complet, conserver le fuseau du document
+    // historique plutôt qu'un UTC silencieux.
+  }
+  return DEFAULT_TIME_ZONE;
+}
+
+function parseIsoDate(value) {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  try {
+    const plainDate = getTemporal().PlainDate.from(value);
+    return plainDate.toString() === value ? plainDate : null;
+  } catch (error) {
+    return null;
+  }
+}
+
+function formatIsoDate(plainDate) {
+  return plainDate ? plainDate.toString() : null;
+}
+
+function addDays(isoDate, days) {
+  if (!Number.isInteger(days)) return null;
+  const plainDate = parseIsoDate(isoDate);
+  return plainDate ? plainDate.add({ days }).toString() : null;
+}
+
+function startOfIsoWeek(isoDate) {
+  const plainDate = parseIsoDate(isoDate);
+  return plainDate ? plainDate.subtract({ days: plainDate.dayOfWeek - 1 }).toString() : null;
+}
+
+function isIsoWeekStart(isoDate) {
+  const plainDate = parseIsoDate(isoDate);
+  return Boolean(plainDate && plainDate.dayOfWeek === 1);
+}
+
+function isoDateFromEpochMs(epochMs, timeZone) {
+  if (!Number.isFinite(epochMs)) return null;
+  try {
+    return getTemporal().Instant.fromEpochMilliseconds(epochMs)
+      .toZonedDateTimeISO(resolveTimeZone(timeZone))
+      .toPlainDate()
+      .toString();
+  } catch (error) {
+    return null;
+  }
+}
+
+function epochMsAtLocalMidnight(isoDate, timeZone) {
+  const plainDate = parseIsoDate(isoDate);
+  if (!plainDate) return null;
+  try {
+    return plainDate.toZonedDateTime({
+      timeZone: resolveTimeZone(timeZone),
+      plainTime: '00:00'
+    }).epochMilliseconds;
+  } catch (error) {
+    return null;
+  }
+}
+
+/**
+ * Convertit un jour civil en timestamp Grist. Les colonnes Date de Grist
+ * sont des jours sans fuseau ; leur représentation historique est minuit UTC.
+ * Ce choix ne doit donc jamais dépendre du fuseau du navigateur de l'éditeur.
+ */
+function epochMsAtUtcMidnight(isoDate) {
+  const plainDate = parseIsoDate(isoDate);
+  if (!plainDate) return null;
+  try {
+    return plainDate.toZonedDateTime({
+      timeZone: 'UTC',
+      plainTime: '00:00'
+    }).epochMilliseconds;
+  } catch (error) {
+    return null;
+  }
+}
+
+function isoDateFromGrist(value, timeZone = DEFAULT_TIME_ZONE) {
+  if (typeof value === 'string') return parseIsoDate(value) ? value : null;
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    // Les anciennes valeurs du document ont été écrites à minuit Europe/Paris.
+    // Fixer le fuseau documentaire évite qu'un éditeur hors de France voie le
+    // dimanche précédent, sans casser les données historiques.
+    return isoDateFromEpochMs(value * 1000, timeZone);
+  }
+  if (value instanceof Date) return isoDateFromEpochMs(value.getTime(), timeZone);
+  return null;
+}
+
+return {
+  DEFAULT_TIME_ZONE,
+  parseIsoDate,
+  formatIsoDate,
+  addDays,
+  startOfIsoWeek,
+  isIsoWeekStart,
+  isoDateFromEpochMs,
+  epochMsAtLocalMidnight,
+  epochMsAtUtcMidnight,
+  isoDateFromGrist
+};
+
+  }));
+
   // Module: planning/planning-engine
   moduleFactories.set('planning/planning-engine', (function() {
     var exports = {};
@@ -44,7 +198,7 @@
       }
       return moduleCache.get(id);
     };
-    
+
     /**
  * Planning Engine - Moteur de planification pur (indépendant de Grist et du DOM)
  * 
@@ -891,7 +1045,7 @@ return {
       }
       return moduleCache.get(id);
     };
-    
+
     /**
  * CRA Sheet Workflow — Logique pure et testable pour le workflow des feuilles de temps
  *
@@ -3396,7 +3550,7 @@ return {
       }
       return moduleCache.get(id);
     };
-    
+
     /**
  * CRA Weekly Sheet — Logique pure de résolution des feuilles hebdomadaires
  *
@@ -3416,6 +3570,8 @@ return {
  *
  * @module core/cra/cra-weekly-sheet
  */
+const civilDate = __require('calendar/civil-date');
+
 // ============================================================================
 // HELPERS : NORMALISATION
 // ============================================================================
@@ -3502,18 +3658,27 @@ function formatDateUTC(date) {
  * @returns {string|null} Date ISO YYYY-MM-DD du lundi civil ou null
  */
 function getWeekStartIso(dateValue) {
-  const date = normalizeDateValue(dateValue);
-  if (!date) return null;
+  // Une date Grist désigne un jour civil, pas un instant. Temporal.PlainDate
+  // garantit l'arithmétique calendrier, indépendante du DST et des années
+  // bissextiles.
+  const dateIso = civilDateToIso(dateValue);
+  return dateIso ? civilDate.startOfIsoWeek(dateIso) : null;
+}
 
-  // CORRECTION : Utiliser les méthodes locales pour respecter le fuseau
-  const dayOfWeek = date.getDay();  // 0 = dimanche, 1 = lundi, etc.
-  const offset = (dayOfWeek === 0) ? 6 : (dayOfWeek - 1);
-  
-  const monday = new Date(date);
-  monday.setDate(date.getDate() - offset);
-  monday.setHours(0, 0, 0, 0);
+function civilDateToIso(value) {
+  if (value === null || value === undefined || value === '') return null;
 
-  return formatDateLocal(monday);
+  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return value;
+  }
+
+  return civilDate.isoDateFromGrist(value);
+}
+
+function isCanonicalWeekStartIso(value) {
+  return typeof value === 'string' &&
+    /^\d{4}-\d{2}-\d{2}$/.test(value) &&
+    getWeekStartIso(value) === value;
 }
 
 /**
@@ -3538,32 +3703,8 @@ function formatDateLocal(date) {
  * @returns {string|null} Date ISO YYYY-MM-DD ou null
  */
 function gristDateToIso(value) {
-  if (value === null || value === undefined || value === '') {
-    return null;
-  }
-
-  if (typeof value === 'string') {
-    if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-      return value;
-    }
-    const date = new Date(value);
-    if (!isNaN(date.getTime())) {
-      return formatDateUTC(date);
-    }
-  }
-
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    const ms = value * 1000;
-    const date = new Date(ms);
-    return formatDateUTC(date);
-  }
-
-  // CORRECTION : utiliser value au lieu de date (qui n'existe pas)
-  if (value instanceof Date) {
-    return formatDateUTC(value);
-  }
-
-  return null;
+  if (value === null || value === undefined || value === '') return null;
+  return civilDate.isoDateFromGrist(value);
 }
 
 // ============================================================================
@@ -3614,7 +3755,7 @@ function resolveWeeklySheetState(params) {
   }
 
   // 2. Valider weekStartIso
-  if (!weekStartIso || !/^\d{4}-\d{2}-\d{2}$/.test(weekStartIso)) {
+  if (!isCanonicalWeekStartIso(weekStartIso)) {
     return {
       status: 'INVALID_WEEK',
       sheet: null,
@@ -3625,16 +3766,9 @@ function resolveWeeklySheetState(params) {
     };
   }
 
-  // 3. Vérifier que c'est un lundi (optionnel, mais utile pour diagnostic)
-  const weekDate = new Date(weekStartIso + 'T00:00:00Z');
-  const dayOfWeek = weekDate.getUTCDay();
-  if (dayOfWeek !== 1) {
-    // Ce n'est pas un lundi, on peut soit corriger, soit rejeter
-    // Pour ce module, on accepte mais on logge un avertissement
-    // La semaine canonique devrait toujours être le lundi
-  }
-
-  // 4. Filtrer les feuilles pour ce membre et cette semaine
+  // 3. Filtrer les feuilles pour ce membre et cette semaine. Une feuille
+  // historique mal datée reste lisible sous sa semaine civile, mais aucune
+  // nouvelle feuille non canonique n'est créée.
   const matchingSheets = (sheets || []).filter(s => {
     const sheetMemberId = normalizeMemberId(s.membre);
     if (sheetMemberId !== normalizedMemberId) return false;
@@ -3647,7 +3781,19 @@ function resolveWeeklySheetState(params) {
   if (matchingSheets.length === 0) {
     // Aucune feuille → création requise
     // CORRECTION : Convertir ISO en timestamp Grist (secondes) pour l'écriture
-    const weekStartMs = new Date(weekStartIso + 'T00:00:00').getTime();
+    // Conserver la convention historique des dates Grist de ce document :
+    // minuit Europe/Paris, calculé par Temporal plutôt que par Date.
+    const weekStartMs = civilDate.epochMsAtLocalMidnight(weekStartIso);
+    if (weekStartMs === null) {
+      return {
+        status: 'INVALID_WEEK',
+        sheet: null,
+        sheetId: null,
+        creationFields: null,
+        duplicates: [],
+        reason: 'INVALID_WEEK'
+      };
+    }
     const weekStartUnixSeconds = Math.floor(weekStartMs / 1000);
     
     return {
@@ -3705,12 +3851,13 @@ function buildWeeklySheetCreation(params) {
     return null;
   }
 
-  if (!weekStartIso || !/^\d{4}-\d{2}-\d{2}$/.test(weekStartIso)) {
+  if (!isCanonicalWeekStartIso(weekStartIso)) {
     return null;
   }
 
   // CORRECTION : Convertir ISO en timestamp Grist (secondes)
-  const weekStartMs = new Date(weekStartIso + 'T00:00:00').getTime();
+  const weekStartMs = civilDate.epochMsAtLocalMidnight(weekStartIso);
+  if (weekStartMs === null) return null;
   const weekStartUnixSeconds = Math.floor(weekStartMs / 1000);
 
   return {
@@ -3982,6 +4129,7 @@ return {
   normalizeDateValue,
   formatDateUTC,
   getWeekStartIso,
+  isCanonicalWeekStartIso,
   gristDateToIso,
 
   // Résolution de feuille
@@ -4012,7 +4160,7 @@ return {
       }
       return moduleCache.get(id);
     };
-    
+
     /**
  * Timesheet Validator - Validation de feuilles de temps
  * 
@@ -4298,7 +4446,7 @@ return {
       }
       return moduleCache.get(id);
     };
-    
+
     /**
  * CRA Sheet Validation Service - Service transactionnel pour le workflow des feuilles de temps
  *
@@ -6019,7 +6167,7 @@ return {
       }
       return moduleCache.get(id);
     };
-    
+
     /**
  * CRA Sheet UI Adapter - Adaptateur entre l'UI et le service de validation
  * 
@@ -6559,7 +6707,7 @@ return {
       }
       return moduleCache.get(id);
     };
-    
+
     /**
  * CRA Manager Workspace - État de l'espace manager "À valider"
  * 
@@ -6725,6 +6873,7 @@ return {
   
   // Exposer l'API publique
   var workflow = __require('cra/workflow/cra-sheet-workflow');
+  var calendar = __require('calendar/civil-date');
   var weeklySheet = __require('cra/workflow/cra-weekly-sheet');
   var validator = __require('timesheets/timesheet-validator');
   var service = __require('cra/workflow/cra-sheet-validation-service');
@@ -6732,6 +6881,7 @@ return {
   var managerModule = __require('cra/manager/cra-manager-workspace');
   
   global.TaskFlowCra = {
+    calendar: calendar,
     service: {
       submitSheet: service.submitSheet,
       withdrawSheet: service.withdrawSheet,

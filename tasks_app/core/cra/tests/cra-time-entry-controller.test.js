@@ -28,6 +28,7 @@ const {
   isPersonWeekLocked,
   localDayKeyFromMs,
   gristDateKey,
+  weekStartIsoFromDateIso,
   dailyCapacityForPersonAndDate
 } = require('../controller/cra-time-entry-controller.js');
 
@@ -816,6 +817,26 @@ describe('CRA Time Entry Controller', () => {
       
       expect(result1.locked).toBe(false);
       expect(result2.locked).toBe(false);
+    });
+
+    test('rattache une feuille historique du dimanche DST à son lundi civil', () => {
+      const sheets = [{
+        id: 1,
+        membre: 1,
+        semaine: 1792879200,
+        statut: 'soumis'
+      }];
+
+      const result = isPersonWeekLocked(1, '2026-10-19', sheets);
+      expect(result.locked).toBe(true);
+      expect(result.sheet.id).toBe(1);
+    });
+  });
+
+  describe('semaines ISO civiles', () => {
+    test('ne recule jamais au dimanche à la sortie de l’heure d’été', () => {
+      expect(weekStartIsoFromDateIso('2026-10-25')).toBe('2026-10-19');
+      expect(weekStartIsoFromDateIso('2026-10-26')).toBe('2026-10-26');
     });
   });
   

@@ -12,7 +12,9 @@
 <script src="core/cra/loader/cra-data-loader.js?v=20261009-cra-project-export-fields-v1"></script>
 <script src="core/generated/taskflow-planning-browser.js?v=20260827-retro"></script>
 
-<script src="core/generated/taskflow-cra-browser.js?v=20261009-cra-export-settings-v1"></script>
+<script src="core/vendor/temporal-polyfill.js?v=20261015-temporal-v1"></script>
+<script>window.Temporal = window.Temporal || (window.temporal && window.temporal.Temporal);</script>
+<script src="core/generated/taskflow-cra-browser.js?v=20261015-temporal-v1"></script>
 <script src="core/cra/workflow/cra-workflow-integration.js?v=20261005-submit-batching"></script>
 <script src="core/cra/export/cra-export-model.js?v=20261009-cra-export-settings-v2"></script>
 <script src="core/cra/export/cra-export-settings.js?v=20261009-cra-export-settings-v2"></script>
@@ -8493,25 +8495,49 @@ const safeRecordId = (value) => TaskFlowDomSecurity.sanitizeRecordId(value);
 const gristToMs = (ts) => ts ? ts * 1000 : 0;
 const msToGrist = (ms) => Math.floor(ms / 1000);
 
-// CORRECTION : Formater une date locale en ISO YYYY-MM-DD sans passer par UTC
+function civilCalendar() {
+  if (!window.TaskFlowCra || !window.TaskFlowCra.calendar) {
+    throw new Error('Le calendrier civil Temporal n’est pas disponible.');
+  }
+  return window.TaskFlowCra.calendar;
+}
+
+// Formater une date affichée dans le fuseau du document, jamais en UTC.
 function localDateIso(ms) {
-  const date = new Date(ms);
-  return [
-    date.getFullYear(),
-    String(date.getMonth() + 1).padStart(2, '0'),
-    String(date.getDate()).padStart(2, '0')
-  ].join('-');
+  return civilCalendar().isoDateFromEpochMs(ms);
+}
+
+// Ne jamais naviguer avec N × 24 h : Temporal.PlainDate avance de N jours
+// calendaires, y compris lors des années bissextiles et changements d'heure.
+function addCivilDays(ms, days) {
+  const calendar = civilCalendar();
+  const dateIso = calendar.isoDateFromEpochMs(ms);
+  const nextDateIso = dateIso && calendar.addDays(dateIso, days);
+  return nextDateIso ? calendar.epochMsAtLocalMidnight(nextDateIso) : null;
+}
+
+// Les champs Grist de type Date représentent un jour civil, pas un instant.
+// Cette conversion évite qu'un fuseau ou un changement d'heure décale la grille.
+function localMidnightMsFromCivilIso(value) {
+  return civilCalendar().epochMsAtLocalMidnight(value);
+}
+
+function canonicalWeekStartMs(value) {
+  const calendar = civilCalendar();
+  const dateIso = calendar.isoDateFromGrist(value);
+  const mondayIso = dateIso && calendar.startOfIsoWeek(dateIso);
+  return mondayIso ? localMidnightMsFromCivilIso(mondayIso) : null;
 }
 
 function refIds(v) { return Array.isArray(v) && v[0] === 'L' ? v.slice(1).map(Number) : []; }
-function mondayOf(ms) { const x = new Date(ms); const dow = (x.getDay() + 6) % 7; x.setHours(0, 0, 0, 0); x.setDate(x.getDate() - dow); return x.getTime(); }
+function mondayOf(ms) { const calendar = civilCalendar(); const isoDate = calendar.isoDateFromEpochMs(ms); const mondayIso = isoDate && calendar.startOfIsoWeek(isoDate); return mondayIso ? calendar.epochMsAtLocalMidnight(mondayIso) : null; }
 function weekDays() { 
   const r = []; 
   for (let i = 0; i < 5; i++)  // Lun-Ven uniquement (5 jours)
-    r.push(S.weekStart + i * DAY); 
+    r.push(addCivilDays(S.weekStart, i));
   return r; 
 }
-function sameDay(a, b) { return mondayOf(a) === mondayOf(b) && new Date(a).getDate() === new Date(b).getDate(); }
+function sameDay(a, b) { return localDateIso(a) === localDateIso(b); }
 
 // unite : facteur de conversion heures <-> unite
 function unitFactor() { return S.unit === 'jours' ? S.hoursPerDay : (S.unit === 'demi' ? S.hoursPerDay / 2 : 1); }
@@ -9281,7 +9307,7 @@ function loadDemo() {
     { id: 6, titre: 'Revue de code', projet: 1, assignees: ['L', 1] },
   ];
   S.weekStart = mondayOf(Date.now());
-  const d = (i) => msToGrist(S.weekStart + i * DAY);
+  const d = (i) => msToGrist(addCivilDays(S.weekStart, i));
   S.entries = [
     { id: 1, membre: 1, tache: 1, date: d(0), heures: 4 },
     { id: 2, membre: 1, tache: 2, date: d(0), heures: 3 },
@@ -9813,7 +9839,7 @@ function renderValider() {
 }
 
 function weekLabel() {
-  const s = new Date(S.weekStart), e = new Date(S.weekStart + 6 * DAY);
+  const s = new Date(S.weekStart), e = new Date(addCivilDays(S.weekStart, 6));
   const f = (x) => x.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' });
   return 'Semaine du ' + f(s) + ' au ' + f(e);
 }
@@ -10169,7 +10195,7 @@ document.getElementById('wPrev').onclick = () => {
     toast('Navigation bloquée en mode correction manager');
     return;
   }
-  S.weekStart -= 7 * DAY;
+  S.weekStart = addCivilDays(S.weekStart, -7);
   buildCraIndexes();
   if (S.filterManager) S.filterManager.setData({ tasks: S.tasks });
   render();
@@ -10179,7 +10205,7 @@ document.getElementById('wNext').onclick = () => {
     toast('Navigation bloquée en mode correction manager');
     return;
   }
-  S.weekStart += 7 * DAY;
+  S.weekStart = addCivilDays(S.weekStart, 7);
   buildCraIndexes();
   if (S.filterManager) S.filterManager.setData({ tasks: S.tasks });
   render();
@@ -10653,7 +10679,7 @@ async function openCraExportModal() {
   
   const defaultWeekStart = getCraExportDefaultWeekStart();
   startInput.value = craExportLocalIsoFromMs(defaultWeekStart);
-  endInput.value = craExportLocalIsoFromMs(defaultWeekStart + 6 * DAY);
+  endInput.value = craExportLocalIsoFromMs(addCivilDays(defaultWeekStart, 6));
   
   summary.style.display = 'none';
   downloadBtn.disabled = true;
@@ -10892,8 +10918,8 @@ function safeSheetStatusClass(status) {
     : 'brouillon';
 }
 
-function myStatutForPerson(personId) { 
-  const f = S.feuilles.find(x => x.membre === personId && sameDay(gristToMs(x.semaine), S.weekStart)); 
+function myStatutForPerson(personId) {
+  const f = S.feuilles.find(x => x.membre === personId && canonicalWeekStartMs(x.semaine) === S.weekStart);
   return f ? normalizeSheetStatus(f.statut) : 'brouillon'; 
 }
 
@@ -10901,7 +10927,7 @@ function myStatutForPerson(personId) {
 function myStatut() { return myStatutForPerson(S.selectedPersonId); }
 
 function isLocked() { return ['soumis', 'valide'].includes(myStatut()); }
-function weekTotalFor(membre, wkMs) { let h = 0; for (let i = 0; i < 7; i++) { const d = wkMs + i * DAY; for (const e of S.entries) if (e.membre === membre && sameDay(gristToMs(e.date), d)) h += effectiveCraActualHours(e); } return h; }
+function weekTotalFor(membre, wkMs) { let h = 0; for (let i = 0; i < 7; i++) { const d = addCivilDays(wkMs, i); for (const e of S.entries) if (e.membre === membre && sameDay(gristToMs(e.date), d)) h += effectiveCraActualHours(e); } return h; }
 
 /**
  * Extrait l'ID d'un enregistrement créé par applyUserActions
@@ -11360,7 +11386,7 @@ function buildCraIndexes() {
   
   // PHASE 3 : Index entries par affectation + date (clé canonique)
   const mondayMs = S.weekStart;
-  const sundayMs = mondayMs + (6 * 24 * 60 * 60 * 1000);
+  const sundayMs = addCivilDays(mondayMs, 6);
   
   for (const e of S.entries) {
     const personId = e.membre;
@@ -11473,7 +11499,7 @@ function buildCraIndexes() {
   
   // Index feuilles par personne + semaine
   for (const f of S.feuilles) {
-    const fWeekMs = typeof f.semaine === 'number' ? f.semaine * 1000 : 0;
+    const fWeekMs = canonicalWeekStartMs(f.semaine);
     if (fWeekMs >= mondayMs && fWeekMs <= sundayMs + (24 * 60 * 60 * 1000)) {
       const key = f.membre + '|' + f.semaine;
       S.indexes.feuillesByPersonWeek.set(key, f);
@@ -11676,7 +11702,12 @@ async function initGrist() {
           S.managerCorrectionSheetId = sheet.id;
           S.tab = 'saisie';  // Basculer vers l'onglet de saisie
           S.selectedPersonId = sheet.membre;  // Afficher le propriétaire
-          S.weekStart = gristToMs(sheet.semaine);  // Positionner sur la bonne semaine
+          const sheetWeekStart = canonicalWeekStartMs(sheet.semaine);
+          if (!sheetWeekStart) {
+            toast('La date de cette feuille est invalide : ouverture impossible', 'error');
+            return;
+          }
+          S.weekStart = sheetWeekStart;  // Toujours le lundi civil canonique
           
           // Recharger l'affichage
           render();

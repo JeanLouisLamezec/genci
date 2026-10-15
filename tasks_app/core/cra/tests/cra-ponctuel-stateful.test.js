@@ -1605,10 +1605,9 @@ describe('CRA — Mode ponctuel : saisie hors dates prévues (stateful)', () => 
     describe('B3.21 — année bissextile', () => {
       test('2024-02-29 est valide', () => {
         const date = parseStrictIsoDate('2024-02-29');
-        expect(date).toBeInstanceOf(Date);
-        expect(date.getUTCFullYear()).toBe(2024);
-        expect(date.getUTCMonth()).toBe(1);
-        expect(date.getUTCDate()).toBe(29);
+        expect(date).not.toBeNull();
+        expect(date.toString()).toBe('2024-02-29');
+        expect(date.dayOfWeek).toBe(4);
         
         const timestamp = gristDateFromIso('2024-02-29');
         expect(timestamp).toBe(Date.UTC(2024, 1, 29) / 1000);

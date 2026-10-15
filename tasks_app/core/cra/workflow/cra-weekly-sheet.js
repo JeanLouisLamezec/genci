@@ -20,6 +20,8 @@
 
 'use strict';
 
+const civilDate = require('../../calendar/civil-date');
+
 // ============================================================================
 // HELPERS : NORMALISATION
 // ============================================================================
@@ -106,18 +108,27 @@ function formatDateUTC(date) {
  * @returns {string|null} Date ISO YYYY-MM-DD du lundi civil ou null
  */
 function getWeekStartIso(dateValue) {
-  const date = normalizeDateValue(dateValue);
-  if (!date) return null;
+  // Une date Grist désigne un jour civil, pas un instant. Temporal.PlainDate
+  // garantit l'arithmétique calendrier, indépendante du DST et des années
+  // bissextiles.
+  const dateIso = civilDateToIso(dateValue);
+  return dateIso ? civilDate.startOfIsoWeek(dateIso) : null;
+}
 
-  // CORRECTION : Utiliser les méthodes locales pour respecter le fuseau
-  const dayOfWeek = date.getDay();  // 0 = dimanche, 1 = lundi, etc.
-  const offset = (dayOfWeek === 0) ? 6 : (dayOfWeek - 1);
-  
-  const monday = new Date(date);
-  monday.setDate(date.getDate() - offset);
-  monday.setHours(0, 0, 0, 0);
+function civilDateToIso(value) {
+  if (value === null || value === undefined || value === '') return null;
 
-  return formatDateLocal(monday);
+  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return value;
+  }
+
+  return civilDate.isoDateFromGrist(value);
+}
+
+function isCanonicalWeekStartIso(value) {
+  return typeof value === 'string' &&
+    /^\d{4}-\d{2}-\d{2}$/.test(value) &&
+    getWeekStartIso(value) === value;
 }
 
 /**
@@ -142,32 +153,8 @@ function formatDateLocal(date) {
  * @returns {string|null} Date ISO YYYY-MM-DD ou null
  */
 function gristDateToIso(value) {
-  if (value === null || value === undefined || value === '') {
-    return null;
-  }
-
-  if (typeof value === 'string') {
-    if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-      return value;
-    }
-    const date = new Date(value);
-    if (!isNaN(date.getTime())) {
-      return formatDateUTC(date);
-    }
-  }
-
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    const ms = value * 1000;
-    const date = new Date(ms);
-    return formatDateUTC(date);
-  }
-
-  // CORRECTION : utiliser value au lieu de date (qui n'existe pas)
-  if (value instanceof Date) {
-    return formatDateUTC(value);
-  }
-
-  return null;
+  if (value === null || value === undefined || value === '') return null;
+  return civilDate.isoDateFromGrist(value);
 }
 
 // ============================================================================
@@ -218,7 +205,7 @@ function resolveWeeklySheetState(params) {
   }
 
   // 2. Valider weekStartIso
-  if (!weekStartIso || !/^\d{4}-\d{2}-\d{2}$/.test(weekStartIso)) {
+  if (!isCanonicalWeekStartIso(weekStartIso)) {
     return {
       status: 'INVALID_WEEK',
       sheet: null,
@@ -229,16 +216,9 @@ function resolveWeeklySheetState(params) {
     };
   }
 
-  // 3. Vérifier que c'est un lundi (optionnel, mais utile pour diagnostic)
-  const weekDate = new Date(weekStartIso + 'T00:00:00Z');
-  const dayOfWeek = weekDate.getUTCDay();
-  if (dayOfWeek !== 1) {
-    // Ce n'est pas un lundi, on peut soit corriger, soit rejeter
-    // Pour ce module, on accepte mais on logge un avertissement
-    // La semaine canonique devrait toujours être le lundi
-  }
-
-  // 4. Filtrer les feuilles pour ce membre et cette semaine
+  // 3. Filtrer les feuilles pour ce membre et cette semaine. Une feuille
+  // historique mal datée reste lisible sous sa semaine civile, mais aucune
+  // nouvelle feuille non canonique n'est créée.
   const matchingSheets = (sheets || []).filter(s => {
     const sheetMemberId = normalizeMemberId(s.membre);
     if (sheetMemberId !== normalizedMemberId) return false;
@@ -251,7 +231,19 @@ function resolveWeeklySheetState(params) {
   if (matchingSheets.length === 0) {
     // Aucune feuille → création requise
     // CORRECTION : Convertir ISO en timestamp Grist (secondes) pour l'écriture
-    const weekStartMs = new Date(weekStartIso + 'T00:00:00').getTime();
+    // Conserver la convention historique des dates Grist de ce document :
+    // minuit Europe/Paris, calculé par Temporal plutôt que par Date.
+    const weekStartMs = civilDate.epochMsAtLocalMidnight(weekStartIso);
+    if (weekStartMs === null) {
+      return {
+        status: 'INVALID_WEEK',
+        sheet: null,
+        sheetId: null,
+        creationFields: null,
+        duplicates: [],
+        reason: 'INVALID_WEEK'
+      };
+    }
     const weekStartUnixSeconds = Math.floor(weekStartMs / 1000);
     
     return {
@@ -309,12 +301,13 @@ function buildWeeklySheetCreation(params) {
     return null;
   }
 
-  if (!weekStartIso || !/^\d{4}-\d{2}-\d{2}$/.test(weekStartIso)) {
+  if (!isCanonicalWeekStartIso(weekStartIso)) {
     return null;
   }
 
   // CORRECTION : Convertir ISO en timestamp Grist (secondes)
-  const weekStartMs = new Date(weekStartIso + 'T00:00:00').getTime();
+  const weekStartMs = civilDate.epochMsAtLocalMidnight(weekStartIso);
+  if (weekStartMs === null) return null;
   const weekStartUnixSeconds = Math.floor(weekStartMs / 1000);
 
   return {
@@ -586,6 +579,7 @@ module.exports = {
   normalizeDateValue,
   formatDateUTC,
   getWeekStartIso,
+  isCanonicalWeekStartIso,
   gristDateToIso,
 
   // Résolution de feuille

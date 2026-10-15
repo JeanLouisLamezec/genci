@@ -242,6 +242,34 @@ describe('resolveWeeklySheetState', () => {
 
     expect(result2.status).toBe('INVALID_WEEK');
   });
+
+  test('refuse un dimanche comme début de semaine', () => {
+    const result = resolveWeeklySheetState({
+      memberId: 20,
+      weekStartIso: '2026-10-25',
+      sheets: []
+    });
+
+    expect(result).toMatchObject({
+      status: 'INVALID_WEEK',
+      reason: 'INVALID_WEEK'
+    });
+  });
+
+  test('conserve le jour civil d’un timestamp Grist écrit à minuit local', () => {
+    // 2025-07-21 00:00 Europe/Paris, soit encore le 20 en UTC.
+    expect(getWeekStartIso(1753048800)).toBe('2025-07-21');
+  });
+
+  test('reconnaît une feuille historique datée un dimanche sous son lundi civil', () => {
+    const result = resolveWeeklySheetState({
+      memberId: 20,
+      weekStartIso: '2026-10-19',
+      sheets: [{ id: 99, membre: 20, semaine: '2026-10-25', statut: 'brouillon' }]
+    });
+
+    expect(result).toMatchObject({ status: 'FOUND', sheetId: 99 });
+  });
 });
 
 // ============================================================================
@@ -280,6 +308,13 @@ describe('buildWeeklySheetCreation', () => {
     });
 
     expect(result).toBe(null);
+  });
+
+  test('refuse un dimanche afin de ne jamais le persister comme semaine', () => {
+    expect(buildWeeklySheetCreation({
+      memberId: 20,
+      weekStartIso: '2026-10-25'
+    })).toBe(null);
   });
 });
 
