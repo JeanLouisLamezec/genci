@@ -254,6 +254,7 @@ function build(options = {}) {
     // Exposer aussi le validateur pour usage direct si nécessaire
     validator: {
       validateTimesheet: validator.validateTimesheet,
+      validateWeeklyCapacity: validator.validateWeeklyCapacity,
       ERROR_CODES: validator.ERROR_CODES
     },
     

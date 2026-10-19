@@ -22,8 +22,78 @@ const ERROR_CODES = {
   DUPLICATE_DAILY_ENTRY: "DUPLICATE_DAILY_ENTRY",
   INVALID_ACTUAL_HOURS: "INVALID_ACTUAL_HOURS",
   INVALID_CAPACITY: "INVALID_CAPACITY",
-  DATE_OUTSIDE_TIMESHEET_WEEK: "DATE_OUTSIDE_TIMESHEET_WEEK"
+  DATE_OUTSIDE_TIMESHEET_WEEK: "DATE_OUTSIDE_TIMESHEET_WEEK",
+  WEEKLY_CAPACITY_EXCEEDED: "WEEKLY_CAPACITY_EXCEEDED"
 };
+
+/**
+ * Valide le total des heures réalisées d'une semaine.
+ *
+ * Cette règle est volontairement indépendante des capacités journalières :
+ * une semaine peut contenir des jours fériés, des temps partiels ou des
+ * absences, mais ne peut jamais dépasser la capacité hebdomadaire du membre.
+ * Les calculs se font en centi-heures afin d'éviter les écarts de flottants.
+ *
+ * @param {Array<{actualHours: number|null|undefined}>} entries
+ * @param {number} weeklyCapacityHours
+ * @returns {{valid: boolean, weeklyTotalHours: number, weeklyCapacityHours: number, exceededBy: number, errors: Array}}
+ */
+function validateWeeklyCapacity(entries, weeklyCapacityHours) {
+  const capacity = Number(weeklyCapacityHours);
+  if (!Number.isFinite(capacity) || capacity < 0) {
+    return {
+      valid: false,
+      weeklyTotalHours: 0,
+      weeklyCapacityHours: weeklyCapacityHours,
+      exceededBy: 0,
+      errors: [{
+        code: ERROR_CODES.INVALID_CAPACITY,
+        message: 'Capacité hebdomadaire invalide'
+      }]
+    };
+  }
+
+  let totalCentiHours = 0;
+  const errors = [];
+  for (const entry of entries || []) {
+    const actualHours = entry && entry.actualHours;
+    if (actualHours === null || actualHours === undefined || actualHours === '') {
+      continue;
+    }
+    if (typeof actualHours !== 'number' || !Number.isFinite(actualHours) || actualHours < 0) {
+      errors.push({
+        code: ERROR_CODES.INVALID_ACTUAL_HOURS,
+        actualHours,
+        message: 'Heures réalisées invalides'
+      });
+      continue;
+    }
+    totalCentiHours += toCentiHours(actualHours);
+  }
+
+  const capacityCentiHours = toCentiHours(capacity);
+  const weeklyTotalHours = toHours(totalCentiHours);
+  const exceededBy = totalCentiHours > capacityCentiHours
+    ? toHours(totalCentiHours - capacityCentiHours)
+    : 0;
+  if (exceededBy > 0) {
+    errors.push({
+      code: ERROR_CODES.WEEKLY_CAPACITY_EXCEEDED,
+      weeklyTotalHours,
+      weeklyCapacityHours: toHours(capacityCentiHours),
+      exceededBy,
+      message: `Capacité hebdomadaire dépassée : ${weeklyTotalHours}h > ${toHours(capacityCentiHours)}h (+${exceededBy}h)`
+    });
+  }
+
+  return {
+    valid: errors.length === 0,
+    weeklyTotalHours,
+    weeklyCapacityHours: toHours(capacityCentiHours),
+    exceededBy,
+    errors
+  };
+}
 
 /**
  * Vérifie si une date est dans la période de la feuille
@@ -267,6 +337,7 @@ function validateTimesheet(input) {
 
 module.exports = {
   validateTimesheet,
+  validateWeeklyCapacity,
   isDateInTimesheetWeek,
   ERROR_CODES,
   addDaysUTC

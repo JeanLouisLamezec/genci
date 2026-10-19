@@ -298,4 +298,96 @@ describe('workflow unifié de saisie CRA', () => {
 
     expect(result.locked).toBe(true);
   });
+
+  test('bloque une mise à jour qui ferait passer la semaine au-dessus de 35h', async () => {
+    const deps = dependencies({
+      entries: [
+        { id: 80, tache: TASK_ID, membre: MEMBER_ID, date: ts(DATE_ISO), heures: 5, affectation: 40, feuille: 50 },
+        { id: 81, tache: 8, membre: MEMBER_ID, date: ts('2026-08-24'), heures: 7, feuille: 50 },
+        { id: 82, tache: 9, membre: MEMBER_ID, date: ts('2026-08-26'), heures: 7, feuille: 50 },
+        { id: 83, tache: 10, membre: MEMBER_ID, date: ts('2026-08-27'), heures: 7, feuille: 50 },
+        { id: 84, tache: 11, membre: MEMBER_ID, date: ts('2026-08-28'), heures: 7, feuille: 50 }
+      ]
+    });
+
+    const result = await CRAController.saveCraCellChange({
+      taskId: TASK_ID, personId: MEMBER_ID, dateIso: DATE_ISO, hours: 8
+    }, deps);
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'WEEKLY_CAPACITY_EXCEEDED',
+      weeklyTotalHours: 36,
+      weeklyCapacityHours: 35,
+      exceededBy: 1
+    });
+    expect(deps.grist.docApi.applyUserActions).not.toHaveBeenCalled();
+  });
+
+  test('utilise capaciteHebdo pour un temps partiel lors de la saisie', async () => {
+    const deps = dependencies({
+      team: [{ id: MEMBER_ID, capaciteHebdo: 28 }],
+      entries: [
+        { id: 80, tache: TASK_ID, membre: MEMBER_ID, date: ts(DATE_ISO), heures: 0, affectation: 40, feuille: 50 },
+        { id: 81, tache: 8, membre: MEMBER_ID, date: ts('2026-08-24'), heures: 7, feuille: 50 },
+        { id: 82, tache: 9, membre: MEMBER_ID, date: ts('2026-08-26'), heures: 7, feuille: 50 },
+        { id: 83, tache: 10, membre: MEMBER_ID, date: ts('2026-08-27'), heures: 7, feuille: 50 },
+        { id: 84, tache: 11, membre: MEMBER_ID, date: ts('2026-08-28'), heures: 7, feuille: 50 }
+      ]
+    });
+
+    const result = await CRAController.saveCraCellChange({
+      taskId: TASK_ID, personId: MEMBER_ID, dateIso: DATE_ISO, hours: 0.5
+    }, deps);
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'WEEKLY_CAPACITY_EXCEEDED',
+      weeklyTotalHours: 28.5,
+      weeklyCapacityHours: 28
+    });
+    expect(deps.grist.docApi.applyUserActions).not.toHaveBeenCalled();
+  });
+
+  test('bloque aussi une création qui dépasserait le plafond hebdomadaire', async () => {
+    const deps = dependencies({
+      entries: [
+        { id: 81, tache: 8, membre: MEMBER_ID, date: ts('2026-08-24'), heures: 7, feuille: 50 },
+        { id: 82, tache: 9, membre: MEMBER_ID, date: ts('2026-08-25'), heures: 7, feuille: 50 },
+        { id: 83, tache: 10, membre: MEMBER_ID, date: ts('2026-08-26'), heures: 7, feuille: 50 },
+        { id: 84, tache: 11, membre: MEMBER_ID, date: ts('2026-08-27'), heures: 7, feuille: 50 },
+        { id: 85, tache: 12, membre: MEMBER_ID, date: ts('2026-08-28'), heures: 7, feuille: 50 }
+      ]
+    });
+
+    const result = await CRAController.saveCraCellChange({
+      taskId: TASK_ID, personId: MEMBER_ID, dateIso: DATE_ISO, hours: 1
+    }, deps);
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'WEEKLY_CAPACITY_EXCEEDED',
+      weeklyTotalHours: 36,
+      weeklyCapacityHours: 35
+    });
+    expect(deps.grist.docApi.applyUserActions).not.toHaveBeenCalled();
+  });
+
+  test('n’inclut pas les lignes seulement planifiées dans le plafond hebdomadaire', async () => {
+    const deps = dependencies({
+      entries: [
+        { id: 80, tache: TASK_ID, membre: MEMBER_ID, date: ts(DATE_ISO), heures: 2, affectation: 40, feuille: 50 },
+        { id: 81, tache: 8, membre: MEMBER_ID, date: ts('2026-08-24'), heures: null, heuresPrevues: 40, feuille: 50 }
+      ]
+    });
+
+    const result = await CRAController.saveCraCellChange({
+      taskId: TASK_ID, personId: MEMBER_ID, dateIso: DATE_ISO, hours: 3
+    }, deps);
+
+    expect(result).toMatchObject({ ok: true, action: 'update', entryId: 80 });
+    expect(deps.grist.docApi.applyUserActions).toHaveBeenCalledWith([
+      ['UpdateRecord', 'TimeEntries', 80, { heures: 3 }]
+    ]);
+  });
 });

@@ -33,6 +33,7 @@ const USER_MESSAGES = {
   DUPLICATE_WEEKLY_SHEET: 'Plusieurs feuilles existent pour cette semaine. Corrigez les données avant de continuer.',
   TIME_ENTRY_SCOPE_INCOMPLETE: 'Certaines lignes de cette semaine ne sont pas rattachées à la bonne feuille.',
   TIMESHEET_VALIDATION_FAILED: 'La feuille contient des erreurs. Vérifiez les heures et les capacités quotidiennes.',
+  WEEKLY_CAPACITY_EXCEEDED: 'La capacité hebdomadaire du membre serait dépassée.',
   NOT_EXPECTED_VALIDATION_MANAGER: 'Cette feuille a été soumise à un autre responsable.',
   WORKFLOW_STATE_CHANGED: 'La feuille a changé pendant l\'opération. Les données ont été rechargées.',
   WORKFLOW_APPLY_FAILED: 'L\'enregistrement dans Grist a échoué.',

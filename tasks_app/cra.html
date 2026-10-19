@@ -9962,7 +9962,17 @@ async function performCraCellChange(taskId, dayMs, personId, qtyStr) {
       }
       
       if (typeof CraWorkflowIntegration !== 'undefined' && CraWorkflowIntegration.updateManagerActual) {
-        await CraWorkflowIntegration.updateManagerActual(S.managerCorrectionSheetId, existingEntry.id, parseResult.hours);
+        const correctionResult = await CraWorkflowIntegration.updateManagerActual(
+          S.managerCorrectionSheetId,
+          existingEntry.id,
+          parseResult.hours
+        );
+        if (!correctionResult || !correctionResult.success) {
+          // L'adaptateur a déjà affiché le message métier. Ne jamais refléter
+          // localement une modification que le garde serveur a refusée.
+          render();
+          return;
+        }
         // Une correction de réalisé ne modifie ni l'affectation ni le plan.
         // Garder la mise à jour locale évite un rechargement complet du CRA
         // entre deux clics sur les flèches.
@@ -10045,6 +10055,11 @@ async function performCraCellChange(taskId, dayMs, personId, qtyStr) {
       toast('Aucune affectation autorisée pour cette date');
     } else if (result.code === 'DUPLICATE_TIME_ENTRY') {
       toast('Erreur : plusieurs entrées pour cette cellule');
+    } else if (result.code === 'WEEKLY_CAPACITY_EXCEEDED') {
+      toast(
+        'Limite hebdomadaire dépassée : ' +
+        result.weeklyTotalHours + ' h / ' + result.weeklyCapacityHours + ' h'
+      );
     } else if (result.code === 'CELL_WRITE_PENDING') {
       // Normalement absorbé par la file de la vue. Cette branche protège les
       // appels provenant d'une ancienne vue encore ouverte.

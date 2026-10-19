@@ -7,7 +7,41 @@
 
 'use strict';
 
-const { validateTimesheet, ERROR_CODES, isDateInTimesheetWeek } = require('./timesheet-validator.js');
+const {
+  validateTimesheet,
+  validateWeeklyCapacity,
+  ERROR_CODES,
+  isDateInTimesheetWeek
+} = require('./timesheet-validator.js');
+
+describe('Timesheet Validator - Capacité hebdomadaire', () => {
+  test('35h exactement reste autorisé', () => {
+    const result = validateWeeklyCapacity([
+      { actualHours: 7 }, { actualHours: 7 }, { actualHours: 7 },
+      { actualHours: 7 }, { actualHours: 7 }
+    ], 35);
+
+    expect(result).toMatchObject({ valid: true, weeklyTotalHours: 35, exceededBy: 0 });
+  });
+
+  test('refuse 35,01h avec un code stable', () => {
+    const result = validateWeeklyCapacity([
+      { actualHours: 35.01 }
+    ], 35);
+
+    expect(result).toMatchObject({ valid: false, weeklyTotalHours: 35.01, exceededBy: 0.01 });
+    expect(result.errors[0].code).toBe(ERROR_CODES.WEEKLY_CAPACITY_EXCEEDED);
+  });
+
+  test('ne compte pas une valeur réalisée absente', () => {
+    const result = validateWeeklyCapacity([
+      { actualHours: null }, { actualHours: undefined }, { actualHours: '' }, { actualHours: 35 }
+    ], 35);
+
+    expect(result.valid).toBe(true);
+    expect(result.weeklyTotalHours).toBe(35);
+  });
+});
 
 describe('Timesheet Validator - Capacité valide', () => {
   

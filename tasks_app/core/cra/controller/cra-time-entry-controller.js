@@ -30,8 +30,10 @@
 // que le bundle CRA a exposé TaskFlowCra.calendar. Les opérations de saisie
 // arrivent après ce chargement et ne dépendent donc jamais de Date.setDate().
 let civilDate = null;
+let timesheetValidator = null;
 if (typeof module !== 'undefined' && module.exports) {
   civilDate = require('../../calendar/civil-date');
+  timesheetValidator = require('../../timesheets/timesheet-validator');
 }
 
 function getCivilDate() {
@@ -44,6 +46,18 @@ function getCivilDate() {
     return globalThis.TaskFlowCra.calendar;
   }
   throw new Error('Calendrier civil CRA indisponible.');
+}
+
+function getTimesheetValidator() {
+  if (timesheetValidator) return timesheetValidator;
+  if (
+    typeof globalThis !== 'undefined' &&
+    globalThis.TaskFlowCra &&
+    globalThis.TaskFlowCra.validator
+  ) {
+    return globalThis.TaskFlowCra.validator;
+  }
+  return null;
 }
 
 // Défense en profondeur : le widget coalesce les clics rapides, mais le
@@ -771,6 +785,70 @@ function normalizedCraHours(value) {
   return hours > 0 && hours < MINIMUM_CRA_PREFILL_HOURS ? 0 : hours;
 }
 
+/**
+ * Capacité hebdomadaire contractuelle du membre. Une valeur 0 est valide
+ * (absence totale) ; seule une valeur absente ou invalide utilise le repli
+ * historique à 35h.
+ */
+function weeklyCapacityForPerson(personId, team) {
+  const member = (team || []).find(function(candidate) {
+    return Number(candidate.id) === Number(personId);
+  });
+  const capacity = Number(member && member.capaciteHebdo);
+  return Number.isFinite(capacity) && capacity >= 0 ? capacity : 35;
+}
+
+/**
+ * Vérifie la capacité hebdomadaire après remplacement de la cellule en cours.
+ * Les lignes seulement planifiées ne participent pas au total : seul `heures`
+ * explicitement saisi est du réalisé.
+ */
+function validateWeeklyActualHours(params) {
+  const {
+    personId,
+    weekStartIso,
+    entries,
+    team,
+    existingEntry,
+    candidateHours
+  } = params || {};
+  const validator = getTimesheetValidator();
+  if (!validator || typeof validator.validateWeeklyCapacity !== 'function') {
+    return {
+      valid: false,
+      code: 'TIMESHEET_VALIDATOR_UNAVAILABLE',
+      errors: [{ code: 'TIMESHEET_VALIDATOR_UNAVAILABLE' }]
+    };
+  }
+
+  const targetId = existingEntry && Number(existingEntry.id);
+  let targetReplaced = false;
+  const weeklyEntries = [];
+  for (const entry of entries || []) {
+    if (Number(entry.membre) !== Number(personId)) continue;
+    if (weekStartIsoFromDateIso(gristDateKey(entry.date)) !== weekStartIso) continue;
+
+    if (Number.isFinite(targetId) && Number(entry.id) === targetId) {
+      weeklyEntries.push({ actualHours: candidateHours });
+      targetReplaced = true;
+    } else if (hasExplicitActualHours(entry)) {
+      weeklyEntries.push({ actualHours: Number(entry.heures) });
+    }
+  }
+
+  if (!targetReplaced && candidateHours > 0) {
+    weeklyEntries.push({ actualHours: candidateHours });
+  }
+
+  const result = validator.validateWeeklyCapacity(
+    weeklyEntries,
+    weeklyCapacityForPerson(personId, team)
+  );
+  return Object.assign({
+    code: result.valid ? null : (result.errors[0] && result.errors[0].code)
+  }, result);
+}
+
 function hasSuppressedCraPlannedHours(entry) {
   const plannedHours = Number(entry && entry.heuresPrevues) || 0;
   return plannedHours > 0 && plannedHours < MINIMUM_CRA_PREFILL_HOURS;
@@ -973,7 +1051,7 @@ function dailyCapacityForPersonAndDate(personId, dayMs, dailyCapacities, team, a
       };
     }
     
-    const weeklyCapacity = Number(member.capaciteHebdo) || 35;
+    const weeklyCapacity = weeklyCapacityForPerson(personId, team);
     let dailyCapacity = weeklyCapacity / 5;
     
     // BUG 4 : Utiliser des clés de dates civiles pour les indisponibilités
@@ -1055,7 +1133,7 @@ function dailyCapacityForPersonAndDate(personId, dayMs, dailyCapacities, team, a
   // Fallback legacy
   const member = (team || []).find(m => m.id === personId);
   if (member) {
-    const legacyCapacity = (Number(member.capaciteHebdo) || 35) / 5;
+    const legacyCapacity = weeklyCapacityForPerson(personId, team) / 5;
     result.capacity = legacyCapacity;
     result.theoreticalCapacity = legacyCapacity;
     result.availableCapacity = legacyCapacity;
@@ -1238,6 +1316,29 @@ async function saveCraCellChangeInternal(input, dependencies) {
       sheetId: null,
       fields: {},
       actionsExecuted: 0
+    };
+  }
+
+  // Ce contrôle intervient avant toute création de feuille : une saisie
+  // refusée ne doit pas produire d'effet de bord dans Feuilles. Le calcul
+  // remplace la valeur de la cellule existante au lieu de l'additionner.
+  const weeklyValidation = validateWeeklyActualHours({
+    personId,
+    weekStartIso,
+    entries,
+    team,
+    existingEntry,
+    candidateHours: normalizedCraHours(hours)
+  });
+  if (!weeklyValidation.valid) {
+    return {
+      ok: false,
+      action: 'blocked',
+      code: weeklyValidation.code || 'WEEKLY_CAPACITY_EXCEEDED',
+      weeklyTotalHours: weeklyValidation.weeklyTotalHours,
+      weeklyCapacityHours: weeklyValidation.weeklyCapacityHours,
+      exceededBy: weeklyValidation.exceededBy,
+      errors: weeklyValidation.errors || []
     };
   }
   
@@ -1561,6 +1662,8 @@ const CRAController = {
   canDirectEditPersonSheet,
   extractAddedRecordId,
   dailyCapacityForPersonAndDate,
+  weeklyCapacityForPerson,
+  validateWeeklyActualHours,
   hasExplicitActualHours,
   effectiveDisplayedHours,
   isPrefilledFromPlanning,

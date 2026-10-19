@@ -814,8 +814,63 @@ function normalizeCapacityValue(value) {
   return number;
 }
 
+function weeklyCapacityForMember(memberId, team) {
+  const member = (team || []).find(candidate => {
+    return workflow.normalizeMemberId(candidate.id) === workflow.normalizeMemberId(memberId);
+  });
+  const capacity = Number(member && member.capaciteHebdo);
+  // 0 est une capacité légitime (absence totale), donc pas de `|| 35`.
+  return Number.isFinite(capacity) && capacity >= 0 ? capacity : 35;
+}
+
+function validateWeeklyActualHours(snapshot, timeEntryId, candidateHours) {
+  if (!timesheetValidator || typeof timesheetValidator.validateWeeklyCapacity !== 'function') {
+    return {
+      valid: false,
+      code: SERVICE_ERROR_CODES.TIMESHEET_VALIDATOR_UNAVAILABLE,
+      errors: [{ code: SERVICE_ERROR_CODES.TIMESHEET_VALIDATOR_UNAVAILABLE }]
+    };
+  }
+
+  const normalizedEntryId = workflow.normalizeMemberId(timeEntryId);
+  let foundTarget = false;
+  const entries = (snapshot.allMemberWeekEntries || []).map(entry => {
+    if (workflow.normalizeMemberId(entry.id) === normalizedEntryId) {
+      foundTarget = true;
+      return { actualHours: candidateHours };
+    }
+    return { actualHours: entry.heures };
+  });
+  if (!foundTarget) {
+    return {
+      valid: false,
+      code: 'TIME_ENTRY_NOT_FOUND',
+      errors: [{ code: 'TIME_ENTRY_NOT_FOUND' }]
+    };
+  }
+
+  const result = timesheetValidator.validateWeeklyCapacity(
+    entries,
+    weeklyCapacityForMember(snapshot.sheet.membre, snapshot.team)
+  );
+  return Object.assign({
+    code: result.valid ? null : (result.errors[0] && result.errors[0].code)
+  }, result);
+}
+
+// Lors d'une soumission, le workflow matérialise une proposition de planning
+// dans `heures` quand aucun réalisé explicite n'existe. La validation doit
+// donc contrôler la valeur qui sera effectivement enregistrée, pas seulement
+// la valeur brute lue avant cette matérialisation.
+function actualHoursAfterSubmission(entry) {
+  if (entry && entry.heures !== null && entry.heures !== undefined && entry.heures !== '') {
+    return entry.heures;
+  }
+  return entry ? entry.heuresPrevues : null;
+}
+
 async function callFunctionalValidator(snapshot, grist) {
-  const { sheet, timeEntries, memberCapacities } = snapshot;
+  const { sheet, timeEntries, allMemberWeekEntries, memberCapacities } = snapshot;
   const sheetMemberId = workflow.normalizeMemberId(sheet.membre);
   const weekStartIso = workflow.getWeekStartIso(sheet.semaine);
 
@@ -852,7 +907,7 @@ async function callFunctionalValidator(snapshot, grist) {
       };
     }
 
-    entries.push({ taskId, date, actualHours: e.heures });
+    entries.push({ taskId, date, actualHours: actualHoursAfterSubmission(e) });
   }
 
   // Utiliser les capacités du snapshot (déjà chargées)
@@ -910,9 +965,16 @@ async function callFunctionalValidator(snapshot, grist) {
       options: { allowWeekend: false }
     });
 
+    const weeklyResult = timesheetValidator.validateWeeklyCapacity(
+      (allMemberWeekEntries || timeEntries).map(entry => ({
+        actualHours: actualHoursAfterSubmission(entry)
+      })),
+      weeklyCapacityForMember(sheetMemberId, snapshot.team)
+    );
+
     return { 
-      valid: result.valid, 
-      errors: result.errors || [], 
+      valid: result.valid && weeklyResult.valid,
+      errors: (result.errors || []).concat(weeklyResult.errors || []),
       warnings: [],
       isTechnicalError: false
     };
@@ -1535,6 +1597,22 @@ async function updateManagerActual(params) {
       };
     }
 
+    const weeklyValidation1 = validateWeeklyActualHours(
+      snapshot1,
+      normalizedTimeEntryId,
+      numericHours
+    );
+    if (!weeklyValidation1.valid) {
+      return {
+        success: false,
+        code: weeklyValidation1.code || 'WEEKLY_CAPACITY_EXCEEDED',
+        reason: 'La capacité hebdomadaire serait dépassée',
+        sheetId,
+        transition: 'update_manager_actual',
+        validation: weeklyValidation1
+      };
+    }
+
     // === SNAPSHOT 2 ===
     const snapshot2 = await loadWorkflowSnapshot(grist, sheetId);
 
@@ -1593,6 +1671,24 @@ async function updateManagerActual(params) {
           after: snapshot2
         };
       }
+    }
+
+    // La seconde lecture est la dernière barrière avant écriture. Elle couvre
+    // une modification provenant d'une autre session entre les deux snapshots.
+    const weeklyValidation2 = validateWeeklyActualHours(
+      snapshot2,
+      normalizedTimeEntryId,
+      numericHours
+    );
+    if (!weeklyValidation2.valid) {
+      return {
+        success: false,
+        code: weeklyValidation2.code || 'WEEKLY_CAPACITY_EXCEEDED',
+        reason: 'La capacité hebdomadaire a changé pendant la correction',
+        sheetId,
+        transition: 'update_manager_actual',
+        validation: weeklyValidation2
+      };
     }
 
     // === APPLICATION ===

@@ -4182,8 +4182,78 @@ const ERROR_CODES = {
   DUPLICATE_DAILY_ENTRY: "DUPLICATE_DAILY_ENTRY",
   INVALID_ACTUAL_HOURS: "INVALID_ACTUAL_HOURS",
   INVALID_CAPACITY: "INVALID_CAPACITY",
-  DATE_OUTSIDE_TIMESHEET_WEEK: "DATE_OUTSIDE_TIMESHEET_WEEK"
+  DATE_OUTSIDE_TIMESHEET_WEEK: "DATE_OUTSIDE_TIMESHEET_WEEK",
+  WEEKLY_CAPACITY_EXCEEDED: "WEEKLY_CAPACITY_EXCEEDED"
 };
+
+/**
+ * Valide le total des heures réalisées d'une semaine.
+ *
+ * Cette règle est volontairement indépendante des capacités journalières :
+ * une semaine peut contenir des jours fériés, des temps partiels ou des
+ * absences, mais ne peut jamais dépasser la capacité hebdomadaire du membre.
+ * Les calculs se font en centi-heures afin d'éviter les écarts de flottants.
+ *
+ * @param {Array<{actualHours: number|null|undefined}>} entries
+ * @param {number} weeklyCapacityHours
+ * @returns {{valid: boolean, weeklyTotalHours: number, weeklyCapacityHours: number, exceededBy: number, errors: Array}}
+ */
+function validateWeeklyCapacity(entries, weeklyCapacityHours) {
+  const capacity = Number(weeklyCapacityHours);
+  if (!Number.isFinite(capacity) || capacity < 0) {
+    return {
+      valid: false,
+      weeklyTotalHours: 0,
+      weeklyCapacityHours: weeklyCapacityHours,
+      exceededBy: 0,
+      errors: [{
+        code: ERROR_CODES.INVALID_CAPACITY,
+        message: 'Capacité hebdomadaire invalide'
+      }]
+    };
+  }
+
+  let totalCentiHours = 0;
+  const errors = [];
+  for (const entry of entries || []) {
+    const actualHours = entry && entry.actualHours;
+    if (actualHours === null || actualHours === undefined || actualHours === '') {
+      continue;
+    }
+    if (typeof actualHours !== 'number' || !Number.isFinite(actualHours) || actualHours < 0) {
+      errors.push({
+        code: ERROR_CODES.INVALID_ACTUAL_HOURS,
+        actualHours,
+        message: 'Heures réalisées invalides'
+      });
+      continue;
+    }
+    totalCentiHours += toCentiHours(actualHours);
+  }
+
+  const capacityCentiHours = toCentiHours(capacity);
+  const weeklyTotalHours = toHours(totalCentiHours);
+  const exceededBy = totalCentiHours > capacityCentiHours
+    ? toHours(totalCentiHours - capacityCentiHours)
+    : 0;
+  if (exceededBy > 0) {
+    errors.push({
+      code: ERROR_CODES.WEEKLY_CAPACITY_EXCEEDED,
+      weeklyTotalHours,
+      weeklyCapacityHours: toHours(capacityCentiHours),
+      exceededBy,
+      message: `Capacité hebdomadaire dépassée : ${weeklyTotalHours}h > ${toHours(capacityCentiHours)}h (+${exceededBy}h)`
+    });
+  }
+
+  return {
+    valid: errors.length === 0,
+    weeklyTotalHours,
+    weeklyCapacityHours: toHours(capacityCentiHours),
+    exceededBy,
+    errors
+  };
+}
 
 /**
  * Vérifie si une date est dans la période de la feuille
@@ -4427,6 +4497,7 @@ function validateTimesheet(input) {
 
 return {
   validateTimesheet,
+  validateWeeklyCapacity,
   isDateInTimesheetWeek,
   ERROR_CODES,
   addDaysUTC
@@ -5260,8 +5331,63 @@ function normalizeCapacityValue(value) {
   return number;
 }
 
+function weeklyCapacityForMember(memberId, team) {
+  const member = (team || []).find(candidate => {
+    return workflow.normalizeMemberId(candidate.id) === workflow.normalizeMemberId(memberId);
+  });
+  const capacity = Number(member && member.capaciteHebdo);
+  // 0 est une capacité légitime (absence totale), donc pas de `|| 35`.
+  return Number.isFinite(capacity) && capacity >= 0 ? capacity : 35;
+}
+
+function validateWeeklyActualHours(snapshot, timeEntryId, candidateHours) {
+  if (!timesheetValidator || typeof timesheetValidator.validateWeeklyCapacity !== 'function') {
+    return {
+      valid: false,
+      code: SERVICE_ERROR_CODES.TIMESHEET_VALIDATOR_UNAVAILABLE,
+      errors: [{ code: SERVICE_ERROR_CODES.TIMESHEET_VALIDATOR_UNAVAILABLE }]
+    };
+  }
+
+  const normalizedEntryId = workflow.normalizeMemberId(timeEntryId);
+  let foundTarget = false;
+  const entries = (snapshot.allMemberWeekEntries || []).map(entry => {
+    if (workflow.normalizeMemberId(entry.id) === normalizedEntryId) {
+      foundTarget = true;
+      return { actualHours: candidateHours };
+    }
+    return { actualHours: entry.heures };
+  });
+  if (!foundTarget) {
+    return {
+      valid: false,
+      code: 'TIME_ENTRY_NOT_FOUND',
+      errors: [{ code: 'TIME_ENTRY_NOT_FOUND' }]
+    };
+  }
+
+  const result = timesheetValidator.validateWeeklyCapacity(
+    entries,
+    weeklyCapacityForMember(snapshot.sheet.membre, snapshot.team)
+  );
+  return Object.assign({
+    code: result.valid ? null : (result.errors[0] && result.errors[0].code)
+  }, result);
+}
+
+// Lors d'une soumission, le workflow matérialise une proposition de planning
+// dans `heures` quand aucun réalisé explicite n'existe. La validation doit
+// donc contrôler la valeur qui sera effectivement enregistrée, pas seulement
+// la valeur brute lue avant cette matérialisation.
+function actualHoursAfterSubmission(entry) {
+  if (entry && entry.heures !== null && entry.heures !== undefined && entry.heures !== '') {
+    return entry.heures;
+  }
+  return entry ? entry.heuresPrevues : null;
+}
+
 async function callFunctionalValidator(snapshot, grist) {
-  const { sheet, timeEntries, memberCapacities } = snapshot;
+  const { sheet, timeEntries, allMemberWeekEntries, memberCapacities } = snapshot;
   const sheetMemberId = workflow.normalizeMemberId(sheet.membre);
   const weekStartIso = workflow.getWeekStartIso(sheet.semaine);
 
@@ -5298,7 +5424,7 @@ async function callFunctionalValidator(snapshot, grist) {
       };
     }
 
-    entries.push({ taskId, date, actualHours: e.heures });
+    entries.push({ taskId, date, actualHours: actualHoursAfterSubmission(e) });
   }
 
   // Utiliser les capacités du snapshot (déjà chargées)
@@ -5356,9 +5482,16 @@ async function callFunctionalValidator(snapshot, grist) {
       options: { allowWeekend: false }
     });
 
+    const weeklyResult = timesheetValidator.validateWeeklyCapacity(
+      (allMemberWeekEntries || timeEntries).map(entry => ({
+        actualHours: actualHoursAfterSubmission(entry)
+      })),
+      weeklyCapacityForMember(sheetMemberId, snapshot.team)
+    );
+
     return { 
-      valid: result.valid, 
-      errors: result.errors || [], 
+      valid: result.valid && weeklyResult.valid,
+      errors: (result.errors || []).concat(weeklyResult.errors || []),
       warnings: [],
       isTechnicalError: false
     };
@@ -5981,6 +6114,22 @@ async function updateManagerActual(params) {
       };
     }
 
+    const weeklyValidation1 = validateWeeklyActualHours(
+      snapshot1,
+      normalizedTimeEntryId,
+      numericHours
+    );
+    if (!weeklyValidation1.valid) {
+      return {
+        success: false,
+        code: weeklyValidation1.code || 'WEEKLY_CAPACITY_EXCEEDED',
+        reason: 'La capacité hebdomadaire serait dépassée',
+        sheetId,
+        transition: 'update_manager_actual',
+        validation: weeklyValidation1
+      };
+    }
+
     // === SNAPSHOT 2 ===
     const snapshot2 = await loadWorkflowSnapshot(grist, sheetId);
 
@@ -6039,6 +6188,24 @@ async function updateManagerActual(params) {
           after: snapshot2
         };
       }
+    }
+
+    // La seconde lecture est la dernière barrière avant écriture. Elle couvre
+    // une modification provenant d'une autre session entre les deux snapshots.
+    const weeklyValidation2 = validateWeeklyActualHours(
+      snapshot2,
+      normalizedTimeEntryId,
+      numericHours
+    );
+    if (!weeklyValidation2.valid) {
+      return {
+        success: false,
+        code: weeklyValidation2.code || 'WEEKLY_CAPACITY_EXCEEDED',
+        reason: 'La capacité hebdomadaire a changé pendant la correction',
+        sheetId,
+        transition: 'update_manager_actual',
+        validation: weeklyValidation2
+      };
     }
 
     // === APPLICATION ===
@@ -6200,6 +6367,7 @@ const USER_MESSAGES = {
   DUPLICATE_WEEKLY_SHEET: 'Plusieurs feuilles existent pour cette semaine. Corrigez les données avant de continuer.',
   TIME_ENTRY_SCOPE_INCOMPLETE: 'Certaines lignes de cette semaine ne sont pas rattachées à la bonne feuille.',
   TIMESHEET_VALIDATION_FAILED: 'La feuille contient des erreurs. Vérifiez les heures et les capacités quotidiennes.',
+  WEEKLY_CAPACITY_EXCEEDED: 'La capacité hebdomadaire du membre serait dépassée.',
   NOT_EXPECTED_VALIDATION_MANAGER: 'Cette feuille a été soumise à un autre responsable.',
   WORKFLOW_STATE_CHANGED: 'La feuille a changé pendant l\'opération. Les données ont été rechargées.',
   WORKFLOW_APPLY_FAILED: 'L\'enregistrement dans Grist a échoué.',
@@ -6927,6 +7095,7 @@ return {
     // Exposer aussi le validateur pour usage direct si nécessaire
     validator: {
       validateTimesheet: validator.validateTimesheet,
+      validateWeeklyCapacity: validator.validateWeeklyCapacity,
       ERROR_CODES: validator.ERROR_CODES
     },
     

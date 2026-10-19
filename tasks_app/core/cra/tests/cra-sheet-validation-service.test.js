@@ -517,6 +517,33 @@ describe('CRA Sheet Validation Service - Correction manager', () => {
     expect(result.success).toBe(false);
     expect(result.code).toBe('SHEET_NOT_VALIDATED');
   });
+
+  it('refuse une correction manager qui dépasserait la capacité hebdomadaire', async () => {
+    const data = createBaseData({ sheetStatut: 'correction_manager', entryHeures: 7 });
+    data.TimeEntries.push(
+      { id: 2, membre: 2, tache: 2, date: 1704758400, heures: 7, heuresPrevues: 0, feuille: 1 },
+      { id: 3, membre: 2, tache: 3, date: 1704844800, heures: 7, heuresPrevues: 0, feuille: 1 },
+      { id: 4, membre: 2, tache: 4, date: 1704931200, heures: 7, heuresPrevues: 0, feuille: 1 },
+      { id: 5, membre: 2, tache: 5, date: 1705017600, heures: 7, heuresPrevues: 0, feuille: 1 }
+    );
+    const grist = createMockGristWithData(data);
+    const applyUserActions = jest.spyOn(grist.docApi, 'applyUserActions');
+
+    const result = await service.updateManagerActual({
+      grist,
+      actorMemberId: 1,
+      sheetId: 1,
+      timeEntryId: 1,
+      hours: 8
+    });
+
+    expect(result).toMatchObject({
+      success: false,
+      code: 'WEEKLY_CAPACITY_EXCEEDED',
+      validation: { weeklyTotalHours: 36, weeklyCapacityHours: 35, exceededBy: 1 }
+    });
+    expect(applyUserActions).not.toHaveBeenCalled();
+  });
 });
 
 // ============================================================================
