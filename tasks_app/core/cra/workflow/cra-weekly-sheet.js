@@ -21,6 +21,14 @@
 'use strict';
 
 const civilDate = require('../../calendar/civil-date');
+const sheetCreationContract = require('./cra-sheet-creation-contract.js');
+const {
+  DRAFT_SHEET_CREATION_REQUIRED_FIELDS,
+  DRAFT_SHEET_CREATION_SYSTEM_FIELDS,
+  DRAFT_SHEET_CREATION_ALLOWED_FIELDS,
+  isValidDraftSheetCreationPayload,
+  buildDraftSheetCreationPayload
+} = sheetCreationContract;
 
 // ============================================================================
 // HELPERS : NORMALISATION
@@ -574,6 +582,13 @@ function buildEnsureWeeklySheetActions(params) {
 // ============================================================================
 
 module.exports = {
+  // Contrat de création sécurisé, partagé avec le garde d'écriture.
+  DRAFT_SHEET_CREATION_REQUIRED_FIELDS,
+  DRAFT_SHEET_CREATION_SYSTEM_FIELDS,
+  DRAFT_SHEET_CREATION_ALLOWED_FIELDS,
+  isValidDraftSheetCreationPayload,
+  buildDraftSheetCreationPayload,
+
   // Helpers de normalisation (exportés pour usage externe si nécessaire)
   normalizeMemberId,
   normalizeDateValue,

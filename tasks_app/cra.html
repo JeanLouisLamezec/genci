@@ -14,7 +14,7 @@
 
 <script src="core/vendor/temporal-polyfill.js?v=20261015-temporal-v1"></script>
 <script>window.Temporal = window.Temporal || (window.temporal && window.temporal.Temporal);</script>
-<script src="core/generated/taskflow-cra-browser.js?v=20261015-temporal-v1"></script>
+<script src="core/generated/taskflow-cra-browser.js?v=20261020-sheet-creation-contract-v1"></script>
 <script src="core/cra/workflow/cra-workflow-integration.js?v=20261005-submit-batching"></script>
 <script src="core/cra/export/cra-export-model.js?v=20261009-cra-export-settings-v2"></script>
 <script src="core/cra/export/cra-export-settings.js?v=20261009-cra-export-settings-v2"></script>
@@ -1466,9 +1466,13 @@ tfoot td.left { text-align: left; color: var(--text-muted); font-weight: 600; }
 
     var identityDomain = global && global.TaskFlowIdentity;
     var identityRuntimeModule = global && global.TaskFlowIdentityRuntime;
+    // Le bundle CRA est chargé avant ce coeur partagé dans cra.html. En Node,
+    // l'import direct garantit la même règle dans les tests.
+    var weeklySheetContract = global && global.TaskFlowCra && global.TaskFlowCra.weeklySheet;
     if (typeof module !== 'undefined' && module.exports) {
         identityDomain = require('../identity/taskflow-identity.js');
         identityRuntimeModule = require('../identity/taskflow-identity-runtime.js');
+        weeklySheetContract = require('../cra/workflow/cra-weekly-sheet.js');
     }
 
     var CONTROLLED_TABLES = [
@@ -2072,7 +2076,14 @@ tfoot td.left { text-align: left; color: var(--text-muted); font-weight: 600; }
 
     function canCreateSheet(snapshot, proposed) {
         if (actorIsAdmin(snapshot)) return allow('ADMIN');
-        if (!hasExactFields(proposed, ['membre', 'semaine', 'statut', 'revisionValidation'])) {
+        var validCreationPayload = weeklySheetContract &&
+            typeof weeklySheetContract.isValidDraftSheetCreationPayload === 'function'
+            ? weeklySheetContract.isValidDraftSheetCreationPayload(proposed)
+            // Les widgets sans bundle CRA ne créent normalement pas de feuille.
+            // Préserver leur contrat historique, strict et fermé, plutôt que
+            // d'élargir leurs droits si leur bundle est absent.
+            : hasExactFields(proposed, ['membre', 'semaine', 'statut', 'revisionValidation']);
+        if (!validCreationPayload) {
             return deny('CRA_SHEET_CREATE_FIELDS_FORBIDDEN', 'La creation d\'une feuille doit utiliser uniquement les champs initiaux du workflow.');
         }
         if (normalizeId(proposed.membre) !== actorId(snapshot) || normalizeStatus(proposed.statut) !== 'brouillon' || Number(proposed.revisionValidation) !== 0) {

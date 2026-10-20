@@ -1,6 +1,7 @@
 'use strict';
 
 const permissions = require('./taskflow-permissions.js');
+const weeklySheet = require('../cra/workflow/cra-weekly-sheet.js');
 
 function fixture(actorMemberId = 1, overrides = {}) {
   const team = overrides.team || [
@@ -80,6 +81,52 @@ describe('TaskFlow permissions - identité', () => {
     expect(identity.identified).toBe(false);
     expect(identity.status).toBe('MEMBER_INACTIVE');
     expect(identity.isAdmin).toBe(false);
+  });
+});
+
+describe('TaskFlow permissions - création des feuilles CRA', () => {
+  const draftFieldsFor = (memberId, metadata = {}) => weeklySheet.buildDraftSheetCreationPayload({
+    membre: memberId,
+    semaine: 1753048800,
+    statut: 'brouillon',
+    revisionValidation: 0
+  }, metadata);
+
+  test('un contributeur non-admin peut créer sa feuille avec createdAt', () => {
+    const snapshot = fixture(4);
+    const fields = draftFieldsFor(4, { createdAt: 1753048800 });
+
+    expect(permissions.canCreateSheet(snapshot, fields)).toMatchObject({
+      allowed: true,
+      code: 'CRA_SHEET_OWNER_CREATE'
+    });
+    expect(authorize(snapshot, ['AddRecord', 'Feuilles', null, fields])).toMatchObject({
+      allowed: true,
+      code: 'BATCH_ALLOWED'
+    });
+  });
+
+  test('la création d’un contributeur reste bloquée hors de son périmètre ou du contrat', () => {
+    const snapshot = fixture(4);
+
+    expect(permissions.canCreateSheet(snapshot, draftFieldsFor(3, { createdAt: 1753048800 }))).toMatchObject({
+      allowed: false,
+      code: 'CRA_SHEET_CREATE_FORBIDDEN'
+    });
+    expect(permissions.canCreateSheet(snapshot, {
+      ...draftFieldsFor(4, { createdAt: 1753048800 }),
+      soumisPar: 4
+    })).toMatchObject({
+      allowed: false,
+      code: 'CRA_SHEET_CREATE_FIELDS_FORBIDDEN'
+    });
+    expect(permissions.canCreateSheet(snapshot, {
+      ...draftFieldsFor(4),
+      createdAt: '1753048800'
+    })).toMatchObject({
+      allowed: false,
+      code: 'CRA_SHEET_CREATE_FIELDS_FORBIDDEN'
+    });
   });
 });
 

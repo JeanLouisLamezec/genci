@@ -24,6 +24,7 @@ const {
   clearWeeklySheetLocks,
   SERVICE_ERROR_CODES
 } = require('../workflow/cra-sheet-validation-service.js');
+const permissions = require('../../permissions/taskflow-permissions.js');
 
 // ============================================================================
 // HELPERS : MOCK GRIST
@@ -41,6 +42,7 @@ function createMockGrist(options = {}) {
   let entriesData = entries.map(entry => ({ ...entry }));
   let nextId = 1000;
   const appliedActions = [];
+  const fetchCalls = [];
 
   function toColumnar(rows) {
     const columnNames = new Set(['id']);
@@ -55,6 +57,7 @@ function createMockGrist(options = {}) {
   return {
     docApi: {
       fetchTable: async (tableName) => {
+        fetchCalls.push(tableName);
         if (tableName === 'Feuilles') return toColumnar(sheetsData);
         if (tableName === 'TimeEntries') return toColumnar(entriesData);
         return {};
@@ -79,8 +82,39 @@ function createMockGrist(options = {}) {
         return createdIds.length ? { id: createdIds } : {};
       }
     },
-    state: () => ({ sheets: sheetsData, entries: entriesData, appliedActions })
+    state: () => ({ sheets: sheetsData, entries: entriesData, appliedActions, fetchCalls })
   };
+}
+
+function contributorPermissionSnapshot(memberId = 20) {
+  const team = [{
+    id: memberId,
+    nom: 'Contributeur',
+    gristUserId: 2020,
+    actif: true,
+    estAdmin: false
+  }];
+  const identity = permissions.resolveActorIdentity({
+    team,
+    currentGristUserId: 2020
+  });
+  return permissions.createSnapshot({
+    Team: team,
+    Feuilles: [],
+    TimeEntries: [],
+    Tasks: [],
+    Projects: [],
+    TaskAssignments: [],
+    Actions: [],
+    Entites: [],
+    Programmes: [],
+    KanbanSteps: [],
+    UserFilters: [],
+    Disponibilites: [],
+    MemberDailyCapacities: [],
+    TaskFlow_Meta: [],
+    Competences: []
+  }, identity);
 }
 // ============================================================================
 // TESTS : ensureWeeklySheet
@@ -120,6 +154,7 @@ describe('ensureWeeklySheet', () => {
     expect(result.sheetId).toBe(50);
     expect(result.error).toBe(null);
     expect(result.code).toBe('OK');
+    expect(grist.state().fetchCalls).toEqual([]);
   });
 
   // Test 2 : Création réussie
@@ -132,7 +167,9 @@ describe('ensureWeeklySheet', () => {
     const result = await ensureWeeklySheet({
       grist,
       memberId: 20,
-      weekStartIso: '2025-07-21'
+      weekStartIso: '2025-07-21',
+      sheets: [],
+      nowUnixSeconds: 1753048800
     });
 
     expect(result.success).toBe(true);
@@ -140,6 +177,46 @@ describe('ensureWeeklySheet', () => {
     expect(result.sheetId).toBe(100);
     expect(result.error).toBe(null);
     expect(result.code).toBe('OK');
+    expect(grist.state().appliedActions).toEqual([
+      ['AddRecord', 'Feuilles', null, {
+        membre: 20,
+        semaine: 1753048800,
+        statut: 'brouillon',
+        revisionValidation: 0,
+        createdAt: 1753048800
+      }]
+    ]);
+    // Une relecture ciblée avant l'écriture et une vérification après : pas de
+    // rechargement global ni d'appel redondant supplémentaire.
+    expect(grist.state().fetchCalls).toEqual(['Feuilles', 'Feuilles']);
+  });
+
+  test('le payload généré passe le garde pour un contributeur non-admin', async () => {
+    const grist = createMockGrist({ sheets: [], addRecordResult: { id: [100] } });
+    const rawApply = grist.docApi.applyUserActions.bind(grist.docApi);
+    const snapshot = contributorPermissionSnapshot(20);
+    const decisions = [];
+
+    grist.docApi.applyUserActions = async actions => {
+      const decision = permissions.authorizeMutationBatch(snapshot, actions);
+      decisions.push(decision);
+      if (!decision.allowed) throw new Error(decision.code);
+      return rawApply(actions);
+    };
+
+    const result = await ensureWeeklySheet({
+      grist,
+      memberId: 20,
+      weekStartIso: '2025-07-21',
+      sheets: [],
+      nowUnixSeconds: 1753048800
+    });
+
+    expect(result).toMatchObject({ success: true, created: true, sheetId: 100 });
+    expect(decisions).toEqual([expect.objectContaining({
+      allowed: true,
+      code: 'BATCH_ALLOWED'
+    })]);
   });
 
   // Test 3 : Aucune entrée et createOnlyWhenEntriesExist = true

@@ -26,6 +26,7 @@ const MODULES = [
   { path: path.join(CORE_DIR, 'calendar', 'civil-date.js') },
   { path: path.join(CORE_DIR, 'planning', 'planning-engine.js') },
   { path: path.join(CORE_DIR, 'cra', 'workflow', 'cra-sheet-workflow.js') },
+  { path: path.join(CORE_DIR, 'cra', 'workflow', 'cra-sheet-creation-contract.js') },
   { path: path.join(CORE_DIR, 'cra', 'workflow', 'cra-weekly-sheet.js') },
   { path: path.join(CORE_DIR, 'timesheets', 'timesheet-validator.js') },
   { path: path.join(CORE_DIR, 'cra', 'workflow', 'cra-sheet-validation-service.js') },
@@ -244,6 +245,11 @@ function build(options = {}) {
       buildSheetCreationActions: weeklySheet.buildSheetCreationActions,
       buildEntryLinkActions: weeklySheet.buildEntryLinkActions,
       buildEnsureWeeklySheetActions: weeklySheet.buildEnsureWeeklySheetActions,
+      DRAFT_SHEET_CREATION_REQUIRED_FIELDS: weeklySheet.DRAFT_SHEET_CREATION_REQUIRED_FIELDS,
+      DRAFT_SHEET_CREATION_SYSTEM_FIELDS: weeklySheet.DRAFT_SHEET_CREATION_SYSTEM_FIELDS,
+      DRAFT_SHEET_CREATION_ALLOWED_FIELDS: weeklySheet.DRAFT_SHEET_CREATION_ALLOWED_FIELDS,
+      isValidDraftSheetCreationPayload: weeklySheet.isValidDraftSheetCreationPayload,
+      buildDraftSheetCreationPayload: weeklySheet.buildDraftSheetCreationPayload,
       normalizeMemberId: weeklySheet.normalizeMemberId,
       getWeekStartIso: weeklySheet.getWeekStartIso,
       gristDateToIso: weeklySheet.gristDateToIso
@@ -303,7 +309,9 @@ function build(options = {}) {
       !context.globalThis.TaskFlowCra.managerWorkspace ||
       typeof context.globalThis.TaskFlowCra.managerWorkspace.resolveManagerWorkspaceState !== 'function' ||
       !context.globalThis.TaskFlowCra.weeklySheet ||
-      typeof context.globalThis.TaskFlowCra.weeklySheet.resolveWeeklySheetState !== 'function'
+      typeof context.globalThis.TaskFlowCra.weeklySheet.resolveWeeklySheetState !== 'function' ||
+      typeof context.globalThis.TaskFlowCra.weeklySheet.isValidDraftSheetCreationPayload !== 'function' ||
+      typeof context.globalThis.TaskFlowCra.weeklySheet.buildDraftSheetCreationPayload !== 'function'
     ) {
       throw new Error('TaskFlowCra mal exposé');
     }
@@ -316,6 +324,7 @@ function build(options = {}) {
     console.log('   ✓ createUiAdapter disponible');
     console.log('   ✓ managerWorkspace.resolveManagerWorkspaceState disponible');
     console.log('   ✓ weeklySheet.resolveWeeklySheetState disponible');
+    console.log('   ✓ contrat de création de feuille disponible');
   } catch (e) {
     console.error(`❌ Erreur d'exécution: ${e.message}`);
     process.exit(1);

@@ -25,6 +25,8 @@ const {
   getWeekStartIso,
   resolveWeeklySheetState,
   buildWeeklySheetCreation,
+  isValidDraftSheetCreationPayload,
+  buildDraftSheetCreationPayload,
   findEntriesForMemberWeek,
   buildOrphanEntryLinkPlan,
   buildSheetCreationActions,
@@ -527,6 +529,39 @@ describe('buildSheetCreationActions', () => {
   test('devrait retourner un tableau vide si pas de champs', () => {
     expect(buildSheetCreationActions(null)).toEqual([]);
     expect(buildSheetCreationActions(undefined)).toEqual([]);
+  });
+});
+
+// ============================================================================
+// TESTS : contrat de création sécurisé
+// ============================================================================
+
+describe('contrat de création de feuille brouillon', () => {
+  const baseFields = {
+    membre: 20,
+    semaine: 1753048800,
+    statut: 'brouillon',
+    revisionValidation: 0
+  };
+
+  test('autorise createdAt comme seule métadonnée système de création', () => {
+    const fields = buildDraftSheetCreationPayload(baseFields, { createdAt: 1753048800 });
+
+    expect(fields).toEqual({ ...baseFields, createdAt: 1753048800 });
+    expect(isValidDraftSheetCreationPayload(fields)).toBe(true);
+  });
+
+  test('refuse les métadonnées non prévues et un createdAt invalide', () => {
+    expect(isValidDraftSheetCreationPayload({
+      ...baseFields,
+      soumisPar: 20
+    })).toBe(false);
+    expect(isValidDraftSheetCreationPayload({
+      ...baseFields,
+      createdAt: '1753048800'
+    })).toBe(false);
+    expect(() => buildDraftSheetCreationPayload(baseFields, { createdAt: -1 }))
+      .toThrow('INVALID_DRAFT_SHEET_CREATION_PAYLOAD');
   });
 });
 

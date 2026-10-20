@@ -479,9 +479,10 @@ async function ensureWeeklySheetInternal(params) {
       }
 
       // 6. Créer la feuille
-      const creationFields = Object.assign({}, resolution.creationFields, {
-        createdAt: nowUnixSeconds
-      });
+      const creationFields = weeklySheet.buildDraftSheetCreationPayload(
+        resolution.creationFields,
+        { createdAt: nowUnixSeconds }
+      );
       const creationActions = weeklySheet.buildSheetCreationActions(creationFields);
       
       let addResult;

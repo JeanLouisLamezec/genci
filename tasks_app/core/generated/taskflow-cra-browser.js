@@ -3538,6 +3538,82 @@ return {
 
   }));
 
+  // Module: cra/workflow/cra-sheet-creation-contract
+  moduleFactories.set('cra/workflow/cra-sheet-creation-contract', (function() {
+    var exports = {};
+    var __require = function(id) {
+      if (!moduleCache.has(id)) {
+        if (!moduleFactories.has(id)) {
+          throw new Error('Module non résolu: ' + id);
+        }
+        moduleCache.set(id, moduleFactories.get(id)());
+      }
+      return moduleCache.get(id);
+    };
+
+    /* ============================================================================
+ * CRA Sheet Creation Contract — forme sûre d'une feuille brouillon
+ * ----------------------------------------------------------------------------
+ * Contrat CommonJS chargé par le service et le bundle CRA. Le garde injecté
+ * dans cra.html le consomme via window.TaskFlowCra.weeklySheet, exposé par ce
+ * bundle avant l'initialisation des permissions.
+ * ========================================================================== */
+const DRAFT_SHEET_CREATION_REQUIRED_FIELDS = Object.freeze([
+    'membre',
+    'semaine',
+    'statut',
+    'revisionValidation'
+  ]);
+const DRAFT_SHEET_CREATION_SYSTEM_FIELDS = Object.freeze(['createdAt']);
+const DRAFT_SHEET_CREATION_ALLOWED_FIELDS = Object.freeze([
+    ...DRAFT_SHEET_CREATION_REQUIRED_FIELDS,
+    ...DRAFT_SHEET_CREATION_SYSTEM_FIELDS
+  ]);
+
+function isValidCreatedAt(value) {
+    return typeof value === 'number' &&
+      Number.isSafeInteger(value) &&
+      value >= 0;
+  }
+
+/**
+ * Vérifie uniquement la forme sûre du payload. Les droits sur le membre et
+ * les transitions sont ensuite contrôlés par taskflow-permissions.
+ */
+function isValidDraftSheetCreationPayload(fields) {
+    if (!fields || typeof fields !== 'object' || Array.isArray(fields)) return false;
+
+    const keys = Object.keys(fields);
+    if (!DRAFT_SHEET_CREATION_REQUIRED_FIELDS.every(field =>
+      Object.prototype.hasOwnProperty.call(fields, field)
+    )) return false;
+    if (!keys.every(field => DRAFT_SHEET_CREATION_ALLOWED_FIELDS.includes(field))) return false;
+
+    return !Object.prototype.hasOwnProperty.call(fields, 'createdAt') ||
+      isValidCreatedAt(fields.createdAt);
+  }
+
+function buildDraftSheetCreationPayload(creationFields, metadata = {}) {
+    const fields = Object.assign({}, creationFields || {});
+    if (Object.prototype.hasOwnProperty.call(metadata, 'createdAt')) {
+      fields.createdAt = metadata.createdAt;
+    }
+    if (!isValidDraftSheetCreationPayload(fields)) {
+      throw new Error('INVALID_DRAFT_SHEET_CREATION_PAYLOAD');
+    }
+    return fields;
+  }
+
+return {
+  DRAFT_SHEET_CREATION_REQUIRED_FIELDS,
+  DRAFT_SHEET_CREATION_SYSTEM_FIELDS,
+  DRAFT_SHEET_CREATION_ALLOWED_FIELDS,
+  isValidDraftSheetCreationPayload,
+  buildDraftSheetCreationPayload
+};
+
+  }));
+
   // Module: cra/workflow/cra-weekly-sheet
   moduleFactories.set('cra/workflow/cra-weekly-sheet', (function() {
     var exports = {};
@@ -3571,6 +3647,14 @@ return {
  * @module core/cra/cra-weekly-sheet
  */
 const civilDate = __require('calendar/civil-date');
+const sheetCreationContract = __require('cra/workflow/cra-sheet-creation-contract');
+const {
+  DRAFT_SHEET_CREATION_REQUIRED_FIELDS,
+  DRAFT_SHEET_CREATION_SYSTEM_FIELDS,
+  DRAFT_SHEET_CREATION_ALLOWED_FIELDS,
+  isValidDraftSheetCreationPayload,
+  buildDraftSheetCreationPayload
+} = sheetCreationContract;
 
 // ============================================================================
 // HELPERS : NORMALISATION
@@ -4124,6 +4208,13 @@ function buildEnsureWeeklySheetActions(params) {
 // ============================================================================
 
 return {
+  // Contrat de création sécurisé, partagé avec le garde d'écriture.
+  DRAFT_SHEET_CREATION_REQUIRED_FIELDS,
+  DRAFT_SHEET_CREATION_SYSTEM_FIELDS,
+  DRAFT_SHEET_CREATION_ALLOWED_FIELDS,
+  isValidDraftSheetCreationPayload,
+  buildDraftSheetCreationPayload,
+
   // Helpers de normalisation (exportés pour usage externe si nécessaire)
   normalizeMemberId,
   normalizeDateValue,
@@ -4996,9 +5087,10 @@ async function ensureWeeklySheetInternal(params) {
       }
 
       // 6. Créer la feuille
-      const creationFields = Object.assign({}, resolution.creationFields, {
-        createdAt: nowUnixSeconds
-      });
+      const creationFields = weeklySheet.buildDraftSheetCreationPayload(
+        resolution.creationFields,
+        { createdAt: nowUnixSeconds }
+      );
       const creationActions = weeklySheet.buildSheetCreationActions(creationFields);
       
       let addResult;
@@ -7085,6 +7177,11 @@ return {
       buildSheetCreationActions: weeklySheet.buildSheetCreationActions,
       buildEntryLinkActions: weeklySheet.buildEntryLinkActions,
       buildEnsureWeeklySheetActions: weeklySheet.buildEnsureWeeklySheetActions,
+      DRAFT_SHEET_CREATION_REQUIRED_FIELDS: weeklySheet.DRAFT_SHEET_CREATION_REQUIRED_FIELDS,
+      DRAFT_SHEET_CREATION_SYSTEM_FIELDS: weeklySheet.DRAFT_SHEET_CREATION_SYSTEM_FIELDS,
+      DRAFT_SHEET_CREATION_ALLOWED_FIELDS: weeklySheet.DRAFT_SHEET_CREATION_ALLOWED_FIELDS,
+      isValidDraftSheetCreationPayload: weeklySheet.isValidDraftSheetCreationPayload,
+      buildDraftSheetCreationPayload: weeklySheet.buildDraftSheetCreationPayload,
       normalizeMemberId: weeklySheet.normalizeMemberId,
       getWeekStartIso: weeklySheet.getWeekStartIso,
       gristDateToIso: weeklySheet.gristDateToIso
