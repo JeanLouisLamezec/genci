@@ -9248,10 +9248,13 @@ if (typeof globalThis !== 'undefined') {
         }
 
         // Construit la liste unique Projet -> Tâche -> Sous-tâche en combinant
-        // les filtres métier et la fenêtre temporelle courante.
+        // les filtres métier et la plage réellement navigable de la timeline.
+        // Les contrôles du haut règlent l'échelle et le point de départ ; le
+        // défilement horizontal doit ensuite pouvoir révéler toute tâche qui
+        // appartient à cette plage effective.
         function buildVisibleTasks() {
-            const rangeStart = getViewStartDate();
-            const rangeEndExclusive = addDays(rangeStart, getTotalDays());
+            const rangeStart = effectiveStart;
+            const rangeEndExclusive = addDays(effectiveStart, effectiveDays);
             const hasTaskOnlyFilters = ['team', 'task']
                 .some(type => Array.isArray(filters[type]) && filters[type].length > 0);
             currentVisibleModel = GanttVisibleTree.buildVisibleRows({
@@ -9668,7 +9671,9 @@ if (typeof globalThis !== 'undefined') {
             el.innerHTML = html;
         }
 
-        // Calcule la plage effective = période vue étendue uniquement pour les tâches qui la chevauchent
+        // Calcule la plage effective navigable. La période choisie en haut
+        // constitue le point de départ et l'échelle, mais ne doit pas masquer
+        // les tâches avant/après lorsqu'on se déplace avec l'ascenseur.
         function computeEffectiveRange() {
             const ft = getFilteredTasks();
             const cfg = VIEW_CONFIG[currentView];
@@ -9677,18 +9682,18 @@ if (typeof globalThis !== 'undefined') {
 
             let eStart = new Date(vStart.getTime());
             let eEnd = addDays(vStart, vDays);
-            const vEnd = new Date(eEnd.getTime());
 
             // Padding en jours selon la résolution de la vue
             const PADDING = cfg.unit === 'day' ? 3 : cfg.unit === 'week' ? 7 : 14;
 
-            // N'étendre que pour les tâches qui chevauchent la période courante.
-            // Les tâches entièrement hors-période restent invisibles (navigation cohérente).
+            // Inclure toutes les tâches métier filtrées. La grille possède ainsi
+            // une plage cohérente avec son ascenseur horizontal ; aucune tâche
+            // ne disparaît simplement parce qu'elle n'était pas dans la fenêtre
+            // initialement sélectionnée.
             ft.forEach(t => {
                 const ts = gristToDate(t.dateDebut);
                 const te = gristToDate(t.dateEcheance);
                 if (!ts || !te) return;
-                if (te < vStart || ts > vEnd) return; // pas d'overlap → ignorer
                 if (ts < eStart) eStart = addDays(ts, -PADDING);
                 if (te > eEnd) eEnd = addDays(te, PADDING);
             });

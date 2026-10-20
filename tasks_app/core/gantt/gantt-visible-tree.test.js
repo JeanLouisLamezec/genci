@@ -50,6 +50,25 @@ describe('GanttVisibleTree - fenêtre temporelle', () => {
     expect(taskOverlapsRange({ dateDebut: day('2026-08-12') }, rangeStart, rangeEndExclusive)).toBe(true);
     expect(taskOverlapsRange({ dateEcheance: day('2024-08-12') }, rangeStart, rangeEndExclusive)).toBe(false);
   });
+
+  test('affiche les tâches antérieures et futures quand la plage navigable les couvre', () => {
+    const tasks = [
+      { id: 70, titre: 'Tâche terminée', projet: 1, dateDebut: day('2025-01-01'), dateEcheance: day('2025-01-15') },
+      { id: 71, titre: 'Tâche future', projet: 1, dateDebut: day('2027-01-01'), dateEcheance: day('2027-01-15') }
+    ];
+    const result = buildVisibleRows({
+      tasks,
+      filteredTasks: tasks,
+      projects: [{ id: 1, nom: 'Alpha' }],
+      rangeStart: new Date('2024-12-20T00:00:00Z'),
+      rangeEndExclusive: new Date('2027-02-01T00:00:00Z'),
+      today,
+      expandedTaskIds: new Set(),
+      collapsedProjectIds: new Set()
+    });
+
+    expect(result.rows.filter(row => row.kind === 'task').map(row => row.task.id)).toEqual([70, 71]);
+  });
 });
 
 describe('GanttVisibleTree - état initial des projets', () => {
