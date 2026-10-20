@@ -51,7 +51,26 @@ function createFilterManager(overrides = {}) {
 }
 
 // Import FilterManager (doit être après la définition de mockData et createFilterManager)
-const { FilterManager, initFilterDropdown } = require('./filter-manager.js');
+const { FilterManager, initFilterDropdown, sortFilterItems } = require('./filter-manager.js');
+
+describe('FilterManager - ordre des sélecteurs', () => {
+  test('trie les personnes, projets et tâches par libellé français sans modifier la source', () => {
+    const source = [
+      { id: 4, titre: 'Tâche 10' },
+      { id: 1, nom: 'Élodie' },
+      { id: 2, nom: 'alpha' },
+      { id: 3, titre: 'Tâche 2' }
+    ];
+
+    expect(sortFilterItems(source).map(item => item.nom || item.titre)).toEqual([
+      'alpha',
+      'Élodie',
+      'Tâche 2',
+      'Tâche 10'
+    ]);
+    expect(source.map(item => item.id)).toEqual([4, 1, 2, 3]);
+  });
+});
 
 // Suite de tests
 describe('FilterManager - Filtre Programme', () => {

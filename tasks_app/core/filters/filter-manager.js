@@ -50,6 +50,35 @@ function normalizeFilters(input) {
   return result;
 }
 
+// Les tables Grist conservent leur ordre de création, qui ne correspond pas
+// nécessairement à l'ordre attendu dans un sélecteur. Centraliser ce tri ici
+// garantit le même affichage pour tous les widgets consommateurs des filtres.
+const filterLabelCollator = typeof Intl !== 'undefined' && typeof Intl.Collator === 'function'
+  ? new Intl.Collator('fr', { sensitivity: 'base', numeric: true })
+  : null;
+
+function filterItemLabel(item) {
+  if (!item || typeof item !== 'object') return '';
+  return String(item.nom || item.titre || item.name || `Item ${item.id}`);
+}
+
+function sortFilterItems(items) {
+  if (!Array.isArray(items)) return [];
+  return items.slice().sort((left, right) => {
+    const leftLabel = filterItemLabel(left);
+    const rightLabel = filterItemLabel(right);
+    const byLabel = filterLabelCollator
+      ? filterLabelCollator.compare(leftLabel, rightLabel)
+      : leftLabel.localeCompare(rightLabel);
+    if (byLabel !== 0) return byLabel;
+    return String(left && left.id != null ? left.id : '').localeCompare(
+      String(right && right.id != null ? right.id : ''),
+      'fr',
+      { numeric: true }
+    );
+  });
+}
+
 class FilterManager {
   /**
    * @param {Object} options
@@ -155,9 +184,9 @@ class FilterManager {
     header.setAttribute('aria-expanded', 'false');
     
     // Créer les checkboxes pour chaque item
-    items.forEach(item => {
+    sortFilterItems(items).forEach(item => {
       const itemId = item.id;
-      const itemLabel = item.nom || item.titre || item.name || `Item ${itemId}`;
+      const itemLabel = filterItemLabel(item);
       
       const labelElement = document.createElement('label');
       labelElement.className = 'filter-checkbox-label';
@@ -638,7 +667,7 @@ class FilterManager {
    */
   _createCheckboxGroup(container, type, items) {
     container.innerHTML = '';
-    items.forEach(item => {
+    sortFilterItems(items).forEach(item => {
       const labelElement = document.createElement('label');
       labelElement.className = 'filter-checkbox-label';
       
@@ -654,7 +683,7 @@ class FilterManager {
       
       const textSpan = document.createElement('span');
       textSpan.className = 'filter-checkbox-text';
-      textSpan.textContent = item.nom || item.titre || item.name || `Item ${item.id}`;
+      textSpan.textContent = filterItemLabel(item);
       
       labelElement.appendChild(checkbox);
       labelElement.appendChild(textSpan);
@@ -773,5 +802,5 @@ function initFilterDropdown(button, panel) {
 
 // Exporter pour une utilisation dans les modules
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { FilterManager, createFilterButton, createFilterPanel, initFilterDropdown, normalizeFilters };
+  module.exports = { FilterManager, createFilterButton, createFilterPanel, initFilterDropdown, normalizeFilters, sortFilterItems };
 }
