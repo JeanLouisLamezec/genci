@@ -112,6 +112,7 @@ tfoot td.colres{background:var(--surface-2);z-index:2}
 .tk .tkdates span{color:var(--text-muted);font-size:0.74rem}
 .tk .pdot{width:9px;height:9px;border-radius:50%;flex-shrink:0}
 .tk .tinfo{flex:1;min-width:0}
+.tk .tp{font-weight:650;font-size:0.78rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .tk .tt{font-weight:650;font-size:0.84rem;letter-spacing:-.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .tk .tm{font-size:0.71rem;color:var(--text-muted);margin-top:1px}
 .tk .th{font-weight:700;font-size:0.84rem;color:var(--text)}
@@ -9581,7 +9582,8 @@ function openCell(key, period) {
   const panelBody = document.getElementById('pBody');
   panelBody.innerHTML = banner + hint + unitToggle + (sorted.length ? sorted.map(i => {
     const p = projById(i.task.projet);
-    const sliceTxt = (p ? esc(p.nom) : 'Sans projet') + ' · ' + hoursText(i.slice) + ' h cette ' + per;
+    const projectName = p ? esc(p.nom) : 'Sans projet';
+    const sliceTxt = hoursText(i.slice) + ' h cette ' + per;
     const usePct = editable && S.allocUnit === 'pct' && capWk > 0;
     const wks = taskWeeks(i.task);
     const val = usePct ? Math.round(i.total / (capWk * wks) * 100) : displayHours(i.total);
@@ -9594,7 +9596,7 @@ function openCell(key, period) {
       ? '<div class="tkedit"><input type="number" name="alloc" min="0" step="' + (usePct ? 5 : 0.5) + '" value="' + val + '" title="Allocation ' + (usePct ? '(% de la capacité sur la durée)' : '(heures)') + '" data-plan-change="set-charge" data-task-id="' + taskId + '" data-member-id="' + memberId + '"' + allocationData + '><span class="u">' + (usePct ? '%' : 'h') + '</span><select name="reassign" title="Réaffecter à un membre (sa marge est indiquée)" data-plan-change="reassign-charge" data-task-id="' + taskId + '" data-member-id="' + memberId + '"><option value="">⇄</option>' + others.map(m => { const fr = av[m.id] ? av[m.id].free : null; return '<option value="' + safeRecordId(m.id) + '">→ ' + esc(m.nom) + (fr != null ? ' (' + fr + ' h libres)' : '') + '</option>'; }).join('') + '</select></div>'
       : '<div class="th">' + hoursText(i.total) + ' h</div>';
     const dates = editable ? '<div class="tkdates"><span class="dl">📅 Dates</span><input type="date" name="dateDebut" value="' + gToInput(i.task.dateDebut) + '" title="Début" data-plan-change="set-start-date" data-task-id="' + taskId + '"><span>→</span><input type="date" name="dateEcheance" value="' + gToInput(i.task.dateEcheance) + '" title="Échéance" data-plan-change="set-end-date" data-task-id="' + taskId + '"></div>' : '';
-    return '<div class="tk"><div class="tkmain"><span class="pdot" style="background:' + safeColor(p && p.couleur, '#64748b') + '"></span><div class="tinfo"><div class="tt">' + esc(i.task.titre) + '</div><div class="tm">' + sliceTxt + '</div></div>' + right + '</div>' + dates + '</div>';
+    return '<div class="tk"><div class="tkmain"><span class="pdot" style="background:' + safeColor(p && p.couleur, '#64748b') + '"></span><div class="tinfo"><div class="tp">' + projectName + '</div><div class="tt">' + esc(i.task.titre) + '</div><div class="tm">' + sliceTxt + '</div></div>' + right + '</div>' + dates + '</div>';
   }).join('') : '<div style="color:var(--text-muted);font-size:.82rem">Aucune tâche ' + (S.mode === 'realise' ? 'réalisée' : 'planifiée') + ' sur cette période.</div>');
   bindPlanEditorActions(panelBody);
   document.getElementById('overlay').classList.add('show');
