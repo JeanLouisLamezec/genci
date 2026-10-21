@@ -204,6 +204,15 @@
         return (Array.isArray(projects) ? projects : []).filter(function (project) {
             if (!project || project.actif === false) return false;
             return typeof canCreateTaskInProject !== 'function' || canCreateTaskInProject(project);
+        }).sort(function (left, right) {
+            var leftName = String((left && left.nom) || '').trim();
+            var rightName = String((right && right.nom) || '').trim();
+            // Le formulaire ne doit jamais refléter l'ordre de création des
+            // enregistrements Grist : les projets proposés sont A → Z.
+            return leftName.localeCompare(rightName, 'fr', {
+                sensitivity: 'base',
+                numeric: true
+            }) || (normalizeId(left && left.id) || 0) - (normalizeId(right && right.id) || 0);
         });
     }
 

@@ -183,4 +183,20 @@ describe('GanttTaskPanelRules - projets proposés à la création', () => {
     ];
     expect(rules.filterCreatableProjects(projects, project => project.id === 2).map(project => project.id)).toEqual([2]);
   });
+
+  test('trie les projets proposés par nom, indépendamment de leur ordre Grist', () => {
+    const projects = [
+      { id: 30, nom: 'Projet 10', actif: true },
+      { id: 20, nom: 'Équipe', actif: true },
+      { id: 10, nom: 'alpha', actif: true },
+      { id: 40, nom: 'Projet 2', actif: true }
+    ];
+
+    expect(rules.filterCreatableProjects(projects).map(project => project.nom)).toEqual([
+      'alpha',
+      'Équipe',
+      'Projet 2',
+      'Projet 10'
+    ]);
+  });
 });
