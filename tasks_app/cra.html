@@ -8554,7 +8554,28 @@ function sameDay(a, b) { return localDateIso(a) === localDateIso(b); }
 function unitFactor() { return S.unit === 'jours' ? S.hoursPerDay : (S.unit === 'demi' ? S.hoursPerDay / 2 : 1); }
 function unitLabel() { return S.unit === 'jours' ? 'jours' : (S.unit === 'demi' ? 'demi-journees' : 'heures'); }
 function hoursToQty(h) { const q = h / unitFactor(); return Math.round(q * 100) / 100; }
-function qtyToHours(q) { return (Number(q) || 0) * unitFactor(); }
+
+// Les nombres métier restent des Number JavaScript, mais l'interface CRA est
+// française : la virgule est le séparateur affiché. Le point reste accepté à
+// la saisie/paste afin de ne jamais transformer une valeur valide en zéro.
+function parseFrenchDecimal(value) {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  const raw = String(value == null ? '' : value).trim();
+  if (!raw) return null;
+  if (!/^(?:\d+(?:[,.]\d+)?|[,.]\d+)$/.test(raw)) return null;
+  const parsed = Number(raw.replace(',', '.'));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function formatFrenchDecimal(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? String(number).replace('.', ',') : '';
+}
+
+function qtyToHours(q) {
+  const parsed = parseFrenchDecimal(q);
+  return parsed === null ? NaN : parsed * unitFactor();
+}
 
 /**
  * Parseur pour la saisie en mode correction manager
@@ -8568,8 +8589,7 @@ function parseManagerHoursInput(qtyStr) {
     return { valid: false, error: 'Valeur requise' };
   }
   
-  const trimmed = String(qtyStr).trim();
-  const parsed = Number(trimmed);
+  const parsed = parseFrenchDecimal(qtyStr);
   
   // Valeur non numérique
   if (!Number.isFinite(parsed)) {
@@ -8584,14 +8604,14 @@ function parseManagerHoursInput(qtyStr) {
   // Zéro est valide
   return { valid: true, hours: parsed };
 }
-function fmtQty(h) { if (!h) return ''; const q = hoursToQty(h); return String(q); }
+function fmtQty(h) { if (!h) return ''; return formatFrenchDecimal(hoursToQty(h)); }
 
 // PHASE 5 : Formatter pour inputs (distingue 0 explicite de null)
 function fmtInputQty(hours, hasValue) {
   if (!hasValue) {
     return '';
   }
-  return String(hoursToQty(hours));
+  return formatFrenchDecimal(hoursToQty(hours));
 }
 
 function activeAssignmentForCraCell(taskId, dayMs, personId) {
@@ -9653,7 +9673,7 @@ function renderSaisie() {
               + esc(shortAvailabilityLabel(availability.label)) + '</div>';
           } else {
             // PHASE 5 : Utiliser displayedHours et fmtInputQty
-            cellHtml += '<input type="number" min="0" step="0.5" value="' + fmtInputQty(displayedH, cellState.hasDisplayValue) + '"' 
+            cellHtml += '<input type="text" inputmode="decimal" autocomplete="off" value="' + fmtInputQty(displayedH, cellState.hasDisplayValue) + '"'
               + (isLocked ? ' disabled' : '')
               + ' data-cra-change="set-cell" data-task-id="' + safeRecordId(t.id) + '" data-day-ms="' + esc(String(d)) + '" data-person-id="' + safeRecordId(personId) + '" style="width:100%;font-size:.85rem">';
             if (plannedH > 0 && !cellState.hasExplicitActual) {
@@ -9683,7 +9703,7 @@ function renderSaisie() {
       const availability = dayAvailabilityInfo(d, personId);
       html += '<td class="' + (availability.isReduced ? 'capacity-reduced' : '') + '" style="text-align:center;font-weight:600;padding:8px">' + (fmtQty(displayed) || '0')
         + (planned > 0 ? '<br><small style="color:var(--text-muted);font-size:.7rem;font-weight:400">' + fmtQty(planned) + ' prevu</small>' : '')
-        + '<br><small class="capacity-value" style="font-size:.75rem">Cap: ' + cap.toFixed(1) + 'h</small>'
+        + '<br><small class="capacity-value" style="font-size:.75rem">Cap: ' + (fmtQty(cap) || '0') + 'h</small>'
         + '</td>';
     });
     const weekCap = weekDaysArr.reduce((s,d) => s + dayCapacityForPerson(d, personId), 0);
@@ -9692,7 +9712,7 @@ function renderSaisie() {
     const weekPl = weekPlannedHours(personId);
     html += '<td class="total" style="text-align:center;font-weight:700;padding:8px">' + (fmtQty(weekDisplayed) || '0')
       + (weekPl > 0 ? '<br><small style="color:var(--text-muted);font-weight:400">/ ' + fmtQty(weekPl) + ' prevu</small>' : '')
-      + '<br><small style="color:var(--text-muted);font-size:.75rem">Cap: ' + weekCap.toFixed(1) + 'h</small>'
+      + '<br><small style="color:var(--text-muted);font-size:.75rem">Cap: ' + (fmtQty(weekCap) || '0') + 'h</small>'
       + '</td></tr></tfoot></table>';
     
     html += '</div>';  // Fin person-section
@@ -9999,7 +10019,14 @@ async function performCraCellChange(taskId, dayMs, personId, qtyStr) {
     }
   }
   
-  const hours = qtyToHours(qtyStr);
+  // Une cellule vide représente bien 0h (effacement). Toute autre valeur
+  // doit être un nombre français valide ; en particulier « 1,5 » devient 1.5.
+  const hours = String(qtyStr == null ? '' : qtyStr).trim() === '' ? 0 : qtyToHours(qtyStr);
+  if (!Number.isFinite(hours) || hours < 0) {
+    toast('Saisissez un nombre positif, avec une virgule si nécessaire');
+    render();
+    return;
+  }
   
   const weekLock = CRAController.isPersonWeekLocked(
     personId,

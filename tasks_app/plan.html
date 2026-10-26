@@ -8591,6 +8591,17 @@ const displayHours = (n) => {
 };
 const hoursText = (n) => String(displayHours(n)).replace('.', ',');
 
+// Les nombres restent stockés avec le point décimal JavaScript/Grist, mais
+// tous les champs d'heures du plan présentent une écriture française. Le
+// point reste accepté au collage pour ne pas dégrader les anciennes habitudes.
+function parseFrenchDecimal(value) {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  const raw = String(value == null ? '' : value).trim();
+  if (!raw || !/^(?:\d+(?:[,.]\d+)?|[,.]\d+)$/.test(raw)) return null;
+  const parsed = Number(raw.replace(',', '.'));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 // Variables globales pour l'index canonique
 let canonData = null;
 let canonPlanIndex = null;
@@ -9192,7 +9203,7 @@ function renderTimeline() {
       const hrs = (effCharges(t).find(c => String(c.teamId) === String(pid)) || {}).heures || 0;
       const hot = isF && fIdx >= 0 && ts < bandE && te > bandS; // tâche dans la période focalisée
       const tp = TaskFlowTimePeriods.key(new Date(Math.max(ts, winStart)), S.granularity); // période à ouvrir si "Ajuster"
-      h += '<div class="tl-row' + (grouped ? ' tl-ind' : '') + (isF ? ' tl-focus' : '') + '" data-lane="' + esc(laneKey) + '"><div class="tl-lbl" title="' + esc(t.titre) + '">' + esc(t.titre) + '</div><div class="tl-track">' + (bandStyle ? '<div class="tl-band" style="' + bandStyle + '"></div>' : '') + '<div class="tl-bar' + (hot ? ' hot' : '') + '" style="left:' + l.toFixed(1) + '%;width:' + w.toFixed(1) + '%;background:' + col + '" data-id="' + t.id + '" data-lane="' + esc(laneKey) + '" data-period="' + tp + '" title="' + esc(t.titre) + ' · ' + r1(hrs) + ' h — cliquer pour l’aperçu">' + esc(t.titre) + '</div></div></div>';
+      h += '<div class="tl-row' + (grouped ? ' tl-ind' : '') + (isF ? ' tl-focus' : '') + '" data-lane="' + esc(laneKey) + '"><div class="tl-lbl" title="' + esc(t.titre) + '">' + esc(t.titre) + '</div><div class="tl-track">' + (bandStyle ? '<div class="tl-band" style="' + bandStyle + '"></div>' : '') + '<div class="tl-bar' + (hot ? ' hot' : '') + '" style="left:' + l.toFixed(1) + '%;width:' + w.toFixed(1) + '%;background:' + col + '" data-id="' + t.id + '" data-lane="' + esc(laneKey) + '" data-period="' + tp + '" title="' + esc(t.titre) + ' · ' + hoursText(hrs) + ' h — cliquer pour l’aperçu">' + esc(t.titre) + '</div></div></div>';
     }
   }
   if (!any) h += '<div class="tl-empty">Aucune tâche datée sur cette fenêtre.</div>';
@@ -9277,7 +9288,7 @@ function taskCardHtml(t) {
     '<div class="tpc-title">' + esc(t.titre) + '</div>' +
     '<div class="tpc-meta">' + (p ? '<span class="tpc-proj"><i style="background:' + safeColor(p.couleur, '#64748b') + '"></i>' + esc(p.nom) + '</span>' : '') + '<span class="tpc-dates">📅 ' + dd + ' → ' + de + '</span></div>' +
     '<div class="tpc-row"><div class="tpc-ava">' + asg.map(m => '<span class="tpc-av" style="background:' + safeColor(m.couleur, '#6366f1') + '" title="' + esc(m.nom) + '">' + esc(ini(m.nom)) + '</span>').join('') + '</div><div class="tpc-prog"><div class="tpc-track"><div style="width:' + prog + '%"></div></div><span>' + prog + '%</span></div></div>' +
-    (totH ? '<div class="tpc-hours">' + r1(totH) + ' h alloué' + (asg.length > 1 ? 'es' : '') + '</div>' : '') +
+    (totH ? '<div class="tpc-hours">' + hoursText(totH) + ' h alloué' + (asg.length > 1 ? 'es' : '') + '</div>' : '') +
     (t.dateCloture ? '<div class="tpc-cloture" style="color:' + (delaiDays(t) > 0 ? '#ff9094' : '#54d2a4') + '">✓ Clôturée le ' + fmtTLDate(t.dateCloture) + (t.dateEcheance ? ' · ' + delaiTxt(t) : '') + '</div>' : '');
 }
 function openTaskPop(taskId, anchor, lane, period) {
@@ -9491,7 +9502,11 @@ function bindPlanEditorActions(container) {
     const memberId = memberIdValue ? Number(memberIdValue) : null;
 
     if (action === 'set-charge' && taskId && memberId) {
-      let hours = Number(control.value) || 0;
+      let hours = parseFrenchDecimal(control.value);
+      if (hours === null || hours < 0) {
+        toast('Saisissez un nombre positif, avec une virgule si nécessaire');
+        return;
+      }
       if (control.dataset.allocationUnit === 'pct') {
         const capacityHours = Number(control.dataset.capacityHours);
         const taskWeeks = Number(control.dataset.taskWeeks);
@@ -9515,7 +9530,12 @@ function bindPlanEditorActions(container) {
       return;
     }
     if (action === 'set-capacity' && memberId) {
-      setCapacity(memberId, Number(control.value) || 0);
+      const capacity = parseFrenchDecimal(control.value);
+      if (capacity === null || capacity < 0) {
+        toast('Saisissez une capacité positive');
+        return;
+      }
+      setCapacity(memberId, capacity);
     }
   };
 
@@ -9565,9 +9585,9 @@ function openCell(key, period) {
   let banner = '';
   if (capP > 0) {
     const r = tot / capP;
-    if (r > 1) banner = '<div class="pbanner over">⚠ Surcharge — <b>+' + r1(tot - capP) + ' h</b> au-dessus de la capacité (' + Math.round(capP) + ' h)</div>';
-    else if (r > 0.85) banner = '<div class="pbanner warn">● Proche de la limite — ' + Math.round(r * 100) + '% · marge ' + r1(capP - tot) + ' h</div>';
-    else if (tot > 0) banner = '<div class="pbanner ok">✓ Charge maîtrisée — ' + Math.round(r * 100) + '% · marge ' + r1(capP - tot) + ' h</div>';
+    if (r > 1) banner = '<div class="pbanner over">⚠ Surcharge — <b>+' + hoursText(tot - capP) + ' h</b> au-dessus de la capacité (' + Math.round(capP) + ' h)</div>';
+    else if (r > 0.85) banner = '<div class="pbanner warn">● Proche de la limite — ' + Math.round(r * 100) + '% · marge ' + hoursText(capP - tot) + ' h</div>';
+    else if (tot > 0) banner = '<div class="pbanner ok">✓ Charge maîtrisée — ' + Math.round(r * 100) + '% · marge ' + hoursText(capP - tot) + ' h</div>';
     else banner = '<div class="pbanner under">○ Aucune charge — ' + Math.round(capP) + ' h disponibles</div>';
   }
   // guidage : quoi faire + où est la marge dans l'équipe (réaffectation éclairée)
@@ -9587,13 +9607,14 @@ function openCell(key, period) {
     const usePct = editable && S.allocUnit === 'pct' && capWk > 0;
     const wks = taskWeeks(i.task);
     const val = usePct ? Math.round(i.total / (capWk * wks) * 100) : displayHours(i.total);
+    const inputValue = usePct ? String(val) : hoursText(val);
     const taskId = safeRecordId(i.task.id);
     const memberId = safeRecordId(tid);
     const allocationData = usePct
       ? ' data-allocation-unit="pct" data-capacity-hours="' + esc(String(Number.isFinite(Number(capWk)) ? Number(capWk) : 0)) + '" data-task-weeks="' + esc(String(Number.isFinite(Number(wks)) ? Number(wks.toFixed(3)) : 0)) + '"'
       : ' data-allocation-unit="h"';
     const right = editable
-      ? '<div class="tkedit"><input type="number" name="alloc" min="0" step="' + (usePct ? 5 : 0.5) + '" value="' + val + '" title="Allocation ' + (usePct ? '(% de la capacité sur la durée)' : '(heures)') + '" data-plan-change="set-charge" data-task-id="' + taskId + '" data-member-id="' + memberId + '"' + allocationData + '><span class="u">' + (usePct ? '%' : 'h') + '</span><select name="reassign" title="Réaffecter à un membre (sa marge est indiquée)" data-plan-change="reassign-charge" data-task-id="' + taskId + '" data-member-id="' + memberId + '"><option value="">⇄</option>' + others.map(m => { const fr = av[m.id] ? av[m.id].free : null; return '<option value="' + safeRecordId(m.id) + '">→ ' + esc(m.nom) + (fr != null ? ' (' + fr + ' h libres)' : '') + '</option>'; }).join('') + '</select></div>'
+      ? '<div class="tkedit"><input type="text" inputmode="' + (usePct ? 'numeric' : 'decimal') + '" autocomplete="off" name="alloc" value="' + inputValue + '" title="Allocation ' + (usePct ? '(% de la capacité sur la durée)' : '(heures)') + '" data-plan-change="set-charge" data-task-id="' + taskId + '" data-member-id="' + memberId + '"' + allocationData + '><span class="u">' + (usePct ? '%' : 'h') + '</span><select name="reassign" title="Réaffecter à un membre (sa marge est indiquée)" data-plan-change="reassign-charge" data-task-id="' + taskId + '" data-member-id="' + memberId + '"><option value="">⇄</option>' + others.map(m => { const fr = av[m.id] ? av[m.id].free : null; return '<option value="' + safeRecordId(m.id) + '">→ ' + esc(m.nom) + (fr != null ? ' (' + hoursText(fr) + ' h libres)' : '') + '</option>'; }).join('') + '</select></div>'
       : '<div class="th">' + hoursText(i.total) + ' h</div>';
     const dates = editable ? '<div class="tkdates"><span class="dl">📅 Dates</span><input type="date" name="dateDebut" value="' + gToInput(i.task.dateDebut) + '" title="Début" data-plan-change="set-start-date" data-task-id="' + taskId + '"><span>→</span><input type="date" name="dateEcheance" value="' + gToInput(i.task.dateEcheance) + '" title="Échéance" data-plan-change="set-end-date" data-task-id="' + taskId + '"></div>' : '';
     return '<div class="tk"><div class="tkmain"><span class="pdot" style="background:' + safeColor(p && p.couleur, '#64748b') + '"></span><div class="tinfo"><div class="tp">' + projectName + '</div><div class="tt">' + esc(i.task.titre) + '</div><div class="tm">' + sliceTxt + '</div></div>' + right + '</div>' + dates + '</div>';
@@ -9745,7 +9766,8 @@ async function reloadDispos() {
 async function addIndispo(memberId) {
   const label = (document.getElementById('indLabel').value || 'Indispo').trim();
   const start = document.getElementById('indStart').value, end = document.getElementById('indEnd').value;
-  const dispoPct = Math.max(0, Math.min(100, parseFloat(document.getElementById('indDispo').value) || 0));
+  const parsedDispoPct = parseFrenchDecimal(document.getElementById('indDispo').value);
+  const dispoPct = Math.max(0, Math.min(100, parsedDispoPct === null ? 0 : parsedDispoPct));
   if (!start || !end) { toast('Renseigne les deux dates.'); return; }
   if (end < start) { toast('La fin doit être après le début.'); return; }
   const fields = { membre: memberId, type: label, dateDebut: isoToSec(start), dateFin: isoToSec(end), dispo: dispoPct / 100 };
@@ -10618,7 +10640,7 @@ function showPreviewError(assignmentId, result) {
  * Rendu d'un item du résumé
  */
 function renderSummaryItem(label, value) {
-  const displayValue = value != null ? `${Number(value).toFixed(1)}h` : '—';
+  const displayValue = value != null ? `${hoursText(value)}h` : '—';
   return `
     <div style="background:var(--surface-2);padding:8px;border-radius:6px">
       <div style="color:var(--text-muted);font-size:0.7rem;margin-bottom:2px">${escapeHtml(label)}</div>
@@ -10658,9 +10680,9 @@ function renderPlanTable(desiredPlan) {
     html += `
       <tr style="border-bottom:1px solid var(--border)">
         <td style="padding:6px">${escapeHtml(dateStr)}</td>
-        <td style="padding:6px;text-align:right;font-weight:600">${(item.plannedHours || 0).toFixed(1)}h</td>
-        <td style="padding:6px;text-align:right;color:var(--text-muted)">${(item.baseCapacityHours || 0).toFixed(1)}h</td>
-        <td style="padding:6px;text-align:right;color:var(--text-muted)">${(item.availableCapacityHours || 0).toFixed(1)}h</td>
+        <td style="padding:6px;text-align:right;font-weight:600">${hoursText(item.plannedHours || 0)}h</td>
+        <td style="padding:6px;text-align:right;color:var(--text-muted)">${hoursText(item.baseCapacityHours || 0)}h</td>
+        <td style="padding:6px;text-align:right;color:var(--text-muted)">${hoursText(item.availableCapacityHours || 0)}h</td>
       </tr>
     `;
   }
