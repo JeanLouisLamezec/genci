@@ -9050,23 +9050,7 @@ async function render() {
     h += '</tr>';
   }
   h += '</tbody>';
-  // pied : total équipe par période vs capacité canonique
-  h += '<tfoot><tr><td class="colres" style="text-align:left;padding:7px 10px">' + (S.mode === 'dispo' ? 'Dispo équipe' : 'Capacité équipe') + '</td>';
-  let grand = 0;
-  for (let pi = 0; pi < periods.length; pi++) {
-    const p = periods[pi];
-    let tot = 0; for (const row of rows) if (!row.isHeader) tot += (matrix[row.key] || {})[p] || 0;
-    const capTeam = PlanCanonAdapter.getTeamCapacity(activeTeam(), p, S.granularity, canonData ? canonData.dailyCapacities : [], true);
-    if (S.mode === 'dispo') {
-      const freeTot = Math.max(capTeam - tot, 0); grand += freeTot;
-      h += '<td class="' + (p === nowKey ? 'nowcol' : '') + '">' + (freeTot > 0.005 ? hoursText(freeTot) : '·') + '</td>';
-    } else {
-      grand += tot;
-      const pc = capTeam > 0 ? Math.round(tot / capTeam * 100) : null;
-      h += '<td class="' + (p === nowKey ? 'nowcol' : '') + '">' + (tot > 0 ? hoursText(tot) + (pc != null ? '<div style="font-size:.66rem;color:var(--text-muted);font-weight:400">' + pc + '%</div>' : '') : '·') + '</td>';
-    }
-  }
-  h += '<td class="sum"><div class="sh">' + hoursText(grand) + ' h</div></td></tr></tfoot></table>';
+  h += '</table>';
   if (S.groupBy === 'programme' && !S.projects.some(p => Number(p.programme || p.portefeuille) > 0)) {
     h = '<div class="pf-hint">Aucun projet n\'est rattaché à un programme — tout apparaît sous « Sans programme ». Affectez vos projets dans la table <b>Projects</b> (colonne <b>Programme</b>).</div>' + h;
   }
